@@ -5592,7 +5592,11 @@ class ActionPlanner(_ActionLegalityMixin):
         the doubted pick. A pick already made at high effort stands, unless it
         rests on a false lethal claim or casts an attack-only creature the
         losing-attack guard would hold: those deterministic contradictions go
-        to the board-math fallback, which follows the searched line.
+        to the board-math fallback, which follows the searched line. A high
+        effort pick asserting an impossible premise about the cast itself (a
+        summoning-sick creature attacking this turn, an effect from a creature
+        with no entry/cast ability) is re-asked once instead; a revised answer
+        still resting on the premise goes to the board-math fallback.
         """
         concerns = concerns_for(chosen, data)
         if not concerns:
@@ -5605,23 +5609,35 @@ class ActionPlanner(_ActionLegalityMixin):
                 for kind, text in concerns
                 if kind in ("false_lethal", "attack_only", "damage_attribution", "false_combat_board")
             ]
-            if not hard:
+            premise = [text for kind, text in concerns if kind == "false_cast_premise"]
+            if not hard and not premise:
                 logger.info(
                     "typed-decision: the high-effort pick %s stands despite %s", chosen, ", ".join(kinds)
                 )
                 return data, chosen
             trace["second_look"] = {
-                "concerns": [text for _kind, text in hard],
+                "concerns": [text for _kind, text in (hard or concerns)],
                 "first": chosen,
                 "final": "fallback",
             }
-            logger.warning(
-                "typed-decision: setting aside the high-effort pick %s (%s) [model: %s]",
+            if hard:
+                logger.warning(
+                    "typed-decision: setting aside the high-effort pick %s (%s) [model: %s]",
+                    chosen,
+                    hard[0][1][:200],
+                    str(data.get("reasoning") or "")[:160],
+                )
+                raise SecondLookError(f"high-effort pick {chosen} set aside: {hard[0][1][:200]}")
+            # A false cast premise is a factual contradiction about the pick's
+            # outcome, not a stylistic doubt: re-ask once even though the pick
+            # came from the high-effort leg. Only a revised answer that no
+            # longer rests on the impossible premise stands; otherwise the
+            # deterministic fallback below decides.
+            logger.info(
+                "typed-decision: re-asking the high-effort pick %s over a false cast premise: %s",
                 chosen,
-                hard[0][1][:200],
-                str(data.get("reasoning") or "")[:160],
+                premise[0][:160],
             )
-            raise SecondLookError(f"high-effort pick {chosen} set aside: {hard[0][1][:200]}")
         option = decision.find(chosen[0])
         label = _option_text(decision, chosen[0]) if option is not None else chosen[0]
         logger.info(
@@ -5671,6 +5687,19 @@ class ActionPlanner(_ActionLegalityMixin):
             game_state, new_data.get("reasoning")
         ):
             raise SecondLookError("second look still relies on a contradicted combat board")
+        # A revised answer may not stand on the same impossible cast premise
+        # (either pick): that is the explicit safe-unresolved path.
+        from arenamcp.cast_premises import cast_premise_concerns
+
+        lingering = cast_premise_concerns(decision, game_state, new_chosen, new_data.get("reasoning"))
+        if lingering:
+            trace["second_look"] = {
+                "concerns": [text for _kind, text in concerns],
+                "first": chosen,
+                "final": "fallback",
+                "refuted_claims": lingering,
+            }
+            raise SecondLookError(f"second look still rests on a false cast premise: {lingering[0][:160]}")
         if new_chosen == chosen:
             from arenamcp.game_plan import decision_claim_notes
 
@@ -6289,6 +6318,13 @@ class ActionPlanner(_ActionLegalityMixin):
         equipment_concern = equipment_pass_concern(decision, game_state, chosen, reasoning)
         if equipment_concern:
             found.append(("equipment_haste", equipment_concern))
+        # Impossible premises about the cast itself (summoning-sick attack now,
+        # an effect from a creature with no entry/cast ability): re-evaluate
+        # the pick instead of only annotating rationale afterwards.
+        from arenamcp.cast_premises import cast_premise_concerns
+
+        for text in cast_premise_concerns(decision, game_state, chosen, reasoning):
+            found.append(("false_cast_premise", text))
         for kind, check in (
             ("false_lethal", self._false_lethal_concern),
             ("face_burn", self._face_burn_concern),

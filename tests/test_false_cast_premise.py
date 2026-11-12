@@ -1,0 +1,326 @@
+"""Fable Nov 2026-11-12: impossible cast premises re-evaluate the pick, not the prose.
+
+Recorded autoplay decisions rested on premises the rules contradict: a
+summoning-sick creature claimed to attack this turn (Skyward Spider T8,
+Spellbook Vendor T12) and a creature with no entry/cast ability claimed to put
+an Eerie counter on another creature immediately (Optimistic Scavenger T16).
+The pre-existing summoning-sickness validator only rewrote the reasoning; the
+selected action stood. These tests pin the new deterministic detector
+(:mod:`arenamcp.cast_premises`) and its second-look wiring through the typed
+decision boundary, offline with mocked model outputs.
+"""
+
+import copy
+import json
+from pathlib import Path
+from unittest.mock import Mock
+
+import pytest
+
+from arenamcp.action_planner import ActionPlanner, SecondLookError
+from arenamcp.cast_premises import cast_premise_concerns
+from arenamcp.decisions import decision_from_dict
+from arenamcp.game_plan import decision_claim_notes
+
+FIXTURE = json.loads((Path(__file__).parent / "fixtures/false_cast_premise_20261112.json").read_text())
+CASES = {case["name"]: case for case in FIXTURE["cases"]}
+
+
+def _decision(name):
+    return decision_from_dict(CASES[name]["decision"])
+
+
+def _cast_instance_id(name):
+    case = CASES[name]
+    chosen = case["chosen_option_ids"][0]
+    for option in case["decision"]["options"]:
+        if option["option_id"] == chosen:
+            return option["meta"].get("instanceId")
+    raise AssertionError(f"no cast option among {case['chosen_option_ids']}")
+
+
+@pytest.mark.parametrize("name", ["skyward_spider_t8", "spellbook_vendor_t12"])
+def test_recorded_summoning_sick_attack_premise_is_flagged(name):
+    """Original failure: the pick's stated outcome is impossible this turn."""
+    case = CASES[name]
+    concerns = cast_premise_concerns(
+        _decision(name), case["state"], case["chosen_option_ids"], case["reasoning"]
+    )
+    assert len(concerns) == 1
+    assert "summoning sick" in concerns[0]
+    assert "can't attack" in concerns[0]
+
+
+def test_recorded_false_entry_effect_premise_is_flagged():
+    """Original failure: an Eerie counter attributed to the creature's own entry."""
+    case = CASES["optimistic_scavenger_t16"]
+    concerns = cast_premise_concerns(
+        _decision("optimistic_scavenger_t16"),
+        case["state"],
+        case["chosen_option_ids"],
+        case["reasoning"],
+    )
+    assert len(concerns) == 1
+    assert "no enters-the-battlefield or when-you-cast ability" in concerns[0]
+    assert "Eerie" in concerns[0]
+
+
+def test_preexisting_validator_caught_the_sick_claim_but_left_the_pick():
+    """Documents the regression baseline: rationale rewritten, action unchanged."""
+    case = CASES["skyward_spider_t8"]
+    notes = decision_claim_notes(
+        case["reasoning"], case["state"], cast_ids={_cast_instance_id("skyward_spider_t8")}
+    )
+    assert notes and "summoning sick" in notes[0]
+    # The recorded post-correction explanation keeps the same chosen option.
+    assert (
+        "Rules correction"
+        in (
+            json.loads(
+                Path(
+                    "/home/joshu/fable-nov-evidence/autoplay-false-premise-20261112/decisions.json"
+                ).read_text()
+            )[0]["decision"]["explanation"]
+        )
+    )
+
+
+def test_genuine_haste_attack_now_is_not_flagged():
+    """Adversarial positive: a hasty creature really can attack this turn."""
+    case = copy.deepcopy(CASES["skyward_spider_t8"])
+    for card in case["state"]["hand"]:
+        if card.get("instance_id") == _cast_instance_id("skyward_spider_t8"):
+            card["oracle_text"] = (card.get("oracle_text") or "") + "\nHaste"
+    assert (
+        cast_premise_concerns(
+            _decision("skyward_spider_t8"),
+            case["state"],
+            case["chosen_option_ids"],
+            case["reasoning"],
+        )
+        == []
+    )
+
+
+def test_other_unsick_creature_attacking_is_not_flagged():
+    """Adversarial positive: an existing untapped creature may attack freely."""
+    case = CASES["optimistic_scavenger_t16"]
+    reasoning = (
+        "Casting Optimistic Scavenger. Veteran Survivor attacks this turn; "
+        "the Scavenger blocks from next turn onward."
+    )
+    assert (
+        cast_premise_concerns(
+            _decision("optimistic_scavenger_t16"),
+            case["state"],
+            case["chosen_option_ids"],
+            reasoning,
+        )
+        == []
+    )
+
+
+def test_future_timed_trigger_claim_is_out_of_scope():
+    """Conservative scope: scheduled triggers are not immediate-entry claims."""
+    case = CASES["optimistic_scavenger_t16"]
+    reasoning = (
+        "Casting Optimistic Scavenger; at the beginning of combat it creates "
+        "a Role token for Veteran Survivor."
+    )
+    assert (
+        cast_premise_concerns(
+            _decision("optimistic_scavenger_t16"),
+            case["state"],
+            case["chosen_option_ids"],
+            reasoning,
+        )
+        == []
+    )
+
+
+def test_enchantment_entry_counter_claim_is_not_attributed_to_the_cast():
+    """Adversarial positive: a real Eerie enchantment entry owns that trigger."""
+    case = CASES["optimistic_scavenger_t16"]
+    reasoning = (
+        "Casting Optimistic Scavenger. When the Eerie enchantment enters later, "
+        "it puts a +1/+1 counter on Veteran Survivor."
+    )
+    assert (
+        cast_premise_concerns(
+            _decision("optimistic_scavenger_t16"),
+            case["state"],
+            case["chosen_option_ids"],
+            reasoning,
+        )
+        == []
+    )
+
+
+def test_unknown_oracle_text_yields_no_entry_effect_concern():
+    """Unknown oracle text stays conservative: no concern is invented."""
+    case = copy.deepcopy(CASES["optimistic_scavenger_t16"])
+    for card in case["state"]["hand"]:
+        if card.get("instance_id") == _cast_instance_id("optimistic_scavenger_t16"):
+            card["oracle_text"] = ""
+    assert (
+        cast_premise_concerns(
+            _decision("optimistic_scavenger_t16"),
+            case["state"],
+            case["chosen_option_ids"],
+            case["reasoning"],
+        )
+        == []
+    )
+
+
+def _concerns_for(case):
+    decision = _decision(case["name"])
+
+    def concerns_for(chosen, data):
+        return [
+            ("false_cast_premise", text)
+            for text in cast_premise_concerns(decision, case["state"], chosen, data.get("reasoning"))
+        ]
+
+    return decision, concerns_for
+
+
+def test_second_look_reasks_false_cast_premise_and_clean_revision_stands(monkeypatch):
+    """Through the planner: bad premise forces one re-ask; the revision stands."""
+    case = CASES["skyward_spider_t8"]
+    decision, concerns_for = _concerns_for(case)
+    backend = Mock()
+    calls = []
+
+    def complete(*args, **kwargs):
+        calls.append(args[1])
+        if len(calls) == 1:
+            return json.dumps(
+                {
+                    "option_ids": case["chosen_option_ids"],
+                    "reasoning": case["reasoning"],
+                }
+            )
+        return json.dumps(
+            {
+                "option_ids": case["chosen_option_ids"],
+                "reasoning": "Casting Skyward Spider develops a flier; it blocks from next turn.",
+            }
+        )
+
+    backend.complete.side_effect = complete
+    planner = ActionPlanner(backend, separate_strategy_planning=True)
+    monkeypatch.setattr(planner, "_sized_budget", lambda *args: 1.0)
+    assert planner.plan_decision_options(decision, case["state"]) == case["chosen_option_ids"]
+    assert len(calls) == 2
+    assert "SECOND LOOK" in calls[1]
+    assert "summoning sick" in calls[1]
+    trace = planner._last_decision_trace["second_look"]
+    assert any("summoning sick" in text for text in trace["concerns"])
+    assert trace.get("final") != "fallback"
+
+
+def test_lingering_premise_in_revision_goes_to_explicit_fallback():
+    """A revised answer still resting on the premise cannot stand: fallback."""
+    case = CASES["optimistic_scavenger_t16"]
+    decision, concerns_for = _concerns_for(case)
+    planner = ActionPlanner(Mock(), separate_strategy_planning=True)
+    planner._last_decision_trace = {}
+    data = {
+        "option_ids": case["chosen_option_ids"],
+        "reasoning": case["reasoning"],
+    }
+
+    def ask(message, **kwargs):
+        return json.dumps(data)
+
+    def parse(raw):
+        payload = json.loads(raw)
+        return payload, payload["option_ids"]
+
+    with pytest.raises(SecondLookError) as excinfo:
+        planner._second_look(
+            decision,
+            case["state"],
+            data,
+            case["chosen_option_ids"],
+            concerns_for,
+            ask,
+            parse,
+            "pick",
+            False,
+        )
+    assert "false cast premise" in str(excinfo.value)
+    trace = planner._last_decision_trace["second_look"]
+    assert trace["final"] == "fallback"
+    assert trace["refuted_claims"]
+
+
+def test_high_effort_pick_with_false_premise_is_reasked_not_rubber_stamped():
+    """High-effort picks are re-asked over a false premise; clean answer stands."""
+    case = CASES["spellbook_vendor_t12"]
+    decision, concerns_for = _concerns_for(case)
+    planner = ActionPlanner(Mock(), separate_strategy_planning=True)
+    planner._last_decision_trace = {}
+    bad_data = {
+        "option_ids": case["chosen_option_ids"],
+        "reasoning": case["reasoning"],
+    }
+    good_data = {
+        "option_ids": case["chosen_option_ids"],
+        "reasoning": "Casting Spellbook Vendor builds a body and a Role; it blocks from next turn.",
+    }
+    answers = iter([json.dumps(good_data)])
+
+    def ask(message, **kwargs):
+        return next(answers)
+
+    def parse(raw):
+        payload = json.loads(raw)
+        return payload, payload["option_ids"]
+
+    new_data, new_chosen = planner._second_look(
+        decision,
+        case["state"],
+        bad_data,
+        case["chosen_option_ids"],
+        concerns_for,
+        ask,
+        parse,
+        "pick",
+        True,
+    )
+    assert new_chosen == case["chosen_option_ids"]
+    assert new_data["reasoning"] == good_data["reasoning"]
+
+
+def test_high_effort_pick_still_on_premise_raises_instead_of_standing():
+    """Same as above but the revision repeats the premise: explicit fallback."""
+    case = CASES["spellbook_vendor_t12"]
+    decision, concerns_for = _concerns_for(case)
+    planner = ActionPlanner(Mock(), separate_strategy_planning=True)
+    planner._last_decision_trace = {}
+    data = {
+        "option_ids": case["chosen_option_ids"],
+        "reasoning": case["reasoning"],
+    }
+
+    def ask(message, **kwargs):
+        return json.dumps(data)
+
+    def parse(raw):
+        payload = json.loads(raw)
+        return payload, payload["option_ids"]
+
+    with pytest.raises(SecondLookError):
+        planner._second_look(
+            decision,
+            case["state"],
+            data,
+            case["chosen_option_ids"],
+            concerns_for,
+            ask,
+            parse,
+            "pick",
+            True,
+        )
