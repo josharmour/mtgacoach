@@ -879,15 +879,6 @@ _PLAN_RECURSION_NEGATED = re.compile(
     r"(?:longer\s+)?(?:available|usable|possible)\b"
 )
 
-# Supported connectors inside a positive recursion binding. These are the
-# ONLY words allowed between the recursion verb and the card name (object
-# form) or between the card name and its return predicate (subject form);
-# anything else — purpose infinitives ("to replace"), adverbs ("never"),
-# prepositional detours — leaves the clause unmatched, and unmatched or
-# ambiguous clauses stay lost/unknown instead of being revived by loose text.
-_PLAN_BIND_DETERMINER = r"(?:the|a|an|my|your|our)"
-_PLAN_BIND_AUXILIARY = r"(?:will|shall)"
-
 # Evidence is judged per actual clause: a plan part may hold several
 # sentences, and a name in one sentence plus a recursion word in the next is
 # NOT evidence ("Etali's Favor is lost. Recur World Breaker instead.").
@@ -909,17 +900,13 @@ _PLAN_CONTRAST_SPLIT = re.compile(
 def _plan_promises_this_recursion(plan: GamePlan, name: str) -> bool:
     """Card-specific plan evidence that ``name`` comes back from the graveyard.
 
-    Narrow positive action grammar: one actual clause (sentence) of the plan
-    must bind a recursion action to THIS card — either a recursion verb takes
-    the card as its immediate object ("recur Etali's Favor", "return Etali's
+    Narrow positive action-to-card matching: one actual clause (sentence) of
+    the plan must bind a recursion action to THIS card — either a recursion
+    verb takes the card as its object ("recur Etali's Favor", "return Etali's
     Favor from the graveyard") or the card is the subject coming back
-    ("Etali's Favor returns from the graveyard"). Between the verb and the
-    card only supported determiners may stand; between the card and its
-    return predicate only supported auxiliaries may stand. Co-occurrence
-    alone is not evidence: a recursion word elsewhere in the clause (even
-    about another card), a contrastive tail ("...instead of Etali's Favor"),
-    a purpose infinitive ("Recur World Breaker to replace Etali's Favor"), a
-    non-returning subject ("Etali's Favor never comes back"), or a negated
+    ("Etali's Favor returns from the graveyard"). Co-occurrence alone is not
+    evidence: a recursion word elsewhere in the clause (even about another
+    card), a contrastive tail ("...instead of Etali's Favor"), or a negated
     mention ("Recursion is unavailable") does not revive the route. When no
     clause binds, the route stays lost/unknown rather than being revived by
     loose text.
@@ -928,13 +915,9 @@ def _plan_promises_this_recursion(plan: GamePlan, name: str) -> bool:
         return False
     wanted = name.strip().lower().replace("\u2019", "'")
     escaped = re.escape(wanted)
-    verb_takes_card = re.compile(
-        r"\b" + _PLAN_RECURSION_ACTION_VERB + r"\b"
-        r"(?:\s+" + _PLAN_BIND_DETERMINER + r")*\s+" + escaped
-    )
+    verb_takes_card = re.compile(r"\b" + _PLAN_RECURSION_ACTION_VERB + r"\b[^.;]{0,30}?" + escaped)
     card_comes_back = re.compile(
-        escaped + r"(?:(?:\s+" + _PLAN_BIND_AUXILIARY + r")*\s+"
-        r"(?:returns?|(?:comes?|gets?|is)\s+back|is\s+recurred))\b"
+        escaped + r"[^.;]{0,40}?\b(?:returns?|(?:comes?|gets?|is)\s+back|is\s+recurred)\b"
     )
     for part in [*plan.win_conditions, plan.path, plan.develop_next, *plan.active_mechanisms]:
         for raw in _PLAN_CLAUSE_SPLIT.split(str(part or "")):

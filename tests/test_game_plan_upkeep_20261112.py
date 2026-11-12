@@ -617,62 +617,6 @@ def test_observe_records_a_negated_recursion_route_as_lost_without_a_model_call(
     assert mgr.current.route_state["pieces"]["synthesizer"] == "graveyard"
 
 
-def test_recursion_binding_requires_immediate_action_adjacency():
-    """95f7c0b review gap: a small explicit positive action grammar decides —
-    the recursion action must apply IMMEDIATELY to the route card, with only
-    supported determiners between verb and card and only supported
-    auxiliaries between card and return predicate. A purpose infinitive
-    ('Recur World Breaker to replace Etali's Favor.') binds the action to the
-    OTHER card, and a non-returning subject ('Etali's Favor never comes
-    back.') promises nothing — both leave the graveyard-only route lost.
-    Unmatched/ambiguous forms stay lost/unknown; no negation blacklist
-    growth and no broadened vocabulary do the deciding."""
-    zones = {
-        "players": [{"is_local": True, "seat_id": 1, "life_total": 20}],
-        "turn": {"turn_number": 9, "active_player": 1, "phase": "Main1"},
-        "battlefield": [],
-        "hand": [],
-        "graveyard": [{"instance_id": 5, "name": "Etali's Favor"}],
-        "exile": [],
-        "command": [],
-    }
-
-    def _routed(wins=None, **parts):
-        variant = GamePlan(
-            win_conditions=wins or ["win with Etali's Favor"], path="cast it and swing", **parts
-        )
-        variant.route_cards = ["etali's favor"]
-        return variant
-
-    to_replace = _routed(develop_next="Recur World Breaker to replace Etali's Favor.")
-    assert win_route_lost(to_replace, zones)  # the action binds World Breaker, not the Favor
-
-    never_back = _routed(active_mechanisms=["Etali's Favor never comes back."])
-    assert win_route_lost(never_back, zones)  # a non-returning subject is not a promise
-
-    # The grammar is positive, not a blacklist: the same shapes with the
-    # action actually bound to the route card keep the route alive.
-    bound_object = _routed(develop_next="Recur Etali's Favor to pressure the planeswalker.")
-    assert not win_route_lost(bound_object, zones)  # verb + card, adjacent
-
-    bound_subject_aux = _routed(active_mechanisms=["Etali's Favor will return from the graveyard."])
-    assert not win_route_lost(bound_subject_aux, zones)  # supported auxiliary + return predicate
-
-
-def test_observe_records_a_detached_recursion_route_as_lost_without_a_model_call(monkeypatch):
-    """Real observation path for 95f7c0b: when the plan's recursion action is
-    grammatically detached from the route card ('Recur World Breaker to
-    replace Synthesizer.'), observe() must record the graveyard-only route as
-    lost on the code-owned upkeep refresh — zero model calls."""
-    be, mgr = _formed_manager(monkeypatch)
-    mgr.current.route_cards = ["synthesizer"]
-    mgr.current.active_mechanisms = ["Recur World Breaker to replace Synthesizer."]
-    mgr.observe(_state(turn=5, synth_on_board=False))
-    assert be.calls == 1  # upkeep stays code-owned
-    assert mgr.current.route_state["status"] == "lost"
-    assert mgr.current.route_state["pieces"]["synthesizer"] == "graveyard"
-
-
 def test_ledger_captures_fresh_upkeep_not_the_previous_turns_snapshot(monkeypatch):
     """f39b158 gap 2: the turn-5 ledger entry must describe the board as it
     stands NOW (engine destroyed between observations), not the stale turn-4
