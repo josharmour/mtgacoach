@@ -295,10 +295,29 @@ def test_zero_cost_spell_is_offered_not_withheld_as_unpayable():
     assert filter_play_options(decision, {}).option_ids() == {"idx:1", "pass"}
 
 
-def test_activate_options_carry_selected_ability_metadata():
+def _stub_selected_ability(monkeypatch):
+    """Deterministic describe_ability for CI, where the local MTGA database
+    (and therefore ability 194115's rules text) is absent.
+
+    Only Firdoch Core's {4} animation (194115) resolves, to Arena's menu
+    dialect; every other id — including 0 — stays unresolved ("", ""), so
+    options keep omitting ability_text exactly as production does.
+    """
+    import arenamcp.gre_action_matcher as matcher
+
+    def fake_describe_ability(ability_grp_id):
+        if int(ability_grp_id or 0) == 194115:
+            return "", "{o4}: This becomes a 4/4 artifact creature until end of turn."
+        return "", ""
+
+    monkeypatch.setattr(matcher, "describe_ability", fake_describe_ability)
+
+
+def test_activate_options_carry_selected_ability_metadata(monkeypatch):
     """Activated-ability options keep the selected ability's own cost and rules
     text (plus payment info) so prompts and safety see the offered ability, not
     a flattening of the whole card."""
+    _stub_selected_ability(monkeypatch)
     action = {
         "actionType": "ActionType_Activate",
         "grpId": 98577,

@@ -13,6 +13,7 @@ import importlib.util
 import os
 import pathlib
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -337,13 +338,63 @@ def test_mulligan_guard_subcounts_keep_vs_mulligan():
 # --------------------------------------------------------------------------
 
 
-def test_opponent_commander_resolved_from_command_zone():
+class _StubCardDB:
+    """Deterministic stand-in for arenamcp.card_db.get_card_database().
+
+    grp_id_to_name must return whatever name the DB supplies, verbatim —
+    the local database carries the front face ("Eddie Brock") while CI's
+    carries the full double-faced name ("Eddie Brock // Venom, Lethal
+    Protector"), so the test pins the lookup and the exact supplied return
+    for both shapes instead of hardcoding one database's wording.
+    """
+
+    def __init__(self, names):
+        self.names = names
+        self.lookups = []
+
+    def get_card_by_arena_id(self, grp_id):
+        self.lookups.append(int(grp_id))
+        name = self.names.get(int(grp_id))
+        return SimpleNamespace(name=name) if name else None
+
+
+@pytest.mark.parametrize(
+    ("db_name", "expected"),
+    [
+        # Front-face-only row, as in the local database.
+        ("Eddie Brock", "Eddie Brock"),
+        # Full double-faced name, as CI's database legitimately returns.
+        ("Eddie Brock // Venom, Lethal Protector", "Eddie Brock // Venom, Lethal Protector"),
+    ],
+)
+def test_opponent_commander_resolved_from_command_zone(monkeypatch, db_name, expected):
     """Real case: match 0e5bb04f — opponent commander grp_id 97871
-    (legendary Creature; resolves via arenamcp.card_db to Eddie Brock)
-    sitting in their end-of-game command zone."""
+    (legendary Creature) sitting in their end-of-game command zone.
+
+    Hermetic: the card DB is stubbed, so the assertion pins the arena-id
+    lookup (97871) and the exact name the DB supplies — production returns
+    it verbatim, with no normalization or substring trimming.
+    """
+    db = _StubCardDB({97871: db_name})
+    monkeypatch.setattr(fr, "_card_db", lambda: db)
     bundle = _bundle("0e5bb04f", command_zone=[EDDIE_BROCK_CARD], opponent_seat_id=2)
     rv = fr.review_bundle(bundle)
-    assert rv["opponent_commanders"] == ["Eddie Brock"]
+    assert db.lookups == [97871]
+    assert rv["opponent_commanders"] == [expected]
+
+
+def test_opponent_commander_without_card_db_reports_grp_id(monkeypatch):
+    """Hermetic boundary: with the card DB unavailable (CI without the local
+    MTGA database), the commander is reported by its arena id — grp:97871 —
+    rather than a guessed name."""
+    monkeypatch.setattr(fr, "_card_db", lambda: None)
+    bundle = _bundle("0e5bb04f", command_zone=[EDDIE_BROCK_CARD], opponent_seat_id=2)
+    rv = fr.review_bundle(bundle)
+    assert rv["opponent_commanders"] == ["grp:97871"]
+
+    # And it still enters the opposing-commander win-rate table under that id.
+    agg = fr.aggregate([rv])
+    assert set(agg["opponent_commanders"]) == {"grp:97871"}
 
 
 def test_opponent_commander_planeswalker_real_case_44bc39ca():

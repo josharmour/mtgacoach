@@ -90,12 +90,30 @@ def test_tapped_core_cannot_be_sold_as_a_free_attacker_by_either_planner():
     ]
 
 
-def test_selected_ability_dialect_keeps_the_tapped_and_payment_guards():
+def _stub_selected_ability(monkeypatch):
+    """Deterministic describe_ability for CI, where the local MTGA database
+    (and therefore ability 194115's rules text) is absent.
+
+    Only Firdoch Core's {4} animation (194115) resolves, to Arena's menu
+    dialect; every other id — including 0 — stays unresolved ("", "").
+    """
+    import arenamcp.gre_action_matcher as matcher
+
+    def fake_describe_ability(ability_grp_id):
+        if int(ability_grp_id or 0) == 194115:
+            return "", "{o4}: This becomes a 4/4 artifact creature until end of turn."
+        return "", ""
+
+    monkeypatch.setattr(matcher, "describe_ability", fake_describe_ability)
+
+
+def test_selected_ability_dialect_keeps_the_tapped_and_payment_guards(monkeypatch):
     """Selected-ability metadata quotes Arena's dialect; guards must still fire.
 
     The menu's ability text says "this becomes a 4/4 ...", not oracle's
     "this artifact becomes a 4/4 ...". Both are the same temporary animation.
     """
+    _stub_selected_ability(monkeypatch)
     state, core, action = board()
     meta = decision(action).options[0].meta
     # The selected ability's own cost and rules text ride along on the option.
