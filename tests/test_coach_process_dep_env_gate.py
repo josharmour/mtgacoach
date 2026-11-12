@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -95,16 +96,26 @@ def _clear_selection(monkeypatch) -> None:
 
 
 def _prepare_env_for(root: Path, python_executable: str) -> Path:
-    """Fabricate a validly-marked prepared environment for ``(root, interp)``."""
+    """Fabricate a validly-marked prepared environment for ``(root, interp)``.
+
+    The marker records the CANONICAL interpreter (``resolve_interpreter``),
+    exactly as production ``ensure_dep_env`` writes it — not the raw resolved
+    path. For a copied-binary venv interpreter (a Windows-style ``--copies``
+    layout, where plain path resolution cannot recover the base) the two
+    differ, and production strict validation correctly rejects a raw-path
+    marker as incoherent with the environment identity.
+    """
     identity = env_identity(root, python_executable=python_executable)
     env_dir = env_dir_for(identity)
-    (env_dir / "bin").mkdir(parents=True)
+    # Two interpreters with the same canonical identity share one env dir;
+    # re-preparing it must be idempotent.
+    (env_dir / "bin").mkdir(parents=True, exist_ok=True)
     (env_dir / "bin" / "python").write_text("", encoding="utf-8")
     marker = {
         "schema": dep_env.MARKER_SCHEMA,
         "identity": identity,
         "fingerprint": dependency_fingerprint(root),
-        "python": str(Path(python_executable).resolve()),
+        "python": dep_env.resolve_interpreter(python_executable),
     }
     (env_dir / ENV_MARKER_NAME).write_text(json.dumps(marker), encoding="utf-8")
     return env_dir
@@ -297,6 +308,57 @@ def test_prepared_dep_env_finds_matching_environment(snapshot_root, isolated_run
     env_dir = _prepare_env_for(snapshot_root, interp)
 
     assert dep_env.prepared_dep_env(snapshot_root) == env_dir
+
+
+def _make_venv_interpreter(base_python: Path, target: Path, *, copies: bool) -> Path:
+    """A real venv interpreter over ``base_python`` (symlinked or copied binary)."""
+    command = [str(base_python), "-m", "venv", "--without-pip"]
+    if copies:
+        command.append("--copies")
+    command.append(str(target))
+    subprocess.run(command, check=True, capture_output=True, timeout=120)
+    return dep_env.venv_python(target)
+
+
+def test_prepare_env_marker_coherent_for_copied_and_symlinked_interpreters(
+    snapshot_root, isolated_runtime, tmp_path
+):
+    """Marker coherence must not depend on HOW the interpreter reaches its base.
+
+    A symlinked venv interpreter and a copied-binary (``--copies``) venv
+    interpreter over the SAME base resolve to one canonical identity, and a
+    marker written through ``resolve_interpreter`` is accepted for both. The
+    raw ``Path(...).resolve()`` marker form is NOT accepted for a copied
+    binary — it names the venv interpreter itself, which production strict
+    validation correctly rejects as incoherent with the environment identity.
+    """
+    base = Path(dep_env.resolve_interpreter())
+    symlink_python = _make_venv_interpreter(base, tmp_path / "venv-symlink", copies=False)
+    copied_python = _make_venv_interpreter(base, tmp_path / "venv-copies", copies=True)
+
+    symlink_canonical = dep_env.resolve_interpreter(str(symlink_python))
+    copied_canonical = dep_env.resolve_interpreter(str(copied_python))
+
+    # One canonical identity regardless of linkage...
+    assert symlink_canonical == str(base)
+    assert copied_canonical == str(base)
+    # ...which for a copied binary is genuinely DIFFERENT from the raw path
+    # (otherwise the negative case below would prove nothing on this host).
+    assert Path(copied_python).resolve() != Path(copied_canonical)
+
+    for interp in (symlink_python, copied_python):
+        env_dir = _prepare_env_for(snapshot_root, str(interp))
+        assert dep_env.prepared_dep_env(snapshot_root) == env_dir
+
+    # Negative: the raw-resolved marker form is incoherent for the copied
+    # interpreter — production must keep rejecting it (no loosened fixture).
+    env_dir = _prepare_env_for(snapshot_root, str(copied_python))
+    marker_path = env_dir / dep_env.ENV_MARKER_NAME
+    marker = json.loads(marker_path.read_text(encoding="utf-8"))
+    marker["python"] = str(Path(copied_python).resolve())
+    marker_path.write_text(json.dumps(marker), encoding="utf-8")
+
+    assert dep_env.prepared_dep_env(snapshot_root) is None
 
 
 def _make_interpreter_shim(path: Path, version: str = "3.14.0") -> Path:
