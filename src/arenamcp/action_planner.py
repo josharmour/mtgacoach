@@ -5289,6 +5289,13 @@ class ActionPlanner(_ActionLegalityMixin):
                 return []
             if picked:
                 logger.info(f"plan_decision_options: controller-aware target fallback picked {picked}")
+                # Provenance: a cancelled target step leaves no completed
+                # decision record, so downstream readers must be able to see
+                # that the deterministic fallback chose the target (2026-11-11
+                # T9: the cast said "to the face", the fallback picked a
+                # creature, and nothing recorded the divergence).
+                if isinstance(trace, dict):
+                    trace["targeting_fallback"] = picked
                 return picked
             return [DECLINE_DECISION]
         if decision.request_type == "SelectN":
@@ -7728,7 +7735,10 @@ class ActionPlanner(_ActionLegalityMixin):
         r"|\bgame\s+over\b|\bfinish(?:es)?\s+(?:them|the opponent)\s+off\b"
     )
     _LETHAL_NOW = re.compile(
-        rf"(?<!not )\b(?:exactly|precisely)\s+lethal\b"
+        # 2026-11-11 T9 (match fe9d1f07): "gives 10 damage — exact lethal on
+        # their 7 life even if Dazzling Angel chumps Slickshot" — the adjective
+        # form slipped every pattern, so the false claim was never checked.
+        rf"(?<!not )\b(?:exact|exactly|precisely)\s+lethal\b"
         rf"|{_LETHAL_WORD}{_CLAUSE_GAP}{_NOW_WORD}|{_NOW_WORD}{_CLAUSE_GAP}{_LETHAL_WORD}"
         rf"|(?:{_GAME_END}){_CLAUSE_GAP}{_NOW_WORD}|{_NOW_WORD}{_CLAUSE_GAP}(?:{_GAME_END})|{_GAME_ENDS_NOW}",
         re.I,

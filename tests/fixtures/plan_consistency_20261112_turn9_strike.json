@@ -1,0 +1,1313 @@
+{
+ "_meta": {
+  "_provenance": "Trimmed from fable-nov evidence bundle nuitari-plan-consistency-20261112/turn9-turn11-decisions.json entry[1] state_snapshot.state; Hired Claw moved from stack to battlefield (it had resolved before the Strike decision)."
+ },
+ "state": {
+  "match_id": "fe9d1f07-95fd-426c-87da-945b99e1e4dd",
+  "game_number": 1,
+  "event_id": "Ladder",
+  "format_name": "Ladder",
+  "turn": {
+   "turn_number": 9,
+   "active_player": 1,
+   "priority_player": 1,
+   "phase": "Main1",
+   "step": "None",
+   "pending_combat_steps": [],
+   "stage": "Play"
+  },
+  "players": [
+   {
+    "seat_id": 1,
+    "life_total": 20,
+    "life_gained_this_turn": 0,
+    "life_gained_this_game": 0,
+    "counters": {},
+    "lands_played": 0,
+    "mana_pool": {},
+    "has_enduring_story": null,
+    "team_id": 1,
+    "status": "InGame",
+    "controller_seat_id": 1,
+    "is_local": true,
+    "mulligan_count": 0,
+    "timeout_count": 1
+   },
+   {
+    "seat_id": 2,
+    "life_total": 7,
+    "life_gained_this_turn": 0,
+    "life_gained_this_game": 1,
+    "counters": {},
+    "lands_played": 0,
+    "mana_pool": {},
+    "has_enduring_story": null,
+    "team_id": 2,
+    "status": "InGame",
+    "controller_seat_id": 2,
+    "is_local": false,
+    "mulligan_count": 0,
+    "timeout_count": 1
+   }
+  ],
+  "battlefield": [
+   {
+    "instance_id": 279,
+    "grp_id": 65385,
+    "name": "Mountain",
+    "oracle_text": "({T}: Add {R}.)",
+    "type_line": "Basic Land \u2014 Mountain",
+    "mana_cost": "",
+    "owner_seat_id": 1,
+    "controller_seat_id": 1,
+    "power": null,
+    "toughness": null,
+    "is_tapped": true,
+    "turn_entered_battlefield": 1,
+    "is_attacking": false,
+    "is_blocking": false,
+    "card_types": [
+     "Land"
+    ],
+    "subtypes": [
+     "Mountain"
+    ],
+    "object_kind": "CARD",
+    "counters": {},
+    "ability_grp_ids": [
+     1004
+    ],
+    "damaged_this_turn": false,
+    "class_level": 0,
+    "color_production": [
+     "Red"
+    ],
+    "damage": 0,
+    "base_grp_id": 65385
+   },
+   {
+    "instance_id": 284,
+    "grp_id": 106527,
+    "name": "Plains",
+    "oracle_text": "({T}: Add {W}.)",
+    "type_line": "Basic Land \u2014 Plains",
+    "mana_cost": "",
+    "owner_seat_id": 2,
+    "controller_seat_id": 2,
+    "power": null,
+    "toughness": null,
+    "is_tapped": true,
+    "turn_entered_battlefield": 2,
+    "is_attacking": false,
+    "is_blocking": false,
+    "card_types": [
+     "Land"
+    ],
+    "subtypes": [
+     "Plains"
+    ],
+    "object_kind": "CARD",
+    "counters": {},
+    "ability_grp_ids": [
+     1001
+    ],
+    "damaged_this_turn": false,
+    "class_level": 0,
+    "color_production": [
+     "White"
+    ],
+    "damage": 0,
+    "base_grp_id": 106527
+   },
+   {
+    "instance_id": 285,
+    "grp_id": 93850,
+    "name": "Authority of the Consuls",
+    "oracle_text": "Creatures your opponents control enter tapped.\nWhenever a creature an opponent controls enters, you gain 1 life.",
+    "type_line": "Enchantment",
+    "mana_cost": "{W}",
+    "owner_seat_id": 2,
+    "controller_seat_id": 2,
+    "power": null,
+    "toughness": null,
+    "is_tapped": false,
+    "turn_entered_battlefield": 2,
+    "is_attacking": false,
+    "is_blocking": false,
+    "card_types": [
+     "Enchantment"
+    ],
+    "subtypes": [],
+    "object_kind": "CARD",
+    "counters": {},
+    "ability_grp_ids": [
+     15979,
+     76694
+    ],
+    "damaged_this_turn": false,
+    "class_level": 0,
+    "color_production": [],
+    "damage": 0,
+    "colors": [
+     "White"
+    ],
+    "base_grp_id": 93850
+   },
+   {
+    "instance_id": 288,
+    "grp_id": 65385,
+    "name": "Mountain",
+    "oracle_text": "({T}: Add {R}.)",
+    "type_line": "Basic Land \u2014 Mountain",
+    "mana_cost": "",
+    "owner_seat_id": 1,
+    "controller_seat_id": 1,
+    "power": null,
+    "toughness": null,
+    "is_tapped": false,
+    "turn_entered_battlefield": 3,
+    "is_attacking": false,
+    "is_blocking": false,
+    "card_types": [
+     "Land"
+    ],
+    "subtypes": [
+     "Mountain"
+    ],
+    "object_kind": "CARD",
+    "counters": {},
+    "ability_grp_ids": [
+     1004
+    ],
+    "damaged_this_turn": false,
+    "class_level": 0,
+    "color_production": [
+     "Red"
+    ],
+    "damage": 0,
+    "base_grp_id": 65385
+   },
+   {
+    "instance_id": 289,
+    "grp_id": 90492,
+    "name": "Slickshot Show-Off",
+    "oracle_text": "Flying\nHaste\nWhenever you cast a noncreature spell, this creature gets +2/+0 until end of turn.\nPlot {o1oR}",
+    "type_line": "Creature \u2014 Bird Wizard",
+    "mana_cost": "{1}{R}",
+    "owner_seat_id": 1,
+    "controller_seat_id": 1,
+    "power": 1,
+    "toughness": 2,
+    "is_tapped": false,
+    "turn_entered_battlefield": 3,
+    "is_attacking": false,
+    "is_blocking": false,
+    "card_types": [
+     "Creature"
+    ],
+    "subtypes": [
+     "Bird",
+     "Wizard"
+    ],
+    "object_kind": "CARD",
+    "counters": {},
+    "keywords": [
+     "flying",
+     "haste"
+    ],
+    "ability_grp_ids": [
+     8,
+     9,
+     171890,
+     171855
+    ],
+    "damaged_this_turn": false,
+    "class_level": 0,
+    "color_production": [],
+    "damage": 0,
+    "colors": [
+     "Red"
+    ],
+    "base_grp_id": 90492
+   },
+   {
+    "instance_id": 294,
+    "grp_id": 106527,
+    "name": "Plains",
+    "oracle_text": "({T}: Add {W}.)",
+    "type_line": "Basic Land \u2014 Plains",
+    "mana_cost": "",
+    "owner_seat_id": 2,
+    "controller_seat_id": 2,
+    "power": null,
+    "toughness": null,
+    "is_tapped": true,
+    "turn_entered_battlefield": 4,
+    "is_attacking": false,
+    "is_blocking": false,
+    "card_types": [
+     "Land"
+    ],
+    "subtypes": [
+     "Plains"
+    ],
+    "object_kind": "CARD",
+    "counters": {},
+    "ability_grp_ids": [
+     1001
+    ],
+    "damaged_this_turn": false,
+    "class_level": 0,
+    "color_production": [
+     "White"
+    ],
+    "damage": 0,
+    "base_grp_id": 106527
+   },
+   {
+    "instance_id": 299,
+    "grp_id": 65385,
+    "name": "Mountain",
+    "oracle_text": "({T}: Add {R}.)",
+    "type_line": "Basic Land \u2014 Mountain",
+    "mana_cost": "",
+    "owner_seat_id": 1,
+    "controller_seat_id": 1,
+    "power": null,
+    "toughness": null,
+    "is_tapped": false,
+    "turn_entered_battlefield": 5,
+    "is_attacking": false,
+    "is_blocking": false,
+    "card_types": [
+     "Land"
+    ],
+    "subtypes": [
+     "Mountain"
+    ],
+    "object_kind": "CARD",
+    "counters": {},
+    "ability_grp_ids": [
+     1004
+    ],
+    "damaged_this_turn": false,
+    "class_level": 0,
+    "color_production": [
+     "Red"
+    ],
+    "damage": 0,
+    "base_grp_id": 65385
+   },
+   {
+    "instance_id": 314,
+    "grp_id": 106527,
+    "name": "Plains",
+    "oracle_text": "({T}: Add {W}.)",
+    "type_line": "Basic Land \u2014 Plains",
+    "mana_cost": "",
+    "owner_seat_id": 2,
+    "controller_seat_id": 2,
+    "power": null,
+    "toughness": null,
+    "is_tapped": true,
+    "turn_entered_battlefield": 6,
+    "is_attacking": false,
+    "is_blocking": false,
+    "card_types": [
+     "Land"
+    ],
+    "subtypes": [
+     "Plains"
+    ],
+    "object_kind": "CARD",
+    "counters": {},
+    "ability_grp_ids": [
+     1001
+    ],
+    "damaged_this_turn": false,
+    "class_level": 0,
+    "color_production": [
+     "White"
+    ],
+    "damage": 0,
+    "base_grp_id": 106527
+   },
+   {
+    "instance_id": 315,
+    "grp_id": 93722,
+    "name": "Dazzling Angel",
+    "oracle_text": "Flying\nWhenever another creature you control enters, you gain 1 life.",
+    "type_line": "Creature \u2014 Angel",
+    "mana_cost": "{2}{W}",
+    "owner_seat_id": 2,
+    "controller_seat_id": 2,
+    "power": 2,
+    "toughness": 3,
+    "is_tapped": false,
+    "turn_entered_battlefield": 6,
+    "is_attacking": false,
+    "is_blocking": false,
+    "card_types": [
+     "Creature"
+    ],
+    "subtypes": [
+     "Angel"
+    ],
+    "object_kind": "CARD",
+    "counters": {},
+    "keywords": [
+     "flying"
+    ],
+    "ability_grp_ids": [
+     8,
+     122104
+    ],
+    "damaged_this_turn": false,
+    "class_level": 0,
+    "color_production": [],
+    "damage": 0,
+    "colors": [
+     "White"
+    ],
+    "base_grp_id": 93722
+   },
+   {
+    "instance_id": 320,
+    "grp_id": 94052,
+    "name": "Giant Cindermaw",
+    "oracle_text": "Trample\nPlayers can't gain life.",
+    "type_line": "Creature \u2014 Dinosaur Beast",
+    "mana_cost": "{2}{R}",
+    "owner_seat_id": 1,
+    "controller_seat_id": 1,
+    "power": 4,
+    "toughness": 3,
+    "is_tapped": false,
+    "turn_entered_battlefield": 7,
+    "is_attacking": false,
+    "is_blocking": false,
+    "card_types": [
+     "Creature"
+    ],
+    "subtypes": [
+     "Dinosaur",
+     "Beast"
+    ],
+    "object_kind": "CARD",
+    "counters": {},
+    "keywords": [
+     "trample"
+    ],
+    "ability_grp_ids": [
+     14,
+     92939
+    ],
+    "damaged_this_turn": false,
+    "class_level": 0,
+    "color_production": [],
+    "damage": 0,
+    "colors": [
+     "Red"
+    ],
+    "base_grp_id": 94052
+   },
+   {
+    "instance_id": 326,
+    "grp_id": 106527,
+    "name": "Plains",
+    "oracle_text": "({T}: Add {W}.)",
+    "type_line": "Basic Land \u2014 Plains",
+    "mana_cost": "",
+    "owner_seat_id": 2,
+    "controller_seat_id": 2,
+    "power": null,
+    "toughness": null,
+    "is_tapped": true,
+    "turn_entered_battlefield": 8,
+    "is_attacking": false,
+    "is_blocking": false,
+    "card_types": [
+     "Land"
+    ],
+    "subtypes": [
+     "Plains"
+    ],
+    "object_kind": "CARD",
+    "counters": {},
+    "ability_grp_ids": [
+     1001
+    ],
+    "damaged_this_turn": false,
+    "class_level": 0,
+    "color_production": [
+     "White"
+    ],
+    "damage": 0,
+    "base_grp_id": 106527
+   },
+   {
+    "instance_id": 327,
+    "grp_id": 93738,
+    "name": "Sun-Blessed Healer",
+    "oracle_text": "Kicker {o1oW}\nLifelink\nWhen this creature enters, if it was kicked, return target nonland permanent card with mana value 2 or less from your graveyard to the battlefield.",
+    "type_line": "Creature \u2014 Human Cleric",
+    "mana_cost": "{1}{W}",
+    "owner_seat_id": 2,
+    "controller_seat_id": 2,
+    "power": 3,
+    "toughness": 1,
+    "is_tapped": false,
+    "turn_entered_battlefield": 8,
+    "is_attacking": false,
+    "is_blocking": false,
+    "card_types": [
+     "Creature"
+    ],
+    "subtypes": [
+     "Human",
+     "Cleric"
+    ],
+    "object_kind": "CARD",
+    "counters": {},
+    "keywords": [
+     "lifelink"
+    ],
+    "ability_grp_ids": [
+     9313,
+     12,
+     175778
+    ],
+    "damaged_this_turn": false,
+    "class_level": 0,
+    "color_production": [],
+    "damage": 0,
+    "colors": [
+     "White"
+    ],
+    "summoning_sickness": true,
+    "base_grp_id": 93738
+   },
+   {
+    "instance_id": 334,
+    "grp_id": 93854,
+    "name": "Giada, Font of Hope",
+    "oracle_text": "Flying\nVigilance\nEach other Angel you control enters with an additional +1/+1 counter on it for each Angel you already control.\n{oT}: Add {oW}. Spend this mana only to cast an Angel spell.",
+    "type_line": "Legendary Creature \u2014 Angel",
+    "mana_cost": "{1}{W}",
+    "owner_seat_id": 2,
+    "controller_seat_id": 2,
+    "power": 2,
+    "toughness": 2,
+    "is_tapped": false,
+    "turn_entered_battlefield": 8,
+    "is_attacking": false,
+    "is_blocking": false,
+    "card_types": [
+     "Creature"
+    ],
+    "subtypes": [
+     "Angel"
+    ],
+    "object_kind": "CARD",
+    "counters": {},
+    "keywords": [
+     "flying",
+     "vigilance"
+    ],
+    "ability_grp_ids": [
+     8,
+     15,
+     149357,
+     149358
+    ],
+    "damaged_this_turn": false,
+    "class_level": 0,
+    "color_production": [],
+    "damage": 0,
+    "colors": [
+     "White"
+    ],
+    "summoning_sickness": true,
+    "base_grp_id": 93854
+   },
+   {
+    "instance_id": 337,
+    "grp_id": 91676,
+    "name": "Hired Claw",
+    "oracle_text": "Whenever you attack with one or more Lizards, this creature deals 1 damage to target opponent.\n{o1oR}: Put a +1/+1 counter on this creature. Activate only if an opponent lost life this turn and only once each turn.",
+    "type_line": "Creature \u2014 Lizard Mercenary",
+    "mana_cost": "{R}",
+    "owner_seat_id": 1,
+    "controller_seat_id": 1,
+    "power": 1,
+    "toughness": 2,
+    "is_tapped": false,
+    "turn_entered_battlefield": -1,
+    "is_attacking": false,
+    "is_blocking": false,
+    "card_types": [
+     "Creature"
+    ],
+    "subtypes": [
+     "Lizard",
+     "Mercenary"
+    ],
+    "object_kind": "CARD",
+    "counters": {},
+    "ability_grp_ids": [
+     174024,
+     174025
+    ],
+    "damaged_this_turn": false,
+    "class_level": 0,
+    "color_production": [],
+    "damage": 0,
+    "colors": [
+     "Red"
+    ],
+    "base_grp_id": 91676
+   }
+  ],
+  "hand": [
+   {
+    "instance_id": 336,
+    "grp_id": 66263,
+    "name": "Lightning Strike",
+    "oracle_text": "Lightning Strike deals 3 damage to any target.",
+    "type_line": "Instant",
+    "mana_cost": "{1}{R}",
+    "owner_seat_id": 1,
+    "controller_seat_id": 1,
+    "power": null,
+    "toughness": null,
+    "is_tapped": false,
+    "turn_entered_battlefield": -1,
+    "is_attacking": false,
+    "is_blocking": false,
+    "card_types": [
+     "Instant"
+    ],
+    "subtypes": [],
+    "object_kind": "CARD",
+    "counters": {},
+    "ability_grp_ids": [
+     70361
+    ],
+    "damaged_this_turn": false,
+    "class_level": 0,
+    "color_production": [],
+    "damage": 0,
+    "colors": [
+     "Red"
+    ],
+    "base_grp_id": 66263
+   }
+  ],
+  "graveyard": [
+   {
+    "instance_id": 282,
+    "grp_id": 93792,
+    "name": "Boltwave",
+    "oracle_text": "Boltwave deals 3 damage to each opponent.",
+    "type_line": "Sorcery",
+    "mana_cost": "{R}",
+    "owner_seat_id": 1,
+    "controller_seat_id": 1,
+    "power": null,
+    "toughness": null,
+    "is_tapped": false,
+    "turn_entered_battlefield": -1,
+    "is_attacking": false,
+    "is_blocking": false,
+    "card_types": [
+     "Sorcery"
+    ],
+    "subtypes": [],
+    "object_kind": "CARD",
+    "counters": {},
+    "ability_grp_ids": [
+     88755
+    ],
+    "damaged_this_turn": false,
+    "class_level": 0,
+    "color_production": [],
+    "damage": 0,
+    "colors": [
+     "Red"
+    ],
+    "base_grp_id": 93792
+   },
+   {
+    "instance_id": 303,
+    "grp_id": 93905,
+    "name": "Burst Lightning",
+    "oracle_text": "Kicker {o4}\nBurst Lightning deals 2 damage to any target. If this spell was kicked, it deals 4 damage instead.",
+    "type_line": "Instant",
+    "mana_cost": "{R}",
+    "owner_seat_id": 1,
+    "controller_seat_id": 1,
+    "power": null,
+    "toughness": null,
+    "is_tapped": false,
+    "turn_entered_battlefield": -1,
+    "is_attacking": false,
+    "is_blocking": false,
+    "card_types": [
+     "Instant"
+    ],
+    "subtypes": [],
+    "object_kind": "CARD",
+    "counters": {},
+    "ability_grp_ids": [
+     2852,
+     94999
+    ],
+    "damaged_this_turn": false,
+    "class_level": 0,
+    "color_production": [],
+    "damage": 0,
+    "colors": [
+     "Red"
+    ],
+    "base_grp_id": 93905
+   },
+   {
+    "instance_id": 308,
+    "grp_id": 93792,
+    "name": "Boltwave",
+    "oracle_text": "Boltwave deals 3 damage to each opponent.",
+    "type_line": "Sorcery",
+    "mana_cost": "{R}",
+    "owner_seat_id": 1,
+    "controller_seat_id": 1,
+    "power": null,
+    "toughness": null,
+    "is_tapped": false,
+    "turn_entered_battlefield": -1,
+    "is_attacking": false,
+    "is_blocking": false,
+    "card_types": [
+     "Sorcery"
+    ],
+    "subtypes": [],
+    "object_kind": "CARD",
+    "counters": {},
+    "ability_grp_ids": [
+     88755
+    ],
+    "damaged_this_turn": false,
+    "class_level": 0,
+    "color_production": [],
+    "damage": 0,
+    "colors": [
+     "Red"
+    ],
+    "base_grp_id": 93792
+   },
+   {
+    "instance_id": 312,
+    "grp_id": 87323,
+    "name": "Tectonic Hazard",
+    "oracle_text": "Tectonic Hazard deals 1 damage to each opponent and each creature they control.",
+    "type_line": "Sorcery",
+    "mana_cost": "{R}",
+    "owner_seat_id": 1,
+    "controller_seat_id": 1,
+    "power": null,
+    "toughness": null,
+    "is_tapped": false,
+    "turn_entered_battlefield": -1,
+    "is_attacking": false,
+    "is_blocking": false,
+    "card_types": [
+     "Sorcery"
+    ],
+    "subtypes": [],
+    "object_kind": "CARD",
+    "counters": {},
+    "ability_grp_ids": [
+     169643
+    ],
+    "damaged_this_turn": false,
+    "class_level": 0,
+    "color_production": [],
+    "damage": 0,
+    "colors": [
+     "Red"
+    ],
+    "base_grp_id": 87323
+   }
+  ],
+  "stack": [],
+  "exile": [],
+  "command": [],
+  "local_seat_id": 1,
+  "opponent_seat_id": 2,
+  "controlled_turn": {
+   "opponent_controlled_by_you": false,
+   "you_controlled_by_opponent": false,
+   "deciding_for_opponent": false
+  },
+  "decision_seat_id": 1,
+  "decision_context": {
+   "type": "actions_available",
+   "num_actions": 5,
+   "action_types": [
+    "ActionType_Activate_Mana",
+    "ActionType_Cast",
+    "ActionType_FloatMana",
+    "ActionType_Pass"
+   ],
+   "requestType": "ActionsAvailable",
+   "requestClass": "ActionsAvailableRequest",
+   "prompt": {
+    "promptId": 2,
+    "parameters": []
+   },
+   "sourceId": 0,
+   "_bridge_source": true
+  },
+  "legal_actions": [
+   "Cast Lightning Strike [OK]",
+   "Action: Activate_Mana",
+   "Action: Activate_Mana",
+   "Pass",
+   "Action: FloatMana"
+  ],
+  "legal_actions_raw": [
+   {
+    "actionType": "ActionType_Cast",
+    "grpId": 66263,
+    "instanceId": 336,
+    "facetId": 336,
+    "manaCost": [
+     {
+      "color": [
+       "ManaColor_Generic"
+      ],
+      "count": 1
+     },
+     {
+      "color": [
+       "ManaColor_Red"
+      ],
+      "count": 1
+     }
+    ],
+    "shouldStop": true,
+    "targets": [
+     {
+      "targetIdx": 1,
+      "targets": [
+       {
+        "targetInstanceId": 1,
+        "highlight": "HighlightType_Cold"
+       },
+       {
+        "targetInstanceId": 2,
+        "highlight": "HighlightType_Hot"
+       },
+       {
+        "targetInstanceId": 289,
+        "highlight": "HighlightType_Cold"
+       },
+       {
+        "targetInstanceId": 315,
+        "highlight": "HighlightType_Hot"
+       },
+       {
+        "targetInstanceId": 320,
+        "highlight": "HighlightType_Cold"
+       },
+       {
+        "targetInstanceId": 327,
+        "highlight": "HighlightType_Hot"
+       },
+       {
+        "targetInstanceId": 334,
+        "highlight": "HighlightType_Hot"
+       }
+      ]
+     }
+    ],
+    "autoTapSolution": {
+     "autoTapActions": [
+      {
+       "instanceId": 288,
+       "abilityGrpId": 1004,
+       "manaPaymentOption": {
+        "mana": [
+         {
+          "manaId": 339,
+          "color": "ManaColor_Red",
+          "srcInstanceId": 288,
+          "specs": [
+           {
+            "type": "ManaSpecType_Predictive"
+           }
+          ],
+          "abilityGrpId": 1004,
+          "count": 1
+         }
+        ]
+       }
+      },
+      {
+       "instanceId": 299,
+       "abilityGrpId": 1004,
+       "manaPaymentOption": {
+        "mana": [
+         {
+          "manaId": 340,
+          "color": "ManaColor_Red",
+          "srcInstanceId": 299,
+          "specs": [
+           {
+            "type": "ManaSpecType_Predictive"
+           }
+          ],
+          "abilityGrpId": 1004,
+          "count": 1
+         }
+        ]
+       }
+      }
+     ]
+    },
+    "_castable": true,
+    "_autotap_lands": [
+     {
+      "instanceId": 288,
+      "mana": ""
+     },
+     {
+      "instanceId": 299,
+      "mana": ""
+     }
+    ],
+    "_mana_cost_str": "1ManaColor_Generic1R"
+   },
+   {
+    "actionType": "ActionType_Activate_Mana",
+    "grpId": 65385,
+    "instanceId": 288,
+    "facetId": 288,
+    "abilityGrpId": 1004,
+    "manaPaymentOptions": [
+     {
+      "mana": [
+       {
+        "manaId": 339,
+        "color": "ManaColor_Red",
+        "srcInstanceId": 288,
+        "specs": [
+         {
+          "type": "ManaSpecType_Predictive"
+         }
+        ],
+        "abilityGrpId": 1004,
+        "count": 1
+       }
+      ]
+     }
+    ],
+    "isBatchable": true,
+    "uniqueAbilityId": 225,
+    "manaSelections": [
+     {
+      "instanceId": 288,
+      "abilityGrpId": 1004,
+      "options": [
+       {
+        "mana": [
+         {
+          "color": "ManaColor_Red",
+          "count": 1
+         }
+        ]
+       }
+      ]
+     }
+    ],
+    "_ability_grp_id": 1004
+   },
+   {
+    "actionType": "ActionType_Activate_Mana",
+    "grpId": 65385,
+    "instanceId": 299,
+    "facetId": 299,
+    "abilityGrpId": 1004,
+    "manaPaymentOptions": [
+     {
+      "mana": [
+       {
+        "manaId": 340,
+        "color": "ManaColor_Red",
+        "srcInstanceId": 299,
+        "specs": [
+         {
+          "type": "ManaSpecType_Predictive"
+         }
+        ],
+        "abilityGrpId": 1004,
+        "count": 1
+       }
+      ]
+     }
+    ],
+    "isBatchable": true,
+    "uniqueAbilityId": 240,
+    "manaSelections": [
+     {
+      "instanceId": 299,
+      "abilityGrpId": 1004,
+      "options": [
+       {
+        "mana": [
+         {
+          "color": "ManaColor_Red",
+          "count": 1
+         }
+        ]
+       }
+      ]
+     }
+    ],
+    "_ability_grp_id": 1004
+   },
+   {
+    "actionType": "ActionType_Pass"
+   },
+   {
+    "actionType": "ActionType_FloatMana"
+   }
+  ],
+  "pending_selection_objects": [],
+  "_bridge_request_type": "ActionsAvailable",
+  "_bridge_request_class": "ActionsAvailableRequest",
+  "_bridge_actions": [
+   {
+    "actionType": "Cast",
+    "grpId": 66263,
+    "instanceId": 336,
+    "facetId": 336,
+    "assumeCanBePaidFor": false,
+    "manaCost": [
+     {
+      "color": "[ \"Generic\" ]",
+      "count": 1
+     },
+     {
+      "color": "[ \"Red\" ]",
+      "count": 1
+     }
+    ],
+    "hasAutoTap": true,
+    "autoTapActions": [
+     {
+      "instanceId": 288,
+      "manaId": 0
+     },
+     {
+      "instanceId": 299,
+      "manaId": 0
+     }
+    ],
+    "targets": [
+     {
+      "targetId": 1,
+      "targets": [
+       {
+        "targetInstanceId": 1,
+        "highlight": "Cold"
+       },
+       {
+        "targetInstanceId": 2,
+        "highlight": "Hot"
+       },
+       {
+        "targetInstanceId": 289,
+        "highlight": "Cold"
+       },
+       {
+        "targetInstanceId": 315,
+        "highlight": "Hot"
+       },
+       {
+        "targetInstanceId": 320,
+        "highlight": "Cold"
+       },
+       {
+        "targetInstanceId": 327,
+        "highlight": "Hot"
+       },
+       {
+        "targetInstanceId": 334,
+        "highlight": "Hot"
+       }
+      ]
+     }
+    ],
+    "shouldStop": true
+   },
+   {
+    "actionType": "ActivateMana",
+    "grpId": 65385,
+    "instanceId": 288,
+    "abilityGrpId": 1004,
+    "facetId": 288,
+    "uniqueAbilityId": 225,
+    "assumeCanBePaidFor": false,
+    "isBatchable": true
+   },
+   {
+    "actionType": "ActivateMana",
+    "grpId": 65385,
+    "instanceId": 299,
+    "abilityGrpId": 1004,
+    "facetId": 299,
+    "uniqueAbilityId": 240,
+    "assumeCanBePaidFor": false,
+    "isBatchable": true
+   },
+   {
+    "actionType": "Pass",
+    "grpId": 0,
+    "instanceId": 0,
+    "assumeCanBePaidFor": false
+   },
+   {
+    "actionType": "FloatMana",
+    "grpId": 0,
+    "instanceId": 0,
+    "assumeCanBePaidFor": false
+   }
+  ],
+  "_bridge_can_pass": true,
+  "_bridge_can_cancel": false,
+  "_bridge_allow_undo": false,
+  "_bridge_game_state_id": 0,
+  "hand_complete": true,
+  "hand_count": 1,
+  "deck_cards": [
+   65385,
+   65385,
+   65385,
+   65385,
+   65385,
+   65385,
+   65385,
+   65385,
+   65385,
+   65385,
+   65385,
+   65385,
+   65385,
+   65385,
+   65385,
+   65385,
+   65385,
+   65385,
+   65385,
+   65385,
+   75525,
+   75525,
+   75525,
+   75525,
+   97417,
+   97417,
+   97417,
+   97417,
+   93905,
+   93905,
+   93905,
+   93905,
+   97423,
+   66263,
+   66263,
+   66263,
+   87323,
+   87323,
+   87323,
+   87323,
+   90492,
+   90492,
+   90492,
+   90492,
+   91668,
+   91668,
+   91668,
+   91668,
+   91676,
+   91676,
+   91676,
+   91676,
+   93792,
+   93792,
+   93792,
+   93792,
+   95628,
+   95628,
+   94052,
+   94052
+  ],
+  "damage_taken": {
+   "2": 14
+  },
+  "designations": {},
+  "dungeon_status": {},
+  "commander_grp_ids": [],
+  "commander_casts": {},
+  "zones": {
+   "opponent_hand_count": 3,
+   "library_count": 49,
+   "library_count_source": "bridge_total_card_count",
+   "local_graveyard": [
+    {
+     "instance_id": 282,
+     "grp_id": 93792,
+     "name": "Boltwave",
+     "oracle_text": "Boltwave deals 3 damage to each opponent.",
+     "type_line": "Sorcery",
+     "mana_cost": "{R}",
+     "owner_seat_id": 1,
+     "controller_seat_id": 1,
+     "power": null,
+     "toughness": null,
+     "is_tapped": false,
+     "turn_entered_battlefield": -1,
+     "is_attacking": false,
+     "is_blocking": false,
+     "card_types": [
+      "Sorcery"
+     ],
+     "subtypes": [],
+     "object_kind": "CARD",
+     "counters": {},
+     "ability_grp_ids": [
+      88755
+     ],
+     "damaged_this_turn": false,
+     "class_level": 0,
+     "color_production": [],
+     "damage": 0,
+     "colors": [
+      "Red"
+     ],
+     "base_grp_id": 93792
+    },
+    {
+     "instance_id": 303,
+     "grp_id": 93905,
+     "name": "Burst Lightning",
+     "oracle_text": "Kicker {o4}\nBurst Lightning deals 2 damage to any target. If this spell was kicked, it deals 4 damage instead.",
+     "type_line": "Instant",
+     "mana_cost": "{R}",
+     "owner_seat_id": 1,
+     "controller_seat_id": 1,
+     "power": null,
+     "toughness": null,
+     "is_tapped": false,
+     "turn_entered_battlefield": -1,
+     "is_attacking": false,
+     "is_blocking": false,
+     "card_types": [
+      "Instant"
+     ],
+     "subtypes": [],
+     "object_kind": "CARD",
+     "counters": {},
+     "ability_grp_ids": [
+      2852,
+      94999
+     ],
+     "damaged_this_turn": false,
+     "class_level": 0,
+     "color_production": [],
+     "damage": 0,
+     "colors": [
+      "Red"
+     ],
+     "base_grp_id": 93905
+    },
+    {
+     "instance_id": 308,
+     "grp_id": 93792,
+     "name": "Boltwave",
+     "oracle_text": "Boltwave deals 3 damage to each opponent.",
+     "type_line": "Sorcery",
+     "mana_cost": "{R}",
+     "owner_seat_id": 1,
+     "controller_seat_id": 1,
+     "power": null,
+     "toughness": null,
+     "is_tapped": false,
+     "turn_entered_battlefield": -1,
+     "is_attacking": false,
+     "is_blocking": false,
+     "card_types": [
+      "Sorcery"
+     ],
+     "subtypes": [],
+     "object_kind": "CARD",
+     "counters": {},
+     "ability_grp_ids": [
+      88755
+     ],
+     "damaged_this_turn": false,
+     "class_level": 0,
+     "color_production": [],
+     "damage": 0,
+     "colors": [
+      "Red"
+     ],
+     "base_grp_id": 93792
+    },
+    {
+     "instance_id": 312,
+     "grp_id": 87323,
+     "name": "Tectonic Hazard",
+     "oracle_text": "Tectonic Hazard deals 1 damage to each opponent and each creature they control.",
+     "type_line": "Sorcery",
+     "mana_cost": "{R}",
+     "owner_seat_id": 1,
+     "controller_seat_id": 1,
+     "power": null,
+     "toughness": null,
+     "is_tapped": false,
+     "turn_entered_battlefield": -1,
+     "is_attacking": false,
+     "is_blocking": false,
+     "card_types": [
+      "Sorcery"
+     ],
+     "subtypes": [],
+     "object_kind": "CARD",
+     "counters": {},
+     "ability_grp_ids": [
+      169643
+     ],
+     "damaged_this_turn": false,
+     "class_level": 0,
+     "color_production": [],
+     "damage": 0,
+     "colors": [
+      "Red"
+     ],
+     "base_grp_id": 87323
+    }
+   ],
+   "opponent_graveyard": [],
+   "opponent_library_count": 49
+  },
+  "_zone_aliases": [
+   "battlefield",
+   "command",
+   "exile",
+   "graveyard",
+   "hand",
+   "my_hand",
+   "stack"
+  ]
+ }
+}
