@@ -126,6 +126,11 @@ class KeepCriteria:
     lands_in_play_by_turn: tuple[tuple[int, int], ...]
     early_play_ceiling: int
     colour_priority: tuple[str, ...]
+    # Conditional extras, never folded into lands_in_play_by_turn: each entry
+    # names a card whose OWN rules text grants this deck's player additional
+    # land drops, with the drawn-and-cast precondition spelled out. Empty
+    # unless such a grant exists in the list.
+    extra_land_drop_potential: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -147,20 +152,29 @@ class DeckProfile:
     def keep_criteria_lines(self) -> list[str]:
         """Prompt lines stating what this deck's hands need (mulligan aid).
 
-        Two distinct numbers, never conflated: how many lands the deck is
-        expected to draw by a turn (availability) and how many it can
-        legally put in play by then (the achievable keep goal — one land
-        drop per turn, plus one more only when the list's own rules text
-        grants additional land drops).
+        Three distinct things, never conflated: how many lands the deck is
+        expected to draw by a turn (availability), how many it can legally
+        put in play by then (the achievable keep goal — the ordinary one
+        drop per turn, unconditional), and any extra land drops the list
+        COULD gain — labelled conditional potential, because a permission
+        in the deck list only becomes an active effect once that card is
+        drawn and cast.
         """
         drawn = dict(self.criteria.lands_by_turn)
         in_play = dict(self.criteria.lands_in_play_by_turn)
         priority = ", ".join(self.criteria.colour_priority) or "no committed colours"
-        return [
+        line = (
             f"DECK PROFILE KEEP GUIDE: this deck puts ~{in_play.get(3, self.criteria.land_count)} lands in play by turn 3 "
             f"(~{drawn.get(3, self.criteria.land_count)} expected drawn) and has cheap "
             f"plays at MV<={self.criteria.early_play_ceiling}; colour priority {priority}."
-        ]
+        )
+        if self.criteria.extra_land_drop_potential:
+            line += (
+                " Extra land drops are potential only: "
+                + "; ".join(self.criteria.extra_land_drop_potential[:2])
+                + "."
+            )
+        return [line]
 
 
 def _card_field(card: dict, key: str) -> str:
@@ -339,23 +353,59 @@ def _engines_from_facts(
     return tuple(engines)
 
 
-def _grants_extra_land_drop(text: str) -> bool:
-    """True when a card's own rules text grants additional land drops.
+_EXTRA_DROP_GRANT = re.compile(r"\b(?:additional|extra|one more)\b", re.I)
+# A negated permission ("you can't play an additional land") is a restriction,
+# not a grant. No printed card pairs these tokens with a negated additional-
+# land permission today (full Scryfall oracle sweep of every /additional land/
+# sentence, 41 cards, 2026-11-12), but Arena dialects and future printings
+# could, so the guard stays.
+_EXTRA_DROP_NEGATED = re.compile(r"\b(?:can'?t|cannot|don'?t|doesn'?t|won'?t|never|no player|nobody)\b", re.I)
+# Permissions handed to other players ("each player may play an additional
+# land" — Storm Cauldron, Ghirapur Orrery, Rites of Flourishing) are not the
+# deck's own grant; only a self-addressed permission counts.
+_EXTRA_DROP_OTHER_SUBJECT = re.compile(
+    r"\bopponents?\b|\bdefending player\b|\beach opponent\b|\btarget opponent\b"
+    r"|\beach player\b",
+    re.I,
+)
+_EXTRA_DROP_SELF = re.compile(r"\byou\b|\byour\b", re.I)
+_EXTRA_DROP_PERSISTENT = re.compile(r"each of your turns", re.I)
 
-    Matches a sentence that both names extra/additional lands and uses a play
-    verb ("you may play an additional land on each of your turns"). Mana
-    producers, land tutors and sacrifice costs never match: making mana or
-    finding a land is not playing one, so ramp role counts never stand in for
-    a real extra-drop effect.
+
+def _extra_land_drop_grant(text: str) -> str | None:
+    """How a card's own rules text grants its controller extra land drops.
+
+    Returns ``"an extra land drop on each of your turns"`` for a persistent
+    permission, ``"an extra land drop on one turn"`` for a one-shot one, and
+    ``None`` when the text grants nothing to this deck's player. Matching is
+    sentence-scoped and requires a self-addressed play permission over
+    additional/extra lands; negated sentences and permissions aimed at other
+    players never match. Mana producers, land tutors and sacrifice costs never
+    match either: making mana or finding a land is not playing one, so ramp
+    role counts never stand in for a real extra-drop effect.
     """
     for sentence in re.split(r"[.;]", (text or "").lower()):
-        if (
-            re.search(r"\b(?:additional|extra|one more)\b", sentence)
+        if not (
+            _EXTRA_DROP_GRANT.search(sentence)
             and re.search(r"\blands?\b", sentence)
             and re.search(r"\bplay\b", sentence)
         ):
-            return True
-    return False
+            continue
+        if _EXTRA_DROP_NEGATED.search(sentence):
+            continue
+        if _EXTRA_DROP_OTHER_SUBJECT.search(sentence):
+            continue
+        if not _EXTRA_DROP_SELF.search(sentence):
+            continue
+        if _EXTRA_DROP_PERSISTENT.search(sentence):
+            return "an extra land drop on each of your turns"
+        return "an extra land drop on one turn"
+    return None
+
+
+def _grants_extra_land_drop(text: str) -> bool:
+    """True when a card's own rules text grants its controller extra drops."""
+    return _extra_land_drop_grant(text) is not None
 
 
 def build_profile(
@@ -509,21 +559,28 @@ def build_profile(
     ratio = (land_count / card_count) if card_count else 0.0
     lands_by_turn = tuple((turn, min(land_count, round((7 + turn) * ratio))) for turn in range(1, 6))
     # Achievable on-board lands: the ordinary legal land development of one
-    # drop per turn, raised by at most one extra drop per turn from turn 2
-    # onward and only when the list's OWN rules text grants additional land
-    # drops (e.g. "you may play an additional land on each of your turns").
-    # Cheap ramp creatures are mana capacity, not land drops, and a deck
-    # count never stands in for a drawn, cast extra-drop effect. Expected
-    # draws are availability, not a keep goal — a 92-land Commander deck
-    # draws ~9 lands by turn 3 but can only put ~3 in play.
-    extra_drop_effects = any(_grants_extra_land_drop(row["text"]) for row in spell_rows)
-    lands_in_play_by_turn = tuple(
-        (
-            turn,
-            min(drawn, turn + (1 if extra_drop_effects and turn >= 2 else 0)),
-        )
-        for turn, drawn in lands_by_turn
-    )
+    # drop per turn, capped by expected draws. An extra-drop permission
+    # sitting in the deck list is NOT an active effect — it has to be drawn,
+    # affordable and cast first — so it never raises this baseline. Such
+    # permissions are reported separately as labelled conditional potential
+    # (criteria.extra_land_drop_potential). Cheap ramp creatures are mana
+    # capacity, not land drops, and a deck count never stands in for a drawn,
+    # cast extra-drop effect. Expected draws are availability, not a keep
+    # goal — a 92-land Commander deck draws ~9 lands by turn 3 but can only
+    # put ~3 in play.
+    lands_in_play_by_turn = tuple((turn, min(drawn, turn)) for turn, drawn in lands_by_turn)
+    potentials: list[tuple[int, str]] = []
+    for row in spell_rows:
+        shape = _extra_land_drop_grant(row["text"])
+        if shape:
+            potentials.append(
+                (
+                    _mana_value(row["mana_cost"]),
+                    f"{row['name']} (MV {_mana_value(row['mana_cost'])}) grants {shape} once drawn and cast",
+                )
+            )
+    potentials.sort()
+    extra_land_drop_potential = tuple(text for _, text in potentials[:3])
     spell_copies = sum(row["count"] for row in spell_rows)
     threshold = max(3, spell_copies // 5)
     max_mv = max((_mana_value(row["mana_cost"]) for row in spell_rows), default=0)
@@ -546,6 +603,7 @@ def build_profile(
         lands_in_play_by_turn=lands_in_play_by_turn,
         early_play_ceiling=ceiling,
         colour_priority=priority,
+        extra_land_drop_potential=extra_land_drop_potential,
     )
 
     # Seed text: the profile as prompt lines.
@@ -560,6 +618,13 @@ def build_profile(
         (
             f"Colour priority {' then '.join(priority) if priority else 'undeclared'}; "
             f"by turn 3 the deck puts ~{inplay3} lands in play and casts cheap plays at MV<={ceiling}."
+            + (
+                " Potential extra land drops (only once drawn and cast): "
+                + "; ".join(extra_land_drop_potential[:2])
+                + "."
+                if extra_land_drop_potential
+                else ""
+            )
         ),
         (
             f"Mana sources: {sources.total}"

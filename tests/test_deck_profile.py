@@ -464,8 +464,11 @@ def test_deck_keep_guide_quoted_in_mulligan_bug_20261109_212434(monkeypatch):
     guide = _deck_keep_guide(state)
     assert guide, "expected a profile-derived keep guide"
     assert guide[0] == (
-        "DECK PROFILE KEEP GUIDE: this deck puts ~4 lands in play by turn 3 "
-        "(~4 expected drawn) and has cheap plays at MV<=1; colour priority G, R."
+        "DECK PROFILE KEEP GUIDE: this deck puts ~3 lands in play by turn 3 "
+        "(~4 expected drawn) and has cheap plays at MV<=1; colour priority G, R. "
+        "Extra land drops are potential only: Exploration (MV 1) grants an extra "
+        "land drop on each of your turns once drawn and cast; Icetill Explorer "
+        "(MV 4) grants an extra land drop on each of your turns once drawn and cast."
     )
     # No deck list -> no guide line, quietly.
     assert _deck_keep_guide({}) == []
@@ -529,14 +532,16 @@ def test_lands_in_play_counts_legal_drops_not_ramp_bug_20261109_212434():
 
 
 def test_extra_land_drop_needs_own_rules_text_bug_20261109_212434():
-    """The +1 land drop comes from the list's own rules text, nothing else.
+    """Extra drops are conditional potential from the list's own rules text.
 
     Real logged cards from bug_20261109_212434: Exploration and Icetill
     Explorer literally grant an additional land drop each turn; Llanowar
     Elves (mana dork), Elvish Mystic (mana dork) and Crop Rotation
-    (sacrifice-a-land tutor) do not. The same 56-Forest shell therefore
-    achieves one extra drop per turn from turn 2 onward with Exploration,
-    and none at all with Llanowar Elves.
+    (sacrifice-a-land tutor) do not. The permission never raises the
+    achievable baseline — it is reported as labelled conditional potential
+    (drawn and cast required) — so the same 56-Forest shell stays on the
+    ordinary one-drop-per-turn curve whether it runs Exploration or
+    Llanowar Elves.
     """
     assert deck_profile._grants_extra_land_drop(_fixture_card("minsc", "Exploration")["oracle_text"])
     assert deck_profile._grants_extra_land_drop(_fixture_card("minsc", "Icetill Explorer")["oracle_text"])
@@ -548,9 +553,107 @@ def test_extra_land_drop_needs_own_rules_text_bug_20261109_212434():
     profile = build_profile([dict(forest, count=56), dict(exploration, count=4)])
     in_play = dict(profile.criteria.lands_in_play_by_turn)
     drawn = dict(profile.criteria.lands_by_turn)
-    assert in_play[1] == min(drawn[1], 1)  # no extra drop before one is in play
-    assert in_play[2] == min(drawn[2], 3)
-    assert in_play[3] == min(drawn[3], 4)
+    # Ordinary baseline everywhere; the permission is potential, not active.
+    assert all(in_play[turn] == min(drawn[turn], turn) for turn in range(1, 6))
+    assert profile.criteria.extra_land_drop_potential == (
+        "Exploration (MV 1) grants an extra land drop on each of your turns once drawn and cast",
+    )
+
+
+def test_icetill_cast_condition_gates_extra_drop_bug_20261109_212434():
+    """An uncastable-by-then extra-drop card never lifts the baseline.
+
+    Round-4 rejection probe, real logged card Icetill Explorer from
+    bug_20261109_212434 ({2}{G}{G}): with 59 Forests and no ramp the old
+    formula predicted 3 lands in play on turn 2 and 4 on turn 3 — before
+    the four-mana Explorer could even be cast. The baseline must stay at
+    the ordinary one drop per turn (2 by turn 2, 3 by turn 3), with the
+    Explorer's grant reported as conditional potential naming the cast
+    precondition.
+    """
+    forest = _fixture_card("minsc", "Forest")
+    icetill = _fixture_card("minsc", "Icetill Explorer")
+    profile = build_profile([dict(forest, count=59), dict(icetill, count=1)])
+    in_play = dict(profile.criteria.lands_in_play_by_turn)
+    assert in_play[2] == 2
+    assert in_play[3] == 3
+    assert profile.criteria.extra_land_drop_potential == (
+        "Icetill Explorer (MV 4) grants an extra land drop on each of your turns once drawn and cast",
+    )
+    # The keep guide labels the potential instead of raising the goal.
+    lines = profile.keep_criteria_lines()
+    assert "puts ~3 lands in play by turn 3" in lines[0]
+    assert "potential only" in lines[0]
+    assert "Icetill Explorer (MV 4)" in lines[0]
+
+
+def test_extra_drop_predicate_requires_self_permission_bug_20261109_212434():
+    """Only self-addressed, unnegated play permissions count as potential.
+
+    Real card oracle texts (Scryfall, verified 2026-11-12): Azusa, Lost but
+    Seeking grants 'You may play two additional lands on each of your
+    turns' (persistent self grant); Summer Bloom grants 'You may play up to
+    three additional lands this turn' (one-shot self grant); Rites of
+    Flourishing says 'Each player may play an additional land on each of
+    their turns' — a permission aimed at every player, not this deck's
+    player, so it is not counted (conservative: a shared permission is not
+    this deck's own grant). A negated sentence ('you can't play an
+    additional land') is a restriction, never a grant — no printed card
+    pairs those tokens today (full Scryfall /additional land/ sweep, 41
+    cards), the guard is defensive for Arena dialects.
+    """
+    azusa = {
+        "name": "Azusa, Lost but Seeking",
+        "type_line": "Legendary Creature — Human Monk",
+        "mana_cost": "{2}{G}",
+        "oracle_text": "You may play two additional lands on each of your turns.",
+        "count": 1,
+    }
+    summer_bloom = {
+        "name": "Summer Bloom",
+        "type_line": "Sorcery",
+        "mana_cost": "{1}{G}{G}",
+        "oracle_text": "You may play up to three additional lands this turn.",
+        "count": 1,
+    }
+    rites = {
+        "name": "Rites of Flourishing",
+        "type_line": "Enchantment",
+        "mana_cost": "{2}{G}",
+        "oracle_text": (
+            "Each player may play an additional land on each of their turns.\n"
+            "At the beginning of each player's draw step, that player draws an extra card."
+        ),
+        "count": 1,
+    }
+    negated = {
+        "name": "Defensive Probe",
+        "type_line": "Enchantment",
+        "mana_cost": "{1}{G}",
+        # Synthetic sentence covering a shape absent from the printed corpus;
+        # see docstring. Guards against Arena dialect rewordings.
+        "oracle_text": "You can't play an additional land on each of your turns.",
+        "count": 1,
+    }
+
+    assert deck_profile._extra_land_drop_grant(azusa["oracle_text"]) == (
+        "an extra land drop on each of your turns"
+    )
+    assert deck_profile._extra_land_drop_grant(summer_bloom["oracle_text"]) == (
+        "an extra land drop on one turn"
+    )
+    assert deck_profile._extra_land_drop_grant(rites["oracle_text"]) is None
+    assert deck_profile._extra_land_drop_grant(negated["oracle_text"]) is None
+
+    forest = _fixture_card("minsc", "Forest")
+    profile = build_profile([dict(forest, count=56), azusa])
+    assert profile.criteria.extra_land_drop_potential == (
+        "Azusa, Lost but Seeking (MV 3) grants an extra land drop on each of your turns once drawn and cast",
+    )
+    # Rites of Flourishing contributes no potential and no baseline lift.
+    profile = build_profile([dict(forest, count=56), rites])
+    assert profile.criteria.extra_land_drop_potential == ()
+    assert dict(profile.criteria.lands_in_play_by_turn)[3] == 3
 
 
 def test_deck_keep_guide_yields_to_cached_playbook_bug_20261109_212434(monkeypatch, tmp_path):
