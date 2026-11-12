@@ -18,7 +18,11 @@ from unittest.mock import Mock
 import pytest
 
 from arenamcp.action_planner import ActionPlanner, SecondLookError
-from arenamcp.cast_premises import _classify_haste_clause, cast_premise_concerns
+from arenamcp.cast_premises import (
+    _classify_haste_clause,
+    _self_attack_assertions,
+    cast_premise_concerns,
+)
 from arenamcp.decisions import decision_from_dict
 from arenamcp.game_plan import decision_claim_notes
 
@@ -646,3 +650,114 @@ def test_plan_decision_options_repeated_false_response_falls_back_deterministica
     # Whatever the deterministic fallback returned, it is a legal selection.
     if result:
         assert decision.selection_is_valid(result)
+
+
+# --- review round 5: subject/action/time gate for summoning-sick notes ------
+
+ROUND4_DEFENSIVE_REASONING = (
+    "Casting Optimistic Scavenger immediately makes our board much harder to attack into."
+)
+
+
+def test_round4_defensive_phrase_never_elevates_sick_note():
+    """The exact round-4 repro: validator still notes it, detector stays silent."""
+    case = CASES["optimistic_scavenger_t16"]
+    notes = decision_claim_notes(
+        ROUND4_DEFENSIVE_REASONING,
+        case["state"],
+        cast_ids={_cast_instance_id("optimistic_scavenger_t16")},
+    )
+    assert notes and "summoning sick" in notes[0]
+    # Full no-concern: neither an entry-effect nor an escalated sick concern.
+    assert (
+        cast_premise_concerns(
+            _decision("optimistic_scavenger_t16"),
+            case["state"],
+            case["chosen_option_ids"],
+            ROUND4_DEFENSIVE_REASONING,
+        )
+        == []
+    )
+
+
+def test_defensive_phrase_boundary_preserves_pick_without_reask(monkeypatch):
+    """Decision boundary: the defensively-worded pick stands on the first ask."""
+    case = CASES["optimistic_scavenger_t16"]
+    decision, _ = _concerns_for(case)
+    backend = Mock()
+    calls = []
+
+    def complete(*args, **kwargs):
+        calls.append(args[1])
+        return json.dumps(
+            {
+                "option_ids": case["chosen_option_ids"],
+                "reasoning": ROUND4_DEFENSIVE_REASONING,
+            }
+        )
+
+    backend.complete.side_effect = complete
+    planner = ActionPlanner(backend, separate_strategy_planning=True)
+    monkeypatch.setattr(planner, "_sized_budget", lambda *args: 1.0)
+    assert planner.plan_decision_options(decision, case["state"]) == case["chosen_option_ids"]
+    assert len(calls) == 1
+    assert "SECOND LOOK" not in calls[0]
+    assert not planner.last_llm_failure
+
+
+@pytest.mark.parametrize(
+    ("name", "reasoning", "expected"),
+    [
+        # Positives: the cast creature itself attacking/tapping now.
+        ("skyward_spider_t8", CASES["skyward_spider_t8"]["reasoning"], True),
+        ("spellbook_vendor_t12", CASES["spellbook_vendor_t12"]["reasoning"], True),
+        (
+            "optimistic_scavenger_t16",
+            "Casting Optimistic Scavenger; it attacks immediately this turn.",
+            True,
+        ),
+        (
+            "skyward_spider_t8",
+            "Casting Skyward Spider, then it taps immediately this turn.",
+            True,
+        ),
+        # Negatives: defense / other attackers / conditional later attacks /
+        # opponent as attacker / no immediacy marker.
+        ("optimistic_scavenger_t16", ROUND4_DEFENSIVE_REASONING, False),
+        (
+            "optimistic_scavenger_t16",
+            "Casting Optimistic Scavenger while Veteran Survivor attacks this turn.",
+            False,
+        ),
+        (
+            "optimistic_scavenger_t16",
+            "Casting Optimistic Scavenger gives us another body while Veteran Survivor attacks this turn.",
+            False,
+        ),
+        (
+            "optimistic_scavenger_t16",
+            "Casting Optimistic Scavenger develops our board; it can attack next turn once untapped.",
+            False,
+        ),
+        (
+            "optimistic_scavenger_t16",
+            "Casting Optimistic Scavenger immediately discourages them from attacking into us.",
+            False,
+        ),
+        (
+            "optimistic_scavenger_t16",
+            "Casting Optimistic Scavenger and it attacks with flying.",
+            False,
+        ),
+    ],
+)
+def test_self_attack_assertion_subject_action_time_matrix(name, reasoning, expected):
+    """Only positive self-attack/tap-now assertions justify escalating a note."""
+    case = CASES[name]
+    card_name = {
+        "skyward_spider_t8": "Skyward Spider",
+        "spellbook_vendor_t12": "Spellbook Vendor",
+        "optimistic_scavenger_t16": "Optimistic Scavenger",
+    }[name]
+    assertions = _self_attack_assertions(card_name, reasoning, case["state"])
+    assert bool(assertions) is expected

@@ -55,6 +55,22 @@ Conservatism contract (review rounds 2–4):
 - Any battlefield object whose oracle text is missing/unreadable makes the
   board scan return ``None`` (unknown) and NO concern is raised: an unseen
   ability could support the claim.
+- A summoning-sick note is escalated only when the reasoning itself
+  positively asserts THE CAST CREATURE attacking/tapping now (review round
+  5: subject/action/time gate). The pre-existing claim validator keys
+  loosely on ``attack``, so defensive phrasing ("makes our board much
+  harder to attack into"), other creatures attacking and conditional later
+  attacks stay unknown — annotated after commitment as before, but never
+  turned into a premise concern. An assertion requires ALL of:
+  * subject: the action verb is anchored to the cast card's name (directly,
+    over a bounded bridge, or via an immediately following pronoun) and no
+    other visible permanent's name intervenes as a competing subject;
+  * action: an attack/tap verb governed by the cast creature — not an
+    infinitive/comparative frame ("harder to attack"), an opponent as the
+    attacker ("discourages them from attacking"), or a defensive direction
+    ("attacks into us");
+  * time: an explicit immediacy marker beside the verb and no future or
+    conditional timing in the same local window.
 """
 
 import re
@@ -202,6 +218,80 @@ def _entry_effect_claims(name: str, reasoning: str) -> list[str]:
             continue
         claims.append(sentence)
     return claims
+
+
+# --- premise-1 subject/action/time gate (review round 5) ---------------------
+
+# Attack/tap verbs as full tokens. Bare "attack" (as in "harder to attack
+# into") is deliberately NOT matched: the loose validator already keys on it
+# and this gate must be stricter than what it gates.
+_SICK_ACTION_VERB = re.compile(r"\b(?:attacks?|attacking|taps?|tapping)\b")
+_IMMEDIATE_TIME = re.compile(r"\b(?:now|immediately|right away|at once|this turn)\b")
+_INFINITIVE_FRAME = re.compile(r"\b(?:to|into)\s*$")
+_OPPONENT_SUBJECT = re.compile(r"\b(?:them|they|their|opponents?|enem\w+)\b[^.;]{0,16}$")
+_DEFENSIVE_DIRECTION = re.compile(r"^\s*(?:into|through)\b")
+
+
+def _self_attack_assertions(name: str, reasoning: str, game_state: dict) -> list[str]:
+    """Sentences positively asserting ``name`` itself attacks/taps this turn.
+
+    Subject/action/time gate for elevating a summoning-sick note into a
+    premise concern (review round 5). The pre-existing claim validator keys
+    loosely on ``attack``, so defensive phrasing ("makes our board much
+    harder to attack into"), other creatures attacking and conditional later
+    attacks must never escalate. An assertion requires ALL of:
+
+    - subject: the action verb is anchored to the cast card's name — directly
+      over a bounded bridge, or via an immediately following pronoun — and no
+      other visible permanent's name intervenes as a competing subject;
+    - action: an attack/tap verb governed by the cast creature, not an
+      infinitive/comparative frame ("harder to attack"), an opponent as the
+      attacker ("discourages them from attacking"), or a defensive direction
+      ("attacks into us");
+    - time: an explicit immediacy marker beside the verb and no future or
+      conditional timing in the same local window.
+    """
+    esc = re.escape(name.casefold())
+    others = [
+        str(obj.get("name")).casefold()
+        for obj in _visible_objects(game_state)
+        if obj.get("name") and str(obj.get("name")).casefold() != name.casefold()
+    ]
+    assertions: list[str] = []
+    for sentence in _sentences(reasoning.translate(_APOSTROPHE)):
+        low = sentence.casefold()
+        for m in _SICK_ACTION_VERB.finditer(low):
+            prefix = low[: m.start()]
+            for nm in re.finditer(rf"(?<![a-z0-9]){esc}(?![a-z0-9])", prefix):
+                bridge = low[nm.end() : m.start()]
+                if "." in bridge:
+                    continue  # sentence boundary between name and verb
+                pronoun = re.search(r"\bit\b", bridge)
+                if pronoun:
+                    # "<Name> ... it attacks" — pronoun chain from the name.
+                    if len(bridge[: pronoun.start()]) > 60 or len(bridge[pronoun.end() :]) > 24:
+                        continue
+                elif len(bridge) > 40:
+                    continue  # direct anchor: bounded bridge only
+                if any(other and other in bridge for other in others):
+                    break  # another visible permanent is the competing subject
+                if _INFINITIVE_FRAME.search(bridge):
+                    break  # "harder to attack ..." — implicit/opponent subject
+                if _OPPONENT_SUBJECT.search(bridge):
+                    break  # "... discourages them from attacking ..."
+                window = low[m.end() : m.end() + 40]
+                if _DEFENSIVE_DIRECTION.match(window):
+                    break  # "... attacks into us" is the opponent's action
+                if not _IMMEDIATE_TIME.search(window):
+                    break  # no explicit this-turn timing beside the verb
+                if _FUTURE_TIMING.search(bridge) or _FUTURE_TIMING.search(window):
+                    break  # scheduled/conditional attack, not now
+                assertions.append(sentence)
+                break
+            else:
+                continue
+            break
+    return assertions
 
 
 def _type_words(card) -> frozenset[str]:
@@ -367,9 +457,16 @@ def cast_premise_concerns(decision, game_state: dict, chosen: list[str], reasoni
             for note in decision_claim_notes(text, game_state, cast_ids=cast_ids)
             if name.casefold() in note.casefold() and "summoning sick" in note.casefold()
         ]
-        # Only assert impossibility when no visible ability grants haste and no
-        # oracle text is unreadable; otherwise keep the pick as reasoned.
-        if sick_notes and _scan_board(game_state, _classify_haste_clause) is False:
+        # Only assert impossibility when no visible ability grants haste, no
+        # oracle text is unreadable, AND the reasoning itself positively
+        # asserts this creature attacking/tapping now (round-5 subject/
+        # action/time gate — defensive phrasing, other attackers and
+        # conditional later attacks stay unknown).
+        if (
+            sick_notes
+            and _scan_board(game_state, _classify_haste_clause) is False
+            and _self_attack_assertions(name, text, game_state)
+        ):
             for note in sick_notes:
                 concern = (
                     f"{note}. Re-evaluate the play without counting on {name} attacking or tapping this turn."
