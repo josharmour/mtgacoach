@@ -43,16 +43,97 @@ ENV_MARKER_NAME = "dep-env.json"
 #: creator already promoted a valid environment we adopt theirs.
 _PROMOTION_ATTEMPTS = 3
 
+# --- Windows path-length safety -------------------------------------------------
+#
+# With LongPathsEnabled=0 (the observed qualification machine state), every
+# path must fit the classic MAX_PATH budget of 260 characters. Native Windows
+# qualification showed a locked PySide6/shiboken install failing deep inside
+# its build tree (``qrc_qmake_Qt_labs_assetdownloader_init.cpp.obj``) under a
+# normal-length runtime root while the *same* source and lock succeeded with a
+# drive-root runtime root (``C:\\rq3fd``). The fix is deterministic short-root
+# selection BEFORE any bytes are written — never a registry change and never a
+# loose fallback.
+#
+# Budget accounting (all lengths are characters of the final layout):
+#   <base>/dep-envs/<identity[:16]>          final environment directory
+#   <base>/dep-envs/.dep-staging-<12>-<8>    private staging venv during build
+#   .../Scripts/python.exe                   deepest path WE construct ourselves
+# Everything beyond that belongs to package internals (site-packages nesting,
+# compiler/build artifacts), which is what actually blew the budget in
+# qualification. The observed success envelope bounds that depth at roughly
+# 190 characters (success prefix at ``C:\\rq3fd`` was ~70), so the reserve
+# below is deliberately conservative against it.
+_WIN_MAX_PATH = 260
+_WIN_OWN_LAYOUT_RESERVE = (
+    len("/dep-envs")
+    # "/" + identity[:16]
+    + len("/" + "x" * 16)
+    # ".dep-staging-" + 12 identity chars + "-" + 8 randomness chars
+    + len("/.dep-staging-" + "x" * 12 + "-" + "x" * 8)
+    + len("/Scripts/python.exe")
+)
+_WIN_PACKAGE_HEADROOM = 130
+
+#: Fallback base under user-writable storage when the requested runtime root
+#: cannot fit the budget. Kept short on purpose so it fits for realistic
+#: profile paths ("%LOCALAPPDATA%\\mtgacoach\\r").
+_WIN_FALLBACK_BASE_PARTS = ("mtgacoach", "r")
+
+
+def _is_windows() -> bool:
+    return sys.platform.startswith("win")
+
+
+def _windows_safe_base(base: Path) -> Path:
+    """Return ``base``, or a deterministic short user-storage base on Windows.
+
+    Pure function of ``base`` (+ platform), so preparation and later prepared-
+    only lookups always agree on where an environment lives. Raises a clear,
+    actionable :class:`SnapshotError` when NO user-writable location can fit
+    the budget — there is deliberately no loose fallback onto arbitrary paths.
+    """
+    limit = _WIN_MAX_PATH - _WIN_OWN_LAYOUT_RESERVE - _WIN_PACKAGE_HEADROOM
+
+    def fits(candidate: Path) -> bool:
+        return len(str(candidate)) + len("/dep-envs") <= limit
+
+    if fits(base):
+        return base
+    local_appdata = os.environ.get("LOCALAPPDATA", "").strip()
+    fallback = Path(local_appdata).joinpath(*_WIN_FALLBACK_BASE_PARTS) if local_appdata else None
+    if fallback is not None and fallback != base and fits(fallback):
+        logger.info(
+            "Runtime root %s risks Windows MAX_PATH failures for deep package "
+            "layouts; dependency environments will use %s instead",
+            base,
+            fallback,
+        )
+        return fallback
+    raise SnapshotError(
+        f"runtime root {base} is too long for Windows MAX_PATH-limited "
+        f"dependency-environment layouts ({_WIN_MAX_PATH}-character budget "
+        f"minus {_WIN_OWN_LAYOUT_RESERVE} characters of staging/interpreter "
+        f"layout minus {_WIN_PACKAGE_HEADROOM} characters reserved for "
+        f"package internals), and no shorter user-writable fallback fits "
+        f"either. Set MTGACOACH_RUNTIME_ROOT to a short path near a drive "
+        f"root (for example C:\\rq) and prepare again."
+    )
+
 
 def dep_env_root(runtime_root: Path | None = None) -> Path:
-    if runtime_root is not None:
-        return Path(runtime_root) / "dep-envs"
+    base = Path(runtime_root) if runtime_root is not None else _default_runtime_base()
+    if _is_windows():
+        base = _windows_safe_base(base)
+    return base / "dep-envs"
+
+
+def _default_runtime_base() -> Path:
     try:
         from .runtime import get_runtime_root
 
-        return Path(get_runtime_root()) / "dep-envs"
+        return Path(get_runtime_root())
     except Exception:  # pragma: no cover - bootstrap contexts without the package
-        return Path.home() / ".local" / "share" / "mtgacoach" / "dep-envs"
+        return Path.home() / ".local" / "share" / "mtgacoach"
 
 
 def resolve_interpreter(python_executable: str | None = None) -> str:
@@ -202,6 +283,17 @@ def _repoint_entrypoint_shebangs(staging: Path, env_dir: Path) -> None:
     occurrence of the staging interpreter path covers both shapes; anything
     that never pointed at staging (``activate.fish`` and friends) is left
     untouched.
+
+    On Windows the same problem takes a third shape: pip's console/windowed
+    launchers are ``.exe`` binaries laid out as ``<PE launcher> +
+    b'#!' + interpreter + post_interp + b'\\n' + <ZIP payload>`` (distlib
+    ``ScriptMaker._write_script``). The entry-point payload travels inside the
+    appended ZIP and the interpreter reference is a plain byte shebang between
+    the PE image and the ZIP. Once staging is deleted these launchers exit 1
+    with empty output (observed for ``pip3.exe``, ``pip3.11.exe`` and
+    ``normalizer.exe`` after promotion). They are repaired by splicing a new
+    shebang line while keeping the PE prefix and ZIP payload byte-identical;
+    launchers that do not point at staging are left untouched.
     """
     staging_python_path = venv_python(staging)
     staging_python = str(staging_python_path)
@@ -210,6 +302,8 @@ def _repoint_entrypoint_shebangs(staging: Path, env_dir: Path) -> None:
     # layout instead of probing it.
     promoted_python = env_dir / staging_python_path.parent.name / staging_python_path.name
     bin_dir = venv_python(staging).parent
+    if _is_windows():
+        _repoint_windows_launcher_exes(bin_dir, staging_python, str(promoted_python))
     for script in sorted(bin_dir.iterdir()):
         if not script.is_file() or script.name.endswith(".exe"):
             continue
@@ -220,6 +314,64 @@ def _repoint_entrypoint_shebangs(staging: Path, env_dir: Path) -> None:
         if not text.startswith("#!") or staging_python not in text:
             continue  # only scripts referencing the doomed staging path
         script.write_text(text.replace(staging_python, str(promoted_python)), encoding="utf-8")
+
+
+def _repoint_windows_launcher_exes(bin_dir: Path, staging_python: str, promoted_python: str) -> None:
+    """Retarget pip-generated ``.exe`` launchers at the promoted interpreter.
+
+    See :func:`_repoint_entrypoint_shebangs` for the binary layout rationale.
+    Only launchers whose embedded interpreter is exactly the staging python
+    (compared case-insensitively, as Windows does) are rewritten; anything
+    else — foreign interpreters, manifests, non-launcher binaries — keeps its
+    original bytes.
+    """
+    old_norm = os.path.normcase(staging_python)
+    for exe in sorted(bin_dir.glob("*.exe")):
+        if not exe.is_file():
+            continue
+        try:
+            data = exe.read_bytes()
+        except OSError:
+            continue
+        rewritten = _retarget_launcher_shebang(data, old_norm, promoted_python)
+        if rewritten is not None:
+            exe.write_bytes(rewritten)
+
+
+def _retarget_launcher_shebang(data: bytes, old_norm: str, promoted_python: str) -> bytes | None:
+    """Splice ``promoted_python`` into a launcher's shebang line.
+
+    The launcher layout is ``<PE prefix> + b'#!' + interpreter + post_interp +
+    b'\\n' + <ZIP payload>``. The ZIP payload starts at the last local-file
+    header signature (``PK\\x03\\x04``); the shebang is the single line ending
+    immediately before it. Returns ``None`` (leave untouched) when the shape
+    does not match or the embedded interpreter is not the staging python.
+    """
+    zip_idx = data.rfind(b"PK\x03\x04")
+    if zip_idx == -1:
+        return None
+    shebang_idx = data.rfind(b"#!", 0, zip_idx)
+    if shebang_idx == -1:
+        return None
+    line = data[shebang_idx:zip_idx]
+    if not line.endswith(b"\n") or b"\n" in line[:-1]:
+        return None  # not a single-line shebang sitting directly before the payload
+    try:
+        body = line[:-1].decode("utf-8")[2:]
+    except UnicodeDecodeError:
+        return None
+    if body.startswith('"'):  # defensively support quoted interpreter paths
+        end_quote = body.find('"', 1)
+        if end_quote == -1:
+            return None
+        interp_token, post_interp = body[1:end_quote], body[end_quote + 1 :]
+    else:
+        space = body.find(" ")
+        interp_token, post_interp = (body, "") if space == -1 else (body[:space], body[space:])
+    if os.path.normcase(interp_token) != old_norm:
+        return None
+    new_line = f"#!{promoted_python}{post_interp}\n".encode()
+    return data[:shebang_idx] + new_line + data[zip_idx:]
 
 
 def _install_dependencies(staging_python: Path, snapshot_root: Path, work_dir: Path) -> str:
@@ -366,6 +518,9 @@ def ensure_dep_env(
             "install_mode": install_mode,
             "created_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "snapshot": str(snapshot_root),
+            # Actual dep-envs root in effect (may differ from the requested
+            # runtime root on Windows when path-length safety redirected it).
+            "dep_envs_root": str(env_dir.parent),
         }
         (_marker_path(staging)).write_text(
             json.dumps(marker_data, indent=2, sort_keys=True) + "\n", encoding="utf-8"

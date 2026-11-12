@@ -12,6 +12,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import threading
 from pathlib import Path
 
@@ -391,3 +392,149 @@ def test_promoted_entrypoints_work_at_space_containing_paths(tmp_path):
     )
     assert proc.returncode == 0, f"stdout={proc.stdout}\nstderr={proc.stderr}"
     assert str(promoted) in proc.stdout  # running from the promoted location
+
+
+# --- Windows qualification regressions ------------------------------------------
+
+
+def _launcher_exe(interpreter: str, payload: bytes, post: str = "") -> bytes:
+    """Stand-in for a pip/distlib Windows launcher: PE prefix + shebang + ZIP."""
+    pe_prefix = b"MZ" + bytes(30)
+    return pe_prefix + f"#!{interpreter}{post}\n".encode() + payload
+
+
+def _embedded_launcher_interpreter(exe_bytes: bytes) -> tuple[str, str]:
+    zip_idx = exe_bytes.rfind(b"PK\x03\x04")
+    assert zip_idx != -1
+    shebang_idx = exe_bytes.rfind(b"#!", 0, zip_idx)
+    line = exe_bytes[shebang_idx:zip_idx].decode("utf-8")
+    body = line[2:-1]  # strip '#!' and trailing newline
+    space = body.find(" ")
+    interp, post = (body, "") if space == -1 else (body[:space], body[space:])
+    return interp, post
+
+
+def test_windows_exe_launchers_are_retargeted_to_promoted_python(tmp_path, monkeypatch):
+    """pip3/pip3.11/normalizer-style .exe launchers survive promotion.
+
+    Native Windows qualification found these exiting 1 with empty output after
+    promotion: their embedded interpreter referenced the deleted staging venv
+    and the old repoint pass skipped ``.exe`` entirely. The repair must splice
+    the promoted interpreter into the launcher's shebang while keeping the PE
+    prefix and the ZIP entry-point payload byte-identical.
+    """
+    monkeypatch.setattr(dep_env, "_is_windows", lambda: True)
+    staging = tmp_path / "staging"
+    promoted = tmp_path / "promoted"
+    bin_dir = staging / "Scripts"
+    bin_dir.mkdir(parents=True)
+    (bin_dir / "python.exe").write_bytes(b"")
+
+    staging_python = str(bin_dir / "python.exe")
+    promoted_python = str(promoted / "Scripts" / "python.exe")
+    payload_plain = b"PK\x03\x04entry-point-zip-pip3"
+    payload_post = b"PK\x03\x04entry-point-zip-normalizer"
+    foreign_payload = b"PK\x03\x04foreign-zip"
+
+    (bin_dir / "pip3.exe").write_bytes(_launcher_exe(staging_python, payload_plain))
+    (bin_dir / "pip3.11.exe").write_bytes(_launcher_exe(staging_python, payload_plain))
+    (bin_dir / "normalizer.exe").write_bytes(_launcher_exe(staging_python, payload_post, post=" -E"))
+    foreign_before = _launcher_exe("C:\\elsewhere\\python.exe", foreign_payload)
+    (bin_dir / "foreign.exe").write_bytes(foreign_before)
+    nozip_before = b"MZ" + bytes(10) + f"#!{staging_python}\n".encode()
+    (bin_dir / "nozip.exe").write_bytes(nozip_before)
+
+    dep_env._repoint_entrypoint_shebangs(staging, promoted)
+
+    for name, expected_payload, expected_post in (
+        ("pip3.exe", payload_plain, ""),
+        ("pip3.11.exe", payload_plain, ""),
+        ("normalizer.exe", payload_post, " -E"),
+    ):
+        data = (bin_dir / name).read_bytes()
+        interp, post = _embedded_launcher_interpreter(data)
+        assert interp == promoted_python, name
+        assert post == expected_post, name
+        assert data[data.rfind(b"PK\x03\x04") :] == expected_payload, name
+        assert data[: data.rfind(b"#!")] == b"MZ" + bytes(30), name
+
+    # Launchers that never pointed at staging keep their exact bytes.
+    assert (bin_dir / "foreign.exe").read_bytes() == foreign_before
+    assert (bin_dir / "nozip.exe").read_bytes() == nozip_before
+
+
+def test_windows_long_runtime_root_redirects_dep_envs_to_short_user_storage(
+    snapshot_root, fake_runs, tmp_path, monkeypatch
+):
+    """Deep runtime roots stage/promote under a short deterministic location.
+
+    Qualification blocker 1: a locked PySide6 install failed on MAX_PATH under
+    a normal-length runtime root while the same source/lock succeeded from a
+    drive-root root. Selection must happen deterministically BEFORE any bytes
+    are written so preparation and prepared-only lookups agree.
+    """
+    monkeypatch.setattr(dep_env, "_is_windows", lambda: True)
+    # The redirection LOGIC is what's under test here (the absolute Windows
+    # budget is covered by the envelope test below), so scale the budget to
+    # this host's temporary-directory depth: the fallback must fit while the
+    # deep root must not, whatever length pytest's tmp tree happens to be.
+    with tempfile.TemporaryDirectory(prefix="rq-win-") as short_tmp:
+        local_appdata = Path(short_tmp)
+        monkeypatch.setenv("LOCALAPPDATA", str(local_appdata))
+        long_root = local_appdata / "deep" / "-".join(["segment"] * 12)
+        fallback_total = len(str(local_appdata.joinpath("mtgacoach", "r", "dep-envs")))
+        monkeypatch.setattr(
+            dep_env,
+            "_WIN_MAX_PATH",
+            fallback_total + 1 + dep_env._WIN_OWN_LAYOUT_RESERVE + dep_env._WIN_PACKAGE_HEADROOM,
+        )
+
+        env_dir = ensure_dep_env(snapshot_root, runtime_root=long_root)
+
+        expected_base = local_appdata / "mtgacoach" / "r"
+        assert env_dir.parent == expected_base / "dep-envs"
+        marker = read_env_marker(env_dir)
+        assert marker is not None
+        assert marker["dep_envs_root"] == str(expected_base / "dep-envs")
+        # Prepared-only lookups resolve to the same redirected location.
+        assert dep_env.prepared_dep_env(snapshot_root, runtime_root=long_root) == env_dir
+
+
+def test_windows_unfitting_roots_fail_with_actionable_guidance(
+    snapshot_root, fake_runs, tmp_path, monkeypatch
+):
+    """No silent fallback: when nothing fits, fail loudly and build nothing."""
+    monkeypatch.setattr(dep_env, "_is_windows", lambda: True)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / ("l" * 80)))
+    long_root = tmp_path / ("-".join(["segment"] * 12))
+
+    with pytest.raises(SnapshotError, match="MTGACOACH_RUNTIME_ROOT"):
+        ensure_dep_env(snapshot_root, runtime_root=long_root)
+
+    # Nothing was staged anywhere: the failure precedes any filesystem work.
+    assert not (tmp_path / ("l" * 80)).exists() or not any((tmp_path / ("l" * 80)).rglob(".dep-staging-*"))
+
+
+def test_windows_path_budget_matches_observed_qualification_envelope(tmp_path, monkeypatch):
+    """Drive-root roots pass; realistic profile roots pass; deep roots redirect."""
+
+    def fits(base: Path) -> bool:
+        return dep_env._windows_safe_base(base) == base
+
+    # The proven-good qualification root from the coordinator rerun.
+    assert fits(Path("C:\\rq3fd"))
+    # A realistic %LOCALAPPDATA%-style default must not be forced to redirect.
+    assert fits(Path("C:\\Users\\joshu\\AppData\\Local\\mtgacoach"))
+
+    # Deep roots are redirected to the short user-storage fallback. Build the
+    # expectation the same way the implementation does (joinpath), so the
+    # comparison is separator-consistent on any host OS.
+    deep = Path("C:\\Users\\joshu\\AppData\\Local\\mtgacoach\\" + "\\".join(["seg"] * 20))
+    monkeypatch.setenv("LOCALAPPDATA", "C:\\Users\\joshu\\AppData\\Local")
+    expected_fallback = Path("C:\\Users\\joshu\\AppData\\Local").joinpath("mtgacoach", "r")
+    assert dep_env._windows_safe_base(deep) == expected_fallback
+
+    # And when even the fallback cannot fit, selection refuses loudly.
+    monkeypatch.setenv("LOCALAPPDATA", "C:\\Users\\joshu\\AppData\\Local\\" + "\\".join(["s"] * 40))
+    with pytest.raises(SnapshotError, match="MTGACOACH_RUNTIME_ROOT"):
+        dep_env._windows_safe_base(deep)
