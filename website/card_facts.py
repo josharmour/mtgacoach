@@ -34,7 +34,7 @@ import re
 import time
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from match_bundles import authorize_upload, owner_of
 from state import _get_db, _require_admin
 
@@ -430,6 +430,80 @@ async def admin_upsert_card_facts(request: Request, _=Depends(_require_admin)):
 
     logger.info("Card-facts upsert stored=%d rejected=%d", stored, len(rejected))
     return {"stored": stored, "rejected": rejected}
+
+
+# ---------------------------------------------------------------------------
+# Admin read routes (S2: the ingest job must see what the store already has)
+# ---------------------------------------------------------------------------
+
+# Upper bound on the wanted-list page size.  The ingest job asks for a few
+# hundred at a time; anything past this is a mistake, not a work list.
+MAX_WANTED_LIMIT = 5000
+
+
+def wanted_entries(limit: int = 500) -> list[dict[str, Any]]:
+    """Missing hashes ranked by demand: most-requested first.
+
+    Rows come straight from ``card_facts_wanted`` (fed by customer lookups);
+    ties break on recency so a fresh burst of interest outranks an old one.
+    """
+    with _get_db().get_db() as conn:
+        rows = conn.execute(
+            "SELECT rules_hash, wanted_count, last_requested_at FROM card_facts_wanted"
+            " ORDER BY wanted_count DESC, last_requested_at DESC LIMIT ?",
+            (int(limit),),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def record_statuses(rules_hashes: list[str]) -> dict[str, str]:
+    """Stored status for each hash that exists in the store.
+
+    Hashes with no row are simply absent from the result — absence is the
+    "customers asked for this and nobody compiled it yet" signal the ingest
+    job works from.
+    """
+    statuses: dict[str, str] = {}
+    with _get_db().get_db() as conn:
+        for start in range(0, len(rules_hashes), 100):
+            chunk = rules_hashes[start : start + 100]
+            placeholders = ",".join("?" * len(chunk))
+            rows = conn.execute(
+                f"SELECT rules_hash, status FROM card_facts WHERE rules_hash IN ({placeholders})",
+                chunk,
+            ).fetchall()
+            for row in rows:
+                statuses[row["rules_hash"]] = row["status"]
+    return statuses
+
+
+@router.get("/v1/card-facts/admin/wanted")
+def admin_wanted_card_facts(
+    limit: int = Query(default=500, ge=1, le=MAX_WANTED_LIMIT),
+    _=Depends(_require_admin),
+) -> dict[str, Any]:
+    """The ingest job's default work list: demanded-but-missing hashes."""
+    return {"wanted": wanted_entries(limit)}
+
+
+@router.get("/v1/card-facts/admin/records")
+def admin_card_facts_statuses(
+    hashes: str = Query(...),
+    _=Depends(_require_admin),
+) -> dict[str, Any]:
+    """Store status per comma-separated hash (used to skip already-ok cards)."""
+    requested: list[str] = []
+    for piece in hashes.split(","):
+        piece = piece.strip()
+        if piece and piece not in requested:
+            requested.append(piece)
+    if not requested:
+        raise HTTPException(422, "hashes query parameter required")
+    if len(requested) > MAX_HASHES_PER_LOOKUP:
+        raise HTTPException(422, f"Capped at {MAX_HASHES_PER_LOOKUP} hashes per request")
+    for value in requested:
+        _validated_hash(value)
+    return {"records": record_statuses(requested)}
 
 
 # Create the tables when the module is imported alongside the app;

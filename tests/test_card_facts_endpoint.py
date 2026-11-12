@@ -680,3 +680,113 @@ def test_lookup_does_not_leak_stored_payloads_of_other_statuses_via_found(env):
     _store(client, _record(h, status="review"))
     body = _lookup(client, [h]).json()
     assert body["found"] == {} and body["missing"] == [h]
+
+
+# ---------------------------------------------------------------------------
+# S2: admin read routes (the ingest job's view of the store)
+# ---------------------------------------------------------------------------
+
+
+def _seed_wanted(proxy_db, rows: list[tuple[str, int, float]]) -> None:
+    """Insert card_facts_wanted rows directly (hash, wanted_count, last_requested_at)."""
+    with proxy_db.get_db() as conn:
+        for digest, count, last_requested in rows:
+            conn.execute(
+                "INSERT OR REPLACE INTO card_facts_wanted"
+                " (rules_hash, wanted_count, last_requested_at) VALUES (?, ?, ?)",
+                (digest, count, last_requested),
+            )
+
+
+def test_admin_wanted_requires_admin_credential(env):
+    """The work list is operational data: same admin gate as upsert."""
+    _, proxy_db, _, _, _, client, _tmp = env
+    _seed_wanted(proxy_db, [(_hash(1), 3, 1000.0)])
+    resp = client.get("/v1/card-facts/admin/wanted")
+    assert resp.status_code == 403
+    resp = client.get("/v1/card-facts/admin/wanted", headers={"X-Admin-Key": "not-the-admin-key"})
+    assert resp.status_code == 403
+
+
+def test_admin_wanted_ranks_by_demand_then_recency(env):
+    """Most-demanded hash first; ties break on the newer request.
+
+    Built from the real demand counter S1's lookup feeds: two lookups for
+    hash 2 and one for hash 3 (test_missing_hashes_increment_the_wanted_counter
+    covers the counting itself); here hash 1 is seeded with the same count as
+    hash 2 but an older timestamp and must rank below it.
+    """
+    _, proxy_db, _, _, _, client, _tmp = env
+    _seed_wanted(
+        proxy_db,
+        [
+            (_hash(1), 2, 1000.0),  # same count as hash 2, older
+            (_hash(2), 2, 2000.0),  # newer → ranks first among the twos
+            (_hash(3), 5, 500.0),   # highest count → first overall
+        ],
+    )
+    resp = client.get("/v1/card-facts/admin/wanted", headers=ADMIN)
+    assert resp.status_code == 200, resp.text
+    wanted = resp.json()["wanted"]
+    assert [row["rules_hash"] for row in wanted] == [_hash(3), _hash(2), _hash(1)]
+    assert wanted[0]["wanted_count"] == 5
+    assert set(wanted[0]) == {"rules_hash", "wanted_count", "last_requested_at"}
+
+
+def test_admin_wanted_limit_is_capped_and_defaulted(env):
+    """limit is bounded (5000) and defaults to 500 rows."""
+    *_, client, _tmp = env
+    resp = client.get("/v1/card-facts/admin/wanted?limit=5001", headers=ADMIN)
+    assert resp.status_code == 422
+    resp = client.get("/v1/card-facts/admin/wanted?limit=0", headers=ADMIN)
+    assert resp.status_code == 422
+    resp = client.get("/v1/card-facts/admin/wanted", headers=ADMIN)
+    assert resp.status_code == 200
+    assert resp.json() == {"wanted": []}
+
+
+def test_admin_records_returns_store_statuses(env):
+    """The ingest job sees ok/failed/review per hash; unknown hashes are absent."""
+    _, _, _, _, _, client, _tmp = env
+    ok_h, failed_h, review_h = _hash(1), _hash(2), _hash(3)
+    _store(
+        client,
+        _record(ok_h),
+        _record(failed_h, status="failed"),
+        _record(review_h, status="review"),
+    )
+    resp = client.get(
+        f"/v1/card-facts/admin/records?hashes={ok_h},{failed_h},{review_h},{_hash(4)}",
+        headers=ADMIN,
+    )
+    assert resp.status_code == 200, resp.text
+    records = resp.json()["records"]
+    assert records == {ok_h: "ok", failed_h: "failed", review_h: "review"}
+
+
+def test_admin_records_requires_admin_credential(env):
+    *_, client, _tmp = env
+    resp = client.get(f"/v1/card-facts/admin/records?hashes={_hash(1)}")
+    assert resp.status_code == 403
+
+
+def test_admin_records_rejects_bad_input_like_lookup_does(env):
+    """Same validation contract as the customer-facing lookup route."""
+    *_, client, _tmp = env
+    # malformed hash
+    resp = client.get(f"/v1/card-facts/admin/records?hashes=NOTAHASH,{_hash(1)}", headers=ADMIN)
+    assert resp.status_code == 422
+    assert "hex" in resp.json()["detail"]
+    # uppercase is malformed here too (hashes are stored lowercase)
+    resp = client.get(f"/v1/card-facts/admin/records?hashes={_hash(1).upper()}", headers=ADMIN)
+    assert resp.status_code == 422
+    # over the per-request cap (same 300 as lookup)
+    many = ",".join(_hash(i) for i in range(301))
+    resp = client.get(f"/v1/card-facts/admin/records?hashes={many}", headers=ADMIN)
+    assert resp.status_code == 422
+    assert "300" in resp.json()["detail"]
+    # duplicates are deduplicated, not an error
+    h = _hash(9)
+    resp = client.get(f"/v1/card-facts/admin/records?hashes={h},{h}", headers=ADMIN)
+    assert resp.status_code == 200
+    assert resp.json() == {"records": {}}
