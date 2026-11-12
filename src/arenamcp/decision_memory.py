@@ -124,6 +124,8 @@ class DecisionRecord:
 _DECLINE = "__decline__"
 CANCELLED = "cancelled — no effect"
 COUNTERED = "countered — no effect"
+# The planner proposed it (an outage fallback pick); no submission was confirmed.
+PROPOSED = "proposed — unconfirmed"
 
 
 def _is_land(card: dict) -> bool:
@@ -213,6 +215,7 @@ class DecisionMemory:
         reasoning: str,
         *,
         model_unavailable: bool = False,
+        outcome: str = "",
     ) -> DecisionRecord | None:
         if not isinstance(state, dict) or decision is None:
             return None
@@ -231,6 +234,7 @@ class DecisionMemory:
             signature=board_signature(state),
             window=turn_window(state),
             model_unavailable=model_unavailable,
+            outcome=outcome,
         )
         self._records.append(record)
         del self._records[: -self._limit]
@@ -290,8 +294,8 @@ class DecisionMemory:
         for record in reversed(self.this_turn(state)):
             if record.chosen_labels == [CANCELLED]:
                 continue  # the decline itself already says so
-            if record.outcome:
-                break  # an earlier cast, already accounted for
+            if record.outcome and record.outcome != PROPOSED:
+                break  # an earlier cast, already accounted for (a proposal is not yet accounted for)
             if record.request_type == "ActionsAvailable":
                 label = (record.chosen_labels or [""])[0].split(" [", 1)[0].strip().casefold()
                 if label == f"cast {name}" or label.startswith(f"cast {name} "):
@@ -299,7 +303,9 @@ class DecisionMemory:
                     marked.append(record)
                 break  # the cast that opened this chain, or another priority choice
             if record.source.strip().casefold() == name:
-                record.outcome = record.outcome or CANCELLED
+                if record.outcome in ("", PROPOSED):
+                    # A cancelled proposal is history too: it never became an effect.
+                    record.outcome = CANCELLED
                 marked.append(record)
         return marked
 

@@ -427,8 +427,10 @@ def test_fallback_target_divergence_reaches_decision_memory():
     """Fallback picked a creature while the cast reasoning promised the face.
 
     The attack step builds its prompt from decision memory; if the fallback's
-    pick never lands there with reasoning naming the real target, the plan
-    commits to a line nobody played (2026-11-11 T9).
+    pick never lands there with reasoning naming the target, the plan commits
+    to a line nobody played (2026-11-11 T9). The pick is only a proposal —
+    no bridge submission happened — so the record must say unconfirmed intent,
+    never a resolved effect.
     """
     backend = _CancelledBackend()
     planner = ActionPlanner(backend, timeout=5, land_drop_first=False)
@@ -440,17 +442,53 @@ def test_fallback_target_divergence_reaches_decision_memory():
     assert trace["targeting_fallback"] == picked
     labels = {opt.option_id: opt.label for opt in decision.options}
     picked_labels = [labels[opt_id] for opt_id in picked]
-    # The refresh names what was actually submitted…
+    # The refresh names the proposed target…
     assert trace["target_refresh"] == (
-        f"Deterministic fallback: Lightning Strike went to {' and '.join(picked_labels)}."
+        f"Proposed (unconfirmed): Lightning Strike aimed at {' and '.join(picked_labels)}; "
+        "no submission confirmed."
     )
-    # …and it reached decision memory, so the attack step sees the real target.
+    # …and it reached decision memory as an unconfirmed proposal, so the attack
+    # step sees the intended target without being told it was played.
     lines = planner.decisions_for_turn(9)
     assert any(
-        "Deterministic fallback: Lightning Strike went to" in line
+        "Proposed (unconfirmed): Lightning Strike aimed at" in line
+        and "[proposed — unconfirmed]" in line
         and all(label in line for label in picked_labels)
         for line in lines
     )
+    # Never phrased as a resolved effect: nothing was submitted.
+    assert not any("went to" in line for line in lines)
+
+
+def test_cancelled_fallback_proposal_never_becomes_confirmed_history():
+    """An unsubmitted/rejected/cancelled fallback pick cannot read as played.
+
+    The proposal is recorded only because a cancelled target step otherwise
+    leaves nothing; when that cast is in fact cancelled afterwards, the
+    proposal must be marked cancelled — no effect, not left standing as
+    confirmed combat history.
+    """
+    from arenamcp.action_planner import DECLINE_DECISION
+
+    backend = _CancelledBackend()
+    planner = ActionPlanner(backend, timeout=5, land_drop_first=False)
+    decision = _target_decision()
+    state = _target_state()
+
+    planner.plan_decision_options(decision, state)
+    assert any("[proposed — unconfirmed]" in line for line in planner.decisions_for_turn(9))
+
+    # The cast is cancelled afterwards: the decline goes through the real
+    # memory path, which marks this turn's steps for the source cancelled.
+    planner._memory().record(state, decision, [DECLINE_DECISION], "request changed")
+
+    lines = planner.decisions_for_turn(9)
+    proposal_lines = [line for line in lines if "aimed at" in line]
+    assert proposal_lines, "the proposal record vanished instead of being marked cancelled"
+    assert all("[cancelled — no effect]" in line for line in proposal_lines)
+    assert not any("[proposed — unconfirmed]" in line for line in lines)
+    # And nothing in memory presents the fallback target as an executed effect.
+    assert not any("went to" in line for line in lines)
 
 
 def test_fallback_refresh_skipped_when_request_was_superseded():
@@ -468,4 +506,4 @@ def test_fallback_refresh_skipped_when_request_was_superseded():
     trace = planner.get_last_decision_trace()
     assert trace["targeting_fallback"] == picked
     assert "target_refresh" not in trace
-    assert not any("Deterministic fallback" in line for line in planner.decisions_for_turn(9))
+    assert not any("Proposed (unconfirmed)" in line for line in planner.decisions_for_turn(9))

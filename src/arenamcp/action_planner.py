@@ -31,7 +31,13 @@ from arenamcp.cast_notes import (
 from arenamcp.channel_zones import battlefield_channel_note, channel_land_note
 from arenamcp.damage_assignment import fallback_plan as damage_fallback_plan
 from arenamcp.damage_assignment import is_assign_damage_window, spoken_split
-from arenamcp.decision_memory import DecisionMemory, burn_combo_note, critical_decision, lethal_reach
+from arenamcp.decision_memory import (
+    PROPOSED,
+    DecisionMemory,
+    burn_combo_note,
+    critical_decision,
+    lethal_reach,
+)
 from arenamcp.decisions import expand_target_selection
 from arenamcp.mana_potential import mana_reach_note
 from arenamcp.match_context import prepare_match_context, strategic_policy, with_deck_reference
@@ -9040,13 +9046,17 @@ class ActionPlanner(_ActionLegalityMixin):
     def _refresh_fallback_target_reasoning(
         self, decision: Any, game_state: dict[str, Any], picked: list[str]
     ) -> None:
-        """Record the fallback's actual target so later combat reasoning sees it.
+        """Record the fallback's target as an unconfirmed proposal for later reasoning.
 
-        A cancelled target step leaves no completed decision record; the
-        deterministic fallback's pick must still reach decision memory with
-        reasoning that names what was submitted, or the attack step inherits a
-        plan nobody played (2026-11-11 T9: the cast said "Strike to the face",
-        the fallback aimed at a creature, and nothing recorded the divergence).
+        A cancelled target step leaves no completed decision record; without
+        any record the attack step inherits a plan nobody played (2026-11-11
+        T9: the cast said "Strike to the face", the fallback aimed at a
+        creature, and nothing recorded the divergence). But the fallback pick
+        is only a proposal — this planner call may be discarded before any
+        bridge submission (cancelled backend, request change), so the record
+        must never state a resolved effect. It is stored as proposed /
+        unconfirmed intent, and a later cancellation of the same source marks
+        it cancelled — no effect.
         """
         cancel_event = getattr(self, "_decision_cancel_event", None)
         if cancel_event is not None and cancel_event.is_set():
@@ -9060,7 +9070,9 @@ class ActionPlanner(_ActionLegalityMixin):
         if not names:
             return
         spell = str(getattr(decision, "source_label", "") or "").strip() or "the spell"
-        reasoning = f"Deterministic fallback: {spell} went to {' and '.join(names)}."
+        reasoning = (
+            f"Proposed (unconfirmed): {spell} aimed at {' and '.join(names)}; no submission confirmed."
+        )
         try:
             self._memory().record(
                 game_state,
@@ -9068,13 +9080,14 @@ class ActionPlanner(_ActionLegalityMixin):
                 picked,
                 reasoning,
                 model_unavailable=getattr(self, "last_llm_failure", "") == "unavailable",
+                outcome=PROPOSED,
             )
         except Exception as error:  # memory never blocks a decision
             logger.debug("decision memory skipped: %s", error)
         trace = getattr(self, "_last_decision_trace", None)
         if isinstance(trace, dict):
             trace["target_refresh"] = reasoning
-        logger.warning("typed-decision: fallback target refresh: %s", reasoning)
+        logger.warning("typed-decision: fallback target proposal (unconfirmed): %s", reasoning)
 
     def _unpayable_ward_targets(self, decision: Any, game_state: dict[str, Any]) -> dict[str, str]:
         """Opposing target options whose ward we cannot pay, mapped to why.
