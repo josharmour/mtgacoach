@@ -45,10 +45,16 @@ Limits (deliberately bounded):
   no definitive verdict: the clause degrades to availability facts and never
   claims a guaranteed outcome.
 - Who-can-block claims are DERIVED FROM THE LEGAL SET: when no untapped
-  creature can legally block (e.g. ground creatures facing a flyer), the text
-  says so instead of asserting they "can still block"; when legality was not
+  creature can legally block (e.g. ground creatures facing a flyer, or a
+  menacing attacker with fewer than two legal blockers), the text says so
+  instead of asserting they "can still block"; when legality was not
   evaluated (multi-attacker plans or missing stats) only neutral availability
   ("are still untapped this combat") is stated.
+- Whole-assignment restrictions are enforced on top of per-blocker legality:
+  menace requires TWO blockers, so singleton assignments are never scored
+  against a menacing attacker (review finding on 167cdf0). Restrictions the
+  production engine does not model (e.g. "can't be blocked by more than one
+  creature") decline definitive arithmetic entirely (safe unknown).
 - Enumeration of counter-block assignments is capped; past the cap an honest
   unknown replaces any "their best block" claim (a found saving block still
   proves one exists - a subset minimum bounds the true best from above).
@@ -244,30 +250,44 @@ class BlockVerdict:
     no_legal: bool = False
 
 
+# Whole-assignment restrictions the production engine does not model (it only
+# knows menace's "two or more blockers" rule). When an attacker carries one,
+# per-blocker legality plus a subset enumeration could score illegal
+# assignments, so definitive arithmetic declines instead (safe unknown).
+_UNMODELLED_MULTI_BLOCK = re.compile(
+    r"can'?t be blocked by (?:(?:more|no more) than one|two or more|at least two)",
+    re.IGNORECASE,
+)
+
 _MAX_COUNTER_BLOCK_ASSIGNMENTS = 512
 
 
-def _counter_block_search(attacker_body: dict, legal: list[dict]):
+def _counter_block_search(attacker_body: dict, legal: list[dict], min_blockers: int = 1):
     """The least damage ``attacker_body`` forces through any legal block.
 
-    Every candidate assignment - each singleton and combination of legal
+    Every candidate assignment - each permitted-size combination of legal
     blockers - is resolved by the production engine,
     :func:`combat_solver._resolve_attacker_damage`, so trample spill order,
     deathtouch and double strike are exactly what the line search plays with;
-    no arithmetic lives here. Returns ``(least_through, names, attacker_died,
-    complete)``; ``complete`` is False when the enumeration hit the assignment
-    cap - the minimum found then bounds the true best from above only, so a
-    found saving block still proves one exists but no "their best block"
+    no arithmetic lives here. ``min_blockers`` carries whole-assignment
+    restrictions (menace needs TWO blockers - a singleton assignment is not a
+    legal block against a menacing attacker, review finding on 167cdf0).
+    Returns ``(least_through, names, attacker_died, complete)``;
+    ``complete`` is False when the enumeration hit the assignment cap - the
+    minimum found then bounds the true best from above only, so a found
+    saving block still proves one exists but no "their best block"
     superlative may be claimed.
     """
     from itertools import combinations
 
+    if min_blockers > len(legal):
+        return None, "", False, True
     least_through: int | None = None
     least_names = ""
     least_attacker_died = False
     evaluated = 0
     complete = True
-    for size in range(1, len(legal) + 1):
+    for size in range(min_blockers, len(legal) + 1):
         for combo in combinations(legal, size):
             evaluated += 1
             if evaluated > _MAX_COUNTER_BLOCK_ASSIGNMENTS:
@@ -285,7 +305,11 @@ def _counter_block_search(attacker_body: dict, legal: list[dict]):
 
 
 def _planeswalker_block_verdict(
-    attacker_body: dict, legal: list[dict], victim: str, pw_loyalty: int
+    attacker_body: dict,
+    legal: list[dict],
+    victim: str,
+    pw_loyalty: int,
+    min_blockers: int = 1,
 ) -> BlockVerdict:
     """A kill-claim-appropriate verdict against a planeswalker victim.
 
@@ -294,10 +318,13 @@ def _planeswalker_block_verdict(
     nor refute a walker kill claim (review finding on 2317892). What a kill
     claim needs is whether any legal block holds the attacker's damage below
     the walker's loyalty: every legal assignment is resolved by the production
-    engine and the least damage through wins."""
+    engine and the least damage through wins. ``min_blockers`` carries
+    whole-assignment restrictions (menace)."""
     power = attacker_body["power"]
     desc = f"the {power}/{attacker_body['toughness']} attacker"
-    through, names, attacker_died, complete = _counter_block_search(attacker_body, legal)
+    through, names, attacker_died, complete = _counter_block_search(
+        attacker_body, legal, min_blockers=min_blockers
+    )
     if through is None:
         return BlockVerdict()
     fate = f"kills {desc}" if attacker_died else f"{desc} survives"
@@ -376,21 +403,31 @@ def _best_block_verdict(
             f"{attacker_body['name']}; all {power} damage goes to {victim}"
         )
         return BlockVerdict(clause=clause, outcome=outcome, unharmed=False, through=power, no_legal=True)
-    if has_combat_keyword(attacker, "menace") and len(legal) == 1:
+    if has_combat_keyword(attacker, "menace") and len(legal) < 2:
+        # Whole-assignment restriction: a menacing attacker cannot be legally
+        # blocked by a single creature (review finding on 167cdf0).
         clause = (
-            f"only two or more creatures can block the menacing {desc}; "
-            f"all {power} damage goes to {victim} this combat."
+            f"only two or more creatures can block the menacing "
+            f"{power}/{toughness} attacker; all {power} damage goes to {victim} this combat."
         )
         outcome = (
             f"their single legal blocker cannot stop {attacker_body['name']}; "
             f"all {power} damage goes to {victim}"
         )
         return BlockVerdict(clause=clause, outcome=outcome, unharmed=False, through=power, no_legal=True)
+    if _UNMODELLED_MULTI_BLOCK.search(str(attacker.get("oracle_text") or "")):
+        return BlockVerdict()  # unmodellable whole-assignment restriction: safe unknown
     pw_loyalty = None
     if target_card is not None and "Planeswalker" in str(target_card.get("type_line") or ""):
         pw_loyalty = loyalty(target_card)
     if pw_loyalty is not None:
-        return _planeswalker_block_verdict(attacker_body, legal, victim, int(pw_loyalty))
+        return _planeswalker_block_verdict(
+            attacker_body,
+            legal,
+            victim,
+            int(pw_loyalty),
+            min_blockers=2 if has_combat_keyword(attacker, "menace") else 1,
+        )
     plan = optimal_blocks([attacker_body], legal, max(1, int(life)), caller="attack_premises")
     if plan is None:
         return BlockVerdict()  # no searched plan: decline definitive arithmetic
@@ -547,8 +584,16 @@ def tapped_crackback_correction(
                 defender_life(state),
                 target_card=_target_card(state, target),
             )
-        clause = f"Their untapped {_describe(untapped)} can still block this attack now, alone or together"
-        clause += f" - {verdict.clause}" if verdict.clause else "."
+        if verdict.no_legal:
+            # Derive the availability claim from the legal set (review finding
+            # on 167cdf0): "can still block this attack now" would contradict
+            # the computed no-legal-block verdict that follows it.
+            clause = f"Their untapped {_describe(untapped)} are still untapped this combat - {verdict.clause}"
+        else:
+            clause = (
+                f"Their untapped {_describe(untapped)} can still block this attack now, alone or together"
+            )
+            clause += f" - {verdict.clause}" if verdict.clause else "."
         clauses.append(clause)
     if tapped:
         clauses.append(

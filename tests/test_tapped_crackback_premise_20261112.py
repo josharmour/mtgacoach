@@ -277,6 +277,156 @@ def test_flying_attacker_needs_flying_or_reach_to_be_blocked():
     ) in clause
 
 
+def test_menace_best_block_requires_both_blockers_against_planeswalker():
+    attacker = {
+        "instance_id": 1,
+        "name": "Menacing Ogre",
+        "power": 4,
+        "toughness": 4,
+        "type_line": "Creature — Ogre",
+        "keywords": ["menace"],
+    }
+    alpha = {
+        "instance_id": 2,
+        "name": "Alpha Bear",
+        "power": 3,
+        "toughness": 3,
+        "type_line": "Creature — Bear",
+    }
+    beta = {
+        "instance_id": 3,
+        "name": "Beta Bear",
+        "power": 3,
+        "toughness": 3,
+        "type_line": "Creature — Bear",
+    }
+    clause = best_block_clause(
+        attacker,
+        [alpha, beta],
+        TARGET,
+        target_card={"name": TARGET, "type_line": "Planeswalker — Human Warrior", "loyalty": 3},
+    )
+    # Whole-assignment legality (review finding on 167cdf0): a menacing
+    # attacker cannot be blocked by a single creature, so the only legal
+    # assignment is BOTH blockers - which kills the attacker and leaves the
+    # walker untouched. The old enumeration scored the illegal singleton
+    # (one 3/3, attacker alive) and claimed damage through.
+    assert "their best block (Alpha Bear, Beta Bear) kills the 4/4 attacker" in clause
+    assert f"{TARGET} takes no damage this combat" in clause
+
+
+def test_menace_single_legal_blocker_is_no_block_at_all():
+    attacker = {
+        "instance_id": 1,
+        "name": "Menacing Ogre",
+        "power": 4,
+        "toughness": 4,
+        "type_line": "Creature — Ogre",
+        "keywords": ["menace"],
+    }
+    blocker = {
+        "instance_id": 2,
+        "name": "Lone Grizzly",
+        "power": 3,
+        "toughness": 3,
+        "type_line": "Creature — Bear",
+    }
+    clause = best_block_clause(attacker, [blocker], TARGET)
+    # One legal blocker cannot legally block a menacing attacker: no block
+    # exists, so all damage goes through.
+    assert (
+        f"only two or more creatures can block the menacing 4/4 attacker; "
+        f"all 4 damage goes to {TARGET} this combat."
+    ) in clause
+
+
+def test_menace_pair_enumeration_scores_trample_spill_across_both_blockers():
+    attacker = {
+        "instance_id": 1,
+        "name": "Menacing Trampler",
+        "power": 4,
+        "toughness": 4,
+        "type_line": "Creature — Beast",
+        "keywords": ["menace", "trample"],
+    }
+    one = {
+        "instance_id": 2,
+        "name": "Token One",
+        "power": 1,
+        "toughness": 1,
+        "type_line": "Creature — Token",
+    }
+    two = {
+        "instance_id": 3,
+        "name": "Token Two",
+        "power": 1,
+        "toughness": 1,
+        "type_line": "Creature — Token",
+    }
+    clause = best_block_clause(
+        attacker,
+        [one, two],
+        TARGET,
+        target_card={"name": TARGET, "type_line": "Planeswalker — Human Warrior", "loyalty": 3},
+    )
+    # The required pair blocks: trample assigns lethal to each token and
+    # spills exactly 2 through - below the walker's loyalty, so the pair
+    # saves it (the attacker itself survives on 2 damage). Singleton
+    # assignments are illegal and must not be scored.
+    assert (
+        f"their best block (Token One, Token Two) the 4/4 attacker survives and "
+        f"only 2 damage gets through to {TARGET}, below its 3 loyalty."
+    ) in clause
+
+
+def test_unmodellable_multi_block_restriction_declines_arithmetic():
+    attacker = {
+        "instance_id": 1,
+        "name": "Lone Wolf",
+        "power": 4,
+        "toughness": 4,
+        "type_line": "Creature — Wolf",
+        # Whole-assignment restriction the production engine does not model:
+        # subset enumeration could score an illegal two-blocker assignment.
+        "oracle_text": "Lone Wolf can't be blocked by more than one creature.",
+    }
+    alpha = {
+        "instance_id": 2,
+        "name": "Alpha Bear",
+        "power": 2,
+        "toughness": 2,
+        "type_line": "Creature — Bear",
+    }
+    beta = {
+        "instance_id": 3,
+        "name": "Beta Bear",
+        "power": 2,
+        "toughness": 2,
+        "type_line": "Creature — Bear",
+    }
+    # Safe unknown: no definitive arithmetic when the restriction is
+    # unmodellable.
+    assert best_block_clause(attacker, [alpha, beta], TARGET) == ""
+
+
+def test_flying_narration_derives_availability_from_the_legal_set(state):
+    boo = dict(_ours(state, "Boo")[0], keywords=["flying"])
+    correction = tapped_crackback_correction(state, REASONING, attackers=[boo], target=TARGET)
+    # The verdict here is "no legal block exists", not a validated no-damage
+    # outcome, so the unsupported kill certainty is appended after, not
+    # replaced by, a contradiction-free revision.
+    assert correction.mode == "append"
+    # Review finding on 167cdf0: the narration must not say their untapped
+    # ground crew "can still block this attack now" and then that none of
+    # them can legally block the flyer - derive the claim from the legal set.
+    assert BLOCK_PHRASE not in correction.text
+    assert (
+        "none of their untapped creatures can legally block the 4/4 attacker "
+        "(only a creature with flying or reach can block a flyer)"
+    ) in correction.text
+    assert f"all 4 damage goes to {TARGET} this combat." in correction.text
+
+
 def test_blocked_non_trample_attack_deals_no_damage():
     attacker = {
         "instance_id": 1,
