@@ -14,6 +14,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -51,9 +52,7 @@ class FakeScryfall:
     def __init__(self, sets: dict[str, str] | None = None):
         # name -> set code; defaults put every fixture card in "neo".
         self._sets = sets or {name: "neo" for name in PRINTED_CARDS}
-        self._name_index = {
-            name: {"name": name, "set": code} for name, code in self._sets.items()
-        }
+        self._name_index = {name: {"name": name, "set": code} for name, code in self._sets.items()}
 
     def _card_dict_to_scryfall_card(self, raw):
         return PRINTED_CARDS[raw["name"]]
@@ -74,6 +73,9 @@ class FakeServer:
         self.upsert_calls = 0
         self.wanted_calls = 0
         self.records_calls = 0
+        # Test hook: fail the upsert requests whose 1-based call number is in
+        # this set (lets a test fail exactly the second call, say).
+        self.fail_upsert_calls: set[int] = set()
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), self._make_handler())
         self.httpd.daemon_threads = True
         self.port = self.httpd.server_port
@@ -126,11 +128,15 @@ class FakeServer:
                 if not self.path.startswith("/v1/card-facts/admin/upsert"):
                     self._send({"error": "not found"}, 404)
                     return
+                with outer.lock:
+                    outer.upsert_calls += 1
+                    if outer.upsert_calls in outer.fail_upsert_calls:
+                        self._send({"error": "upstream unavailable"}, 500)
+                        return
                 length = int(self.headers.get("Content-Length", 0))
                 payload = json.loads(self.rfile.read(length) or b"{}")
                 stored = 0
                 with outer.lock:
-                    outer.upsert_calls += 1
                     for record in payload.get("records", []):
                         digest = record.get("rules_hash", "")
                         if not digest:
@@ -185,8 +191,10 @@ def _all_ok() -> dict[str, str]:
 
 def _run(ingest, server_or_none, argv_extra, monkeypatch, fake=None, **kw):
     if fake is None:
+
         def forbidden(*a, **k):
             raise AssertionError("compiler must not be called")
+
         fake = forbidden
     monkeypatch.setattr(ingest, "compile_one", fake)
     argv = list(argv_extra)
@@ -245,9 +253,7 @@ def test_rerun_skips_cards_the_store_already_serves(ingest, server, monkeypatch,
     assert code == 0
 
 
-def test_interrupt_keeps_finished_work_and_rerun_completes_backlog(
-    ingest, server, monkeypatch, tmp_path
-):
+def test_interrupt_keeps_finished_work_and_rerun_completes_backlog(ingest, server, monkeypatch, tmp_path):
     """Ctrl-C mid-run uploads finished cards; a rerun finishes the rest."""
     out = tmp_path / "r"
     first_pass: list[str] = []
@@ -263,8 +269,7 @@ def test_interrupt_keeps_finished_work_and_rerun_completes_backlog(
             record=_compiled_record(identifier),
         )
 
-    code = _run(ingest, server, ["--set", "neo", "--out", str(out)], monkeypatch,
-                fake=stopping_fake)
+    code = _run(ingest, server, ["--set", "neo", "--out", str(out)], monkeypatch, fake=stopping_fake)
     assert code == 130
     assert len(server.statuses()) >= 1
 
@@ -281,8 +286,7 @@ def test_interrupt_keeps_finished_work_and_rerun_completes_backlog(
             record=_compiled_record(identifier),
         )
 
-    code = _run(ingest, server, ["--set", "neo", "--out", str(out)], monkeypatch,
-                fake=finishing_fake)
+    code = _run(ingest, server, ["--set", "neo", "--out", str(out)], monkeypatch, fake=finishing_fake)
     assert code == 0
     assert server.statuses() == _all_ok()
     # Nothing compiled twice across the two passes.
@@ -305,8 +309,14 @@ def test_failed_validation_upload_lands_as_review_not_ok(ingest, server, monkeyp
         )
 
     scryfall = FakeScryfall({"Fury": "neo"})
-    code = _run(ingest, server, ["--set", "neo", "--out", str(tmp_path / "r")],
-                monkeypatch, fake=failing_fake, scryfall=scryfall)
+    code = _run(
+        ingest,
+        server,
+        ["--set", "neo", "--out", str(tmp_path / "r")],
+        monkeypatch,
+        fake=failing_fake,
+        scryfall=scryfall,
+    )
     assert code == 0
     assert compiled == ["Fury"]
     assert server.statuses() == {_expected_hash("Fury"): "review"}
@@ -319,16 +329,13 @@ def test_dry_run_compiles_and_uploads_nothing(ingest, server, monkeypatch, tmp_p
     def forbidden(*a, **k):
         raise AssertionError("dry run must not compile")
 
-    code = _run(ingest, server, ["--set", "neo", "--out", str(out), "--dry-run"],
-                monkeypatch, fake=forbidden)
+    code = _run(ingest, server, ["--set", "neo", "--out", str(out), "--dry-run"], monkeypatch, fake=forbidden)
     assert code == 0
     assert server.upsert_calls == 0
     assert not out.exists() or not list(out.iterdir())
 
 
-def test_wanted_mode_resolves_demanded_hashes_and_counts_unresolved(
-    ingest, server, monkeypatch, tmp_path
-):
+def test_wanted_mode_resolves_demanded_hashes_and_counts_unresolved(ingest, server, monkeypatch, tmp_path):
     """--wanted maps demanded hashes back to cards; unknown hashes count."""
     fury_hash = _expected_hash("Fury")
     mox_hash = _expected_hash("Chrome Mox")
@@ -350,9 +357,9 @@ def test_wanted_mode_resolves_demanded_hashes_and_counts_unresolved(
             record=_compiled_record(identifier),
         )
 
-    code = _run(ingest, server,
-                ["--wanted", "--limit", "10", "--out", str(tmp_path / "r")],
-                monkeypatch, fake=fake)
+    code = _run(
+        ingest, server, ["--wanted", "--limit", "10", "--out", str(tmp_path / "r")], monkeypatch, fake=fake
+    )
     assert code == 0
     assert sorted(compiled) == ["Chrome Mox", "Fury"]
     assert server.statuses() == {fury_hash: "ok", mox_hash: "ok"}
@@ -373,7 +380,134 @@ def test_cached_local_record_uploads_without_model_call(ingest, server, monkeypa
     def forbidden(*a, **k):
         raise AssertionError("cached record must not be recompiled")
 
-    code = _run(ingest, server, ["--set", "neo", "--out", str(out)], monkeypatch,
-                fake=forbidden)
+    code = _run(ingest, server, ["--set", "neo", "--out", str(out)], monkeypatch, fake=forbidden)
     assert code == 0
     assert server.statuses() == {_expected_hash("Fury"): "ok"}
+
+
+# ── Review findings (2026-11-11 review of clean38f2afd) ─────────────────────
+
+
+def test_cache_only_run_flushes_every_buffered_record_before_success(ingest, server, monkeypatch, tmp_path):
+    """Review case: cached-only 4 records, batch 1 uploads 1 then returns
+    while 3 remain buffered.
+
+    A cache-only run with --batch-size 1 whose first upsert fails must not
+    exit 0: the three records still buffered stay local, the run reports
+    failure, and a rerun uploads exactly the remaining three without any
+    model call.
+    """
+    out = tmp_path / "r"
+    out.mkdir()
+    for name in PRINTED_CARDS:
+        record = _compiled_record(name)
+        (out / f"{_expected_hash(name)}.json").write_text(to_json(record))
+
+    def forbidden(*a, **k):
+        raise AssertionError("cached records must not be recompiled")
+
+    server.fail_upsert_calls = {2}  # first batch lands, the second one fails
+    code = _run(
+        ingest, server, ["--set", "neo", "--out", str(out), "--batch-size", "1"], monkeypatch, fake=forbidden
+    )
+    assert code == 1, "a run that leaves buffered records must not report success"
+    uploaded_first = set(server.statuses())
+    assert len(uploaded_first) == 1
+
+    # Rerun: the one ok row is skipped, the three survivors upload from cache.
+    server.fail_upsert_calls = set()
+    code = _run(
+        ingest, server, ["--set", "neo", "--out", str(out), "--batch-size", "1"], monkeypatch, fake=forbidden
+    )
+    assert code == 0
+    assert server.statuses() == _all_ok()
+
+
+def test_quarantines_cached_record_whose_filename_hash_holds_another_card(
+    ingest, server, monkeypatch, tmp_path
+):
+    """Review case: Fury hash filename containing Chrome Mox record accepted
+    and uploaded ok.
+
+    A cache file named <fury-hash>.json that actually holds Chrome Mox's
+    record must not be uploaded as Fury: it is quarantined under
+    <out>/quarantine/, Fury is recompiled from the model, and the store ends
+    up with the real Fury record under Fury's hash.
+    """
+    out = tmp_path / "r"
+    out.mkdir()
+    fury_hash = _expected_hash("Fury")
+    wrong_record = _compiled_record("Chrome Mox")
+    (out / f"{fury_hash}.json").write_text(to_json(wrong_record))
+
+    compiled: list[str] = []
+
+    def fake(identifier, resolver, backend):
+        compiled.append(identifier)
+        return CompileResult(
+            identifier=str(identifier),
+            name=identifier,
+            rules_hash=_expected_hash(identifier),
+            status="compiled",
+            record=_compiled_record(identifier),
+        )
+
+    code = _run(ingest, server, ["--set", "neo", "--out", str(out)], monkeypatch, fake=fake)
+    assert code == 0
+    assert "Fury" in compiled, "the mislabelled cache entry must be recompiled"
+    assert server.statuses() == _all_ok()
+    # The impostor file was moved aside, not uploaded or deleted.
+    quarantined = out / "quarantine" / f"{fury_hash}.json"
+    assert quarantined.exists()
+    assert json.loads(quarantined.read_text())["name"] == "Chrome Mox"
+    # And the real Fury record now lives under Fury's hash.
+    fresh = json.loads((out / f"{fury_hash}.json").read_text())
+    assert fresh["name"] == "Fury"
+
+
+def test_drain_deadline_abandons_wedged_compile_and_exits_promptly(ingest, server, monkeypatch, tmp_path):
+    """Review case: DRAIN_TIMEOUT=.05 event-blocked compiler remains alive
+    after .25s.
+
+    The first compile call completes and requests a stop; every later call
+    wedges on an event that never fires. The run must upload the one finished
+    card, abandon the wedged ones at the drain deadline, and exit promptly
+    (daemon worker threads) instead of waiting on them forever. Exactly one
+    card can complete no matter how the two worker threads interleave.
+    """
+    monkeypatch.setattr(ingest, "DRAIN_TIMEOUT_S", 0.05)
+    out = tmp_path / "r"
+    wedged = threading.Event()  # never set: stands in for a hung model call
+    calls = {"n": 0}
+    lock = threading.Lock()
+
+    def fake(identifier, resolver, backend):
+        with lock:
+            calls["n"] += 1
+            first = calls["n"] == 1
+        if first:
+            ingest.request_stop()
+            return CompileResult(
+                identifier=str(identifier),
+                name=identifier,
+                rules_hash=_expected_hash(identifier),
+                status="compiled",
+                record=_compiled_record(identifier),
+            )
+        wedged.wait()
+        raise AssertionError("unreachable: the wedged compile never returns")
+
+    started = time.monotonic()
+    code = _run(ingest, server, ["--set", "neo", "--out", str(out)], monkeypatch, fake=fake)
+    elapsed = time.monotonic() - started
+
+    assert code == 130
+    # Bounded: far below any unbounded wait on the wedged compiles.
+    assert elapsed < 5.0
+    # Exactly one card made it through; it is one of the two items the
+    # workers pick up first (the queue order is fixed).
+    statuses = server.statuses()
+    assert len(statuses) == 1
+    first_two = {_expected_hash("Fury"), _expected_hash("Minsc & Boo, Timeless Heroes")}
+    assert set(statuses) <= first_two
+    wedged.set()  # release the daemon threads so the test process stays clean

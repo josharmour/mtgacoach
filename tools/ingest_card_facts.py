@@ -13,15 +13,21 @@ the loop between them:
      --all         every card in the Scryfall cache
 2. Skip what is already done: hashes whose store status is ``ok`` are never
    recompiled; hashes with a usable local record are uploaded without a
-   model call.
+   model call. A cached record is only trusted when its provenance checks
+   pass (stamped hash and printed facts match the requested card);
+   anything else is quarantined under ``<out>/quarantine/`` and recompiled.
 3. Compile the rest two cards at a time through the F2 compiler
    (``compile_one``), writing each record under ``--out`` as it lands.
 4. Upload finished records in batches to POST /v1/card-facts/admin/upsert.
    Records that failed validation are uploaded with status ``review`` so a
-   human can look at them instead of silently disappearing.
+   human can look at them instead of silently disappearing. A run only
+   reports success once every staged batch has been uploaded (or has
+   deliberately stayed local after a failure).
 5. Stop cleanly on SIGINT/SIGTERM: no new compiles start, in-flight cards
-   finish or are abandoned, completed work is uploaded, and a rerun resumes
-   where this one left off (server ``ok`` statuses plus local records).
+   finish or are abandoned within a bounded drain (compiles run on daemon
+   threads, so a wedged model call cannot hold the process hostage),
+   completed work is uploaded, and a rerun resumes where this one left off
+   (server ``ok`` statuses plus local records).
 
 Everything is driven by plain HTTP against the admin endpoints; nothing is
 deployed or restarted here.  Run it with PYTHONPATH=src:
@@ -41,6 +47,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import queue
 import signal
 import sys
 import threading
@@ -49,7 +56,6 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Iterable
-from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -162,11 +168,15 @@ def _raw_universe(scryfall: Any) -> Iterable[dict[str, Any]]:
     return index.values()
 
 
-def _hash_raw_card(scryfall: Any, raw: dict[str, Any]) -> tuple[str, str]:
-    """Return ``(rules_hash, name)`` exactly as the compiler will compute it."""
+def _printed_facts(scryfall: Any, raw: dict[str, Any]) -> dict[str, str]:
+    """Printed facts and hash exactly as the compiler will compute them."""
     card = scryfall._card_dict_to_scryfall_card(raw)
-    digest = rules_hash(card.name, card.mana_cost, card.type_line, card.oracle_text)
-    return digest, card.name
+    return {
+        "name": card.name,
+        "mana_cost": card.mana_cost,
+        "type_line": card.type_line,
+        "rules_hash": rules_hash(card.name, card.mana_cost, card.type_line, card.oracle_text),
+    }
 
 
 def build_work_list(
@@ -178,8 +188,10 @@ def build_work_list(
 ) -> tuple[list[dict[str, Any]], int]:
     """Return ``(work_items, unresolved_hashes)`` for the chosen source.
 
-    Each work item is ``{"name": ..., "rules_hash": ...}``.  Items are unique
-    by rules_hash and keep their source order (demand rank for --wanted).
+    Each work item carries the printed facts (``name``, ``mana_cost``,
+    ``type_line``), the ``rules_hash`` and, for wanted mode, the
+    ``wanted_count``. Items are unique by rules_hash and keep their source
+    order (demand rank for --wanted).
     """
     items_by_hash: dict[str, dict[str, Any]] = {}
     unresolved = 0
@@ -188,28 +200,24 @@ def build_work_list(
         if server is None:
             raise IngestError("--wanted needs --server or ARENAMCP_CARD_FACTS_URL")
         entries = server.wanted(wanted_limit)
-        hash_to_raw: dict[str, dict[str, Any]] = {}
+        hash_to_facts: dict[str, dict[str, str]] = {}
         for raw in _raw_universe(scryfall):
-            digest, _name = _hash_raw_card(scryfall, raw)
-            hash_to_raw.setdefault(digest, raw)
+            facts = _printed_facts(scryfall, raw)
+            hash_to_facts.setdefault(facts["rules_hash"], facts)
         for entry in entries:
             digest = str(entry.get("rules_hash", ""))
-            raw = hash_to_raw.get(digest)
-            if raw is None:
+            facts = hash_to_facts.get(digest)
+            if facts is None:
                 unresolved += 1
                 continue
-            items_by_hash[digest] = {
-                "name": str(raw.get("name", "")),
-                "rules_hash": digest,
-                "wanted_count": entry.get("wanted_count"),
-            }
+            items_by_hash[digest] = {**facts, "wanted_count": entry.get("wanted_count")}
     else:
         wanted_set = set_code.strip().lower() if set_code else None
         for raw in _raw_universe(scryfall):
             if wanted_set is not None and str(raw.get("set", "")).lower() != wanted_set:
                 continue
-            digest, name = _hash_raw_card(scryfall, raw)
-            items_by_hash[digest] = {"name": name, "rules_hash": digest}
+            facts = _printed_facts(scryfall, raw)
+            items_by_hash[facts["rules_hash"]] = facts
 
     return list(items_by_hash.values()), unresolved
 
@@ -243,6 +251,42 @@ def write_local_record(out_dir: Path, rules_hash_: str, record: CardFacts) -> No
     os.replace(tmp, path)
 
 
+def cache_problems(record: CardFacts, item: dict[str, Any]) -> list[str]:
+    """Ways a locally cached record fails to be about the requested card.
+
+    A cache file named ``<hash>.json`` is only trusted for upload when it
+    really is that card's record: its stamped ``rules_hash`` must equal the
+    requested hash and its printed facts (name, mana cost, type line) must
+    match the Scryfall card the hash was computed from. Anything else — a
+    record for another card under this filename, edited printed fields — is
+    quarantined and recompiled rather than uploaded.
+    """
+    problems: list[str] = []
+    if record.rules_hash != item["rules_hash"]:
+        problems.append(
+            f"record rules_hash {record.rules_hash!r} does not match requested {item['rules_hash']!r}"
+        )
+    for field_name in ("name", "mana_cost", "type_line"):
+        expected = item.get(field_name)
+        actual = getattr(record, field_name)
+        if expected is not None and actual != expected:
+            problems.append(f"record {field_name} {actual!r} does not match printed {expected!r}")
+    return problems
+
+
+def quarantine_record(out_dir: Path, rules_hash_: str) -> Path | None:
+    """Move an untrusted cache file aside under ``<out>/quarantine/``."""
+    source = out_dir / f"{rules_hash_}.json"
+    target_dir = out_dir / "quarantine"
+    try:
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target = target_dir / source.name
+        os.replace(source, target)
+        return target
+    except OSError:
+        return None
+
+
 def record_payload(record: CardFacts) -> dict[str, Any]:
     """Wire format for one record; failed validations go to review."""
     payload = card_facts_to_dict(record)
@@ -265,6 +309,7 @@ def classify_work(
     work_items: list[dict[str, Any]],
     out_dir: Path,
     server: CardFactsServer | None,
+    log: Any,
 ) -> tuple[dict[str, str], dict[str, CardFacts]]:
     """Split the work list into what can be skipped and what must be compiled.
 
@@ -275,7 +320,9 @@ def classify_work(
       not serve customers and are worth refreshing).
     * ``cached_records`` maps hash -> locally cached usable record for hashes
       that are neither ok on the server nor missing locally; these are
-      uploaded without a model call.
+      uploaded without a model call. A cached file is only trusted after its
+      provenance checks pass (stamped hash and printed facts match the
+      requested card); anything else is quarantined and recompiled.
 
     Everything else in the work list needs compiling.
     """
@@ -290,8 +337,17 @@ def classify_work(
         if statuses.get(digest) == "ok":
             continue
         record = load_local_record(out_dir, digest)
-        if record is not None:
-            cached[digest] = record
+        if record is None:
+            continue
+        problems = cache_problems(record, item)
+        if problems:
+            quarantine_record(out_dir, digest)
+            log(
+                f"warning: cached record for {item['name']} failed provenance checks "
+                f"({' ; '.join(problems)[:200]}); quarantined and requeued for compile"
+            )
+            continue
+        cached[digest] = record
     return statuses, cached
 
 
@@ -379,6 +435,7 @@ def run_job(
         "uploaded": 0,
         "upload_rejected": 0,
         "upload_failures": 0,
+        "abandoned_compiles": 0,
         "interrupted": False,
         "seconds": 0.0,
     }
@@ -392,7 +449,7 @@ def run_job(
     )
     summary["unresolved_hashes"] += unresolved_hashes
 
-    statuses, cached = classify_work(work_items, out_dir, server)
+    statuses, cached = classify_work(work_items, out_dir, server, log)
     summary["work_list"] = len(work_items)
     if server is None:
         log("no server configured; records will only be written locally")
@@ -403,20 +460,23 @@ def run_job(
     uploader = Uploader(server, batch_size, summary, log)
 
     # Cached records upload without a model call, in dry runs they are only
-    # counted.
-    for digest, record in cached.items():
+    # counted. Every cached batch is flushed before the run can succeed: a
+    # cache-only run must not return while records remain buffered.
+    staged_cached = len(cached)
+    for record in cached.values():
         uploader.stage(record)
     if dry_run:
-        summary["uploaded_from_cache"] = len(cached)
-        summary["to_compile"] = (
-            len(work_items) - summary["already_ok_on_server"] - len(cached)
-        )
+        summary["uploaded_from_cache"] = staged_cached
+        summary["to_compile"] = len(work_items) - summary["already_ok_on_server"] - len(cached)
         summary["seconds"] = round(time.monotonic() - started, 2)
         return summary
-    if cached and not uploader.flush():
+    if staged_cached and not uploader.flush_all():
+        # Batches that succeeded are gone from the buffer; the rest stay
+        # local and a rerun picks them up. Report what actually uploaded.
+        summary["uploaded_from_cache"] = staged_cached - len(uploader.buffer)
         summary["seconds"] = round(time.monotonic() - started, 2)
         return summary
-    summary["uploaded_from_cache"] = len(cached)
+    summary["uploaded_from_cache"] = staged_cached
 
     to_compile = [
         item
@@ -432,8 +492,6 @@ def run_job(
     backend = backend_factory()
 
     def compile_item(item: dict[str, Any]):
-        if _stop.is_set():
-            return None
         return compile_one(item["name"], resolver, backend)
 
     def handle_result(item: dict[str, Any], result: Any) -> None:
@@ -449,51 +507,75 @@ def run_job(
             summary["compiled_review"] += 1
             log(f"warning: {result.name or item['name']} needs review: {'; '.join(result.problems)[:200]}")
 
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
-        futures: dict[Future, dict[str, Any]] = {}
-        for item in to_compile:
-            if _stop.is_set():
-                break
-            futures[pool.submit(compile_item, item)] = item
+    # Compiles run on daemon worker threads so a wedged model call can never
+    # hold the process hostage: once a drain deadline expires the run walks
+    # away from it and lets the daemon die with the process.
+    work_queue: queue.SimpleQueue = queue.SimpleQueue()
+    for index, item in enumerate(to_compile):
+        work_queue.put((index, item))
+    results: queue.SimpleQueue = queue.SimpleQueue()
 
-        pending = set(futures)
-        while pending:
-            done = {f for f in pending if f.done()}
-            if not done:
-                time.sleep(0.05)
-                if _stop.is_set():
-                    for future in pending:
-                        future.cancel()
-                    pending = {f for f in pending if not f.cancelled() and f.running()}
-                    continue
-                continue
-            for future in done:
-                pending.discard(future)
-                item = futures[future]
-                try:
-                    handle_result(item, future.result())
-                except Exception as error:  # keep the run alive; record locally
-                    log(f"warning: compiling {item['name']} raised {error!r}")
-            if _stop.is_set() or summary["upload_failures"]:
-                for future in pending:
-                    future.cancel()
-                pending = {f for f in pending if not f.cancelled() and f.running()}
-                continue
-            if len(uploader.buffer) >= uploader.batch_size and not uploader.flush():
-                for future in pending:
-                    future.cancel()
-                pending = {f for f in pending if not f.cancelled() and f.running()}
-
-    # Drain anything still running after an interrupt (bounded).
-    running = [f for f in futures if not f.cancelled() and not f.done()]
-    if running and _stop.is_set():
-        deadline = time.monotonic() + DRAIN_TIMEOUT_S
-        for future in running:
-            remaining = max(0.0, deadline - time.monotonic())
+    def worker() -> None:
+        # A stop (or an upload failure, which ends the run early) stops new
+        # compiles from starting; the item a worker already holds finishes
+        # naturally or is abandoned at the bounded drain deadline below,
+        # where its daemon thread dies with the process.
+        while not _stop.is_set() and not summary["upload_failures"]:
             try:
-                handle_result(futures[future], future.result(timeout=remaining))
-            except Exception:
-                pass
+                index, item = work_queue.get_nowait()
+            except queue.Empty:
+                return
+            try:
+                results.put((index, compile_item(item)))
+            except Exception as error:
+                results.put((index, error))
+
+    threads = [
+        threading.Thread(target=worker, name=f"ingest-compile-{number}", daemon=True)
+        for number in range(min(MAX_WORKERS, len(to_compile)))
+    ]
+    for thread in threads:
+        thread.start()
+
+    handled: set[int] = set()
+    drain_deadline: float | None = None
+
+    def harvest() -> None:
+        while True:
+            try:
+                index, payload = results.get_nowait()
+            except queue.Empty:
+                return
+            handled.add(index)
+            item = to_compile[index]
+            if isinstance(payload, BaseException):
+                log(f"warning: compiling {item['name']} raised {payload!r}")
+                continue
+            try:
+                handle_result(item, payload)
+            except Exception as error:  # keep the run alive; record locally
+                log(f"warning: handling result for {item['name']} raised {error!r}")
+
+    while True:
+        harvest()
+        draining = _stop.is_set() or bool(summary["upload_failures"])
+        if draining and drain_deadline is None:
+            drain_deadline = time.monotonic() + DRAIN_TIMEOUT_S
+        # When draining, queued-but-unstarted items are abandoned by design;
+        # only in-flight results and live workers need accounting.
+        all_accounted = results.empty() and not any(thread.is_alive() for thread in threads)
+        if all_accounted:
+            break
+        if drain_deadline is not None and time.monotonic() >= drain_deadline:
+            break  # bounded drain expired; abandon whatever is still running
+        time.sleep(0.02)
+
+    harvest()  # catch results that landed between the last harvest and here
+
+    abandoned = len(to_compile) - len(handled)
+    if abandoned:
+        log(f"warning: abandoned {abandoned} compilation(s) at the drain deadline")
+    summary["abandoned_compiles"] = abandoned
 
     uploader.flush_all()
     summary["interrupted"] = _stop.is_set()
@@ -540,7 +622,9 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
         default=DEFAULT_OUT_DIR,
         help="local record cache directory (default %(default)s)",
     )
-    parser.add_argument("--server", default=os.environ.get("ARENAMCP_CARD_FACTS_URL"), help="coach API base URL")
+    parser.add_argument(
+        "--server", default=os.environ.get("ARENAMCP_CARD_FACTS_URL"), help="coach API base URL"
+    )
     parser.add_argument(
         "--admin-key",
         default=os.environ.get("ARENAMCP_ADMIN_KEY"),
@@ -595,7 +679,11 @@ def main(
         return 1
 
     print(json.dumps(summary, indent=2))
-    return 130 if summary.get("interrupted") else 0
+    if summary.get("interrupted"):
+        return 130
+    # Buffered records that never made it to the server are a failed run,
+    # not a successful one (they stay local for a rerun to pick up).
+    return 1 if summary.get("upload_failures") else 0
 
 
 if __name__ == "__main__":
