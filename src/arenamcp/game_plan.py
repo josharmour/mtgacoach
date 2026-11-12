@@ -269,7 +269,7 @@ BOARD FACTS are computed from the live board (clocks through best blocks, race, 
 - The turn plan covers T (this turn if it is ours, else our next turn), T+1 and T+2 (our following turns). Each turn's "cast" list may name ONLY cards in our hand now (or castable from our graveyard), each card at most once, and their combined mana value must fit that turn's MANA BUDGET with the colours available. A card we hope to draw goes in "hold" as "if drawn: <name>", never in "cast".
 - When BOARD FACTS lists CANDIDATE LINES (a deterministic 2-turn search), build "turns" from one of them and keep its attack/hold posture unless you name a concrete card or combat reason.
 - As defender/control, prioritise creatures that block and removal on attackers over card draw, mana rocks or cycling until the clock is under control. As aggressor, maximise damage; spend removal on blockers.
-- Win conditions must be realistic for the CURRENT state: no empty-library/alternate wins while the library is large, and no combo whose pieces are not in hand or on the battlefield (label a needed draw explicitly). A win route through a card in our graveyard is only real when it can actually come back — its own rules text recurs it (retrace, flashback, embalm, eternalize, escape, ...) or the plan names the recursion line; a card only in exile is out of the game.
+- Win conditions must be realistic for the CURRENT state: no empty-library/alternate wins while the library is large, and no combo whose pieces are not in hand or on the battlefield (label a needed draw explicitly).
 Use the deck list and remaining library to identify realistic engines, outs and backup plans; cards in the library are possibilities, not cards in hand or guaranteed draws. Rules are quoted for the cards seen this game and for the playbook's key cards; a library card listed by name only has no quoted rules, so do not invent abilities for it. Preserve the prior plan when still sound, and adapt when its assumptions change.
 Removal and tutoring are conditional decisions: compare the current threat, timing, mana and opportunity cost. Hold interaction when that protects the winning line; remove a threat when it prevents loss or unlocks progress. A tutor should find the currently useful legal card still in the library, with a feasible follow-up, rather than repeat an old preferred target.
 """
@@ -369,14 +369,6 @@ class GamePlan:
     # was validated. When every one of them has left our visible zones, the win
     # route is gone and the plan is reformed ("win route lost").
     route_cards: list[str] = field(default_factory=list)
-    # Structured upkeep state (E5a), recomputed by code on every observation —
-    # never written by the model. route_state tracks the live win route
-    # (status + where each route card sits); engines tracks which plan-
-    # committed pieces are in play or lost; next_steps carries the upcoming
-    # turn-plan steps.
-    route_state: dict = field(default_factory=dict)
-    engines: dict = field(default_factory=dict)
-    next_steps: list[str] = field(default_factory=list)
 
     def is_empty(self) -> bool:
         return not (self.win_conditions or self.path or self.develop_next or self.turn_plan)
@@ -400,20 +392,6 @@ class GamePlan:
                 "  Turn plan: " + " | ".join(f"T{step['turn']}: {step_text(step)}" for step in self.turn_plan)
             )
         lines.append(f"  Win condition(s): {wins}")
-        if self.route_state:
-            status = str(self.route_state.get("status") or "unknown")
-            pieces = self.route_state.get("pieces") or {}
-            detail = ", ".join(f"{name} ({zone})" for name, zone in pieces.items())
-            lines.append(f"  Live route: {status}" + (f" — {detail}" if detail else ""))
-        if self.engines:
-            in_play = [str(name) for name in self.engines.get("in_play") or []]
-            lost = [str(name) for name in self.engines.get("lost") or []]
-            if in_play:
-                lines.append("  Engines in play: " + ", ".join(in_play))
-            if lost:
-                lines.append("  Engines lost: " + ", ".join(lost))
-        if self.next_steps:
-            lines.append("  Next steps: " + " | ".join(str(step) for step in self.next_steps[:3]))
         if self.path:
             lines.append(f"  Path to win: {self.path}")
         if self.switch_if:
@@ -467,9 +445,6 @@ class GamePlan:
             "lessons": list(self.lessons),
             "updates": list(self.updates),
             "route_cards": list(self.route_cards),
-            "route_state": dict(self.route_state),
-            "engines": dict(self.engines),
-            "next_steps": list(self.next_steps),
         }
 
 
@@ -618,53 +593,29 @@ def _visible_card_names(state: dict) -> set[str]:
     return names
 
 
-def _piece_zone(name: str, state: dict) -> str:
-    """Where one of the plan's named cards sits right now ("gone" when nowhere).
+def _usable_card_names(state: dict) -> set[str]:
+    """Names of our cards we can actually use now or retrieve by standard means.
 
-    Ownership-aware on the battlefield (an opponent's copy of the same card is
-    not ours). Zones are checked in reachability order; exile is deliberately
-    last-tier — a card only in exile is inaccessible without a specific return
-    effect (the 00651f77 failure: Etali's Favor exiled, route kept alive six
-    turns).
+    Hand, our battlefield, the command zone and the graveyard count (graveyard
+    recursion is standard in this format); exile does not — a card only in
+    exile is inaccessible without a specific return effect, which is exactly
+    the 00651f77 failure (Etali's Favor exiled, route kept alive six turns).
     """
-    if not name or not isinstance(state, dict):
-        return "gone"
-    wanted = name.strip().lower()
-    if not wanted:
-        return "gone"
+    names: set[str] = set()
     seat = _local_seat(state)
-    for zone in ("battlefield", "hand", "command", "graveyard", "exile"):
+    for zone in ("hand", "battlefield", "graveyard", "command"):
         for card in state.get(zone) or []:
             if not isinstance(card, dict):
                 continue
-            card_name = str(card.get("name") or "").strip().lower()
-            if card_name != wanted:
+            name = str(card.get("name") or "").strip().lower()
+            if not name:
                 continue
             if zone == "battlefield" and seat is not None:
                 controller = card.get("controller_seat_id", card.get("owner_seat_id"))
                 if controller is not None and str(controller) != str(seat):
                     continue
-            return zone
-    return "gone"
-
-
-def _zone_card(name: str, state: dict, zone: str) -> dict | None:
-    """The first of our cards named ``name`` in ``zone``, or None."""
-    if not name or not isinstance(state, dict):
-        return None
-    wanted = name.strip().lower()
-    seat = _local_seat(state)
-    for card in state.get(zone) or []:
-        if not isinstance(card, dict):
-            continue
-        if str(card.get("name") or "").strip().lower() != wanted:
-            continue
-        if zone == "battlefield" and seat is not None:
-            controller = card.get("controller_seat_id", card.get("owner_seat_id"))
-            if controller is not None and str(controller) != str(seat):
-                continue
-        return card
-    return None
+            names.add(name)
+    return names
 
 
 def _actionable_card_names(state: dict) -> set[str]:
@@ -726,9 +677,7 @@ def switch_if_triggered(plan: GamePlan, state: dict, basis: dict | None = None) 
     except Exception:
         return ""
     their_creatures = [
-        c
-        for c in (live.get("creatures") or [])
-        if str(c.get("owner_seat_id", "")) != str(live.get("local_seat_id"))
+        c for c in (live.get("creatures") or []) if str(c.get("owner_seat_id", "")) != str(live.get("local_seat_id"))
     ]
     our_life = opp_life = None
     for player in state.get("players") or []:
@@ -754,12 +703,7 @@ def switch_if_triggered(plan: GamePlan, state: dict, basis: dict | None = None) 
         if "life" in text or "clock" in text:
             match = re.search(r"\b(\d+)\b", text)
             threshold = int(match.group(1)) if match else None
-            if (
-                threshold is not None
-                and "opponent" in text
-                and opp_life is not None
-                and opp_life <= threshold
-            ):
+            if threshold is not None and "opponent" in text and opp_life is not None and opp_life <= threshold:
                 return clause
             if threshold is not None and "we" in text and our_life is not None and our_life <= threshold:
                 return clause
@@ -784,7 +728,9 @@ def switch_if_triggered(plan: GamePlan, state: dict, basis: dict | None = None) 
             continue
         destroyed = {
             word.strip(",.;:").lower()
-            for word in re.findall(r"([A-Z][a-zA-Z'’-]+(?:\s+[A-Z][a-zA-Z'’-]+)*)\s+destroyed", clause)
+            for word in re.findall(
+                r"([A-Z][a-zA-Z'’-]+(?:\s+[A-Z][a-zA-Z'’-]+)*)\s+destroyed", clause
+            )
         }
         actionable = _actionable_card_names(state)
         on_board = _battlefield_names(state)
@@ -802,170 +748,31 @@ def switch_if_triggered(plan: GamePlan, state: dict, basis: dict | None = None) 
     return ""
 
 
-# Valid board roles (mirrors board_assessment.ROLES; kept local to avoid an
-# import cycle at module load).
-_ROLE_WORDS = frozenset({"aggressor", "defender", "control", "race"})
-
-
-def _role_word(value: Any) -> str:
-    """A valid board role word, or "" when the assessment is missing/invalid.
-
-    A failed board assessment must never surface as a literal "none" role and
-    overwrite a valid one.
-    """
-    role = str(value if isinstance(value, str) else "").strip().lower()
-    return role if role in _ROLE_WORDS else ""
-
-
 def win_route_lost(plan: GamePlan, state: dict) -> bool:
-    """True when no route card backing the win conditions is reachable.
+    """True when every route card backing the win conditions is unusable.
 
     Grounded in 2026-11-10 00651f77: the plan kept "win with Etali's Favor"
     for six turns after the Favor had been exiled. A card only in exile is
     inaccessible (no standard way back), so it no longer keeps the route
-    alive. A card in the graveyard keeps the route only when it can actually
-    come back — its own rules text carries a recursion mechanic (retrace,
-    flashback, embalm, ...) or the plan itself states a recursion line — not
-    merely because "graveyard recursion is standard".
+    alive; a card in the graveyard does (graveyard recursion is standard).
     """
     routes = [name for name in (plan.route_cards or []) if name]
-    if not routes or not isinstance(state, dict) or not state:
+    if not routes or not state:
         return False
-    for route in routes:
-        zone = _piece_zone(route, state)
-        if zone in ("battlefield", "hand", "command"):
-            return False
-        if zone == "graveyard" and _graveyard_recursion_usable(plan, _zone_card(route, state, "graveyard")):
-            return False
-    return True
-
-
-# Mechanics that bring a specific card back out of our graveyard (generic
-# rules-text anchors, not card names).
-_GRAVEYARD_RECURSION_KEYWORDS = (
-    "retrace",
-    "flashback",
-    "embalm",
-    "eternalize",
-    "escape",
-    "jump-start",
-    "haunt",
-    "undying",
-    "persist",
-    "scavenge",
-)
-
-
-def _graveyard_recursion_usable(plan: GamePlan, card: dict | None) -> bool:
-    """True when a route card sitting in our graveyard can realistically come back.
-
-    Either the card's own rules text carries a recursion mechanic, or the plan
-    itself states a recursion line ("recur the ... from the graveyard").
-    """
-    text = ""
-    if isinstance(card, dict):
-        text = str(card.get("oracle_text") or card.get("rules_text") or "").lower()
-    if any(keyword in text for keyword in _GRAVEYARD_RECURSION_KEYWORDS):
-        return True
-    if re.search(r"returns?\b.{0,60}\bfrom\b.{0,30}\bgraveyard\b.{0,40}\bto\b", text):
-        return True
-    plan_text = "; ".join(
-        str(part)
-        for part in [*plan.win_conditions, plan.path, plan.develop_next, *plan.active_mechanisms]
-        if part
-    ).lower()
-    return bool(re.search(r"\b(?:recur|recursion|retrace)\b|\breturn\b[^.;]{0,50}\bgraveyard\b", plan_text))
+    usable = _usable_card_names(state)
+    return all(route.lower() not in usable for route in routes)
 
 
 def _route_cards_from_state(plan: GamePlan, state: dict) -> list[str]:
-    """Names from the win conditions/path that are visible right now.
-
-    Anchors each visible card name against the plan text with word boundaries
-    instead of scanning greedy n-gram chunks — chunking misaligned word
-    boundaries on real win-condition prose ("...trample from Etali's Favor
-    (87300)...") and never produced "etali's favor" as a candidate.
-    """
+    """Names from the win conditions/path that are visible right now."""
     visible = _visible_card_names(state)
-    if not visible:
-        return []
-    text = (
-        "; ".join(str(part) for part in [*plan.win_conditions, plan.path] if part)
-        .lower()
-        .replace("\u2019", "'")
-    )
     routes: list[str] = []
-    for name in sorted(visible):
-        if len(name) < 3 or name in _ROUTE_STOPWORDS:
-            continue
-        pattern = r"(?<![a-z0-9])" + re.escape(name.replace("\u2019", "'")) + r"(?:'s)?(?![a-z0-9])"
-        if re.search(pattern, text):
-            routes.append(name)
-    routes.sort(key=text.find)
+    for text in [*plan.win_conditions, plan.path]:
+        for name in re.findall(r"[A-Za-z][A-Za-z'’-]+(?:\s+[A-Za-z][A-Za-z'’-]+){0,3}", str(text)):
+            key = name.strip().lower()
+            if key in visible and key not in routes and key not in _ROUTE_STOPWORDS:
+                routes.append(key)
     return routes
-
-
-def compute_upkeep(plan: GamePlan, state: dict) -> dict[str, Any]:
-    """The structured upkeep snapshot (E5a), recomputed from the live board.
-
-    Returns ``{"route_state": ..., "engines": ..., "next_steps": ...}``:
-    where each route card sits and whether the win route is still live, which
-    plan-committed engine pieces are in play or lost, and the upcoming
-    turn-plan steps. Code-owned — never written by the model — and honest on
-    malformed states (empty/unknown rather than guessed).
-    """
-    turn = 0
-    if isinstance(state, dict):
-        turn_info = state.get("turn")
-        if isinstance(turn_info, dict):
-            try:
-                turn = int(turn_info.get("turn_number") or 0)
-            except (TypeError, ValueError):
-                turn = 0
-    pieces: dict[str, str] = {}
-    for route in plan.route_cards:
-        name = str(route).strip().lower()
-        if name:
-            pieces[name] = _piece_zone(name, state)
-    status = "unknown"
-    if pieces:
-        status = "lost" if win_route_lost(plan, state) else "live"
-    engines_in_play: list[str] = []
-    engines_lost: list[str] = []
-    for name in _plan_engine_names(plan):
-        zone = _piece_zone(name, state)
-        if zone == "battlefield":
-            engines_in_play.append(name)
-        elif zone in ("gone", "exile", "graveyard"):
-            # Not contributing right now: destroyed (gone), exiled, or sitting
-            # in the graveyard awaiting recursion.
-            engines_lost.append(f"{name} ({zone})")
-    next_steps: list[str] = []
-    for step in plan.turn_plan:
-        step_turn = int(step.get("turn") or 0)
-        if step_turn and step_turn >= max(turn, 1):
-            next_steps.append(f"T{step_turn}: {step_text(step)}")
-        if len(next_steps) >= 3:
-            break
-    return {
-        "route_state": {"status": status, "pieces": pieces, "checked_turn": turn},
-        "engines": {"in_play": engines_in_play, "lost": engines_lost},
-        "next_steps": next_steps,
-    }
-
-
-def _plan_engine_names(plan: GamePlan) -> list[str]:
-    """Cards the plan committed to using: route cards plus upcoming planned casts."""
-    names: list[str] = []
-    for route in plan.route_cards:
-        name = str(route).strip().lower()
-        if name and name not in names:
-            names.append(name)
-    for step in plan.turn_plan:
-        for cast in step.get("cast") or []:
-            name = str(cast).strip().lower()
-            if name and name not in names:
-                names.append(name)
-    return names
 
 
 _ROUTE_STOPWORDS = frozenset(
@@ -4510,7 +4317,6 @@ class GamePlanManager:
                     "role": e.role,
                     "plan_formed": e.plan_formed,
                     "planned": e.planned,
-                    "upkeep": e.upkeep,
                     "did": list(e.did),
                     "start": dict(e.start),
                     "end": dict(e.end),
@@ -4591,42 +4397,11 @@ class GamePlanManager:
                 snapshot=snapshot_from_assessment(assessment),
                 role=str(getattr(assessment, "role", "") or ""),
                 plan=self._plan,
-                upkeep=self._upkeep_ledger_note(),
                 decisions_for_turn=decisions_cb,
                 mid_turn=mid_turn,
             )
         except Exception as error:
             logger.debug("match ledger skipped for turn %s: %s", turn, error)
-
-    def _upkeep_ledger_note(self) -> str:
-        """One-line structured-upkeep summary for the ledger entry (never raises).
-
-        Rendered from the code-owned upkeep snapshot — live route status and
-        piece zones, lost engine pieces, upcoming steps — so the per-turn
-        ledger shows what the plan still had to work with when the turn began.
-        """
-        try:
-            plan = self._plan
-            if plan is None:
-                return ""
-            bits: list[str] = []
-            route_state = plan.route_state or {}
-            status = str(route_state.get("status") or "")
-            pieces = route_state.get("pieces") or {}
-            if status:
-                detail = ", ".join(f"{name} {zone}" for name, zone in pieces.items())
-                bits.append(f"route {status}" + (f" ({detail})" if detail else ""))
-            engines = plan.engines or {}
-            lost = [str(name) for name in engines.get("lost") or []]
-            if lost:
-                bits.append("engines lost: " + ", ".join(lost))
-            steps = [str(step) for step in (plan.next_steps or [])[:2]]
-            if steps:
-                bits.append("next: " + " | ".join(steps))
-            return "; ".join(bits)
-        except Exception as error:
-            logger.debug("upkeep ledger note skipped: %s", error)
-            return ""
 
     _CALL_CLASS = "background.game_plan"
 
@@ -4772,10 +4547,6 @@ class GamePlanManager:
         """
         if self._plan is None or self._plan.is_empty():
             return
-        # Structured upkeep (E5a): recompute the live route / engine /
-        # next-step snapshot from the real board on every observation —
-        # code-owned, never written by the model.
-        self._refresh_upkeep_state_locked(game_state)
         key = self._strategic_key(game_state)
         seen = getattr(self, "_upkeep_key", None)
         self._upkeep_key = key
@@ -4788,32 +4559,11 @@ class GamePlanManager:
         self._record_commander_update((seen[1], seen[2]), (key[1], key[2]), turn)
         # Role flip: update the kept plan's role in place. The entry records
         # the flip as the assessment saw it (previous key role -> new), since
-        # validation may have left plan.role on a coarser value. A missing or
-        # failed assessment yields no role at all — never a literal "none"
-        # that would overwrite a valid role.
-        old_role = _role_word(seen[0][0] if isinstance(seen[0], tuple) else seen[0])
-        new_role = _role_word(key[0][0] if isinstance(key[0], tuple) else key[0])
+        # validation may have left plan.role on a coarser value.
+        old_role = str(seen[0][0] if isinstance(seen[0], tuple) else seen[0]).strip().lower()
+        new_role = str(key[0][0] if isinstance(key[0], tuple) else key[0]).strip().lower()
         if new_role and new_role != old_role:
             self._apply_role_update(new_role, "board assessment", turn, old_role=old_role)
-
-    def _refresh_upkeep_state_locked(self, game_state: dict) -> None:
-        """Recompute the structured upkeep snapshot from the live board.
-
-        Caller holds the lock; advisory only, never raises. The snapshot is
-        derived purely from game state and the plan's own commitments — no
-        model call, no reform.
-        """
-        plan = self._plan
-        if plan is None:
-            return
-        try:
-            snapshot = compute_upkeep(plan, game_state)
-        except Exception as error:
-            logger.debug("plan upkeep snapshot skipped: %s", error)
-            return
-        plan.route_state = snapshot["route_state"]
-        plan.engines = snapshot["engines"]
-        plan.next_steps = snapshot["next_steps"]
 
     def _tricks(self) -> Any:
         """The opponent-trick table service, or None when it can't be had."""
@@ -5570,9 +5320,7 @@ class GamePlanManager:
             return "stale plan"
         return ""
 
-    def _apply_role_update(
-        self, new_role: str, reason: str, turn: int | None = None, old_role: str | None = None
-    ) -> None:
+    def _apply_role_update(self, new_role: str, reason: str, turn: int | None = None, old_role: str | None = None) -> None:
         """Flip the plan's role in place (E5): no reform, one logged update."""
         plan = self._plan
         if plan is None:
@@ -5591,9 +5339,7 @@ class GamePlanManager:
         plan.updates.append(entry[:160])
         logger.info("Game plan role updated in place: %s", entry)
 
-    def _record_commander_update(
-        self, old_command: tuple, new_command: tuple, turn: int | None = None
-    ) -> None:
+    def _record_commander_update(self, old_command: tuple, new_command: tuple, turn: int | None = None) -> None:
         """Log a commander-zone/cast change against the kept plan (E5).
 
         The commander entering or leaving the battlefield (zone identities) or

@@ -391,7 +391,10 @@ def test_no_supersede_on_our_turn_but_the_prompt_flags_the_late_plan(monkeypatch
             plan_threads[0].join(timeout=3)
     finally:
         gate.set()
-    assert "GamePlan for turn 10 predates changes on the opponent's board (Inspiring Overseer" in caplog.text
+    assert (
+        "GamePlan for turn 10 predates changes on the opponent's board (Inspiring Overseer"
+        in caplog.text
+    )
     block = mgr.strategy_block(deepcopy(late))
     assert "attack: Emberheart Challenger, Hired Claw" in block
     assert "written before the opponent's board changed" in block

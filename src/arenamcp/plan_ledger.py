@@ -59,7 +59,6 @@ class TurnEntry:
     plan_formed: int = 0
     planned: str = ""  # the plan's step text for this turn, "" when none
     planned_casts: list[str] = field(default_factory=list)
-    upkeep: str = ""  # structured upkeep snapshot at turn start (E5a), "" when none
     did: list[str] = field(default_factory=list)  # decision lines made during the turn
     start: dict[str, int] = field(default_factory=dict)
     end: dict[str, int] = field(default_factory=dict)
@@ -106,8 +105,6 @@ class TurnEntry:
             if self.planned_casts:
                 status = "executed" if not missed else ("partly executed" if made else "NOT executed")
                 parts.append(f"{status}" + (f" (missing {', '.join(missed)})" if missed else ""))
-        if self.upkeep:
-            parts.append(f"upkeep: {self.upkeep}")
         if self.did:
             parts.append("did: " + " | ".join(self.did[-6:]))
         elif self.ours:
@@ -142,7 +139,6 @@ class PlanLedger:
         snapshot: dict[str, int],
         role: str = "",
         plan: Any = None,
-        upkeep: str = "",
         decisions_for_turn: Callable[[int], list[str]] | None = None,
         mid_turn: bool = False,
     ) -> None:
@@ -160,7 +156,7 @@ class PlanLedger:
                 except Exception:  # the feed never blocks the ledger
                     pass
         start_snapshot = {} if (mid_turn and not self._entries) else dict(snapshot)
-        entry = TurnEntry(turn=turn, ours=ours, role=role, start=start_snapshot, upkeep=upkeep)
+        entry = TurnEntry(turn=turn, ours=ours, role=role, start=start_snapshot)
         step = plan.step_for(turn) if plan is not None and hasattr(plan, "step_for") else None
         if isinstance(step, dict) and ours:
             from arenamcp.game_plan import step_text
