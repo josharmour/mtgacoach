@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import os
 from typing import Any
 
 from PySide6.QtCore import QObject, QTimer, Signal
@@ -93,6 +94,10 @@ class CoachSession(QObject):
         self._last_concede: dict[str, Any] = {}
         self._start_options = {"autopilot": False, "dry_run": False, "afk": False}
         self._pending_restart: dict[str, bool] | None = None
+        # Snapshot handoff target for the NEXT engine start: (root, commit).
+        # Consumed by _finish_restart; set only when a reload plan decided to
+        # adopt a published snapshot at a safe checkpoint.
+        self._pending_snapshot_target: tuple[str, str] | None = None
         self._shutting_down = False
 
     @property
@@ -130,10 +135,15 @@ class CoachSession(QObject):
         afk: bool = False,
         *,
         engine_reload: bool = False,
-    ) -> None:
-        """Start the background coaching subprocess."""
+    ) -> bool:
+        """Start the background coaching subprocess.
+
+        Returns True when the process was started; False when it was skipped
+        or failed. Callers that must react to a failed snapshot adoption use
+        the return value to roll back to the previous root.
+        """
         if self.is_running or self._shutting_down:
-            return
+            return False
         self._start_options = {"autopilot": autopilot, "dry_run": dry_run, "afk": afk}
         self._set_startup_status(
             {
@@ -149,6 +159,7 @@ class CoachSession(QObject):
             self._process.start(autopilot=autopilot, dry_run=dry_run, afk=afk, engine_reload=engine_reload)
             self.started.emit()
             self.logEmitted.emit("✅ Coach process started.", "status")
+            return True
         except Exception as e:
             logger.error(f"Failed to start coach process: {e}")
             self._set_startup_status(
@@ -156,6 +167,7 @@ class CoachSession(QObject):
             )
             self.errorOccurred.emit(str(e))
             self.logEmitted.emit(f"❌ Failed to start coach process: {e}", "error")
+            return False
 
     def stop(self) -> None:
         """Stop the background coaching subprocess."""
@@ -207,7 +219,62 @@ class CoachSession(QObject):
         if options is None or self._shutting_down or self.is_running:
             return
         self._pending_restart = None
+        target = self._pending_snapshot_target
+        self._pending_snapshot_target = None
+        previous_root = os.environ.get("MTGACOACH_APP_ROOT", "")
+        previous_sha = os.environ.get("MTGACOACH_SNAPSHOT_SHA", "")
+        switched = False
+        if target is not None:
+            target_root, target_commit = target
+            # Established launcher handoff: the new engine starts from the
+            # adopted absolute versioned root. The UI process env follows so
+            # anything spawned from here (engine, TTS) stays on consistent
+            # versions; the UI itself keeps its launch-time code (old UI /
+            # new engine through the declared protocol).
+            os.environ["MTGACOACH_APP_ROOT"] = target_root
+            os.environ["MTGACOACH_SNAPSHOT_SHA"] = target_commit
+            switched = True
+        if self.start(**options, engine_reload=True):
+            return
+        if not switched:
+            return
+        # Adoption failed: roll back to the previous root so the current
+        # (previous) engine version stays usable. Never leave a half-switched
+        # environment behind.
+        logger.warning(
+            "Adopted snapshot %s failed to start; rolling back to %s",
+            os.environ.get("MTGACOACH_SNAPSHOT_SHA", "?")[:7],
+            previous_root or "(checkout)",
+        )
+        self.logEmitted.emit(
+            "New engine snapshot failed to start; rolling back to the previous version.",
+            "error",
+        )
+        if previous_root:
+            os.environ["MTGACOACH_APP_ROOT"] = previous_root
+        else:
+            os.environ.pop("MTGACOACH_APP_ROOT", None)
+        if previous_sha:
+            os.environ["MTGACOACH_SNAPSHOT_SHA"] = previous_sha
+        else:
+            os.environ.pop("MTGACOACH_SNAPSHOT_SHA", None)
         self.start(**options, engine_reload=True)
+
+    def _plan_snapshot_reload(self) -> Any:
+        """Consult published snapshots once, at this safe checkpoint.
+
+        Called only from the request_engine_reload boundary — after the engine
+        signalled it is between matches — never mid-decision.
+        """
+        from .runtime_snapshots import plan_engine_reload, read_pointer_once
+
+        current = os.environ.get("MTGACOACH_SNAPSHOT_SHA", "").strip() or None
+        try:
+            pointer = read_pointer_once()
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("Snapshot lookup failed; reloading the current root: %s", exc)
+            pointer = None
+        return plan_engine_reload(current, pointer)
 
     def send_command(self, command: str, *args: Any) -> None:
         """Send a JSON command to the coach subprocess."""
@@ -709,6 +776,27 @@ class CoachSession(QObject):
             # closing app, takes precedence: never a second engine.
             reason = str(event.get("reason") or "The engine asked to reload")
             if self._pending_restart is None and not self._shutting_down and self.is_running:
+                plan = self._plan_snapshot_reload()
+                if plan.action == "require_full_restart":
+                    # Visible, explicit: never silently reload into an
+                    # unknown/incompatible engine protocol. The current engine
+                    # keeps running; the user chooses Restart Coach.
+                    logger.warning("Engine reload deferred: %s", plan.reason)
+                    self.logEmitted.emit(plan.reason, "error")
+                    self._set_startup_status(
+                        {
+                            "phase": "restart_required",
+                            "message": plan.reason,
+                            "ready": True,
+                        }
+                    )
+                    return
+                if plan.action == "adopt":
+                    # Explicit latest-compatible-engine handoff: the new
+                    # engine starts from the published snapshot root.
+                    logger.info("Engine reload will adopt a newer snapshot: %s", plan.reason)
+                    self.logEmitted.emit(plan.reason, "status")
+                    self._pending_snapshot_target = (plan.target_root, plan.target_commit)
                 logger.info("Engine requested a reload: %s", reason)
                 self.logEmitted.emit(f"{reason}; reloading the engine between matches.", "status")
                 self.engineReloadRequested.emit(reason)

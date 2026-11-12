@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import threading
 from pathlib import Path
 
@@ -75,10 +76,12 @@ class CoachProcess(QObject):
                 args.append("--afk")
 
             src_dir = str(app_root / "src")
+            snapshot_sha = os.environ.get("MTGACOACH_SNAPSHOT_SHA", "").strip()
             self.last_error = (
                 f"Launching: {python_exe} ({python_source})\n"
                 f"Args: {' '.join(args)}\n"
                 f"WorkDir: {app_root}\n"
+                f"Snapshot: {snapshot_sha or '(checkout)'}\n"
                 f"PYTHONPATH: {'(isolated; installed package)' if packaged_runtime else src_dir}"
             )
 

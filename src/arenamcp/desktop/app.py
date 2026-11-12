@@ -277,7 +277,12 @@ def main() -> int:
         print(f"mtgacoach {__version__}")
         return 0
 
-    if checkout := os.environ.get("MTGACOACH_DEV_CHECKOUT"):
+    snapshot_sha = os.environ.get("MTGACOACH_SNAPSHOT_SHA", "").strip()
+    if snapshot_sha:
+        # Running from an immutable runtime snapshot: report the snapshot SHA,
+        # never the mutable checkout HEAD.
+        os.environ["MTGACOACH_BUILD_LABEL"] = f"snapshot ({snapshot_sha[:7]})"
+    elif checkout := os.environ.get("MTGACOACH_DEV_CHECKOUT"):
         # Refresh on Restart Coach too, which execs the desktop module directly.
         from .dev_source import source_revision
 

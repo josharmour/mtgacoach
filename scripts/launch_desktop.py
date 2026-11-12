@@ -39,6 +39,30 @@ def main() -> int:
     repo_root = Path(__file__).resolve().parent.parent
     src_dir = repo_root / "src"
 
+    # Bootstrap import: the snapshot resolver itself always comes from the
+    # checkout; everything the app imports afterwards may come from an
+    # immutable snapshot root (see docs/RUNTIME_SNAPSHOTS.md).
+    src_text = str(src_dir)
+    if src_text not in sys.path:
+        sys.path.insert(0, src_text)
+
+    selection_note = ""
+    try:
+        from arenamcp.desktop.runtime_snapshots import resolve_launch_selection
+
+        selection = resolve_launch_selection(repo_root)
+        if selection.snapshot_root is not None and selection.commit:
+            # One selection, read once: run from the absolute versioned root.
+            repo_root = selection.snapshot_root
+            src_dir = selection.snapshot_root / "src"
+            os.environ["MTGACOACH_SNAPSHOT_SHA"] = selection.commit
+            os.environ["MTGACOACH_SNAPSHOT_ROOT"] = str(selection.snapshot_root)
+            selection_note = f" snapshot={selection.commit[:7]}"
+        elif os.environ.get("MTGACOACH_SNAPSHOTS_DISABLE", "").strip():
+            selection_note = " snapshots=disabled"
+    except Exception as exc:  # snapshots must never block a launch
+        selection_note = f" snapshot_resolution_failed={exc}"
+
     os.chdir(repo_root)
     os.environ["MTGACOACH_APP_ROOT"] = str(repo_root)
     os.environ.setdefault("MTGACOACH_RUNTIME_ROOT", str(_runtime_root()))
@@ -52,6 +76,7 @@ def main() -> int:
         f" python={sys.executable}"
         f" repo_root={repo_root}"
         f" src_dir={src_dir}"
+        f"{selection_note}"
     )
 
     try:
