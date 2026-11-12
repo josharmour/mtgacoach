@@ -360,7 +360,8 @@ def _retarget_launcher_shebang(data: bytes, old_norm: str, promoted_python: str)
         body = line[:-1].decode("utf-8")[2:]
     except UnicodeDecodeError:
         return None
-    if body.startswith('"'):  # defensively support quoted interpreter paths
+    quoted = body.startswith('"')
+    if quoted:
         end_quote = body.find('"', 1)
         if end_quote == -1:
             return None
@@ -370,7 +371,14 @@ def _retarget_launcher_shebang(data: bytes, old_norm: str, promoted_python: str)
         interp_token, post_interp = (body, "") if space == -1 else (body[:space], body[space:])
     if os.path.normcase(interp_token) != old_norm:
         return None
-    new_line = f"#!{promoted_python}{post_interp}\n".encode()
+    # Re-emit with the launcher's own quoting discipline: a quoted interpreter
+    # stays quoted, and a promoted path that contains a space must gain quotes
+    # or the launcher would split it into interpreter + argument. Interpreter
+    # options travel in ``post_interp`` and are preserved verbatim.
+    new_interp = promoted_python
+    if quoted or " " in promoted_python:
+        new_interp = f'"{promoted_python}"'
+    new_line = f"#!{new_interp}{post_interp}\n".encode()
     return data[:shebang_idx] + new_line + data[zip_idx:]
 
 

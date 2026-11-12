@@ -409,6 +409,9 @@ def _embedded_launcher_interpreter(exe_bytes: bytes) -> tuple[str, str]:
     shebang_idx = exe_bytes.rfind(b"#!", 0, zip_idx)
     line = exe_bytes[shebang_idx:zip_idx].decode("utf-8")
     body = line[2:-1]  # strip '#!' and trailing newline
+    if body.startswith('"'):
+        end_quote = body.find('"', 1)
+        return body[: end_quote + 1], body[end_quote + 1 :]
     space = body.find(" ")
     interp, post = (body, "") if space == -1 else (body[:space], body[space:])
     return interp, post
@@ -461,6 +464,39 @@ def test_windows_exe_launchers_are_retargeted_to_promoted_python(tmp_path, monke
     # Launchers that never pointed at staging keep their exact bytes.
     assert (bin_dir / "foreign.exe").read_bytes() == foreign_before
     assert (bin_dir / "nozip.exe").read_bytes() == nozip_before
+
+
+def test_windows_spaced_profile_launcher_preserves_quoting_and_options(tmp_path, monkeypatch):
+    r"""A quoted spaced-path interpreter stays quoted after retargeting.
+
+    Reviewer-reproduced regression: pip authors launchers for spaced profile
+    paths as ``#!"C:\Users\Jane Doe\...\python.exe"`` and the retarget splice
+    re-emitted the promoted interpreter unquoted, splitting the path at the
+    space so the entrypoint died. Quoting must be preserved (and gained when a
+    path needs it) with interpreter options kept verbatim.
+    """
+    monkeypatch.setattr(dep_env, "_is_windows", lambda: True)
+    staging = tmp_path / "Jane Doe" / "staging"
+    promoted = tmp_path / "Jane Doe" / "promoted"
+    bin_dir = staging / "Scripts"
+    bin_dir.mkdir(parents=True)
+    (bin_dir / "python.exe").write_bytes(b"")
+
+    staging_python = str(bin_dir / "python.exe")
+    promoted_python = str(promoted / "Scripts" / "python.exe")
+    assert " " in staging_python  # the fixture must exercise a spaced path
+    payload = b"PK\x03\x04entry-point-zip-pip3"
+
+    quoted_before = _launcher_exe(f'"{staging_python}"', payload, post=" -E -s")
+    (bin_dir / "pip3.exe").write_bytes(quoted_before)
+
+    dep_env._repoint_entrypoint_shebangs(staging, promoted)
+
+    data = (bin_dir / "pip3.exe").read_bytes()
+    interp, post = _embedded_launcher_interpreter(data)
+    assert interp == f'"{promoted_python}"'
+    assert post == " -E -s"
+    assert data[data.rfind(b"PK\x03\x04") :] == payload
 
 
 def test_windows_long_runtime_root_redirects_dep_envs_to_short_user_storage(
