@@ -1,6 +1,12 @@
 {
  "_meta": {
-  "_provenance": "Trimmed from fable-nov evidence bundle nuitari-plan-consistency-20261112/turn9-turn11-decisions.json entry[1] state_snapshot.state; Hired Claw moved from stack to battlefield (it had resolved before the Strike decision)."
+  "provenance": "Verbatim packet.decisions[17].state_snapshot from bundle fe9d1f07-95fd-426c-87da-945b99e1e4dd.json.gz (turn-9 Lightning Strike decision, timestamp 1794452916.126736). No normalization or mutation.",
+  "match_id": "fe9d1f07-95fd-426c-87da-945b99e1e4dd",
+  "turn": 9,
+  "expected": {
+   "lethal_now": false,
+   "best_win_at": 2
+  }
  },
  "state": {
   "match_id": "fe9d1f07-95fd-426c-87da-945b99e1e4dd",
@@ -529,43 +535,6 @@
     ],
     "summoning_sickness": true,
     "base_grp_id": 93854
-   },
-   {
-    "instance_id": 337,
-    "grp_id": 91676,
-    "name": "Hired Claw",
-    "oracle_text": "Whenever you attack with one or more Lizards, this creature deals 1 damage to target opponent.\n{o1oR}: Put a +1/+1 counter on this creature. Activate only if an opponent lost life this turn and only once each turn.",
-    "type_line": "Creature \u2014 Lizard Mercenary",
-    "mana_cost": "{R}",
-    "owner_seat_id": 1,
-    "controller_seat_id": 1,
-    "power": 1,
-    "toughness": 2,
-    "is_tapped": false,
-    "turn_entered_battlefield": -1,
-    "is_attacking": false,
-    "is_blocking": false,
-    "card_types": [
-     "Creature"
-    ],
-    "subtypes": [
-     "Lizard",
-     "Mercenary"
-    ],
-    "object_kind": "CARD",
-    "counters": {},
-    "ability_grp_ids": [
-     174024,
-     174025
-    ],
-    "damaged_this_turn": false,
-    "class_level": 0,
-    "color_production": [],
-    "damage": 0,
-    "colors": [
-     "Red"
-    ],
-    "base_grp_id": 91676
    }
   ],
   "hand": [
@@ -738,7 +707,45 @@
     "base_grp_id": 87323
    }
   ],
-  "stack": [],
+  "stack": [
+   {
+    "instance_id": 337,
+    "grp_id": 91676,
+    "name": "Hired Claw",
+    "oracle_text": "Whenever you attack with one or more Lizards, this creature deals 1 damage to target opponent.\n{o1oR}: Put a +1/+1 counter on this creature. Activate only if an opponent lost life this turn and only once each turn.",
+    "type_line": "Creature \u2014 Lizard Mercenary",
+    "mana_cost": "{R}",
+    "owner_seat_id": 1,
+    "controller_seat_id": 1,
+    "power": 1,
+    "toughness": 2,
+    "is_tapped": false,
+    "turn_entered_battlefield": -1,
+    "is_attacking": false,
+    "is_blocking": false,
+    "card_types": [
+     "Creature"
+    ],
+    "subtypes": [
+     "Lizard",
+     "Mercenary"
+    ],
+    "object_kind": "CARD",
+    "counters": {},
+    "ability_grp_ids": [
+     174024,
+     174025
+    ],
+    "damaged_this_turn": false,
+    "class_level": 0,
+    "color_production": [],
+    "damage": 0,
+    "colors": [
+     "Red"
+    ],
+    "base_grp_id": 91676
+   }
+  ],
   "exile": [],
   "command": [],
   "local_seat_id": 1,

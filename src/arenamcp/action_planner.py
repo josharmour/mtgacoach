@@ -5296,6 +5296,7 @@ class ActionPlanner(_ActionLegalityMixin):
                 # creature, and nothing recorded the divergence).
                 if isinstance(trace, dict):
                     trace["targeting_fallback"] = picked
+                self._refresh_fallback_target_reasoning(decision, game_state, picked)
                 return picked
             return [DECLINE_DECISION]
         if decision.request_type == "SelectN":
@@ -7779,13 +7780,9 @@ class ActionPlanner(_ActionLegalityMixin):
         claim that WE kill them THIS turn counts (``_LETHAL_NOW`` without
         ``_LETHAL_LATER``); the decision memory keeps the original reasoning.
         """
-        # A pending cast has already left hand; its mode/targets may not yet
-        # be represented by board search. Absence of a winning line here is
-        # not evidence of nonlethal damage (#323, kicked Burst at two life).
-        if game_state.get("stack") or getattr(decision, "request_type", "") in {
-            "CastingTimeOptions",
-            "SelectTargets",
-        }:
+        # Target-selection and mode decisions mid-cast: the spell's targets
+        # are not chosen yet, so the board facts cannot score the cast.
+        if getattr(decision, "request_type", "") in {"CastingTimeOptions", "SelectTargets"}:
             return
         reasoning = self._last_decision_reasoning
         if not reasoning:
@@ -7802,6 +7799,28 @@ class ActionPlanner(_ActionLegalityMixin):
             return
         if facts is None:
             return
+        # A pending cast has already left hand; its mode/targets may not yet
+        # be represented by board search. Absence of a winning line here is
+        # not evidence of nonlethal damage (#323, kicked Burst at two life).
+        # The assessment qualifies itself: while it flags our own stack
+        # objects or castable cards it cannot value (``pending`` /
+        # ``unmodelled``), or when the line search did not run cleanly, the
+        # facts stay silent. When it accounts for the whole stack (2026-11-11
+        # T9: Hired Claw resolving while Lightning Strike was decided —
+        # pending empty), its facts stand.
+        if game_state.get("stack"):
+            pending = getattr(facts, "pending", None)
+            unmodelled = getattr(facts, "unmodelled", None)
+            line_search = getattr(facts, "line_search", None)
+            if (
+                line_search is None
+                or getattr(line_search, "truncated", False)
+                or pending is None
+                or unmodelled is None
+                or pending
+                or unmodelled
+            ):
+                return
         best = facts.lines[0] if getattr(facts, "lines", None) else None
         if facts.lethal_now or facts.posture == "lethal" or (best is not None and best.win_at == 1):
             return
@@ -9017,6 +9036,45 @@ class ActionPlanner(_ActionLegalityMixin):
         trace = getattr(self, "_last_decision_trace", None)
         if isinstance(trace, dict):
             trace["target_override"] = reason
+
+    def _refresh_fallback_target_reasoning(
+        self, decision: Any, game_state: dict[str, Any], picked: list[str]
+    ) -> None:
+        """Record the fallback's actual target so later combat reasoning sees it.
+
+        A cancelled target step leaves no completed decision record; the
+        deterministic fallback's pick must still reach decision memory with
+        reasoning that names what was submitted, or the attack step inherits a
+        plan nobody played (2026-11-11 T9: the cast said "Strike to the face",
+        the fallback aimed at a creature, and nothing recorded the divergence).
+        """
+        cancel_event = getattr(self, "_decision_cancel_event", None)
+        if cancel_event is not None and cancel_event.is_set():
+            return  # superseded: the caller discards it, memory must not keep it
+        by_id = {str(option.option_id): option for option in decision.options}
+        names: list[str] = []
+        for option_id in picked:
+            label = str(getattr(by_id.get(str(option_id)), "label", "") or "")
+            if label and label not in names:
+                names.append(label)
+        if not names:
+            return
+        spell = str(getattr(decision, "source_label", "") or "").strip() or "the spell"
+        reasoning = f"Deterministic fallback: {spell} went to {' and '.join(names)}."
+        try:
+            self._memory().record(
+                game_state,
+                decision,
+                picked,
+                reasoning,
+                model_unavailable=getattr(self, "last_llm_failure", "") == "unavailable",
+            )
+        except Exception as error:  # memory never blocks a decision
+            logger.debug("decision memory skipped: %s", error)
+        trace = getattr(self, "_last_decision_trace", None)
+        if isinstance(trace, dict):
+            trace["target_refresh"] = reasoning
+        logger.warning("typed-decision: fallback target refresh: %s", reasoning)
 
     def _unpayable_ward_targets(self, decision: Any, game_state: dict[str, Any]) -> dict[str, str]:
         """Opposing target options whose ward we cannot pay, mapped to why.
