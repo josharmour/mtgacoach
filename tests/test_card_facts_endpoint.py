@@ -722,7 +722,7 @@ def test_admin_wanted_ranks_by_demand_then_recency(env):
         [
             (_hash(1), 2, 1000.0),  # same count as hash 2, older
             (_hash(2), 2, 2000.0),  # newer → ranks first among the twos
-            (_hash(3), 5, 500.0),   # highest count → first overall
+            (_hash(3), 5, 500.0),  # highest count → first overall
         ],
     )
     resp = client.get("/v1/card-facts/admin/wanted", headers=ADMIN)

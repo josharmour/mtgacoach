@@ -13,9 +13,13 @@ the loop between them:
      --all         every card in the Scryfall cache
 2. Skip what is already done: hashes whose store status is ``ok`` are never
    recompiled; hashes with a usable local record are uploaded without a
-   model call. A cached record is only trusted when its provenance checks
-   pass (stamped hash and printed facts match the requested card);
-   anything else is quarantined under ``<out>/quarantine/`` and recompiled.
+   model call. A cached record is only trusted when it survives the same
+   checks a fresh compile must pass: its stamped ``rules_hash`` and printed
+   facts must match the requested card, and the full F1 validator must find
+   no disagreement with the complete current printed card (body stats,
+   keywords, modes included). Anything else — a record for another card
+   under this filename, edited printed fields, a tampered body — is
+   quarantined under ``<out>/quarantine/`` and recompiled, never uploaded.
 3. Compile the rest two cards at a time through the F2 compiler
    (``compile_one``), writing each record under ``--out`` as it lands.
 4. Upload finished records in batches to POST /v1/card-facts/admin/upsert.
@@ -61,7 +65,11 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from arenamcp.card_facts.compiler import CardResolver, compile_one  # noqa: E402
+from arenamcp.card_facts.compiler import (  # noqa: E402
+    CardResolver,
+    _printed_from_scryfall_card,
+    compile_one,
+)
 from arenamcp.card_facts.hashing import rules_hash  # noqa: E402
 from arenamcp.card_facts.schema import (  # noqa: E402
     CardFacts,
@@ -69,6 +77,7 @@ from arenamcp.card_facts.schema import (  # noqa: E402
     from_json,
     to_json,
 )
+from arenamcp.card_facts.validate import validate  # noqa: E402
 
 # At most two compilations run at a time so the job shares the inference
 # engine politely instead of monopolising it.
@@ -168,14 +177,21 @@ def _raw_universe(scryfall: Any) -> Iterable[dict[str, Any]]:
     return index.values()
 
 
-def _printed_facts(scryfall: Any, raw: dict[str, Any]) -> dict[str, str]:
-    """Printed facts and hash exactly as the compiler will compute them."""
+def _printed_facts(scryfall: Any, raw: dict[str, Any]) -> dict[str, Any]:
+    """Printed facts, hash and the full printed card, as the compiler sees them.
+
+    The ``printed`` entry is the same :class:`PrintedCard` the F1 validator
+    and the F2 compiler work from (loyalty included, read from the cache's
+    raw index), so cached records can be held to exactly the standard a
+    fresh compile is held to.
+    """
     card = scryfall._card_dict_to_scryfall_card(raw)
     return {
         "name": card.name,
         "mana_cost": card.mana_cost,
         "type_line": card.type_line,
         "rules_hash": rules_hash(card.name, card.mana_cost, card.type_line, card.oracle_text),
+        "printed": _printed_from_scryfall_card(card, scryfall),
     }
 
 
@@ -189,9 +205,10 @@ def build_work_list(
     """Return ``(work_items, unresolved_hashes)`` for the chosen source.
 
     Each work item carries the printed facts (``name``, ``mana_cost``,
-    ``type_line``), the ``rules_hash`` and, for wanted mode, the
-    ``wanted_count``. Items are unique by rules_hash and keep their source
-    order (demand rank for --wanted).
+    ``type_line``), the ``rules_hash``, the full printed card (``printed``,
+    a :class:`~arenamcp.card_facts.validate.PrintedCard`) and, for wanted
+    mode, the ``wanted_count``. Items are unique by rules_hash and keep their
+    source order (demand rank for --wanted).
     """
     items_by_hash: dict[str, dict[str, Any]] = {}
     unresolved = 0
@@ -255,11 +272,15 @@ def cache_problems(record: CardFacts, item: dict[str, Any]) -> list[str]:
     """Ways a locally cached record fails to be about the requested card.
 
     A cache file named ``<hash>.json`` is only trusted for upload when it
-    really is that card's record: its stamped ``rules_hash`` must equal the
-    requested hash and its printed facts (name, mana cost, type line) must
-    match the Scryfall card the hash was computed from. Anything else — a
-    record for another card under this filename, edited printed fields — is
-    quarantined and recompiled rather than uploaded.
+    survives everything a fresh compile must survive: its stamped
+    ``rules_hash`` must equal the requested hash, its printed facts (name,
+    mana cost, type line) must match the Scryfall card the hash was computed
+    from, and the full F1 validator (:func:`arenamcp.card_facts.validate`)
+    must find no disagreement with the complete current printed card — body
+    stats, keyword abilities and modes included. Anything else — a record
+    for another card under this filename, edited printed fields, a tampered
+    body that still carries a valid hash — is quarantined and recompiled
+    rather than uploaded.
     """
     problems: list[str] = []
     if record.rules_hash != item["rules_hash"]:
@@ -271,6 +292,9 @@ def cache_problems(record: CardFacts, item: dict[str, Any]) -> list[str]:
         actual = getattr(record, field_name)
         if expected is not None and actual != expected:
             problems.append(f"record {field_name} {actual!r} does not match printed {expected!r}")
+    printed = item.get("printed")
+    if printed is not None:
+        problems.extend(validate(record, printed))
     return problems
 
 
@@ -320,9 +344,11 @@ def classify_work(
       not serve customers and are worth refreshing).
     * ``cached_records`` maps hash -> locally cached usable record for hashes
       that are neither ok on the server nor missing locally; these are
-      uploaded without a model call. A cached file is only trusted after its
-      provenance checks pass (stamped hash and printed facts match the
-      requested card); anything else is quarantined and recompiled.
+      uploaded without a model call. A cached file is only trusted after it
+      passes the same checks a fresh compile must pass — provenance (stamped
+      hash and printed facts match the requested card) and the full F1
+      validation against the current printed card; anything else is
+      quarantined and recompiled.
 
     Everything else in the work list needs compiling.
     """
@@ -343,8 +369,9 @@ def classify_work(
         if problems:
             quarantine_record(out_dir, digest)
             log(
-                f"warning: cached record for {item['name']} failed provenance checks "
-                f"({' ; '.join(problems)[:200]}); quarantined and requeued for compile"
+                f"warning: cached record for {item['name']} failed cache trust checks "
+                f"(provenance and full F1 validation: {' ; '.join(problems)[:200]}); "
+                "quarantined and requeued for compile"
             )
             continue
         cached[digest] = record

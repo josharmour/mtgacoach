@@ -3,8 +3,9 @@
 The card universe is the same real printed text the compiler tests use
 (test_card_facts_schema.PRINTED_CARDS — Scryfall oracle text fetched
 2026-11-10), so every rules_hash below is computed from real printed facts,
-and Fury's record comes from the schema suite's fury_record() with the hash
-verified in F1 (16de70d3…).  The server is a real localhost HTTP server
+and cached records are that suite's hand-built records, each proven there
+to validate clean against its printed card (Fury's hash verified in F1,
+16de70d3…).  The server is a real localhost HTTP server
 speaking the S1 admin routes; the compiler is faked at the compile_one
 boundary, so no model and no network beyond 127.0.0.1 is involved.
 """
@@ -23,7 +24,13 @@ import pytest
 from arenamcp.card_facts import rules_hash
 from arenamcp.card_facts.compiler import CompileResult
 from arenamcp.card_facts.schema import CardFacts, to_json
-from test_card_facts_schema import PRINTED_CARDS
+from test_card_facts_schema import (
+    PRINTED_CARDS,
+    chrome_mox_record,
+    fury_record,
+    gemstone_caverns_record,
+    minsc_boo_record,
+)
 
 TOOL_PATH = Path(__file__).resolve().parents[1] / "tools" / "ingest_card_facts.py"
 
@@ -174,15 +181,22 @@ def _expected_hash(name: str) -> str:
     return rules_hash(card.name, card.mana_cost, card.type_line, card.oracle_text)
 
 
+# The schema suite's hand-built records: each one that suite proves validates
+# clean against its printed card, so a cached copy is exactly what a real F2
+# compile of that card would have left behind.
+_RECORD_BUILDERS = {
+    "Fury": fury_record,
+    "Minsc & Boo, Timeless Heroes": minsc_boo_record,
+    "Chrome Mox": chrome_mox_record,
+    "Gemstone Caverns": gemstone_caverns_record,
+}
+
+
 def _compiled_record(name: str, confidence="high") -> CardFacts:
-    card = PRINTED_CARDS[name]
-    return CardFacts(
-        name=name,
-        rules_hash=_expected_hash(name),
-        type_line=card.type_line,
-        mana_cost=card.mana_cost,
-        confidence=confidence,
-    )
+    record = _RECORD_BUILDERS[name]()
+    record.rules_hash = _expected_hash(name)
+    record.confidence = confidence
+    return record
 
 
 def _all_ok() -> dict[str, str]:
@@ -463,6 +477,47 @@ def test_quarantines_cached_record_whose_filename_hash_holds_another_card(
     # And the real Fury record now lives under Fury's hash.
     fresh = json.loads((out / f"{fury_hash}.json").read_text())
     assert fresh["name"] == "Fury"
+
+
+def test_quarantines_cached_record_whose_body_disagrees_with_the_printed_card(
+    ingest, server, monkeypatch, tmp_path
+):
+    """Review case: same current hash/name/mana/type Fury with power 99
+    fails validate but was uploaded ok.
+
+    A cached record whose body contradicts the printed card must not be
+    trusted just because its hash and printed facts still match: the full
+    F1 validation against the current printed card catches the tampered
+    body, the file is quarantined, Fury is recompiled, and the store only
+    ever sees a body that agrees with the printed card.
+    """
+    out = tmp_path / "r"
+    out.mkdir()
+    fury_hash = _expected_hash("Fury")
+    tampered = _compiled_record("Fury")
+    tampered.body.power = "99"
+    (out / f"{fury_hash}.json").write_text(to_json(tampered))
+
+    compiled: list[str] = []
+
+    def fake(identifier, resolver, backend):
+        compiled.append(identifier)
+        return CompileResult(
+            identifier=str(identifier),
+            name=identifier,
+            rules_hash=_expected_hash(identifier),
+            status="compiled",
+            record=_compiled_record(identifier),
+        )
+
+    code = _run(ingest, server, ["--set", "neo", "--out", str(out)], monkeypatch, fake=fake)
+    assert code == 0
+    assert "Fury" in compiled, "the invalid-body cache entry must be recompiled"
+    assert server.statuses() == _all_ok()
+    stored = server.store[fury_hash]["record"]
+    assert stored["body"]["power"] == "3", "the tampered body must never reach the store"
+    quarantined = json.loads((out / "quarantine" / f"{fury_hash}.json").read_text())
+    assert quarantined["body"]["power"] == "99"
 
 
 def test_drain_deadline_abandons_wedged_compile_and_exits_promptly(ingest, server, monkeypatch, tmp_path):
