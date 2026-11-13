@@ -20,9 +20,11 @@ import pytest
 from arenamcp.action_planner import ActionPlanner, SecondLookError
 from arenamcp.cast_premises import (
     _classify_haste_clause,
+    _entry_effect_claims,
     _self_attack_assertions,
     cast_premise_concerns,
 )
+from arenamcp.claim_language import negated_claim
 from arenamcp.decisions import decision_from_dict
 from arenamcp.game_plan import decision_claim_notes
 
@@ -761,3 +763,99 @@ def test_self_attack_assertion_subject_action_time_matrix(name, reasoning, expec
     }[name]
     assertions = _self_attack_assertions(card_name, reasoning, case["state"])
     assert bool(assertions) is expected
+
+
+# --- review round 6: clause negation in revised answers ----------------------
+
+ROUND5_REVISED_ANSWERS = [
+    "Casting Optimistic Scavenger does not immediately put a counter on Veteran Survivor.",
+    "Casting Optimistic Scavenger first puts no counters on Veteran Survivor.",
+]
+
+
+@pytest.mark.parametrize("reasoning", ROUND5_REVISED_ANSWERS)
+def test_true_negation_revisions_raise_no_concern(reasoning):
+    """The exact round-5 repro: a corrected answer that properly DENIES the
+    premise must not be treated as asserting it. Treating the denial as a
+    claim would reject the very revision that fixed the false premise."""
+    case = CASES["optimistic_scavenger_t16"]
+    assert _entry_effect_claims("Optimistic Scavenger", reasoning) == []
+    assert (
+        cast_premise_concerns(
+            _decision("optimistic_scavenger_t16"),
+            case["state"],
+            case["chosen_option_ids"],
+            reasoning,
+        )
+        == []
+    )
+
+
+@pytest.mark.parametrize("reasoning", ROUND5_REVISED_ANSWERS)
+def test_negated_revision_boundary_accepts_correction_on_first_ask(monkeypatch, reasoning):
+    """Decision boundary: the corrected (denying) answer stands on the first
+    ask — no SECOND LOOK, no fallback, no failure signal."""
+    case = CASES["optimistic_scavenger_t16"]
+    decision, _ = _concerns_for(case)
+    backend = Mock()
+    calls = []
+
+    def complete(*args, **kwargs):
+        calls.append(args[1])
+        return json.dumps(
+            {
+                "option_ids": case["chosen_option_ids"],
+                "reasoning": reasoning,
+            }
+        )
+
+    backend.complete.side_effect = complete
+    planner = ActionPlanner(backend, separate_strategy_planning=True)
+    monkeypatch.setattr(planner, "_sized_budget", lambda *args: 1.0)
+    assert planner.plan_decision_options(decision, case["state"]) == case["chosen_option_ids"]
+    assert len(calls) == 1
+    assert "SECOND LOOK" not in calls[0]
+    assert not planner.last_llm_failure
+
+
+def test_ambiguous_denial_scope_stays_unknown():
+    """Ambiguous negation scope ("may not put") is not a positive assertion;
+    the detector abstains instead of refuting either reading."""
+    reasoning = "Casting Optimistic Scavenger may not put a counter on Veteran Survivor."
+    case = CASES["optimistic_scavenger_t16"]
+    assert _entry_effect_claims("Optimistic Scavenger", reasoning) == []
+    assert (
+        cast_premise_concerns(
+            _decision("optimistic_scavenger_t16"),
+            case["state"],
+            case["chosen_option_ids"],
+            reasoning,
+        )
+        == []
+    )
+
+
+def test_negation_scope_resets_at_statement_break():
+    """Precision guard: a denial in an earlier clause does not silence a
+    positive assertion after a statement break — the counter claim in the
+    second clause is still refuted when nothing supports it."""
+    reasoning = "Casting Optimistic Scavenger does not draw a card; it puts a counter on Veteran Survivor."
+    case = CASES["optimistic_scavenger_t16"]
+    concerns = cast_premise_concerns(
+        _decision("optimistic_scavenger_t16"),
+        case["state"],
+        case["chosen_option_ids"],
+        reasoning,
+    )
+    assert len(concerns) == 1
+    assert "no enters-the-battlefield or when-you-cast ability" in concerns[0]
+
+
+def test_negated_claim_unit_scope_semantics():
+    """Unit precision behind the gate: denial cues inside the claim clause
+    abstain; a cue before a statement break does not leak into the next."""
+    assert negated_claim("casting x does not put a counter", 0, 30) is True
+    assert negated_claim("casting x puts no counters", 0, 25) is True
+    assert negated_claim("casting x puts a counter", 0, 23) is False
+    # Statement break resets scope: the second clause asserts positively.
+    assert negated_claim("casting x does not draw; it puts a counter", 0, 39) is False

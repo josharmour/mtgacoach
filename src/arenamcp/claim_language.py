@@ -20,3 +20,28 @@ def conditional_claim(text: str, subject_start: int, claim_end: int) -> bool:
         return True
     after = re.split(_STATEMENT_BREAK, text[claim_end:])[0]
     return bool(re.match(r"\s*,?\s*(?:only\s+)?" + _CONDITION, after))
+
+
+_NEGATION_CUE = re.compile(r"\b(?:not|n't|never|without|neither|nor|no)\b")
+
+
+def negated_claim(text: str, subject_start: int, claim_end: int) -> bool:
+    """A denied effect is not an assertion that it happens.
+
+    Conservative counterpart to conditional_claim: when the clause carrying
+    the claim denies the effect ("does not immediately put", "puts no
+    counters") — or the denial scope is ambiguous — there is no positive
+    assertion left to refute, so the caller must abstain. The cue must sit
+    in the same clause as the claim (statement and contrastive breaks reset
+    scope), so "does not draw; it puts a counter" still asserts the counter.
+    A cue governing some other word in the clause ("no doubt scaling it")
+    also abstains — a missed detection is the safe direction.
+    """
+    if claim_end <= subject_start:
+        return False
+    clause_start = subject_start
+    for match in re.finditer(_STATEMENT_BREAK, text[:claim_end]):
+        if match.end() > subject_start:
+            clause_start = match.end()
+            break
+    return bool(_NEGATION_CUE.search(text[clause_start:claim_end]))

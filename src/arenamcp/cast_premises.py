@@ -17,7 +17,7 @@ being cast (evidence /home/joshu/fable-nov-evidence/autoplay-false-premise-
 These concerns surface such claims BEFORE the pick is final so the second
 look can re-evaluate the choice itself instead of rewriting rationale text.
 
-Conservatism contract (review rounds 2–4):
+Conservatism contract (review rounds 2–6):
 
 - A concern is raised only when impossibility is POSITIVELY established:
   the cast card has no own entry/cast ability AND every visible battlefield
@@ -71,11 +71,18 @@ Conservatism contract (review rounds 2–4):
     ("attacks into us");
   * time: an explicit immediacy marker beside the verb and no future or
     conditional timing in the same local window.
+- A denied effect is not an assertion (review round 6): a corrected answer
+  may properly NEGATE the premise ("does not immediately put a counter",
+  "first puts no counters"); treating that denial as a claim would reject
+  the very revision that fixed the false premise. The denial cue must sit
+  in the same clause as the effect verb (statement/contrastive breaks reset
+  scope), and ambiguous denial scope ("may not put") abstains like any
+  other unknown — a missed detection is the safe direction.
 """
 
 import re
 
-from arenamcp.claim_language import conditional_claim
+from arenamcp.claim_language import conditional_claim, negated_claim
 from arenamcp.game_plan import _is_creature_card
 from arenamcp.play_safety import find_source
 
@@ -215,6 +222,13 @@ def _entry_effect_claims(name: str, reasoning: str) -> list[str]:
         # A conditional framing ("when an enchantment enters it puts a counter")
         # asserts a scheduled trigger, not an immediate-on-cast effect.
         if conditional_claim(low, effect.start(), effect.end()):
+            continue
+        # A denied effect is not an assertion (review round 6): a corrected
+        # answer may properly negate the premise ("does not immediately put
+        # a counter", "first puts no counters"); treating that denial as a
+        # claim would reject the correction. Ambiguous denial scope also
+        # abstains — a concern requires a positively asserted effect.
+        if negated_claim(low, linked.start(), effect.end()):
             continue
         claims.append(sentence)
     return claims
