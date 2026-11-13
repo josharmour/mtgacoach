@@ -772,8 +772,18 @@ ROUND5_REVISED_ANSWERS = [
     "Casting Optimistic Scavenger first puts no counters on Veteran Survivor.",
 ]
 
+# Review round 7: contracted denials. The round-6 cue regex anchored \b
+# before "n't", which can never match inside "doesn't" (the n follows the
+# word char "s"), so a correctly denying revision was still refuted. Both
+# the ASCII and typographic apostrophe forms must abstain.
+CONTRACTED_REVISED_ANSWERS = [
+    "Casting Optimistic Scavenger doesn't immediately put a counter on Veteran Survivor.",
+    "Casting Optimistic Scavenger doesn\u2019t immediately put a counter on Veteran Survivor.",
+    "Casting Optimistic Scavenger won't put a counter on Veteran Survivor this turn.",
+]
 
-@pytest.mark.parametrize("reasoning", ROUND5_REVISED_ANSWERS)
+
+@pytest.mark.parametrize("reasoning", ROUND5_REVISED_ANSWERS + CONTRACTED_REVISED_ANSWERS)
 def test_true_negation_revisions_raise_no_concern(reasoning):
     """The exact round-5 repro: a corrected answer that properly DENIES the
     premise must not be treated as asserting it. Treating the denial as a
@@ -791,7 +801,7 @@ def test_true_negation_revisions_raise_no_concern(reasoning):
     )
 
 
-@pytest.mark.parametrize("reasoning", ROUND5_REVISED_ANSWERS)
+@pytest.mark.parametrize("reasoning", ROUND5_REVISED_ANSWERS + CONTRACTED_REVISED_ANSWERS)
 def test_negated_revision_boundary_accepts_correction_on_first_ask(monkeypatch, reasoning):
     """Decision boundary: the corrected (denying) answer stands on the first
     ask — no SECOND LOOK, no fallback, no failure signal."""
@@ -859,3 +869,33 @@ def test_negated_claim_unit_scope_semantics():
     assert negated_claim("casting x puts a counter", 0, 23) is False
     # Statement break resets scope: the second clause asserts positively.
     assert negated_claim("casting x does not draw; it puts a counter", 0, 39) is False
+
+
+def test_contracted_denial_cues_are_recognized():
+    """Review round 7 unit: the cue must match as a contraction suffix —
+    a leading \\b before "n't" can never fire inside "doesn't" because the
+    n follows the word char "s". ASCII and typographic apostrophes both
+    count; a bare "nt" fragment does not."""
+    assert negated_claim("casting x doesn't put a counter", 0, 29) is True
+    assert negated_claim("casting x doesn\u2019t put a counter", 0, 29) is True
+    assert negated_claim("casting x can't put a counter", 0, 27) is True
+    assert negated_claim("casting x won't put a counter", 0, 27) is True
+    # A word merely containing "nt" without an apostrophe is not a denial.
+    assert negated_claim("casting x wants to put a counter", 0, 31) is False
+
+
+def test_contracted_contrastive_positive_still_refuted():
+    """Precision guard mirroring the round-6 contrastive case: a contracted
+    denial in the first clause does not silence a positive assertion after
+    the statement break — "doesn't draw; it puts a counter" still asserts
+    the counter and is still refuted when nothing supports it."""
+    reasoning = "Casting Optimistic Scavenger doesn't draw a card; it puts a counter on Veteran Survivor."
+    case = CASES["optimistic_scavenger_t16"]
+    concerns = cast_premise_concerns(
+        _decision("optimistic_scavenger_t16"),
+        case["state"],
+        case["chosen_option_ids"],
+        reasoning,
+    )
+    assert len(concerns) == 1
+    assert "no enters-the-battlefield or when-you-cast ability" in concerns[0]
