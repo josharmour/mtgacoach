@@ -1074,3 +1074,78 @@ def test_conditional_attack_unit_scope_semantics():
     assert conditional_claim(text, 0, text.index("now") + 3) is True
     contrastive = "casting x attacks now; if we grant haste, even better"
     assert conditional_claim(contrastive, 0, contrastive.index("now") + 3) is False
+
+
+# Conditions may occur before, inside, or after the subject/effect span.
+# Exercise actual selected actions as well as the detector, not just prose.
+NONASSERTIVE_MATRIX = [
+    ("skyward_spider_t8", phrase)
+    for phrase in [
+        "If we grant it haste, Skyward Spider can attack this turn.",
+        "Skyward Spider, if we grant it haste, can attack this turn.",
+        "Skyward Spider can, if we grant it haste, attack this turn.",
+        "Skyward Spider can attack, if we grant it haste, this turn.",
+        "Skyward Spider can attack this turn if we grant it haste.",
+        "Skyward Spider, provided we grant haste, attacks now.",
+        "Skyward Spider (assuming it gains haste) attacks now.",
+        "Skyward Spider does not attack this turn.",
+        "Skyward Spider isn't attacking this turn.",
+        "Skyward Spider isn’t attacking this turn.",
+        "Skyward Spider will never attack this turn.",
+    ]
+] + [
+    ("optimistic_scavenger_t16", phrase)
+    for phrase in [
+        "If an enchantment enters, casting Optimistic Scavenger puts a counter on Veteran Survivor.",
+        "Casting Optimistic Scavenger, if an enchantment enters, immediately puts a counter on Veteran Survivor.",
+        "Casting Optimistic Scavenger immediately puts a counter on Veteran Survivor if an enchantment enters.",
+        "Casting Optimistic Scavenger does not immediately put a counter on Veteran Survivor.",
+        "Casting Optimistic Scavenger doesn't immediately put a counter on Veteran Survivor.",
+        "Casting Optimistic Scavenger doesn’t immediately put a counter on Veteran Survivor.",
+        "Casting Optimistic Scavenger immediately puts no counters on Veteran Survivor.",
+    ]
+]
+
+
+@pytest.mark.parametrize("case_name,reasoning", NONASSERTIVE_MATRIX)
+def test_nonassertive_matrix_preserves_selected_legal_development(monkeypatch, case_name, reasoning):
+    case = CASES[case_name]
+    decision = _decision(case_name)
+    assert cast_premise_concerns(decision, case["state"], case["chosen_option_ids"], reasoning) == []
+    backend = Mock()
+    backend.complete.return_value = json.dumps(
+        {"option_ids": case["chosen_option_ids"], "reasoning": reasoning}
+    )
+    planner = ActionPlanner(backend, separate_strategy_planning=True)
+    monkeypatch.setattr(planner, "_sized_budget", lambda *args: 1.0)
+    assert planner.plan_decision_options(decision, case["state"]) == case["chosen_option_ids"]
+    assert backend.complete.call_count == 1
+    assert not planner.last_llm_failure
+
+
+@pytest.mark.parametrize("boundary", [";", " but ", " however ", " yet ", "|", "\n"])
+def test_interposed_condition_does_not_cross_statement_boundary(boundary):
+    text = f"skyward spider, if granted haste, waits{boundary}it attacks now"
+    assert not conditional_claim(text, 0, len(text))
+
+
+@pytest.mark.parametrize("condition", ["if", "unless", "provided", "assuming"])
+def test_condition_anywhere_in_assertion_span_abstains(condition):
+    text = f"x, {condition} it gains haste, attacks now"
+    assert conditional_claim(text, 0, len(text))
+
+
+@pytest.mark.parametrize(
+    "tail",
+    [
+        "; if an enchantment enters, even better.",
+        ", so if an enchantment enters, even better.",
+        ", but if an enchantment enters, even better.",
+    ],
+)
+def test_counter_recipient_does_not_swallow_unrelated_condition(tail):
+    reasoning = "Casting Optimistic Scavenger immediately puts a counter on Veteran Survivor" + tail
+    case = CASES["optimistic_scavenger_t16"]
+    assert cast_premise_concerns(
+        _decision("optimistic_scavenger_t16"), case["state"], case["chosen_option_ids"], reasoning
+    )

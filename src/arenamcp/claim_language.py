@@ -15,7 +15,12 @@ def conditional_claim(text: str, subject_start: int, claim_end: int) -> bool:
     asserted keyword. Do not reuse the broader combat-condition vocabulary:
     "has reach because ..." is an assertion, not a hypothetical.
     """
-    before = re.split(_STATEMENT_BREAK, text[:subject_start])[-1]
+    # Conditions can precede the subject, interrupt subject/verb, or follow
+    # the effect. Inspect the whole current claim clause, not just text
+    # before the subject: "X, if granted haste, attacks now" is hypothetical.
+    # The last statement boundary still resets scope, including when the
+    # subject is linked to a later pronoun across that boundary.
+    before = re.split(_STATEMENT_BREAK, text[:claim_end])[-1]
     if re.search(_CONDITION, before):
         return True
     after = re.split(_STATEMENT_BREAK, text[claim_end:])[0]

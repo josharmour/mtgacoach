@@ -233,7 +233,16 @@ def _entry_effect_claims(name: str, reasoning: str) -> list[str]:
             continue
         # A conditional framing ("when an enchantment enters it puts a counter")
         # asserts a scheduled trigger, not an immediate-on-cast effect.
-        if conditional_claim(low, effect.start(), effect.end()):
+        # The counter's recipient is part of the claim, not a new clause.
+        # Include that bounded noun phrase so a trailing condition after
+        # "on Veteran Survivor" is handled just like one after "counter".
+        recipient = re.match(
+            r"\s+on\s+(?:(?!\b(?:if|unless|when|whenever|once|after|until|while"
+            r"|assuming|suppose|provided|and|so|but|however|yet)\b)[\w '’+-]){1,80}",
+            low[effect.end() :],
+        )
+        claim_end = effect.end() + (recipient.end() if recipient else 0)
+        if conditional_claim(low, effect.start(), claim_end):
             continue
         # A denied effect is not an assertion (review round 6): a corrected
         # answer may properly negate the premise ("does not immediately put
