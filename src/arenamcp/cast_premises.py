@@ -17,7 +17,7 @@ being cast (evidence /home/joshu/fable-nov-evidence/autoplay-false-premise-
 These concerns surface such claims BEFORE the pick is final so the second
 look can re-evaluate the choice itself instead of rewriting rationale text.
 
-Conservatism contract (review rounds 2–6):
+Conservatism contract (review rounds 2–8):
 
 - A concern is raised only when impossibility is POSITIVELY established:
   the cast card has no own entry/cast ability AND every visible battlefield
@@ -78,6 +78,11 @@ Conservatism contract (review rounds 2–6):
   in the same clause as the effect verb (statement/contrastive breaks reset
   scope), and ambiguous denial scope ("may not put") abstains like any
   other unknown — a missed detection is the safe direction.
+- The same denial discipline governs the attack gate (review round 8):
+  "it isn't attacking this turn" is a correction, not a self-attack
+  assertion, so the summoning-sick note it accompanies is not escalated.
+  Scope is clause-local exactly as above — "doesn't attack yet; it attacks
+  now" still asserts the attack.
 """
 
 import re
@@ -263,7 +268,11 @@ def _self_attack_assertions(name: str, reasoning: str, game_state: dict) -> list
       attacker ("discourages them from attacking"), or a defensive direction
       ("attacks into us");
     - time: an explicit immediacy marker beside the verb and no future or
-      conditional timing in the same local window.
+      conditional timing in the same local window;
+    - polarity: the attack is not denied in its clause (review round 8 —
+      "it isn't attacking this turn" is a correction, not an assertion;
+      clause-scoped via :func:`arenamcp.claim_language.negated_claim`, so a
+      statement break resets scope and a later positive assertion counts).
     """
     esc = re.escape(name.casefold())
     others = [
@@ -300,6 +309,16 @@ def _self_attack_assertions(name: str, reasoning: str, game_state: dict) -> list
                     break  # no explicit this-turn timing beside the verb
                 if _FUTURE_TIMING.search(bridge) or _FUTURE_TIMING.search(window):
                     break  # scheduled/conditional attack, not now
+                # A denied attack is not an assertion (review round 8): a
+                # corrected answer may properly negate the premise ("it
+                # isn't attacking this turn"); treating that denial as a
+                # claim would reject the very revision that fixed the false
+                # premise. Clause-scoped like the entry-effect gate: a
+                # statement break resets scope, so a positive assertion in
+                # a later clause ("doesn't attack yet; it attacks now")
+                # still counts, and ambiguous denial scope abstains.
+                if negated_claim(low, nm.start(), m.end()):
+                    continue
                 assertions.append(sentence)
                 break
             else:

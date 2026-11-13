@@ -899,3 +899,84 @@ def test_contracted_contrastive_positive_still_refuted():
     )
     assert len(concerns) == 1
     assert "no enters-the-battlefield or when-you-cast ability" in concerns[0]
+
+
+# --- review round 8: attack-branch negation -----------------------------------
+
+# Review round 7 rejection: rounds 6-7 taught the counter branch to abstain
+# on denials, but the attack branch still read "it isn't attacking this turn"
+# as a positive self-attack assertion — so a correctly denying revision of
+# the summoning-sick premise was re-asked (and eventually fallen back)
+# anyway. Both the contracted and spelled-out denials must abstain.
+ATTACK_DENIAL_REVISIONS = [
+    "Casting Skyward Spider is safe because it isn't attacking this turn.",
+    "Casting Skyward Spider is safe because it is not attacking this turn.",
+]
+
+
+@pytest.mark.parametrize("reasoning", ATTACK_DENIAL_REVISIONS)
+def test_attack_denial_revisions_are_not_self_attack_assertions(reasoning):
+    """A denied attack is not an assertion that it happens."""
+    case = CASES["skyward_spider_t8"]
+    assert _self_attack_assertions("Skyward Spider", reasoning, case["state"]) == []
+
+
+def test_round7_attack_denial_revision_raises_no_concern():
+    """The exact round-7 repro through the full detector: the pre-existing
+    validator still notes summoning sickness, but no premise concern is
+    raised, so the corrected pick is never re-asked over its own denial."""
+    reasoning = ATTACK_DENIAL_REVISIONS[0]
+    case = CASES["skyward_spider_t8"]
+    notes = decision_claim_notes(reasoning, case["state"], cast_ids={_cast_instance_id("skyward_spider_t8")})
+    assert notes and "summoning sick" in notes[0]
+    assert (
+        cast_premise_concerns(
+            _decision("skyward_spider_t8"),
+            case["state"],
+            case["chosen_option_ids"],
+            reasoning,
+        )
+        == []
+    )
+
+
+@pytest.mark.parametrize("reasoning", ATTACK_DENIAL_REVISIONS)
+def test_attack_denial_boundary_accepts_correction_on_first_ask(monkeypatch, reasoning):
+    """Decision boundary: the denying revision stands on the first ask —
+    no SECOND LOOK, no fallback, no failure signal."""
+    case = CASES["skyward_spider_t8"]
+    decision, _ = _concerns_for(case)
+    backend = Mock()
+    calls = []
+
+    def complete(*args, **kwargs):
+        calls.append(args[1])
+        return json.dumps(
+            {
+                "option_ids": case["chosen_option_ids"],
+                "reasoning": reasoning,
+            }
+        )
+
+    backend.complete.side_effect = complete
+    planner = ActionPlanner(backend, separate_strategy_planning=True)
+    monkeypatch.setattr(planner, "_sized_budget", lambda *args: 1.0)
+    assert planner.plan_decision_options(decision, case["state"]) == case["chosen_option_ids"]
+    assert len(calls) == 1
+    assert "SECOND LOOK" not in calls[0]
+    assert not planner.last_llm_failure
+
+
+@pytest.mark.parametrize(
+    "reasoning",
+    [
+        "Skyward Spider doesn't attack yet; it attacks now.",
+        "Skyward Spider does not attack yet; it attacks now.",
+    ],
+)
+def test_attack_denial_scope_resets_at_statement_break(reasoning):
+    """Precision guard mirroring the round-6/7 contrastive cases: a denial in
+    an earlier clause does not silence a positive self-attack assertion after
+    the statement break — the attack claim in the second clause still counts."""
+    case = CASES["skyward_spider_t8"]
+    assert _self_attack_assertions("Skyward Spider", reasoning, case["state"]) == [reasoning]
