@@ -33,7 +33,7 @@ def conditional_claim(text: str, subject_start: int, claim_end: int) -> bool:
 # only fires inside a genuine contraction (doesn't/can't/won't/isn't),
 # including the typographic apostrophe. Adding cues only widens denial
 # detection, which is the abstain (safe) direction.
-_NEGATION_CUE = re.compile(r"\b(?:not|never|without|neither|nor|no)\b|\wn['’]t\b")
+_NEGATION_CUE = re.compile(r"\b(?:not|cannot|never|without|neither|nor|no)\b|\wn['’]t\b")
 
 
 def negated_claim(text: str, subject_start: int, claim_end: int) -> bool:

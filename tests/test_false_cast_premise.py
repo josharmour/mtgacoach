@@ -1089,6 +1089,7 @@ NONASSERTIVE_MATRIX = [
         "Skyward Spider, provided we grant haste, attacks now.",
         "Skyward Spider (assuming it gains haste) attacks now.",
         "Skyward Spider does not attack this turn.",
+        "Skyward Spider cannot attack this turn.",
         "Skyward Spider isn't attacking this turn.",
         "Skyward Spider isn’t attacking this turn.",
         "Skyward Spider will never attack this turn.",
@@ -1100,6 +1101,7 @@ NONASSERTIVE_MATRIX = [
         "Casting Optimistic Scavenger, if an enchantment enters, immediately puts a counter on Veteran Survivor.",
         "Casting Optimistic Scavenger immediately puts a counter on Veteran Survivor if an enchantment enters.",
         "Casting Optimistic Scavenger does not immediately put a counter on Veteran Survivor.",
+        "Casting Optimistic Scavenger cannot immediately put a counter on Veteran Survivor.",
         "Casting Optimistic Scavenger doesn't immediately put a counter on Veteran Survivor.",
         "Casting Optimistic Scavenger doesn’t immediately put a counter on Veteran Survivor.",
         "Casting Optimistic Scavenger immediately puts no counters on Veteran Survivor.",
@@ -1149,3 +1151,9 @@ def test_counter_recipient_does_not_swallow_unrelated_condition(tail):
     assert cast_premise_concerns(
         _decision("optimistic_scavenger_t16"), case["state"], case["chosen_option_ids"], reasoning
     )
+
+
+def test_cannot_denial_does_not_hide_later_assertion():
+    text = "casting x cannot draw; it puts a counter"
+    assert not negated_claim(text, 0, len(text))
+    assert negated_claim("casting x cannot put a counter", 0, 30)
