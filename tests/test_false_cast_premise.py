@@ -24,7 +24,7 @@ from arenamcp.cast_premises import (
     _self_attack_assertions,
     cast_premise_concerns,
 )
-from arenamcp.claim_language import negated_claim
+from arenamcp.claim_language import conditional_claim, negated_claim
 from arenamcp.decisions import decision_from_dict
 from arenamcp.game_plan import decision_claim_notes
 
@@ -980,3 +980,97 @@ def test_attack_denial_scope_resets_at_statement_break(reasoning):
     the statement break — the attack claim in the second clause still counts."""
     case = CASES["skyward_spider_t8"]
     assert _self_attack_assertions("Skyward Spider", reasoning, case["state"]) == [reasoning]
+
+
+# --- review round 9: attack-branch conditionals --------------------------------
+
+# Review round 8 rejection: denials fixed, but the exact skyward_spider_t8
+# correct hypothetical "Casting Skyward Spider attacks now if we grant it
+# haste." still raised a sickness concern — the attack gate checked negation
+# but not conditionality, despite the documented conditional conservatism.
+# A conditional attack is a hypothesis about granted haste, not an assertion
+# that the attack happens.
+ATTACK_CONDITIONAL_REVISIONS = [
+    "Casting Skyward Spider attacks now if we grant it haste.",
+    "Casting Skyward Spider attacks now provided we grant it haste.",
+]
+
+
+@pytest.mark.parametrize("reasoning", ATTACK_CONDITIONAL_REVISIONS)
+def test_conditional_attack_revisions_are_not_self_attack_assertions(reasoning):
+    """A conditional attack is a hypothesis, not an assertion that it happens."""
+    case = CASES["skyward_spider_t8"]
+    assert _self_attack_assertions("Skyward Spider", reasoning, case["state"]) == []
+
+
+def test_round8_conditional_attack_revision_raises_no_concern():
+    """The exact round-8 repro through the full detector: the pre-existing
+    validator still notes summoning sickness, but no premise concern is
+    raised, so the hypothetical pick is never re-asked over its own
+    condition."""
+    reasoning = ATTACK_CONDITIONAL_REVISIONS[0]
+    case = CASES["skyward_spider_t8"]
+    notes = decision_claim_notes(reasoning, case["state"], cast_ids={_cast_instance_id("skyward_spider_t8")})
+    assert notes and "summoning sick" in notes[0]
+    assert (
+        cast_premise_concerns(
+            _decision("skyward_spider_t8"),
+            case["state"],
+            case["chosen_option_ids"],
+            reasoning,
+        )
+        == []
+    )
+
+
+@pytest.mark.parametrize("reasoning", ATTACK_CONDITIONAL_REVISIONS)
+def test_conditional_attack_boundary_accepts_correction_on_first_ask(monkeypatch, reasoning):
+    """Decision boundary: the hypothetical revision stands on the first ask —
+    no SECOND LOOK, no fallback, no failure signal."""
+    case = CASES["skyward_spider_t8"]
+    decision, _ = _concerns_for(case)
+    backend = Mock()
+    calls = []
+
+    def complete(*args, **kwargs):
+        calls.append(args[1])
+        return json.dumps(
+            {
+                "option_ids": case["chosen_option_ids"],
+                "reasoning": reasoning,
+            }
+        )
+
+    backend.complete.side_effect = complete
+    planner = ActionPlanner(backend, separate_strategy_planning=True)
+    monkeypatch.setattr(planner, "_sized_budget", lambda *args: 1.0)
+    assert planner.plan_decision_options(decision, case["state"]) == case["chosen_option_ids"]
+    assert len(calls) == 1
+    assert "SECOND LOOK" not in calls[0]
+    assert not planner.last_llm_failure
+
+
+def test_unconditional_attack_after_conditional_still_asserts():
+    """Control (review round 8 rejection): an unconditional false attack is
+    still flagged — a condition in a later clause does not soften the
+    assertion, because statement-break scope locality cuts both ways."""
+    reasoning = "Casting Skyward Spider attacks now; if we grant it haste, even better."
+    case = CASES["skyward_spider_t8"]
+    assert _self_attack_assertions("Skyward Spider", reasoning, case["state"]) == [reasoning]
+    concerns = cast_premise_concerns(
+        _decision("skyward_spider_t8"),
+        case["state"],
+        case["chosen_option_ids"],
+        reasoning,
+    )
+    assert len(concerns) == 1
+    assert "summoning sick" in concerns[0]
+
+
+def test_conditional_attack_unit_scope_semantics():
+    """Unit precision behind the gate: a trailing condition abstains; a
+    condition after a statement break does not soften the assertion."""
+    text = "casting x attacks now if we grant haste"
+    assert conditional_claim(text, 0, text.index("now") + 3) is True
+    contrastive = "casting x attacks now; if we grant haste, even better"
+    assert conditional_claim(contrastive, 0, contrastive.index("now") + 3) is False

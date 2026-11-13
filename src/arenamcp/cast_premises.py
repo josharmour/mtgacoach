@@ -83,6 +83,13 @@ Conservatism contract (review rounds 2–8):
   assertion, so the summoning-sick note it accompanies is not escalated.
   Scope is clause-local exactly as above — "doesn't attack yet; it attacks
   now" still asserts the attack.
+- A conditional attack is a hypothesis, not an assertion (review round 9):
+  "attacks now if we grant it haste" promises the attack only under a
+  granted condition, so the gate abstains via
+  :func:`arenamcp.claim_language.conditional_claim` with the same
+  clause-local scope — a condition after a statement break does not soften
+  an unconditional assertion ("attacks now; if we grant haste later, even
+  better" still asserts).
 """
 
 import re
@@ -272,7 +279,12 @@ def _self_attack_assertions(name: str, reasoning: str, game_state: dict) -> list
     - polarity: the attack is not denied in its clause (review round 8 —
       "it isn't attacking this turn" is a correction, not an assertion;
       clause-scoped via :func:`arenamcp.claim_language.negated_claim`, so a
-      statement break resets scope and a later positive assertion counts).
+      statement break resets scope and a later positive assertion counts);
+    - modality: the attack is not conditioned on something happening
+      (review round 9 — "attacks now if we grant it haste" is a hypothesis
+      about granted haste, clause-scoped via
+      :func:`arenamcp.claim_language.conditional_claim`, so a condition in
+      a later clause does not soften an unconditional assertion).
     """
     esc = re.escape(name.casefold())
     others = [
@@ -305,7 +317,8 @@ def _self_attack_assertions(name: str, reasoning: str, game_state: dict) -> list
                 window = low[m.end() : m.end() + 40]
                 if _DEFENSIVE_DIRECTION.match(window):
                     break  # "... attacks into us" is the opponent's action
-                if not _IMMEDIATE_TIME.search(window):
+                immediate = _IMMEDIATE_TIME.search(window)
+                if immediate is None:
                     break  # no explicit this-turn timing beside the verb
                 if _FUTURE_TIMING.search(bridge) or _FUTURE_TIMING.search(window):
                     break  # scheduled/conditional attack, not now
@@ -318,6 +331,17 @@ def _self_attack_assertions(name: str, reasoning: str, game_state: dict) -> list
                 # a later clause ("doesn't attack yet; it attacks now")
                 # still counts, and ambiguous denial scope abstains.
                 if negated_claim(low, nm.start(), m.end()):
+                    continue
+                # A conditional attack is a hypothesis, not an assertion
+                # (review round 9): "attacks now if we grant it haste"
+                # promises the attack only under a granted condition, so
+                # the gate abstains via claim_language.conditional_claim.
+                # The condition window extends to the end of the immediacy
+                # marker (the claim's tail), keeping the scope clause-local:
+                # a condition after a statement break does not soften an
+                # unconditional assertion ("attacks now; if we grant haste
+                # later, even better" still asserts).
+                if conditional_claim(low, nm.start(), m.end() + immediate.end()):
                     continue
                 assertions.append(sentence)
                 break
