@@ -1513,6 +1513,8 @@ class ActionPlanner(_ActionLegalityMixin):
         if arena_deadline is not None:
             model_deadline = min(model_deadline, arena_deadline)
 
+        declaration_admission = None
+
         def _complete(
             call_class: str = "decision.plan",
             effort: str | None = None,
@@ -1520,9 +1522,22 @@ class ActionPlanner(_ActionLegalityMixin):
             cancel_event: threading.Event | None = None,
         ) -> str:
             remaining = model_deadline - time.monotonic()
+            if declaration_admission is not None:
+                effort, admitted = declaration_admission.admit(
+                    now=time.monotonic(),
+                    degraded=llm_degraded(self._backend),
+                    plan_in_flight=not self._yield_background(),
+                    correction=declaration_admission.calls > 0,
+                )
+                effort = "high" if effort == "high" else None
+                remaining = min(remaining, admitted)
+                diag["pivotal_thinking"].update(
+                    calls=declaration_admission.calls, high_calls=declaration_admission.high_calls
+                )
             if remaining <= 0:
                 raise concurrent.futures.TimeoutError()
-            return self._call_llm(
+            previous_metrics = getattr(self._backend, "last_request_metrics", None)
+            answer = self._call_llm(
                 system_prompt,
                 user_message,
                 4096,
@@ -1532,6 +1547,23 @@ class ActionPlanner(_ActionLegalityMixin):
                 reasoning_effort=effort,
                 cancel_event=cancel_event,
             )
+            if declaration_admission is not None:
+                metrics = getattr(self._backend, "last_request_metrics", None)
+                usage = (
+                    metrics.get("reasoning_tokens")
+                    if isinstance(metrics, dict) and metrics is not previous_metrics
+                    else None
+                )
+                event = {
+                    "category": "pivotal"
+                    if declaration_admission.reasons or declaration_admission.high_calls
+                    else "routine",
+                    "reasoning_tokens": usage,
+                    "effort": effort or "low",
+                }
+                diag["pivotal_thinking"].setdefault("call_usage", []).append(event)
+                logger.info("E4 call metrics: %s", json.dumps(event, sort_keys=True))
+            return answer
 
         def _bounded_complete(call_class: str = "decision.plan") -> str:
             # A future timeout stops only the waiter. Cancel the underlying
@@ -1554,6 +1586,24 @@ class ActionPlanner(_ActionLegalityMixin):
         effort, effort_why = declaration_effort(game_state, effective_legal_actions)
         if self.separate_strategy_planning:
             effort = None
+        from arenamcp.selective_thinking import PivotalCallBudget, close_combat_reason, pivotal_enabled
+
+        if pivotal_enabled() and not self.separate_strategy_planning:
+            from arenamcp.board_assessment import assess
+
+            assessment = assess(game_state)
+            close = close_combat_reason(getattr(assessment, "line_search", None))
+            reasons = tuple(reason for reason in (effort_why, close) if reason)
+            declaration_admission = PivotalCallBudget(
+                deadline=model_deadline,
+                normal_seconds=min(self._timeout, 12.0),
+                pivotal_seconds=max(self._timeout, 12.0),
+                reasons=reasons,
+            )
+            diag["pivotal_thinking"] = {
+                "reasons": list(reasons),
+                "category": "pivotal" if reasons else "routine",
+            }
         if effort:
             logger.info("Declaration plan: high reasoning effort (%s)", effort_why)
             diag["effort"] = effort_why
@@ -1573,7 +1623,7 @@ class ActionPlanner(_ActionLegalityMixin):
                         ).actions
                     ),
                 )
-                if effort
+                if effort and declaration_admission is None
                 else _bounded_complete()
             )
             elapsed = (time.perf_counter() - start) * 1000
@@ -1763,6 +1813,11 @@ class ActionPlanner(_ActionLegalityMixin):
         # are reactive rather than strategic.
         self._maybe_capture_turn_intent(plan, game_state, current_turn)
 
+        if declaration_admission is not None:
+            diag["pivotal_thinking"]["category"] = (
+                "pivotal" if declaration_admission.reasons or declaration_admission.high_calls else "routine"
+            )
+            logger.info("E4 declaration metrics: %s", json.dumps(diag["pivotal_thinking"], sort_keys=True))
         logger.info(f"Planned {len(plan.actions)} actions: {plan.overall_strategy}")
         return plan
 
@@ -4538,6 +4593,14 @@ class ActionPlanner(_ActionLegalityMixin):
         decision, game_state = bind_offered_casts(decision, game_state)
         game_state = {**game_state, "_equipment_relay_costs": relay_costs}
         chosen = self._plan_decision_options(decision, game_state)
+        # An unavailable correction does not erase a per-decision exclusion.
+        # All later selection rewrites must see the same filtered menu.
+        had_options = bool(decision.options)
+        decision = self._without_rejected_outcomes(decision)
+        if had_options and not decision.options:
+            self._last_decision_option_ids = []
+            self._last_decision_trace.update(selected_ids=[], validated_ids=[])
+            return []
         from arenamcp.decision_consistency import consistent_action
         from arenamcp.removal_windows import invalid_removal_intent
         from arenamcp.stack_responses import protective_pass
@@ -4589,6 +4652,14 @@ class ActionPlanner(_ActionLegalityMixin):
                 reasoning=reason,
             )
             logger.info("Protection guard: %s", reason)
+        trace = getattr(self, "_last_decision_trace", None)
+        rejected = set(trace.get("outcome_rejected_ids") or []) if isinstance(trace, dict) else set()
+        if rejected.intersection(chosen):
+            chosen = ["pass"] if decision.find("pass") and decision.selection_is_valid(["pass"]) else []
+            self._last_decision_option_ids = chosen
+            self._last_decision_trace.update(
+                selected_ids=chosen, validated_ids=chosen, outcome_exclusion_guard=True
+            )
         # Bookkeeping that must survive a mid-planning request change: a
         # completed answer is exactly what an identical re-presented window
         # reuses (#226(b)). Damage reconciliation above reads confirmed events,
@@ -5396,7 +5467,13 @@ class ActionPlanner(_ActionLegalityMixin):
         if isinstance(trace, dict):
             trace["llm_failure"] = self.last_llm_failure
         if decision.request_type == "ActionsAvailable":
-            return self._sequence_sweep(decision, game_state, self._board_math_fallback(decision, game_state))
+            effective = self._without_rejected_outcomes(decision)
+            if not effective.options:
+                self._last_decision_trace.update(fallback="no_uncontradicted_option", validated_ids=[])
+                return []
+            return self._sequence_sweep(
+                effective, game_state, self._board_math_fallback(effective, game_state)
+            )
         if decision.request_type == "SelectTargets":
             picked = self.targeting_fallback_choice(decision, game_state)
             if picked == [DECLINE_DECISION]:
@@ -5458,6 +5535,16 @@ class ActionPlanner(_ActionLegalityMixin):
             return []
         return self.deterministic_option_pick(decision)
 
+    def _without_rejected_outcomes(self, decision: Any) -> Any:
+        """Per-decision exclusions survive timeouts and every fallback rewrite."""
+        from dataclasses import replace
+
+        trace = getattr(self, "_last_decision_trace", None)
+        rejected = set(trace.get("outcome_rejected_ids") or []) if isinstance(trace, dict) else set()
+        if not rejected:
+            return decision
+        return replace(decision, options=tuple(o for o in decision.options if o.option_id not in rejected))
+
     def _board_math_fallback(self, decision: Any, game_state: dict[str, Any]) -> list[str]:
         """The model gave no usable priority choice: the searched line's play, else land then board math.
 
@@ -5490,7 +5577,7 @@ class ActionPlanner(_ActionLegalityMixin):
             if filtered:
                 effective = replace(decision, options=filtered)
         rejected = trace.get("outcome_rejected_ids", []) if isinstance(trace, dict) else []
-        if getattr(self, "last_llm_failure", "") == "set_aside" and rejected:
+        if rejected:
             filtered = tuple(o for o in effective.options if o.option_id not in rejected)
             if not filtered:
                 trace.update(fallback="no_uncontradicted_option", validated_ids=[])
@@ -10197,10 +10284,29 @@ class ActionPlanner(_ActionLegalityMixin):
         critical = critical_decision(
             decision, game_state, getattr(self, "_game_plan", ""), skipped=passed_over
         )
+        from arenamcp.selective_thinking import (
+            PivotalCallBudget,
+            pivotal_enabled,
+            pivotal_evidence,
+            selection_reason,
+        )
         from arenamcp.selective_thinking import enabled as selective_enabled
-        from arenamcp.selective_thinking import selection_reason
 
-        selective_requested = selective_enabled(getattr(self._backend, "model", None))
+        e4_enabled = pivotal_enabled() and not self.separate_strategy_planning
+        e4_reasons = ()
+        if e4_enabled:
+            from arenamcp.board_assessment import assess
+
+            e4_reasons = pivotal_evidence(
+                decision,
+                tag_state,
+                assessment=assess(tag_state),
+                search=line_source,
+                target_hints=target_hints,
+                unmodelled=unmodelled,
+            )
+            critical = "; ".join(e4_reasons)
+        selective_requested = not e4_enabled and selective_enabled(getattr(self._backend, "model", None))
         selective_reason = selection_reason(decision, game_state, critical) if selective_requested else ""
         if self.separate_strategy_planning:
             critical = ""
@@ -10216,12 +10322,19 @@ class ActionPlanner(_ActionLegalityMixin):
             if own_stack:
                 selective_reason = ""
         if critical and opponent_turn:
-            logger.info("typed-decision: %s, but on the opponent's turn — low effort", critical)
+            logger.info(
+                "typed-decision: %s, opponent-turn short budget — %s",
+                critical,
+                "E4 pivotal effort subject to load admission" if e4_enabled else "low effort",
+            )
             critical = ""
         elif critical and own_stack:
             # Nothing of theirs to answer: passing resolves it (2026-10-19 09:03:36).
             logger.info(
-                "typed-decision: %s, but only our own %s is on the stack — low effort", critical, own_stack
+                "typed-decision: %s, only our own %s is on the stack — %s",
+                critical,
+                own_stack,
+                "E4 pivotal effort subject to load admission" if e4_enabled else "low effort",
             )
             critical = ""
         elif critical:
@@ -10289,6 +10402,20 @@ class ActionPlanner(_ActionLegalityMixin):
         ) -> str:
             from arenamcp.game_plan import critical_decision_call
 
+            if e4_budget is not None:
+                effort, admitted_budget = e4_budget.admit(
+                    now=time.monotonic(),
+                    degraded=llm_degraded(getattr(self, "_backend", None)),
+                    plan_in_flight=not self._yield_background(),
+                    correction=e4_budget.calls > 0 and effort == "high",
+                )
+                effort = "high" if effort == "high" else None
+                budget = min(budget, admitted_budget)
+                self._last_decision_trace["pivotal_thinking"].update(
+                    calls=e4_budget.calls,
+                    high_calls=e4_budget.high_calls,
+                    category="pivotal" if e4_budget.reasons or e4_budget.high_calls else "routine",
+                )
             thinking_leg = bool(selective_reason and effort == "selective")
             if self.separate_strategy_planning:
                 effort = "low"
@@ -10312,9 +10439,10 @@ class ActionPlanner(_ActionLegalityMixin):
             request_cancel = (
                 cancel_event if cancel_event is not None and cancel_event is not outer else threading.Event()
             )
+            prior_metrics = getattr(self._backend, "last_request_metrics", None)
             try:
                 with critical_decision_call(effort == "high" or thinking_leg):
-                    return self._bounded_call(
+                    answer = self._bounded_call(
                         lambda: self._call_llm(
                             system_prompt,
                             message,
@@ -10329,6 +10457,33 @@ class ActionPlanner(_ActionLegalityMixin):
                         ),
                         timeout_s=remaining,
                     )
+                if e4_budget is not None:
+                    metrics = getattr(self._backend, "last_request_metrics", None)
+                    usage = (
+                        metrics.get("reasoning_tokens")
+                        if isinstance(metrics, dict) and metrics is not prior_metrics
+                        else None
+                    )
+                    logger.info(
+                        "E4 call metrics: %s",
+                        json.dumps(
+                            {
+                                "category": "pivotal"
+                                if e4_budget.reasons or e4_budget.high_calls
+                                else "routine",
+                                "reasoning_tokens": usage,
+                                "effort": effort or "low",
+                            },
+                            sort_keys=True,
+                        ),
+                    )
+                    self._last_decision_trace["pivotal_thinking"].setdefault("call_usage", []).append(
+                        {
+                            "effort": effort or "low",
+                            "reasoning_tokens": usage,
+                        }
+                    )
+                return answer
             except Exception:
                 request_cancel.set()
                 raise
@@ -10441,8 +10596,30 @@ class ActionPlanner(_ActionLegalityMixin):
         if remaining_budget <= 0:
             raise concurrent.futures.TimeoutError("Arena clock reserved for safe default")
         normal_budget = min(normal_budget, remaining_budget)
+        e4_budget = (
+            PivotalCallBudget(
+                deadline=decision_deadline,
+                normal_seconds=normal_budget,
+                pivotal_seconds=max(normal_budget, remaining_budget),
+                reasons=e4_reasons,
+            )
+            if e4_enabled
+            else None
+        )
+        if e4_budget is not None:
+            self._last_decision_trace["pivotal_thinking"] = {
+                "reasons": list(e4_reasons),
+                "category": "pivotal" if e4_reasons else "routine",
+                "calls": 0,
+                "high_calls": 0,
+            }
         answered_high = False
-        if selective_reason and remaining_budget >= 6.0:
+        if e4_budget is not None:
+            data, chosen = parse(
+                ask(user_message, effort="high" if critical else None, budget=remaining_budget)
+            )
+            answered_high = bool(e4_budget.high_calls)
+        elif selective_reason and remaining_budget >= 6.0:
             import hashlib
 
             from arenamcp.selective_thinking import race
@@ -10525,6 +10702,39 @@ class ActionPlanner(_ActionLegalityMixin):
             answered_high = (self._last_decision_trace.get("hedge") or {}).get("winner") == "high"
         else:
             data, chosen = parse(ask(user_message, effort=None, budget=normal_budget))
+        if e4_budget is not None and not e4_budget.high_calls and set(chosen) & set(unmodelled):
+            reason = "preferred option is unevaluated"
+            e4_budget.reasons = (*e4_budget.reasons, reason)
+            self._last_decision_trace["pivotal_thinking"].update(
+                category="pivotal", reasons=list(e4_budget.reasons)
+            )
+            preferred = list(chosen)
+            try:
+                reconsider = (
+                    "\n\nPIVOTAL UNEVALUATED CHOICE: Your preferred action was not evaluated by the planner. "
+                    "Reconsider its actual effects and alternatives before selecting; do not assume an unsupported outcome."
+                )
+                # Promotion and A3 correction share the one high call. Do not hide
+                # an already-grounded contradiction behind generic uncertainty.
+                concerns = concerns_for(chosen, data)
+                if concerns:
+                    reconsider += (
+                        "\n\nSECOND LOOK: "
+                        + " ".join(text for _kind, text in concerns)
+                        + " Choose again: the same option only with a concrete reason that answers this."
+                    )
+                data, chosen = parse(
+                    ask(
+                        user_message + reconsider,
+                        effort="high",
+                        budget=max(0, decision_deadline - time.monotonic()),
+                    )
+                )
+            except Exception:
+                rejected = set(self._last_decision_trace.get("outcome_rejected_ids") or [])
+                self._last_decision_trace["outcome_rejected_ids"] = sorted(rejected | set(preferred))
+                raise
+            answered_high = bool(e4_budget.high_calls)
         self._note_llm_cache_metrics()
         reversed_record = self._memory().reversal(game_state, decision, chosen)
         followed = self._memory().stated_plan_followed(reversed_record, game_state, decision, chosen)
