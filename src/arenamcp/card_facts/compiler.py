@@ -404,6 +404,57 @@ def _token_contract_problems(data: dict[str, Any], printed: PrintedCard) -> list
     return problems
 
 
+def _raw_native_type_problems(data: dict[str, Any]) -> list[str]:
+    """Compiler-only checks before permissive legacy decoding can coerce values.
+
+    Unknown extension fields/effects remain untouched. This checks native JSON
+    types, not printed semantic completeness or executability.
+    """
+    problems = []
+
+    def fields(value, path, integers=(), booleans=(), nullable_integers=()):
+        if not isinstance(value, dict):
+            problems.append(f"{path}: native object required")
+            return
+        for key in integers:
+            if key in value and type(value[key]) is not int:
+                problems.append(f"{path}.{key}: native integer required")
+        for key in booleans:
+            if key in value and type(value[key]) is not bool:
+                problems.append(f"{path}.{key}: native boolean required")
+        for key in nullable_integers:
+            if key in value and value[key] is not None and type(value[key]) is not int:
+                problems.append(f"{path}.{key}: native integer or null required")
+
+    modes = data.get("modes")
+    for index, mode in enumerate(modes if isinstance(modes, list) else []):
+        if not isinstance(mode, dict):
+            continue  # existing decoder/validator compatibility outside this scope
+        path = f"modes[{index}]"
+        fields(mode, path, booleans=("stays_on_battlefield",))
+        if "cost" in mode:
+            cost = mode["cost"]
+            fields(
+                cost, path + ".cost", integers=("life", "discard", "exile_from_graveyard"), booleans=("tap",)
+            )
+            if isinstance(cost, dict) and cost.get("sacrifice") is not None:
+                fields(cost["sacrifice"], path + ".cost.sacrifice", integers=("count",))
+    effects = data.get("effects")
+    for index, entry in enumerate(effects if isinstance(effects, list) else []):
+        effect = entry.get("effect") if isinstance(entry, dict) else None
+        if not isinstance(effect, dict) or effect.get("effect_type") != "CreateToken":
+            continue
+        if "spec" in effect:
+            fields(
+                effect["spec"],
+                f"effects[{index}].effect.spec",
+                integers=("count",),
+                booleans=("tapped", "attacking", "copy_of_self", "not_legendary", "per_opponent"),
+                nullable_integers=("power", "toughness"),
+            )
+    return problems
+
+
 def _stamp(record_data: dict[str, Any], printed: PrintedCard) -> CardFacts:
     """Build the record from the model's dict and stamp compiler-owned fields."""
     record_data["rules_hash"] = rules_hash(
@@ -534,6 +585,9 @@ def compile_one(
             record = None
         else:
             try:
+                raw_problems = _raw_native_type_problems(data)
+                if raw_problems:
+                    raise ValueError("; ".join(raw_problems))
                 record_candidate = _stamp(dict(data), printed)
                 problems = validate(record_candidate, printed) + _token_contract_problems(data, printed)
                 record = record_candidate if not problems else record_candidate
