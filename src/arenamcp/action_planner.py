@@ -5474,6 +5474,13 @@ class ActionPlanner(_ActionLegalityMixin):
             filtered = tuple(o for o in decision.options if o.option_id != attack_only.get("chosen"))
             if filtered:
                 effective = replace(decision, options=filtered)
+        rejected = trace.get("outcome_rejected_ids", []) if isinstance(trace, dict) else []
+        if getattr(self, "last_llm_failure", "") == "set_aside" and rejected:
+            filtered = tuple(o for o in effective.options if o.option_id not in rejected)
+            if not filtered:
+                trace.update(fallback="no_uncontradicted_option", validated_ids=[])
+                return []  # do not submit the disproved unevaluated action
+            effective = replace(effective, options=filtered)
         picked, why = board_math_option_pick(effective, game_state)
         source, board_pick = "board_math", picked
         line = line_fallback_option_pick(effective, game_state, picked)
@@ -5603,13 +5610,17 @@ class ActionPlanner(_ActionLegalityMixin):
             return data, chosen
         kinds = [kind for kind, _text in concerns]
         trace = self._last_decision_trace if isinstance(self._last_decision_trace, dict) else {}
+        if "unevaluated_outcome" in kinds:
+            trace["outcome_rejected_ids"] = list(chosen)
         if answered_high:
             hard = [
                 (kind, text)
                 for kind, text in concerns
                 if kind in ("false_lethal", "attack_only", "damage_attribution", "false_combat_board")
             ]
-            premise = [text for kind, text in concerns if kind == "false_cast_premise"]
+            premise = [
+                text for kind, text in concerns if kind in ("false_cast_premise", "unevaluated_outcome")
+            ]
             if not hard and not premise:
                 logger.info(
                     "typed-decision: the high-effort pick %s stands despite %s", chosen, ", ".join(kinds)
@@ -5700,6 +5711,12 @@ class ActionPlanner(_ActionLegalityMixin):
                 "refuted_claims": lingering,
             }
             raise SecondLookError(f"second look still rests on a false cast premise: {lingering[0][:160]}")
+        unresolved = [
+            text for kind, text in concerns_for(new_chosen, new_data) if kind == "unevaluated_outcome"
+        ]
+        if unresolved:
+            trace["outcome_rejected_ids"] = list(set(trace.get("outcome_rejected_ids", [])) | set(new_chosen))
+            raise SecondLookError(f"second-look outcome remains contradicted: {unresolved[0]}")
         if new_chosen == chosen:
             from arenamcp.game_plan import decision_claim_notes
 
@@ -5738,6 +5755,7 @@ class ActionPlanner(_ActionLegalityMixin):
                     str(new_data.get("reasoning") or "")[:160],
                 )
                 raise SecondLookError(f"second-look re-pick {new_chosen} refuted: {refuted[0][:160]}")
+        trace.pop("outcome_rejected_ids", None)
         trace["second_look"] = {
             "concerns": [text for _kind, text in concerns],
             "first": chosen,
@@ -6260,6 +6278,73 @@ class ActionPlanner(_ActionLegalityMixin):
             "OPPONENT'S END STEP: the last window before we untap; mana left unused now is wasted, so instant "
             "burn held for this moment can go now (at a creature it kills, else their face)."
         )
+
+    def _require_outcome_reask(self, *, yielded, deadline):
+
+        if self.separate_strategy_planning or not yielded or llm_degraded(getattr(self, "_backend", None)):
+            raise SecondLookError("outcome correction unavailable: server busy/degraded")
+        if deadline - time.monotonic() < 6.0:
+            raise SecondLookError("outcome correction unavailable: insufficient clock")
+
+    def _unevaluated_claim_concerns(self, decision, state, chosen, reasoning, unmodelled):
+        """A3: factual outcome contradictions on an explicitly unevaluated action."""
+        from arenamcp.game_plan import decision_claim_notes
+
+        if decision.request_type != "ActionsAvailable" or len(chosen or []) != 1:
+            return []
+        option = decision.find(chosen[0])
+        meta = (option.meta if option is not None else None) or {}
+        if chosen[0] not in unmodelled or meta.get("actionType") not in (
+            "ActionType_Cast",
+            "ActionType_Activate",
+        ):
+            return []
+        source = find_source(state, meta)
+        name = str(source.get("name") or "")
+        if not name:
+            return []
+        # The choice supplies the subject when rationale begins "pings ...",
+        # rather than repeating the selected card's name.
+        text = str(reasoning or "")
+        if name.casefold() not in text.casefold():
+            text = name + " " + text
+        cast_ids = [source.get("instance_id")] if meta.get("actionType") == "ActionType_Cast" else []
+        notes = decision_claim_notes(text, state, cast_ids=cast_ids)
+        from arenamcp.outcome_claims import record_outcome_notes
+
+        notes.extend(record_outcome_notes(source, meta, state, reasoning))
+        # A narrow anonymous-body claim, not a generic occurrence of "block":
+        # selected cast "leaves a ... body that blocks the flyer". Existing
+        # keyword truth accounts for grants and abstains on unknown rules.
+        from arenamcp.claim_language import conditional_claim, negated_claim
+        from arenamcp.game_plan import _keyword_truth
+
+        claim = re.search(r"\bleaves (?:a|an) [^.?!;]*?\bbody that blocks the flyer\b", text, re.IGNORECASE)
+        if (
+            claim
+            and cast_ids
+            and not re.search(r"\b(?:if|unless|once|after|when|would|could|might)\b", text, re.IGNORECASE)
+            and not conditional_claim(text, 0, claim.end())
+            and not negated_claim(text, 0, claim.end())
+        ):
+            board = list(state.get("battlefield") or [])
+            local = state.get("local_seat_id")
+            opponents = [
+                c
+                for c in board
+                if c.get("controller_seat_id") != local and _keyword_truth([c], "flying", board) is True
+            ]
+            if opponents and all(_keyword_truth([source], k, board) is False for k in ("flying", "reach")):
+                notes.append(
+                    f"{name} has neither flying nor reach and cannot supply the claimed blocker for a flyer."
+                )
+        return [
+            ("unevaluated_outcome", note)
+            for note in notes
+            # The dedicated cast-premise check owns summoning-sickness
+            # rejection, including its defensive/negated/conditional cases.
+            if "summoning sick" not in note.casefold()
+        ]
 
     def _second_look_concerns(
         self,
@@ -10304,9 +10389,13 @@ class ActionPlanner(_ActionLegalityMixin):
             return data.get("reasoning") if isinstance(data.get("reasoning"), str) else ""
 
         def concerns_for(ids: list[str], data: dict) -> list[tuple[str, str]]:
-            return self._second_look_concerns(
+            found = self._second_look_concerns(
                 decision, tag_state, ids, reasoning_of(data), line_source, line_tags
             )
+            found.extend(
+                self._unevaluated_claim_concerns(decision, tag_state, ids, reasoning_of(data), unmodelled)
+            )
+            return found
 
         decision_deadline = time.monotonic() + (
             self._sized_budget(self._CRITICAL_DECISION_BUDGET_S, first_token_s)
@@ -10454,8 +10543,16 @@ class ActionPlanner(_ActionLegalityMixin):
                 data, chosen = self._reversal_check_failed(
                     decision, tag_state, data, chosen, line_tags, reversed_record, error
                 )
+
+        def outcome_ask(message, **kwargs):
+            # A3: never downgrade a required high-effort outcome correction into
+            # another speculative low-effort call under contention.
+            if any(kind == "unevaluated_outcome" for kind, _ in concerns_for(chosen, data)):
+                self._require_outcome_reask(yielded=yielded, deadline=decision_deadline)
+            return ask(message, **kwargs)
+
         data, chosen = self._second_look(
-            decision, tag_state, data, chosen, concerns_for, ask, parse, user_message, answered_high
+            decision, tag_state, data, chosen, concerns_for, outcome_ask, parse, user_message, answered_high
         )
         data, chosen = self._repair_invalid_transform_hold(
             decision, tag_state, data, chosen, ask, parse, user_message
