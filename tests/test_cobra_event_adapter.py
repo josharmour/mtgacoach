@@ -90,3 +90,26 @@ def test_unsupported_or_different_event_abstains(change):
     else:
         card["oracle_text"] += " Draw a card."
     assert not lsm._event_landfall_mana(card_facts_from_dict(data), card)
+
+
+@pytest.mark.parametrize("where", ["record", "entry", "effect", "mode", "cost", "body", "mana"])
+def test_preserved_unknown_obligations_abstain(where):
+    data = raw()
+    targets = {
+        "record": data,
+        "entry": data["effects"][0],
+        "effect": data["effects"][0]["effect"],
+        "mode": data["modes"][0],
+        "cost": data["modes"][0]["cost"],
+        "body": data["body"],
+        "mana": data["mana"][0],
+    }
+    targets[where]["additional_condition"] = "Only if an additional payment was made"
+    assert not lsm._event_landfall_mana(card_facts_from_dict(data), _LOTUS_COBRA_CARD)
+
+
+@pytest.mark.parametrize("confidence", ["failed", "low", "", None])
+def test_only_high_confidence_event_admission(confidence):
+    data = raw()
+    data["confidence"] = confidence
+    assert not lsm._event_landfall_mana(card_facts_from_dict(data), _LOTUS_COBRA_CARD)

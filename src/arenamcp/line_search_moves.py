@@ -2183,6 +2183,23 @@ def _event_landfall_mana(record: Any, card: dict) -> bool:
     """
     if record is None or not _landfall_mana_card(card) or len(record.effects) != 1:
         return False
+
+    # New event admission cannot discard preserved future-schema obligations.
+    # Walk every nested dataclass, including body and mana metadata, rather
+    # than checking only the currently consumed effect/cost fields.
+    def unknown_fields(value):
+        if getattr(value, "_unknown_fields", None):
+            return True
+        if dataclasses.is_dataclass(value):
+            return any(unknown_fields(getattr(value, field.name)) for field in dataclasses.fields(value))
+        if isinstance(value, (tuple, list)):
+            return any(unknown_fields(item) for item in value)
+        if isinstance(value, dict):
+            return any(unknown_fields(item) for item in value.values())
+        return False
+
+    if record.confidence != "high" or unknown_fields(record):
+        return False
     entry = record.effects[0]
     trigger = str(entry.trigger).strip()
     if entry.conditions or not re.fullmatch(

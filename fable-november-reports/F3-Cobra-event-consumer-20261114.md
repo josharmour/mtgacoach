@@ -18,3 +18,15 @@ hash-identical; compiler Unknowns and unsupported compound events still abstain.
 negative cases, full line-search suite and existing compiler-search adapter).
 No new inference occurred. OS wrapper unavailable in this session; no fresh
 OS-contained claim. Independent review required before integration or acceptance.
+
+## Independent rework: unknown obligations and confidence
+
+040f655 was independently rejected: preserved unknown schema obligations on the
+record, entry, effect, mode or cost could be ignored, and confidence=failed could
+enter the new event path. The corrected predicate requires exact high confidence
+and recursively refuses preserved `_unknown_fields` throughout all nested
+record dataclasses (including body and mana metadata). It neither removes nor
+normalizes those obligations. The exact seven independent failing cases now
+pass, alongside distinct-body mana accounting and positive real-record tests.
+243 combined tests pass locally; independent successor review remains required.
+No actual model call or record regeneration occurred.
