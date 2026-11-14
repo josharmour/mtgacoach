@@ -404,6 +404,30 @@ def _token_contract_problems(data: dict[str, Any], printed: PrintedCard) -> list
     return problems
 
 
+def _printed_cast_contract_problems(data: dict, printed: PrintedCard) -> list[str]:
+    """Require an explicitly represented normal cast for bounded printed spells.
+
+    This admits no synthesized mode or cost. Split/multiface and no-mana-cost
+    cards remain outside this check; lands are played, not cast. Other additional
+    costs/effects still require their own validation and are not certified here.
+    """
+    type_line = printed.type_line.casefold()
+    if (
+        not printed.mana_cost
+        or "//" in printed.name + printed.type_line + printed.mana_cost
+        or "\n---\n" in printed.oracle_text
+        or "land" in re.findall(r"[a-z]+", type_line.split("—", 1)[0])
+        or not re.fullmatch(r"(?:\{[^{}]+\})+", printed.mana_cost)
+    ):
+        return []
+    modes = data.get("modes")
+    if not isinstance(modes, list) or not any(
+        isinstance(mode, dict) and str(mode.get("name", "")).strip().casefold() == "cast" for mode in modes
+    ):
+        return ["printed nonland spell requires its normal cast mode, including a printed {0} cost"]
+    return []
+
+
 def _raw_native_type_problems(data: dict[str, Any]) -> list[str]:
     """Compiler-only checks before permissive legacy decoding can coerce values.
 
@@ -602,7 +626,11 @@ def compile_one(
                 if raw_problems:
                     raise ValueError("; ".join(raw_problems))
                 record_candidate = _stamp(dict(data), printed)
-                problems = validate(record_candidate, printed) + _token_contract_problems(data, printed)
+                problems = (
+                    validate(record_candidate, printed)
+                    + _token_contract_problems(data, printed)
+                    + _printed_cast_contract_problems(data, printed)
+                )
                 record = record_candidate if not problems else record_candidate
             except Exception as error:
                 record = None

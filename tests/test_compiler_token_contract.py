@@ -12,6 +12,7 @@ def data(effect):
         "mana_cost": "{1}",
         "type_line": "Artifact",
         "body": {},
+        "modes": [{"name": "cast", "cost": {"mana": "{1}"}}],
         "effects": [{"trigger": "ETB", "effect": effect}],
         "confidence": "high",
     }

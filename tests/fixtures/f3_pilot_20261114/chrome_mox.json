@@ -1,0 +1,71 @@
+{
+  "attempts": 1,
+  "name": "Chrome Mox",
+  "problems": [],
+  "record": {
+    "body": {
+      "keywords": [
+        "Imprint"
+      ],
+      "loyalty": null,
+      "power": null,
+      "toughness": null
+    },
+    "compiled_at": "2026-11-14T15:37:11Z",
+    "compiled_by": "card_facts.compiler",
+    "confidence": "high",
+    "effects": [
+      {
+        "conditions": [
+          "you may"
+        ],
+        "effect": {
+          "effect_type": "Exile",
+          "target": "a nonartifact, nonland card from your hand"
+        },
+        "trigger": "ETB"
+      },
+      {
+        "conditions": [],
+        "effect": {
+          "effect_type": "Unknown",
+          "text": "Add one mana of any of the exiled card's colors."
+        },
+        "trigger": "activated"
+      }
+    ],
+    "limited": {},
+    "mana": [
+      {
+        "condition": "an exiled card exists via Imprint",
+        "mana": "one mana of any of the exiled card's colors"
+      }
+    ],
+    "mana_cost": "{0}",
+    "modes": [
+      {
+        "cost": {
+          "discard": 0,
+          "exile_from_graveyard": 0,
+          "life": 0,
+          "mana": "",
+          "sacrifice": null,
+          "tap": true
+        },
+        "cost_text": "{T}",
+        "name": "activate",
+        "stays_on_battlefield": true
+      }
+    ],
+    "name": "Chrome Mox",
+    "notes": "The mana-producing ability depends on the colors of the card exiled by the Imprint ETB trigger; kept as Unknown since AddMana cannot express linked-card colors.",
+    "relationships": {},
+    "rules_hash": "8b9922d53cacb849fbb091ce1fd0c54dec7a08a14c46afad80364ee6a95f0873",
+    "schema_version": 1,
+    "threat": {},
+    "type_line": "Artifact"
+  },
+  "rules_hash": "8b9922d53cacb849fbb091ce1fd0c54dec7a08a14c46afad80364ee6a95f0873",
+  "seconds": 4.362119478988461,
+  "status": "compiled"
+}
