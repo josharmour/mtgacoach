@@ -20,6 +20,7 @@ def report():
         corpus_sha256="a" * 64,
         configuration_sha256="b" * 64,
         facts_sha256="c" * 64,
+        labels_sha256="f" * 64,
         model_layer="not_run",
         results=[
             dict(
@@ -43,14 +44,16 @@ def test_summary_and_equal_diff_hide_identifiers():
     assert "acceptance: not assessed" in m.table(delta)
 
 
-@pytest.mark.parametrize("key", ["corpus_sha256", "configuration_sha256", "facts_sha256", "case_set"])
+@pytest.mark.parametrize(
+    "key", ["corpus_sha256", "configuration_sha256", "facts_sha256", "labels_sha256", "case_set"]
+)
 def test_incomparable_provenance_never_claims_behavior_delta(key):
     a = report()
     b = report()
     if key == "case_set":
         b["results"][0]["case_id"] = "f" * 64
     else:
-        b[key] = "f" * 64
+        b[key] = "0" * 64
     result = m.compare(a, b)
     assert not result["comparable"]
     assert key in result["mismatches"]
@@ -92,3 +95,35 @@ def test_supplied_score_counts_do_not_invent_labels():
     r["results"][0]["score"] = "acceptable"
     assert m.summary(r)["scores"] == {"acceptable": 1}
     assert m.summary(r)["acceptance"] == "not_assessed"
+
+
+def test_duration_and_counter_overflow_rejected():
+    for number in (10**1000, float("inf")):
+        r = report()
+        r["results"][0]["seconds"] = number
+        with pytest.raises(m.InvalidReport):
+            m.summary(r)
+    r = report()
+    r["results"][0]["seconds"] = 1e308
+    second = copy.deepcopy(r["results"][0])
+    second["case_id"] = "0" * 64
+    r["results"].append(second)
+    with pytest.raises(m.InvalidReport):
+        m.summary(r)
+    r = report()
+    r["results"][0]["generation_attempts"] = 10**1000
+    with pytest.raises(m.InvalidReport):
+        m.summary(r)
+
+
+def test_table_includes_supplied_scores_and_label_set_gates_diff():
+    a = report()
+    a["results"][0]["score"] = "acceptable"
+    assert "score acceptable: 1" in m.table(m.summary(a))
+    b = copy.deepcopy(a)
+    b["labels_sha256"] = "0" * 64
+    b["results"][0]["score"] = "blunder"
+    delta = m.compare(a, b)
+    assert not delta["comparable"]
+    assert delta["mismatches"] == ["labels_sha256"]
+    assert "changed_score" not in delta

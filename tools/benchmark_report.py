@@ -15,7 +15,15 @@ from pathlib import Path
 
 STATUSES = frozenset({"answered", "withheld", "invalid", "error"})
 SCORES = frozenset({"acceptable", "blunder", "unlabelled_choice", "not_scored"})
-HEADER = {"version", "corpus_sha256", "configuration_sha256", "facts_sha256", "model_layer", "results"}
+HEADER = {
+    "version",
+    "corpus_sha256",
+    "configuration_sha256",
+    "facts_sha256",
+    "labels_sha256",
+    "model_layer",
+    "results",
+}
 ROW = {"case_id", "status", "selection_sha256", "seconds", "generation_attempts", "score"}
 
 
@@ -32,13 +40,17 @@ def validate(report):
         raise InvalidReport("invalid report shape")
     if type(report["version"]) is not int or report["version"] != 1:
         raise InvalidReport("unsupported report version")
-    if any(not digest(report[key]) for key in ("corpus_sha256", "configuration_sha256", "facts_sha256")):
+    if any(
+        not digest(report[key])
+        for key in ("corpus_sha256", "configuration_sha256", "facts_sha256", "labels_sha256")
+    ):
         raise InvalidReport("invalid provenance digest")
     if report["model_layer"] not in ("not_run", "run"):
         raise InvalidReport("invalid model layer status")
     if type(report["results"]) is not list:
         raise InvalidReport("invalid results")
     seen = set()
+    total_seconds = 0.0
     for row in report["results"]:
         if type(row) is not dict or set(row) != ROW:
             raise InvalidReport("invalid result shape")
@@ -51,11 +63,14 @@ def validate(report):
             raise InvalidReport("invalid selection digest")
         if (
             type(row["seconds"]) not in (int, float)
+            or not 0 <= row["seconds"] <= 1e308
             or not math.isfinite(row["seconds"])
-            or row["seconds"] < 0
         ):
             raise InvalidReport("invalid duration")
-        if type(row["generation_attempts"]) is not int or row["generation_attempts"] < 0:
+        total_seconds += row["seconds"]
+        if not math.isfinite(total_seconds):
+            raise InvalidReport("duration aggregate overflow")
+        if type(row["generation_attempts"]) is not int or not 0 <= row["generation_attempts"] <= 2**63 - 1:
             raise InvalidReport("invalid generation count")
         if type(row["score"]) is not str or row["score"] not in SCORES:
             raise InvalidReport("invalid score")
@@ -83,7 +98,7 @@ def summary(report):
 def compare(before, after):
     validate(before)
     validate(after)
-    keys = ("corpus_sha256", "configuration_sha256", "facts_sha256", "model_layer")
+    keys = ("corpus_sha256", "configuration_sha256", "facts_sha256", "labels_sha256", "model_layer")
     old = {r["case_id"]: r for r in before["results"]}
     new = {r["case_id"]: r for r in after["results"]}
     mismatch = [key for key in keys if before[key] != after[key]]
@@ -113,6 +128,7 @@ def table(value):
             f"{prefix or 'report'}: {report['cases']} cases; {report['seconds']:.3f} seconds; model {report['model_layer']}"
         )
         lines.extend(f"  {key}: {count}" for key, count in report["statuses"].items())
+        lines.extend(f"  score {key}: {count}" for key, count in report["scores"].items())
     if "comparable" in value:
         lines.append("comparable: " + str(value["comparable"]).lower())
         lines.extend(
