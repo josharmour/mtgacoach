@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import argparse
 import collections
+import contextlib
 import dataclasses
 import gzip
 import hashlib
 import json
+import logging
+import math
+import os
 import re
 import time
 from pathlib import Path
@@ -858,13 +862,79 @@ def diff_reports(before, after):
     }
 
 
-def main():
+def aggregate_only(bundles):
+    """Replay in memory and return allowlisted counters, never cases or choices.
+
+    This CLI operation suppresses planner diagnostics process-wide. Run alone
+    under OS network denial. NoModel is still the inert generation boundary.
+    """
+    if not bundles.is_dir():
+        raise ValueError("bundle directory missing")
+    previous = logging.root.manager.disable
+    try:
+        logging.disable(logging.CRITICAL)
+        with (
+            open(os.devnull, "w") as sink,
+            contextlib.redirect_stdout(sink),
+            contextlib.redirect_stderr(sink),
+        ):
+            cases, _, _ = build_cases(bundles.glob("*.json.gz"))
+            counts = {key: 0 for key in ("answered", "withheld", "invalid", "error")}
+            seconds = 0.0
+            attempts = 0
+            for case in cases:
+                row = replay(case)
+                if row.get("status") not in counts:
+                    raise ValueError("invalid replay result")
+                duration = row.get("seconds")
+                generations = row.get("generation_attempts")
+                if (
+                    type(duration) not in (int, float)
+                    or duration < 0
+                    or duration > 86400
+                    or not math.isfinite(duration)
+                ):
+                    raise ValueError("invalid replay timing")
+                if type(generations) is not int or not 0 <= generations <= 10000:
+                    raise ValueError("invalid replay counter")
+                counts[row["status"]] += 1
+                seconds += duration
+                attempts += generations
+            if not math.isfinite(seconds):
+                raise ValueError("invalid total timing")
+            return {
+                "cases": len(cases),
+                "counts": counts,
+                "seconds": seconds,
+                "inert_generation_attempts": attempts,
+                "model_layer": "not_run",
+                "scope": "snapshot-only facts-empty offline replay; acceptance not assessed",
+            }
+    finally:
+        logging.disable(previous)
+
+
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bundles", type=Path)
-    parser.add_argument("--cases", type=Path, required=True)
+    parser.add_argument("--cases", type=Path)
+    parser.add_argument(
+        "--aggregate-only", action="store_true", help="in-memory code replay; no case files or private output"
+    )
     parser.add_argument("--code-only", action="store_true")
     parser.add_argument("--report", type=Path)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+    if args.aggregate_only:
+        if args.bundles is None or args.cases is not None or args.report is not None:
+            parser.exit(2, "aggregate-only requires bundles and forbids case/report files\n")
+        try:
+            value = aggregate_only(args.bundles)
+        except Exception:
+            parser.exit(2, "offline aggregate replay failed; no cases exported\n")
+        print(json.dumps(value, sort_keys=True))
+        return
+    if args.cases is None:
+        parser.exit(2, "cases directory required outside aggregate-only mode\n")
     if args.bundles:
         cases, manifest, counts = build_cases(args.bundles.glob("*.json.gz"))
         args.cases.mkdir(parents=True, exist_ok=True)
