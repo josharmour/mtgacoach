@@ -348,15 +348,38 @@ def _token_contract_problems(data: dict[str, Any], printed: PrintedCard) -> list
     remain conservative because the current schema has no source-span binding.
     """
     sentences = re.split(r"(?<=[.!?])\s+|\n+", printed.oracle_text)
-    unsupported = [
-        sentence
-        for sentence in sentences
-        if re.search(
-            r"\bcreate\b[^.;\n]*\b(?:white|blue|black|red|green|colorless|legendary)\b[^.;\n]*\btokens?\b",
-            sentence,
-            re.IGNORECASE,
-        )
-    ]
+    unsupported = []
+    for sentence in sentences:
+        for creation in re.finditer(r"\bcreate\b", sentence, re.IGNORECASE):
+            # A trigger/condition mentioning token creation is not an instruction.
+            # Comma boundaries retain the ordinary "When ... , create ..." form.
+            prefix = re.split(r"[,;:]", sentence[: creation.start()])[-1]
+            if re.search(r"\b(?:when|whenever|if|unless)\b", prefix, re.IGNORECASE):
+                continue
+            # Recognize only a bounded imperative/optional instruction prefix.
+            # Descriptions such as "effects that create" remain unclassified.
+            if " ".join(prefix.casefold().split()) not in {
+                "",
+                "you",
+                "you may",
+                "then",
+                "then you",
+                "then you may",
+            }:
+                continue
+            tail = sentence[creation.end() :]
+            first_token = re.search(r"\btokens?\b", tail, re.IGNORECASE)
+            if first_token is None:
+                continue
+            properties = tail[: first_token.start()]
+            # Never cross an earlier token object to inspect a later target.
+            if re.search(r"[.;\n]", properties):
+                continue
+            if re.search(
+                r"\b(?:white|blue|black|red|green|colorless|legendary)\b", properties, re.IGNORECASE
+            ):
+                unsupported.append(sentence)
+                break
     if not unsupported:
         return []
     effects = data.get("effects")

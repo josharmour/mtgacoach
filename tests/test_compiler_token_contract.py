@@ -90,3 +90,20 @@ def test_real_compiler_retry_retains_full_unknown():
     assert backend.calls == 2
     assert result.status == "compiled", result.problems
     assert result.record.effects[0].effect.text == text
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Create a Treasure token, then put a +1/+1 counter on target red creature token.",
+        "Whenever you create a red creature token, draw a card. Create a Treasure token.",
+    ],
+)
+def test_other_token_target_or_trigger_is_not_creation_property(text):
+    assert (
+        _token_contract_problems(
+            data({"effect_type": "CreateToken", "spec": {"name": "Treasure"}}),
+            PrintedCard("Test", oracle_text=text),
+        )
+        == []
+    )
