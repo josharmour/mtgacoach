@@ -7,9 +7,7 @@ from pathlib import Path
 
 import pytest
 
-spec = importlib.util.spec_from_file_location(
-    "h", Path(__file__).parents[1] / "tools/head_to_head.py"
-)
+spec = importlib.util.spec_from_file_location("h", Path(__file__).parents[1] / "tools/head_to_head.py")
 h = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(h)
 
@@ -71,9 +69,7 @@ def test_pairs_swap_same_model_different_code_and_table():
 
 def test_duplicate_exact_dedup_and_conflicting_reject():
     p, rows = setup()
-    assert (
-        h.analyze(p, rows + [copy.deepcopy(rows[0])])["duplicate_records_ignored"] == 1
-    )
+    assert h.analyze(p, rows + [copy.deepcopy(rows[0])])["duplicate_records_ignored"] == 1
     bad = copy.deepcopy(rows[0])
     bad["winner"] = "B"
     with pytest.raises(h.InvalidRun):
@@ -114,9 +110,7 @@ def test_draw_unknown_and_missing_not_losses():
         r["winner"] = "draw"
     result = h.analyze(p, rows[:3])
     assert result["draws"] == 1 and result["missing_or_unpaired_games"] == 1
-    assert (
-        result["decisive_games"] == 0 and result["sides"]["A"]["win_rate_95ci"] is None
-    )
+    assert result["decisive_games"] == 0 and result["sides"]["A"]["win_rate_95ci"] is None
     for r in rows:
         r["winner"] = "unknown"
     assert h.analyze(p, rows)["unknown_outcomes"] == 2
@@ -152,7 +146,4 @@ def test_cli_errors_do_not_echo_private_input(tmp_path, capsys):
     p.write_text("{Private Person")
     with pytest.raises(SystemExit) as e:
         h.main(["--run", str(p), "--records", str(p)])
-    assert (
-        e.value.code == 2
-        and capsys.readouterr().err == "invalid head-to-head evidence\n"
-    )
+    assert e.value.code == 2 and capsys.readouterr().err == "invalid head-to-head evidence\n"

@@ -24,9 +24,7 @@ def require(ok):
 
 
 def digest(x, length=64):
-    return (
-        type(x) is str and re.fullmatch("[0-9a-f]{" + str(length) + "}", x) is not None
-    )
+    return type(x) is str and re.fullmatch("[0-9a-f]{" + str(length) + "}", x) is not None
 
 
 def integer(x):
@@ -36,8 +34,7 @@ def integer(x):
 def protocol(p):
     require(
         type(p) is dict
-        and set(p)
-        == {"version", "run_id", "deck_sha256", "format", "games", "sides", "machines"}
+        and set(p) == {"version", "run_id", "deck_sha256", "format", "games", "sides", "machines"}
     )
     require(type(p["version"]) is int and p["version"] == 1)
     require(digest(p["run_id"]) and digest(p["deck_sha256"]))
@@ -65,8 +62,7 @@ def protocol(p):
         require(type(side) is dict and set(side) == {"model", "code_revision"})
         require(
             type(side["model"]) is str
-            and re.fullmatch("[A-Za-z0-9][A-Za-z0-9._:/-]{0,79}", side["model"])
-            is not None
+            and re.fullmatch("[A-Za-z0-9][A-Za-z0-9._:/-]{0,79}", side["model"]) is not None
         )
         require(digest(side["code_revision"], 40))
     return p
@@ -101,17 +97,12 @@ def record(p, r):
     require(type(r) is dict and set(r) == FIELDS)
     require(digest(r["game_id"]))
     require(
-        r["run_id"] == p["run_id"]
-        and r["deck_sha256"] == p["deck_sha256"]
-        and r["format"] == p["format"]
+        r["run_id"] == p["run_id"] and r["deck_sha256"] == p["deck_sha256"] and r["format"] == p["format"]
     )
     require(integer(r["game"]) and 1 <= r["game"] <= p["games"])
     require(type(r["side"]) is str and r["side"] in ("A", "B"))
     expected = p["sides"][r["side"]]
-    require(
-        r["model"] == expected["model"]
-        and r["code_revision"] == expected["code_revision"]
-    )
+    require(r["model"] == expected["model"] and r["code_revision"] == expected["code_revision"])
     swap = r["game"] > p["games"] // 2
     machine_index = (r["side"] == "B") ^ swap
     require(r["machine"] == p["machines"][machine_index])
@@ -124,10 +115,7 @@ def record(p, r):
             require(type(v) in (int, float) and 0 <= v <= 10**9 and math.isfinite(v))
         else:
             require(integer(v))
-    require(
-        metrics["timeouts"] <= metrics["decisions"]
-        and metrics["safe_defaults"] <= metrics["decisions"]
-    )
+    require(metrics["timeouts"] <= metrics["decisions"] and metrics["safe_defaults"] <= metrics["decisions"])
     require(metrics["decisions"] > 0 or metrics["decision_seconds"] == 0)
 
 
@@ -210,20 +198,12 @@ def analyze(p, records):
             "wins_on_play": onplay[side],
             "wins_on_draw": ondraw[side],
             "wins_unknown_play": unknownplay[side],
-            "seconds_per_decision": t["decision_seconds"] / t["decisions"]
-            if t["decisions"]
-            else None,
+            "seconds_per_decision": t["decision_seconds"] / t["decisions"] if t["decisions"] else None,
             "timeouts": t["timeouts"],
             "safe_defaults": t["safe_defaults"],
-            "model_calls_per_paired_game": t["model_calls"] / complete
-            if complete
-            else None,
-            "input_tokens_per_paired_game": t["input_tokens"] / complete
-            if complete
-            else None,
-            "output_tokens_per_paired_game": t["output_tokens"] / complete
-            if complete
-            else None,
+            "model_calls_per_paired_game": t["model_calls"] / complete if complete else None,
+            "input_tokens_per_paired_game": t["input_tokens"] / complete if complete else None,
+            "output_tokens_per_paired_game": t["output_tokens"] / complete if complete else None,
         }
     return result
 
@@ -247,20 +227,14 @@ def main(argv=None):
         type=Path,
         help="explicit protocol JSON path; no discovery or transport",
     )
-    parser.add_argument(
-        "--records", required=True, type=Path, help="sanitized paired-record JSON array"
-    )
+    parser.add_argument("--records", required=True, type=Path, help="sanitized paired-record JSON array")
     parser.add_argument("--format", choices=("json", "table"), default="table")
     args = parser.parse_args(argv)
     try:
-        result = analyze(
-            json.loads(args.run.read_text()), json.loads(args.records.read_text())
-        )
+        result = analyze(json.loads(args.run.read_text()), json.loads(args.records.read_text()))
     except (OSError, ValueError, TypeError, KeyError, OverflowError):
         parser.exit(2, "invalid head-to-head evidence\n")
-    print(
-        json.dumps(result, sort_keys=True) if args.format == "json" else table(result)
-    )
+    print(json.dumps(result, sort_keys=True) if args.format == "json" else table(result))
 
 
 if __name__ == "__main__":
