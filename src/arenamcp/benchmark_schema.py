@@ -53,6 +53,24 @@ COLOR = enum(
     "ManaColor_Colorless",
     "ManaColor_Generic",
     "ManaColor_Any",
+    "ManaColor_AnyColor",
+    "ManaColor_X",
+    "White",
+    "Blue",
+    "Black",
+    "Red",
+    "Green",
+    "Colorless",
+    "Generic",
+    "Any",
+    "AnyColor",
+    "X",
+    "W",
+    "U",
+    "B",
+    "R",
+    "G",
+    "C",
 )
 HIGHLIGHT = enum(
     "Cold",
@@ -86,6 +104,18 @@ REQUEST_CLASS = enum(
     "SelectTargetsRequest",
 )
 ACTION = enum(
+    "CastingTimeOption",
+    "Cast",
+    "Play",
+    "Pass",
+    "ActivateMana",
+    "FloatMana",
+    "Activate",
+    "Special",
+    "PlayMdfc",
+    "ActionType_PlayMdfc",
+    "CastAdventure",
+    "CastOmen",
     *(
         "ActionType_" + v
         for v in (
@@ -132,9 +162,24 @@ ACTION = enum(
             "SelectTarget",
             "Special",
         )
-    )
+    ),
 )
-MANA_COST = sequence(record({"abilityGrpId": integer, "color": sequence(COLOR), "count": integer}))
+
+
+def cost_colors(value):
+    # Native bridge can stringify its enum list; decode only a bounded list
+    # of known mana colors, retaining the original value in the case.
+    import json
+
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (ValueError, TypeError):
+            return False
+    return sequence(COLOR)(value)
+
+
+MANA_COST = sequence(record({"abilityGrpId": integer, "color": cost_colors, "count": integer}))
 MANA_SPEC = record(
     {
         "type": enum(
@@ -244,7 +289,7 @@ ACTION_EXTENSIONS = {
     "maxActivations": integer,
     "shouldStop": boolean,
     "manaSpentMatters": boolean,
-    "_autotap_lands": sequence(integer),
+    "_autotap_lands": sequence(record({"instanceId": nullable(integer), "mana": enum("")})),
     "london_mulligan": boolean,
 }
 

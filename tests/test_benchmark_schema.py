@@ -120,3 +120,24 @@ def test_legacy_mana_action_alias_preserved_across_structural_paths():
     assert s.extended_field("meta", "actionType", "ActionType_Activate_Mana")
     assert s.legal_labels(["Action: Activate_Mana"], {})
     assert not s.ACTION("ActionType_Activate_Mana_PrivateCustomer")
+
+
+def test_source_autotap_land_projection_nullable_reference_and_empty_mana_only():
+    for value, ok in [
+        ([{"instanceId": 42, "mana": ""}], True),
+        ([{"instanceId": None, "mana": ""}], True),
+        ([{"instanceId": "Private Customer", "mana": ""}], False),
+        ([{"instanceId": 42, "mana": "Private Customer"}], False),
+        ([{"instanceId": 42, "mana": "", "customer": "secret"}], False),
+    ]:
+        assert s.extended_field("meta", "_autotap_lands", value) is ok
+
+
+def test_native_action_aliases_and_stringified_cost_colors_are_bounded():
+    assert s.ACTION("ActivateMana") and s.ACTION("ActionType_PlayMdfc")
+    assert not s.ACTION("ActivateMana_PrivateCustomer")
+    assert s.MANA_COST([{"color": '[ "Red", "Green" ]', "count": 1}])
+    assert s.MANA_COST([{"color": ["ManaColor_AnyColor"], "count": 1}])
+    assert not s.MANA_COST([{"color": '["Private Customer"]', "count": 1}])
+    assert not s.MANA_COST([{"color": '{"account":"secret"}', "count": 1}])
+    assert not s.MANA_COST([{"color": [{"account": "secret"}], "count": 1}])
