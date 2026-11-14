@@ -1702,7 +1702,7 @@ def test_fury_hard_cast_and_evoke_valued_from_record(monkeypatch, caplog):
     """standalone.log:2102062 'can't value: Fury (its triggered ability)' — with a
     record the hard cast's ETB damage is removal reach AND the evoke mode becomes a
     real variant: mana value 0, one red hand card paid on the cast, and the 4/4 body
-    leaves again at the next upkeep (stays_on_battlefield False)."""
+    is sacrificed before combat (stays_on_battlefield False)."""
 
     from arenamcp import line_search_moves as lsm
     from arenamcp.card_facts.schema import card_facts_from_dict
@@ -1754,7 +1754,7 @@ def test_lotus_cobra_landfall_mana_is_not_a_cast_discount(monkeypatch):
     """Oracle: "Whenever a land you control enters, add one mana of any color" — the
     mana arrives when a LAND enters, never when the Cobra is cast (#A1 review round 5).
     The record's ETB AddMana is therefore NOT folded into the payable casting cost:
-    the card stays unmodelled (conservative) and its variants are exactly the
+    its casting variants are exactly the
     text-parser baseline — {1}{G}, no discount, no consumption."""
     import dataclasses
 
@@ -1771,9 +1771,8 @@ def test_lotus_cobra_landfall_mana_is_not_a_cast_discount(monkeypatch):
 
     _with_records(monkeypatch, [(_LOTUS_COBRA_CARD, _LOTUS_COBRA_RECORD)])
     after = _a1_variants(source)
-    # The land-entry trigger is not self-bound: no cast-time representation exists,
-    # so the record must NOT clear the unmodelled flag nor discount the cast.
-    assert lsm.unmodelled_effect(dict(_LOTUS_COBRA_CARD)) == baseline_reason
+    # Future land entries are represented separately; casting still costs two.
+    assert lsm.unmodelled_effect(dict(_LOTUS_COBRA_CARD)) == ""
     base_plain, after_plain = baseline["Lotus Cobra"][1], after["Lotus Cobra"][1]
     assert base_plain is not None and after_plain is not None
     assert base_plain.mana_value == 2 and after_plain.mana_value == 2  # still {1}{G}
@@ -1807,7 +1806,7 @@ def test_chrome_mox_imprint_cost_paid_from_record(monkeypatch):
     _with_records(monkeypatch, [(_CHROME_MOX_CARD, _CHROME_MOX_RECORD)])
     after = _a1_variants(source)
     assert lsm.unmodelled_effect(dict(_CHROME_MOX_CARD)) == ""
-    plain = after["Chrome Mox"][1]
+    plain = next(v for v in after["Chrome Mox"][0] if v.imprint_rock)
     assert plain is not None and plain.rock  # still a mana rock
     assert plain.imprint_rock  # its colours come from the exiled card, not any colour
     assert plain.consumes == 1  # the imprint exile is paid on the cast
@@ -1823,7 +1822,11 @@ def test_chrome_mox_imprint_cost_paid_from_record(monkeypatch):
             for v in variants
         ]
 
-    assert unimprinted(after["Chrome Mox"][0]) == unimprinted(baseline["Chrome Mox"][0])
+    assert unimprinted([v for v in after["Chrome Mox"][0] if v.imprint_rock]) == unimprinted(
+        baseline["Chrome Mox"][0]
+    )
+    assert any(not v.rock and not v.consumes for v in after["Chrome Mox"][0])
+    assert not after["Chrome Mox"][1].rock  # baseline declines optional imprint
     assert all(not v.ephemeral for v in after["Chrome Mox"][0])
 
 
@@ -1952,3 +1955,96 @@ def test_match_boundary_resets_the_record_use_log():
     marker = source.index("Match boundary detected")
     window = source[marker : marker + 4000]
     assert "reset_record_use_log()" in window
+
+
+def test_a1_payments_and_evoke_are_applied_to_real_search_nodes(monkeypatch):
+    """A1 captured Fury/Chrome Mox cases: inspect actual transitions, not variant flags."""
+    from arenamcp import line_search_moves as lsm
+
+    _with_records(monkeypatch, [(_FURY_CARD, _FURY_RECORD), (_CHROME_MOX_CARD, _CHROME_MOX_RECORD)])
+    blue = {"name": "Blue payment", "type_line": "Sorcery", "mana_cost": "{U}", "oracle_text": ""}
+    source = _a1_board(_FURY_CARD, _CHROME_MOX_CARD, _SHOCK_CARD, blue)
+    observed = []
+    apply = lsm.Moves._apply_casts
+
+    def inspect(self, mid, *args, **kwargs):
+        before = set(mid.hand)
+        apply(self, mid, *args, **kwargs)
+        casting = {v.spell for v, _ in mid.casts}
+        paid = [i for v, _ in mid.casts for i in v.payment]
+        assert not casting.intersection(paid)
+        assert len(paid) == len(set(paid))
+        assert set(paid).issubset(before)
+        assert not set(paid).intersection(mid.hand)
+        for var, _ in mid.casts:
+            if var.ephemeral:
+                assert all(b["instance_id"] != var.body["instance_id"] for b in mid.ours)
+                observed.append("evoke")
+            if var.imprint_rock:
+                expected = set().union(
+                    *(lsm._body_colors(self.spells[i].spell.card) or set() for i in var.payment)
+                )
+                rocks = [r for r in mid.rocks if r.name == self.spells[var.spell].name]
+                assert rocks and rocks[-1].produces == frozenset(expected)
+                observed.append(tuple(sorted(expected)))
+            elif self.spells[var.spell].name == "Chrome Mox":
+                assert not var.consumes and not var.rock
+                observed.append("decline")
+
+    monkeypatch.setattr(lsm.Moves, "_apply_casts", inspect)
+    _a1_variants(source)
+    assert "evoke" in observed
+    assert "decline" in observed
+    assert ("R",) in observed and ("U",) in observed
+
+
+def test_a1_landfall_mana_requires_existing_body_and_real_land_entry(monkeypatch):
+    """Cobra captured oracle: tapped land still triggers; no entry means no mana."""
+    from types import SimpleNamespace
+
+    from arenamcp import line_search_moves as lsm
+
+    _with_records(monkeypatch, [(_LOTUS_COBRA_CARD, _LOTUS_COBRA_RECORD)])
+    moves = lsm.Moves.__new__(lsm.Moves)
+    moves.our_turn = True
+    moves.model = SimpleNamespace(sources_now=[], sources_all=[], our_permanents=[])
+    body = {"instance_id": 900, "_card": dict(_LOTUS_COBRA_CARD)}
+    node = SimpleNamespace(k=0, played=(), rocks=(), ours=(body,))
+    land = lsm.Land(
+        42,
+        "Tapped land",
+        frozenset({"G"}),
+        True,
+        SimpleNamespace(produces=frozenset({"G"}), name="Tapped land"),
+    )
+    assert moves.sources(node, None) == ([], [])
+    base, all_sources = moves.sources(node, land)
+    assert not base and len(all_sources) == 1 and all_sources[0].produces == frozenset("WUBRG")
+    node.ours = ()
+    assert moves.sources(node, land) == ([], [])  # not yet cast: no trigger
+
+
+def test_a1_self_entry_mana_never_prepays_cast_and_unknown_costs_abstain():
+    from arenamcp import line_search_moves as lsm
+    from arenamcp.card_facts.schema import card_facts_from_dict
+
+    card = dict(_LOTUS_COBRA_CARD, oracle_text="When this creature enters, add one mana of any color.")
+    assert lsm._record_semantics(card_facts_from_dict(_LOTUS_COBRA_RECORD), card["name"], card) is None
+    for cost in ("{C}", "{2/R}", "{R/P}", "{X}", "not mana"):
+        assert lsm._cost_mana_value(cost) is None
+    assert lsm._cost_mana_value("{3}{R}{R}") == 5
+
+
+def test_a1_captured_case_unevaluated_count_improves_without_model(monkeypatch):
+    from arenamcp import line_search_moves as lsm
+
+    cases = [
+        (_FURY_CARD, _FURY_RECORD),
+        (_LOTUS_COBRA_CARD, _LOTUS_COBRA_RECORD),
+        (_CHROME_MOX_CARD, _CHROME_MOX_RECORD),
+    ]
+    _with_records(monkeypatch, [])
+    before = sum(bool(lsm.unmodelled_effect(dict(card))) for card, _ in cases)
+    _with_records(monkeypatch, cases)
+    after = sum(bool(lsm.unmodelled_effect(dict(card))) for card, _ in cases)
+    assert (before, after) == (3, 0)  # captured-card test boards, not live-match evidence
