@@ -1,21 +1,12 @@
 """Compile card-facts records from printed card text using the model.
 
-One model call per card: the prompt carries the full printed rules text of
-every face and asks only for what that text states; anything the text does not
-state must come back as ``unknown``/empty rather than a guess. The answer is
-validated against the printed card with :func:`arenamcp.card_facts.validate`,
-retried once with the problems listed, and written one JSON file per card,
-named by ``rules_hash``.
-
-Printed-text source (one choice, stated here so server and client hash the
-same bytes): **Scryfall**. Every record's ``rules_hash`` is computed over
-Scryfall's ``name``, ``mana_cost``, ``type_line`` and ``oracle_text`` exactly
-as Scryfall prints them — ``{T}``, not Arena's ``{oT}``. Arena card IDs are
-resolved to card names through the local MTGA database when one is installed,
-falling back to Scryfall's arena index; the printed text itself always comes
-from Scryfall either way. For multi-face cards the rules text is what
-:mod:`arenamcp.scryfall` produces: the faces' oracle text joined with
-``\\n---\\n``.
+One model call per supported single-face card, with one validation retry.
+Printed fields come from Scryfall. Compiler and client share conservative
+executable-source admission and preserve legacy four-field hashes byte-for-byte.
+Native markup/symbols and linked/multiface sources are unresolved, not silently
+translated or compiled as front-only approximations. Complete raw Scryfall face
+fields are retained for source inspection, but the current facts schema cannot
+bind effects/modes to faces and therefore must not certify such records.
 
 Model access mirrors ``game_plan._complete``: background lane, low scheduling
 priority, ``call_class`` ``background.card_facts``, high reasoning effort.
@@ -23,6 +14,7 @@ priority, ``call_class`` ``background.card_facts``, high reasoning effort.
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import re
@@ -32,8 +24,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from arenamcp.card_facts.hashing import rules_hash
 from arenamcp.card_facts.schema import CardFacts, card_facts_from_dict, to_json
+from arenamcp.card_facts.source_identity import executable_source_hash
 from arenamcp.card_facts.validate import PrintedCard, validate
 from arenamcp.game_plan import BACKGROUND_PRIORITY, accepted_call_kwargs
 
@@ -89,6 +81,13 @@ def _raw_card_dict(scryfall: Any, name: str) -> dict[str, Any]:
 def _printed_from_scryfall_card(card: Any, scryfall: Any) -> PrintedCard:
     """PrintedCard from a ScryfallCard (or anything with the same fields)."""
     raw = _raw_card_dict(scryfall, card.name)
+    # Either representation can establish unsupported face identity. Empty
+    # metadata in the cache must not erase known object faces (or vice versa).
+    faces = []
+    for candidate in (raw.get("card_faces"), getattr(card, "card_faces", None)):
+        if candidate is not None and (type(candidate) is not list or candidate):
+            faces = copy.deepcopy(candidate)
+            break
     return PrintedCard(
         name=card.name,
         mana_cost=card.mana_cost,
@@ -97,6 +96,7 @@ def _printed_from_scryfall_card(card: Any, scryfall: Any) -> PrintedCard:
         power=card.power or None,
         toughness=card.toughness or None,
         loyalty=_loyalty_of(raw),
+        card_faces=faces,
     )
 
 
@@ -278,6 +278,8 @@ def _stats_line(card: PrintedCard) -> str:
 
 def build_user_prompt(card: PrintedCard) -> str:
     """The printed-card block shown to the model."""
+    if executable_source_hash(card) is None:
+        raise ValueError("unsupported printed source representation")
     lines = [
         f"CARD: {card.name}",
         f"Mana cost: {card.mana_cost or '(none)'}",
@@ -494,12 +496,10 @@ def _raw_native_type_problems(data: dict[str, Any]) -> list[str]:
 
 def _stamp(record_data: dict[str, Any], printed: PrintedCard) -> CardFacts:
     """Build the record from the model's dict and stamp compiler-owned fields."""
-    record_data["rules_hash"] = rules_hash(
-        printed.name,
-        printed.mana_cost,
-        printed.type_line,
-        printed.oracle_text,
-    )
+    digest = executable_source_hash(printed)
+    if digest is None:
+        raise ValueError("unsupported printed source representation")
+    record_data["rules_hash"] = digest
     # Compiler-owned provenance: always stamped here, never taken from the
     # model's answer.
     record_data["compiled_by"] = COMPILED_BY
@@ -595,14 +595,14 @@ def compile_one(
     result = CompileResult(identifier=str(identifier))
 
     printed = resolver.resolve(identifier)
-    if printed is None:
+    if printed is None or executable_source_hash(printed) is None:
         result.status = _STATUS_UNRESOLVED
         result.problems = [f"could not resolve {identifier!r} to a printed card"]
         result.seconds = time.perf_counter() - started
         return result
 
     result.name = printed.name
-    result.rules_hash = rules_hash(printed.name, printed.mana_cost, printed.type_line, printed.oracle_text)
+    result.rules_hash = executable_source_hash(printed)
 
     system_prompt = _SYSTEM_PROMPT
     user_prompt = build_user_prompt(printed)
@@ -715,13 +715,13 @@ def compile_cards(
 
     for identifier in identifiers:
         printed = resolver.resolve(identifier)
-        if printed is None:
+        if printed is None or executable_source_hash(printed) is None:
             summary["unresolved"] += 1
             summary["cards"].append({"identifier": str(identifier), "status": _STATUS_UNRESOLVED})
             logger.warning("card_facts: unresolved identifier %r", identifier)
             continue
 
-        digest = rules_hash(printed.name, printed.mana_cost, printed.type_line, printed.oracle_text)
+        digest = executable_source_hash(printed)
         destination = out_path / f"{digest}.json"
         if destination.exists():
             summary["skipped"] += 1

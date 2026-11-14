@@ -70,6 +70,8 @@ class CardInfo:
     toughness: str = ""
     related_faces: list[dict[str, Any]] = field(default_factory=list)
     is_token: bool = False
+    linked_face_ids: list[int] = field(default_factory=list)
+    card_faces: list[dict[str, Any]] = field(default_factory=list)
 
 
 @runtime_checkable
@@ -123,6 +125,7 @@ class ScryfallAdapter:
             arena_id=card.arena_id or 0,
             scryfall_uri=card.scryfall_uri or "",
             source="scryfall",
+            card_faces=getattr(card, "card_faces", []),
             rarity=getattr(card, "rarity", ""),
             power=getattr(card, "power", ""),
             toughness=getattr(card, "toughness", ""),
@@ -142,6 +145,7 @@ class ScryfallAdapter:
             arena_id=card.arena_id or 0,
             scryfall_uri=card.scryfall_uri or "",
             source="scryfall",
+            card_faces=getattr(card, "card_faces", []),
             rarity=getattr(card, "rarity", ""),
             power=getattr(card, "power", ""),
             toughness=getattr(card, "toughness", ""),
@@ -270,6 +274,7 @@ class MTGADatabaseAdapter:
             power=getattr(card, "power", ""),
             toughness=getattr(card, "toughness", ""),
             related_faces=related_faces,
+            linked_face_ids=list(getattr(card, "linked_face_ids", [])),
             is_token=bool(getattr(card, "is_token", False)),
         )
 

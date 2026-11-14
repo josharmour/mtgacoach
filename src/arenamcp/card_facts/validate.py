@@ -14,7 +14,7 @@ individual cards and no card-name-specific logic.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from arenamcp.card_facts.hashing import normalise
 from arenamcp.card_facts.schema import CardFacts
@@ -24,7 +24,8 @@ from arenamcp.card_facts.schema import CardFacts
 class PrintedCard:
     """The printed card as the card source states it (e.g. Scryfall fields).
 
-    ``oracle_text`` is all faces' rules text concatenated with newlines.
+    ``oracle_text`` is the source projection. Full raw ``card_faces`` are
+    retained when present; executable compilation currently refuses them.
     """
 
     name: str
@@ -34,6 +35,7 @@ class PrintedCard:
     power: str | None = None
     toughness: str | None = None
     loyalty: str | None = None
+    card_faces: list[dict] = field(default_factory=list)
 
 
 # Keyword abilities this validator recognises when stated by a type line or
