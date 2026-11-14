@@ -73,3 +73,45 @@ def test_bad_result_refused(tmp_path, monkeypatch, row):
     monkeypatch.setattr(b, "replay", lambda case: row)
     with pytest.raises(ValueError):
         b.aggregate_only(tmp_path)
+
+
+def test_static_database_is_never_initialized(tmp_path, monkeypatch):
+    setup(monkeypatch)
+    from arenamcp import card_db, match_context
+    from arenamcp.action_planner import _ability_rules_text
+
+    calls = []
+    monkeypatch.setattr(card_db, "get_card_database", lambda: calls.append("unsafe"))
+
+    def replay(case):
+        assert match_context._local_card(123, 0) == {}
+        assert _ability_rules_text(123) == ""
+        return {"status": "withheld", "seconds": 0, "generation_attempts": 0}
+
+    monkeypatch.setattr(b, "replay", replay)
+    b.aggregate_only(tmp_path)
+    assert calls == []
+
+
+def test_direct_fd_output_hidden_and_restored(tmp_path, monkeypatch, capfd):
+    import os
+    import subprocess
+    import sys
+
+    setup(monkeypatch)
+
+    def replay(case):
+        os.write(1, b"private native stdout")
+        os.write(2, b"private native stderr")
+        subprocess.run([sys.executable, "-c", 'import os; os.write(2,b"private child")'], check=True)
+        raise ValueError("private failure")
+
+    monkeypatch.setattr(b, "replay", replay)
+    with pytest.raises(ValueError):
+        b.aggregate_only(tmp_path)
+    out = capfd.readouterr()
+    assert out.out == "" and out.err == ""
+    os.write(1, b"restored out")
+    os.write(2, b"restored err")
+    out = capfd.readouterr()
+    assert out.out == "restored out" and out.err == "restored err"

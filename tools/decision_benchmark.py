@@ -13,6 +13,7 @@ import logging
 import math
 import os
 import re
+import sys
 import time
 from pathlib import Path
 
@@ -862,6 +863,33 @@ def diff_reports(before, after):
     }
 
 
+@contextlib.contextmanager
+def _silence_replay_diagnostics():
+    """Dedicated-process FD and Python stream suppression, restored on errors.
+
+    Covers direct writes and inherited subprocess stdout/stderr, not arbitrary
+    file writes or hostile code. No background work may escape this scope.
+    """
+    saved = []
+    with open(os.devnull, "w") as sink:
+        try:
+            sys.stdout.flush()
+            sys.stderr.flush()
+            for descriptor in (1, 2):
+                duplicate = os.dup(descriptor)
+                saved.append((descriptor, duplicate))
+                os.dup2(sink.fileno(), descriptor)
+            with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
+                yield
+                sink.flush()
+        finally:
+            for descriptor, duplicate in reversed(saved):
+                try:
+                    os.dup2(duplicate, descriptor)
+                finally:
+                    os.close(duplicate)
+
+
 def aggregate_only(bundles):
     """Replay in memory and return allowlisted counters, never cases or choices.
 
@@ -870,13 +898,17 @@ def aggregate_only(bundles):
     """
     if not bundles.is_dir():
         raise ValueError("bundle directory missing")
+    from unittest.mock import patch
+
     previous = logging.root.manager.disable
     try:
         logging.disable(logging.CRITICAL)
         with (
-            open(os.devnull, "w") as sink,
-            contextlib.redirect_stdout(sink),
-            contextlib.redirect_stderr(sink),
+            _silence_replay_diagnostics(),
+            patch("arenamcp.match_context._local_card", return_value={}),
+            patch(
+                "arenamcp.card_db.get_card_database", side_effect=RuntimeError("offline database disabled")
+            ),
         ):
             cases, _, _ = build_cases(bundles.glob("*.json.gz"))
             counts = {key: 0 for key in ("answered", "withheld", "invalid", "error")}
