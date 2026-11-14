@@ -5233,17 +5233,17 @@ class GamePlanManager:
         reason: str = "",
     ) -> GamePlan | None:
         from arenamcp.board_assessment import assess
-        from arenamcp.match_context import prepare_match_context, with_deck_reference
+        from arenamcp.match_context import prepare_match_context, split_deck_reference
 
         # A plan spans turns: it lists the library's remaining cards (outs).
         game_state = prepare_match_context(game_state, library=True)
         context = self._build_context(game_state)
         assessment = assess(game_state)
         # Stable text first, for the server's prefix cache: system prompt,
-        # deck reference (with_deck_reference) and the deck playbook, then the
-        # volatile board.
+        # deck list and commanders, the deck playbook, then the RULES
+        # section (grows only as cards are seen), then the volatile board.
         seed = self._seed_text(game_state)
-        user_parts = [f"DECK PLAYBOOK / STRATEGY:\n{seed}\n"] if seed else []
+        user_parts = []
         user_parts.append(context)
         from arenamcp.damage_decisions import strategy_facts
         from arenamcp.loyalty_removal import loyalty_strategy_context
@@ -5299,7 +5299,15 @@ class GamePlanManager:
                 f"executable win condition / next play this time."
             )
         user_parts.append("\nForm the GAME PLAN as JSON now.")
-        user_message = with_deck_reference("\n".join(user_parts), game_state)
+        # Prefix-cache order (E2): deck list and commanders (stable all
+        # match), then the deck playbook (per deck), then the RULES section
+        # (grows only as cards are seen), then the volatile board. Blocks
+        # keep their exact bytes; only their order changes.
+        seed_block = f"DECK PLAYBOOK / STRATEGY:\n{seed}\n" if seed else ""
+        head, rules = split_deck_reference(str(game_state.get("deck_reference") or ""))
+        user_message = "\n\n".join(
+            block for block in (head, seed_block, rules, "\n".join(user_parts)) if block
+        )
 
         self._reform_failure = ""
         model = str(getattr(self._backend, "model", "")).lower()

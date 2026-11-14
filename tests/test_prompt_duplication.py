@@ -243,7 +243,9 @@ def test_hand_and_command_zone_rules_are_quoted_once_with_the_deck_reference(mon
         assert prompt.count(ELF_RULE) == 1, build.__name__
         assert prompt.count(GROWTH_RULE) == 1, build.__name__
         assert prompt.count(MATRIARCH_RULE) == 1, build.__name__
-        assert ELF_RULE in prompt.split("\n\n", 1)[0]  # the deck reference, the prompt's first block
+        assert (
+            ELF_RULE in prompt.split("\nHAND:", 1)[0]
+        )  # the deck reference's RULES section, ahead of the hand
         hand = prompt.split("\nHAND:", 1)[1]
         assert "Fixture Mana Elf #1" in hand and "Fixture Mana Elf #2" in hand and "Fixture Growth" in hand
 

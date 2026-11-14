@@ -434,6 +434,23 @@ class DeckPlaybook:
         ]
 
     def decision_context(self, state: dict, *, request_type: str | None = None) -> str:
+        lines, _ = self._decision_context_lines(state, request_type=request_type)
+        return "\n".join(lines)
+
+    def decision_context_parts(self, state: dict, *, request_type: str | None = None) -> tuple[str, str, str]:
+        """Return original rendering, stable fields and variable fields.
+
+        Each field remains atomic even when its free text contains newlines
+        or strings resembling another field's label.
+        """
+        lines, core = self._decision_context_lines(state, request_type=request_type)
+        return (
+            "\n".join(lines),
+            "\n".join(value for index, value in enumerate(lines) if index in core),
+            "\n".join(value for index, value in enumerate(lines) if index not in core),
+        )
+
+    def _decision_context_lines(self, state: dict, *, request_type: str | None = None):
         """Keep the relevant learned exceptions close to the immediate choice.
 
         ``request_type``: the pending request's type when the caller knows it
@@ -479,6 +496,8 @@ class DeckPlaybook:
             "explain which rule applies or which constraint defeats it. Mechanical combat scores "
             "omit trigger/recovery value. Do not reduce these decisions to generic token/body value.",
         ]
+        # Indices refer to complete rendered fields, never text line prefixes.
+        core_indices = set(range(len(lines)))
         casts_by_card = state.get("commander_casts") or {}
         for gid in self.commanders:
             card = self.catalog[gid]
@@ -494,6 +513,7 @@ class DeckPlaybook:
                 "Other cost modifiers and Arena's current payable options still apply."
             )
         for policy in self.data["commanders"]:
+            core_indices.add(len(lines))
             lines.append(
                 f"Commander policy [grp:{policy['card']}]: {policy['preserve_or_reuse']} "
                 f"Constraints: {policy['constraints']}"
@@ -526,7 +546,7 @@ class DeckPlaybook:
                     f"Keeping this London hand bottoms {bottom} and keeps {max(0, 7 - bottom)} "
                     "of the seven shown cards; Arena's actual bottom request remains authoritative."
                 )
-        return "\n".join(lines)
+        return lines, core_indices
 
     def render(self, *, omit_oracle_for: Collection[int] = ()) -> str:
         """The full playbook text.

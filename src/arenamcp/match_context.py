@@ -421,13 +421,19 @@ def prepare_match_context(
         reference.append("COMMANDER REFERENCE (availability and command tax depend on live state)")
         reference.extend(_card_line(catalog[gid], count, gid) for gid, count in sorted(commanders.items()))
     full_rules = full_rules or _tutor_in_hand(state)
+    candidate_gids: list[int] = []
     if full_rules:
         quoted = sorted(deck)
     else:
         quoted = _rules_order(state, catalog, _visible_grp_ids(state, catalog))
-        quoted += sorted(
+        # grp ids a pending decision offers (tutor candidates and the like):
+        # quoted for this call only, appended after the cards already seen so
+        # the stable reference and these per-window lines can be separated
+        # without changing a single byte (E2 prefix-cache ordering).
+        candidate_gids = sorted(
             gid for gid in {int(g) for g in reveal if isinstance(g, int)} if gid in deck and gid not in quoted
         )
+        quoted += candidate_gids
     quoted = [gid for gid in quoted if gid not in commanders]
     if quoted:
         # Each card's count, cost, type and printed stats are on its deck-list
@@ -444,6 +450,21 @@ def prepare_match_context(
         )
         reference.extend(_card_line(catalog[gid], deck[gid], gid, listed=True) for gid in quoted)
     result["deck_reference"] = "\n".join(reference)
+    # E2: the same reference, split at the per-window candidate lines. The
+    # candidates are appended last above, so the stable part is the reference
+    # minus exactly those trailing lines; recomposing the two fields reproduces
+    # ``deck_reference`` byte for byte.
+    candidate_lines = [
+        _card_line(catalog[gid], deck[gid], gid, listed=True)
+        for gid in candidate_gids
+        if gid not in commanders
+    ]
+    if candidate_lines:
+        result["decision_candidate_rules"] = "\n".join(candidate_lines)
+        result["deck_reference_stable"] = "\n".join(reference[: len(reference) - len(candidate_lines)])
+    else:
+        result["decision_candidate_rules"] = ""
+        result["deck_reference_stable"] = result["deck_reference"]
     result["deck_catalog"] = catalog
     result["deck_rules_grp_ids"] = sorted(set(quoted) | set(commanders))
     result["library_listed"] = bool(library or full_rules or library_in_play(state))
@@ -512,3 +533,19 @@ def with_deck_reference(prompt: str, state: dict) -> str:
     """Keep stable deck text before volatile board/options for prefix caching."""
     reference = state.get("deck_reference")
     return f"{reference}\n\n{prompt}" if reference else prompt
+
+
+def split_deck_reference(reference: str) -> tuple[str, str]:
+    """Split a deck reference into ``(head, rules section)``.
+
+    The head (deck list and commanders) is byte-identical for the whole
+    match; the RULES section after it grows only as cards are seen and ends
+    with the pending decision's candidate lines. Callers that reorder these
+    blocks for the server's prefix cache use this so every byte of each
+    block stays exactly as :func:`prepare_match_context` rendered it.
+    """
+    lines = reference.split("\n")
+    for index, line in enumerate(lines):
+        if line.startswith("RULES"):
+            return "\n".join(lines[:index]).rstrip("\n"), "\n".join(lines[index:])
+    return reference, ""

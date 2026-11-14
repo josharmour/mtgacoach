@@ -40,7 +40,12 @@ from arenamcp.decision_memory import (
 )
 from arenamcp.decisions import expand_target_selection
 from arenamcp.mana_potential import mana_reach_note
-from arenamcp.match_context import prepare_match_context, strategic_policy, with_deck_reference
+from arenamcp.match_context import (
+    prepare_match_context,
+    split_deck_reference,
+    strategic_policy,
+    with_deck_reference,
+)
 from arenamcp.play_safety import filter_play_options, find_source, shrink_note, unsafe_play_reason
 from arenamcp.situational_rules import SUBJECTS as SITUATIONAL_SUBJECTS
 from arenamcp.situational_rules import compose as compose_rules
@@ -615,7 +620,10 @@ def autopilot_system_prompt(subjects: Any = SITUATIONAL_SUBJECTS) -> str:
     rules = AUTOPILOT_SYSTEM_PROMPT
     if dropped:
         rules = "\n".join(line for line in rules.split("\n") if not line.startswith(dropped))
-    return rules + "\n" + strategic_policy(wanted)
+    # E2: the strategic policy leads BOTH system prompts (typed decisions and
+    # autopilot plan_actions), so the two calls share one long cached prefix;
+    # the per-prompt rule text follows. Pure reorder, no byte changes.
+    return strategic_policy(wanted) + "\n" + rules
 
 
 def _strip_attacker_annotations(tail: str) -> str:
@@ -929,6 +937,38 @@ class ActionPlanner(_ActionLegalityMixin):
             # entire playbook, every source quotation, and then these rules.
             parts.append(playbook.decision_context(state, request_type=request_type))
         return "\n\n".join(parts)
+
+    @staticmethod
+    def _split_playbook_context(context: str) -> tuple[str, str]:
+        """Opaque rendered text has no trustworthy field boundaries."""
+        return context, ""
+
+    def _playbook_context_parts(self, context: str, state: dict, request_type: str) -> tuple[str, str]:
+        from arenamcp.deck_strategy import DeckPlaybook
+
+        try:
+            book = self._deck_playbook()
+            if type(book) is DeckPlaybook:
+                # Only the native field renderer defines trustworthy ownership.
+                # Do not accept a subclass's arbitrary echoed-original/parts.
+                fields, core = DeckPlaybook._decision_context_lines(book, state, request_type=request_type)
+                if (
+                    type(fields) is list
+                    and all(type(field) is str for field in fields)
+                    and type(core) is set
+                    and all(type(index) is int and 0 <= index < len(fields) for index in core)
+                    and "\n".join(fields) == context
+                ):
+                    return (
+                        "\n".join(field for index, field in enumerate(fields) if index in core),
+                        "\n".join(field for index, field in enumerate(fields) if index not in core),
+                    )
+        except Exception:
+            # Optional cache ordering cannot invalidate an already captured
+            # strategy. Preserve its exact text without logging private content.
+            pass
+        # Provider changed, failed or custom renderer: preserve captured block.
+        return self._split_playbook_context(context)
 
     # Ledger #219 (Sealed 98c89a24 T15/T17/T19): with the attack bug (#216) gone
     # the model still held real creatures behind blockers for whole turns while
@@ -4570,7 +4610,10 @@ class ActionPlanner(_ActionLegalityMixin):
     @classmethod
     def _decision_system_prompt(cls, subjects: Any = SITUATIONAL_SUBJECTS) -> str:
         """The typed-decision system prompt for the rule subjects in play (all by default)."""
-        return compose_rules(cls._DECISION_SYSTEM_PARTS, subjects) + "\n" + strategic_policy(subjects)
+        # E2: the strategic policy leads, so the typed-decision and autopilot
+        # plan_actions system prompts share one long cached prefix; the
+        # per-prompt rule text follows. Pure reorder, no byte changes.
+        return strategic_policy(subjects) + "\n" + compose_rules(cls._DECISION_SYSTEM_PARTS, subjects)
 
     def plan_decision_options(self, decision: Any, game_state: dict[str, Any]) -> list[str]:
         """Choose option ids for a typed PendingDecision, remembering the choice.
@@ -10274,8 +10317,38 @@ class ActionPlanner(_ActionLegalityMixin):
         if memory_block:
             lines.append("")
             lines.append(memory_block)
-        user_message = with_deck_reference(
-            (stable_strategy + "\n\n" if stable_strategy else "") + "\n".join(lines), game_state
+        # Prefix-cache order (E2): the stable part leads, ordered from most
+        # shared to least (Do4's ladder) — the deck list and commanders are
+        # identical for every call of the match, the playbook core (plan and
+        # commander policies) is fixed per deck, the RULES section grows per
+        # match as cards are seen, the playbook's live figures and
+        # window-selected rules change with casts and window kinds, the
+        # candidate rules quote this window's options, and the board and
+        # options change call to call. Because the playbook core now sits
+        # between the deck-list head and the RULES section, drawing a new
+        # card mid-match no longer invalidates the strategy prefix; and
+        # because the playbook's variable lines sit behind that section, a
+        # growing commander tax or a different window kind no longer erases
+        # it either. Blocks keep their exact bytes; only their order changes.
+        stable_reference = str(
+            game_state.get("deck_reference_stable") or game_state.get("deck_reference") or ""
+        )
+        candidate_rules = str(game_state.get("decision_candidate_rules") or "")
+        reference_head, seen_rules = split_deck_reference(stable_reference)
+        playbook_core, playbook_tail = self._playbook_context_parts(
+            stable_strategy, game_state, decision.request_type
+        )
+        user_message = "\n\n".join(
+            block
+            for block in (
+                reference_head,
+                playbook_core,
+                seen_rules,
+                playbook_tail,
+                candidate_rules,
+                "\n".join(lines),
+            )
+            if block
         )
         # Removal, spending a plan card, or targeting a removal effect: the
         # model thinks at high effort with a longer budget. Routine priority

@@ -68,10 +68,12 @@ def _decision(request_type="ActionsAvailable", labels=("Pass",), min_weight=None
 
 
 def test_with_every_subject_in_play_the_prompts_are_the_full_rules():
+    # E2 prefix order: the shared strategic policy leads both system prompts;
+    # the class-specific rules follow (see tests/test_prompt_cache_order_e2.py).
     assert ActionPlanner._decision_system_prompt(SUBJECTS) == (
-        ActionPlanner._DECISION_SYSTEM_PROMPT + "\n" + STRATEGIC_POLICY
+        STRATEGIC_POLICY + "\n" + ActionPlanner._DECISION_SYSTEM_PROMPT
     )
-    assert autopilot_system_prompt(SUBJECTS) == AUTOPILOT_SYSTEM_PROMPT + "\n" + STRATEGIC_POLICY
+    assert autopilot_system_prompt(SUBJECTS) == STRATEGIC_POLICY + "\n" + AUTOPILOT_SYSTEM_PROMPT
     for rule in (CREW, ANIMATION, EQUIPMENT, COMMANDER, LAND_SEARCH, SEARCH_CHOICE, TUTORS, FETCH):
         assert rule in ActionPlanner._DECISION_SYSTEM_PROMPT + STRATEGIC_POLICY, rule
 
