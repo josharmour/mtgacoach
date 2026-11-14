@@ -377,3 +377,54 @@ def test_public_format_collision_with_real_identity_rejected(tmp_path):
         cases, _, counts = b.build_cases([path])
         assert not cases
         assert counts["unsafe_schema_or_identity"] == 1
+
+
+def test_all_native_public_event_roles_and_source_collisions(tmp_path):
+    import copy
+
+    base = sample()
+    state = base["packet"]["decisions"][0]["state_snapshot"]["state"]
+    state.update(format_name="Ladder", event_id="Ladder")
+    base["final_state"] = dict(state)
+    base["bug_reports"] = [{"report": {"game_state": dict(state)}}]
+    assert "Ladder" not in b.discover_identities(base)
+    path = tmp_path / "bundle.json"
+    path.write_text(json.dumps(base))
+    cases, _, counts = b.build_cases([path])
+    assert counts["eligible"] == 1
+    assert "event_id" not in json.dumps(cases)
+    for role in ("final", "report"):
+        for change in ("mismatch", "unknown", "account", "player", "alias"):
+            data = copy.deepcopy(base)
+            node = data["final_state"] if role == "final" else data["bug_reports"][0]["report"]["game_state"]
+            if change == "mismatch":
+                node["format_name"] = "Standard"
+            elif change == "unknown":
+                node.update(event_id="Private Event", format_name="Private Event")
+            elif change == "account":
+                node["account_id"] = "Ladder"
+            elif change == "player":
+                node["players"][0]["player_name"] = "Ladder"
+            else:
+                node["eventId"] = "Ladder"
+            expected = "Private Event" if change == "unknown" else "Ladder"
+            assert expected in b.discover_identities(data)
+            if change != "unknown":
+                path.write_text(json.dumps(data))
+                assert not b.build_cases([path])[0]
+
+
+def test_event_roles_do_not_extend_to_similarly_named_metadata():
+    import copy
+
+    node = {"event_id": "Ladder", "format_name": "Ladder"}
+    for data in (
+        {"metadata": {"final_state": node}},
+        {"packet": {"final_state": node}},
+        {"bug_reports": {"0": {"report": {"game_state": node}}}},
+        {"bug_reports": [{"metadata": {"report": {"game_state": node}}}]},
+        {"bug_reports": [{"report": {"metadata": {"game_state": node}}}]},
+        {"finalState": node},
+        {"final_state": {"metadata": node}},
+    ):
+        assert "Ladder" in b.discover_identities(copy.deepcopy(data))

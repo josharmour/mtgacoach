@@ -47,16 +47,28 @@ PUBLIC_FORMATS = frozenset(
 
 
 def public_snapshot_event(value, key, item, path):
-    """Classify only the native snapshot format alias, never other identity sources.
+    """Classify format aliases at three native game-state source roles only.
 
     The event field is still stripped from exported payloads. This only avoids
     treating a validated public format enum as a customer identity globally.
     """
+    native_role = (
+        (
+            len(path) == 5
+            and path[:2] == ("packet", "decisions")
+            and type(path[2]) is int
+            and path[3:] == ("state_snapshot", "state")
+        )
+        or path == ("final_state",)
+        or (
+            len(path) == 4
+            and path[0] == "bug_reports"
+            and type(path[1]) is int
+            and path[2:] == ("report", "game_state")
+        )
+    )
     return (
-        len(path) == 5
-        and path[:2] == ("packet", "decisions")
-        and type(path[2]) is int
-        and path[3:] == ("state_snapshot", "state")
+        native_role
         and key == "event_id"
         and type(item) is str
         and item in PUBLIC_FORMATS
