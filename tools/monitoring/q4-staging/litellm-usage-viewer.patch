@@ -1,0 +1,13 @@
+--- a/litellm-usage-viewer.py
++++ b/litellm-usage-viewer.py
+@@ -546,6 +546,9 @@
+         FROM "LiteLLM_VerificationToken"''')
+     result = load_outcomes(MTGA_TRIALS_DB, keys, frm, to,
+                           MTGACOACH_OWNER_EMAIL, MTGACOACH_OWNER_NAME)
+-    if view in ('users', 'totals'):
++    if view in ('autopilot', 'manual', 'unknown'):
++        mode = {'autopilot': 'autopilot', 'manual': 'played by hand', 'unknown': 'unknown'}[view]
++        return [row for row in result['modes'] if row['play_mode'] == mode]
++    if view in ('users', 'totals', 'modes', 'decks'):
+         return result[view]
+     return result

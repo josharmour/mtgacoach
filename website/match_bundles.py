@@ -130,6 +130,11 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_match_bundles_owner ON match_bundles(owner, received_at);
             """
         )
+        # Backward-compatible, idempotent migration. Legacy rows remain unknown.
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(match_bundles)")}
+        for name, sql_type in (("autopilot_enabled", "INTEGER"), ("format_name", "TEXT"), ("deck_name", "TEXT")):
+            if name not in columns:
+                conn.execute(f"ALTER TABLE match_bundles ADD COLUMN {name} {sql_type}")
 
 
 def _public_row(row: Any) -> dict[str, Any]:
@@ -190,6 +195,9 @@ def insert_bundle(
     platform: str,
     result: str,
     schema_version: Optional[int],
+    autopilot_enabled: Optional[bool] = None,
+    format_name: Optional[str] = None,
+    deck_name: Optional[str] = None,
 ) -> bool:
     """Insert an index row.  Returns False when (owner, install_id, match_id) exists."""
     with _get_db().get_db() as conn:
@@ -197,8 +205,9 @@ def insert_bundle(
             """
             INSERT OR IGNORE INTO match_bundles (
                 owner, install_id, match_id, license_key, auth_source, received_at, size,
-                path, app_version, platform, result, schema_version
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                path, app_version, platform, result, schema_version,
+                autopilot_enabled, format_name, deck_name
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 owner,
@@ -213,6 +222,9 @@ def insert_bundle(
                 platform,
                 result,
                 schema_version,
+                autopilot_enabled,
+                format_name,
+                deck_name,
             ),
         )
         return cur.rowcount > 0
@@ -422,6 +434,22 @@ def _validated_id(value: Any, name: str) -> str:
     return value
 
 
+def _outcome_dimensions(payload: dict[str, Any]) -> dict[str, Any]:
+    """Only explicit metadata can classify a reported game; unknown is not manual."""
+    settings = payload.get("settings_subset")
+    state = payload.get("final_state")
+    packet = payload.get("packet")
+    enabled = settings.get("autopilot_enabled") if isinstance(settings, dict) else None
+    format_name = state.get("format_name") if isinstance(state, dict) else None
+    strategy = packet.get("deck_strategy") if isinstance(packet, dict) else None
+    deck_name = strategy.splitlines()[0].strip() if isinstance(strategy, str) and strategy.splitlines() else None
+    return {
+        "autopilot_enabled": enabled if type(enabled) is bool else None,
+        "format_name": format_name.strip()[:160] if isinstance(format_name, str) and format_name.strip() else None,
+        "deck_name": deck_name[:160] if deck_name else None,
+    }
+
+
 def _summary_fields(payload: dict[str, Any]) -> tuple[str, str, str, Optional[int]]:
     app = payload.get("app") if isinstance(payload.get("app"), dict) else {}
     settings = payload.get("settings_subset") if isinstance(payload.get("settings_subset"), dict) else {}
@@ -527,6 +555,7 @@ async def upload_match_bundle(request: Request, auth: dict = Depends(authorize_u
         platform=platform,
         result=result,
         schema_version=schema_version,
+        **_outcome_dimensions(payload),
     )
     if not inserted:
         # Lost a race with a concurrent upload of the same match: keep theirs.

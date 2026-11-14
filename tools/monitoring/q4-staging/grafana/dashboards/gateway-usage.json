@@ -1,0 +1,4091 @@
+{
+ "annotations": {
+  "list": []
+ },
+ "editable": true,
+ "fiscalYearStartMonth": 0,
+ "graphTooltip": 1,
+ "links": [
+  {
+   "title": "Langfuse \u2014 payload drill-down",
+   "type": "link",
+   "url": "http://10.0.0.10:3100/project/default/traces?spanHours=24",
+   "targetBlank": true
+  }
+ ],
+ "panels": [
+  {
+   "datasource": {
+    "type": "yesoreyeram-infinity-datasource",
+    "uid": "sobriety-stats"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "thresholds"
+     },
+     "decimals": 0,
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     },
+     "unit": "none"
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 0,
+    "w": 4,
+    "h": 4
+   },
+   "id": 95116,
+   "options": {
+    "colorMode": "value",
+    "graphMode": "none",
+    "justifyMode": "auto",
+    "orientation": "auto",
+    "percentChangeColorMode": "standard",
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "/^today$/",
+     "values": false
+    },
+    "showPercentChange": false,
+    "textMode": "auto",
+    "wideLayout": true
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "yesoreyeram-infinity-datasource",
+      "uid": "sobriety-stats"
+     },
+     "format": "table",
+     "refId": "A",
+     "rootSelector": "",
+     "parser": "backend",
+     "source": "url",
+     "type": "json",
+     "url": "http://10.0.0.10:8090/api/stats/active-users?days=30",
+     "url_options": {
+      "data": "",
+      "method": "GET"
+     },
+     "maxRows": 500
+    }
+   ],
+   "title": "Sobriety Copilot \u00b7 today",
+   "type": "stat",
+   "description": "Distinct people who sent a chat, research or SMS message (app install id, else IP for older web builds, else phone number; counted as hashes, never stored). Windows are distinct users across the days, not sums. Days follow America/Los_Angeles."
+  },
+  {
+   "datasource": {
+    "type": "yesoreyeram-infinity-datasource",
+    "uid": "sobriety-stats"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "thresholds"
+     },
+     "decimals": 0,
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     },
+     "unit": "none"
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "x": 4,
+    "y": 0,
+    "w": 4,
+    "h": 4
+   },
+   "id": 87316,
+   "options": {
+    "colorMode": "value",
+    "graphMode": "none",
+    "justifyMode": "auto",
+    "orientation": "auto",
+    "percentChangeColorMode": "standard",
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "/^last_7_days$/",
+     "values": false
+    },
+    "showPercentChange": false,
+    "textMode": "auto",
+    "wideLayout": true
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "yesoreyeram-infinity-datasource",
+      "uid": "sobriety-stats"
+     },
+     "format": "table",
+     "refId": "A",
+     "rootSelector": "",
+     "parser": "backend",
+     "source": "url",
+     "type": "json",
+     "url": "http://10.0.0.10:8090/api/stats/active-users?days=30",
+     "url_options": {
+      "data": "",
+      "method": "GET"
+     },
+     "maxRows": 500
+    }
+   ],
+   "title": "Sobriety Copilot \u00b7 7 days",
+   "type": "stat",
+   "description": "Distinct people who sent a chat, research or SMS message (app install id, else IP for older web builds, else phone number; counted as hashes, never stored). Windows are distinct users across the days, not sums. Days follow America/Los_Angeles."
+  },
+  {
+   "datasource": {
+    "type": "yesoreyeram-infinity-datasource",
+    "uid": "sobriety-stats"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "thresholds"
+     },
+     "decimals": 0,
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     },
+     "unit": "none"
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "x": 8,
+    "y": 0,
+    "w": 4,
+    "h": 4
+   },
+   "id": 19462,
+   "options": {
+    "colorMode": "value",
+    "graphMode": "none",
+    "justifyMode": "auto",
+    "orientation": "auto",
+    "percentChangeColorMode": "standard",
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "/^last_30_days$/",
+     "values": false
+    },
+    "showPercentChange": false,
+    "textMode": "auto",
+    "wideLayout": true
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "yesoreyeram-infinity-datasource",
+      "uid": "sobriety-stats"
+     },
+     "format": "table",
+     "refId": "A",
+     "rootSelector": "",
+     "parser": "backend",
+     "source": "url",
+     "type": "json",
+     "url": "http://10.0.0.10:8090/api/stats/active-users?days=30",
+     "url_options": {
+      "data": "",
+      "method": "GET"
+     },
+     "maxRows": 500
+    }
+   ],
+   "title": "Sobriety Copilot \u00b7 30 days",
+   "type": "stat",
+   "description": "Distinct people who sent a chat, research or SMS message (app install id, else IP for older web builds, else phone number; counted as hashes, never stored). Windows are distinct users across the days, not sums. Days follow America/Los_Angeles."
+  },
+  {
+   "datasource": {
+    "type": "yesoreyeram-infinity-datasource",
+    "uid": "usage-api"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "thresholds"
+     },
+     "decimals": 0,
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     },
+     "unit": "none"
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 0,
+    "w": 4,
+    "h": 4
+   },
+   "id": 27388,
+   "options": {
+    "colorMode": "value",
+    "graphMode": "none",
+    "justifyMode": "auto",
+    "orientation": "auto",
+    "percentChangeColorMode": "standard",
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "/^used_in_window$/",
+     "values": false
+    },
+    "showPercentChange": false,
+    "textMode": "auto",
+    "wideLayout": true
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "yesoreyeram-infinity-datasource",
+      "uid": "usage-api"
+     },
+     "format": "table",
+     "refId": "A",
+     "rootSelector": "",
+     "parser": "backend",
+     "source": "url",
+     "type": "json",
+     "url": "http://10.0.0.10:8013/api/trials?view=totals&from=${__timeFrom}&to=${__timeTo}",
+     "url_options": {
+      "data": "",
+      "method": "GET"
+     },
+     "maxRows": 500
+    }
+   ],
+   "title": "Coach trials using AI \u00b7 range",
+   "type": "stat",
+   "description": "Distinct trial keys with at least one recorded request in the selected dashboard range. Activity, not simultaneous online sessions."
+  },
+  {
+   "datasource": {
+    "type": "yesoreyeram-infinity-datasource",
+    "uid": "usage-api"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "thresholds"
+     },
+     "decimals": 0,
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     },
+     "unit": "none"
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "x": 16,
+    "y": 0,
+    "w": 4,
+    "h": 4
+   },
+   "id": 79105,
+   "options": {
+    "colorMode": "value",
+    "graphMode": "none",
+    "justifyMode": "auto",
+    "orientation": "auto",
+    "percentChangeColorMode": "standard",
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "/^active$/",
+     "values": false
+    },
+    "showPercentChange": false,
+    "textMode": "auto",
+    "wideLayout": true
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "yesoreyeram-infinity-datasource",
+      "uid": "usage-api"
+     },
+     "format": "table",
+     "refId": "A",
+     "rootSelector": "",
+     "parser": "backend",
+     "source": "url",
+     "type": "json",
+     "url": "http://10.0.0.10:8013/api/trials?view=totals&from=${__timeFrom}&to=${__timeTo}",
+     "url_options": {
+      "data": "",
+      "method": "GET"
+     },
+     "maxRows": 500
+    }
+   ],
+   "title": "Coach trials \u00b7 valid keys now",
+   "type": "stat",
+   "description": "Unexpired, unblocked trial keys right now; these users may not be currently using Coach."
+  },
+  {
+   "datasource": {
+    "type": "yesoreyeram-infinity-datasource",
+    "uid": "usage-api"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "thresholds"
+     },
+     "decimals": 0,
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     },
+     "unit": "none"
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "x": 20,
+    "y": 0,
+    "w": 4,
+    "h": 4
+   },
+   "id": 4701,
+   "options": {
+    "colorMode": "value",
+    "graphMode": "none",
+    "justifyMode": "auto",
+    "orientation": "auto",
+    "percentChangeColorMode": "standard",
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "/^used_in_window$/",
+     "values": false
+    },
+    "showPercentChange": false,
+    "textMode": "auto",
+    "wideLayout": true
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "yesoreyeram-infinity-datasource",
+      "uid": "usage-api"
+     },
+     "format": "table",
+     "refId": "A",
+     "rootSelector": "",
+     "parser": "backend",
+     "source": "url",
+     "type": "json",
+     "url": "http://10.0.0.10:8013/api/subscribers?view=totals&from=${__timeFrom}&to=${__timeTo}",
+     "url_options": {
+      "data": "",
+      "method": "GET"
+     },
+     "maxRows": 500
+    }
+   ],
+   "title": "Coach subscribers using AI \u00b7 range",
+   "type": "stat",
+   "description": "Subscriber keys with at least one recorded request in the selected dashboard range."
+  },
+  {
+   "datasource": {
+    "type": "yesoreyeram-infinity-datasource",
+    "uid": "usage-api"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "align": "auto",
+      "cellOptions": {
+       "type": "auto"
+      },
+      "filterable": true,
+      "inspect": false
+     },
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "Last request"
+      },
+      "properties": [
+       {
+        "id": "custom.width",
+        "value": 170
+       }
+      ]
+     }
+    ]
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 4,
+    "w": 12,
+    "h": 8
+   },
+   "id": 4500,
+   "options": {
+    "cellHeight": "sm",
+    "footer": {
+     "countRows": false,
+     "fields": "",
+     "reducer": [
+      "sum"
+     ],
+     "show": false
+    },
+    "showHeader": true,
+    "sortBy": [
+     {
+      "desc": true,
+      "displayName": "Requests"
+     }
+    ]
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "yesoreyeram-infinity-datasource",
+      "uid": "usage-api"
+     },
+     "format": "table",
+     "refId": "A",
+     "rootSelector": "",
+     "parser": "backend",
+     "source": "url",
+     "type": "json",
+     "url": "http://10.0.0.10:8013/api/trials?view=top&from=${__timeFrom}&to=${__timeTo}",
+     "url_options": {
+      "data": "",
+      "method": "GET"
+     },
+     "maxRows": 500
+    }
+   ],
+   "title": "MTGA Coach \u00b7 active trials in range",
+   "type": "table",
+   "description": "Trials that actually sent requests during the selected range, busiest first. Valid but unused trial keys are excluded.",
+   "transformations": [
+    {
+     "id": "filterFieldsByName",
+     "options": {
+      "include": {
+       "names": [
+        "key_alias",
+        "email",
+        "requests",
+        "errors",
+        "last_seen"
+       ]
+      }
+     }
+    },
+    {
+     "id": "organize",
+     "options": {
+      "indexByName": {
+       "key_alias": 0,
+       "email": 1,
+       "requests": 2,
+       "errors": 3,
+       "last_seen": 4
+      },
+      "renameByName": {
+       "key_alias": "Trial",
+       "email": "User",
+       "requests": "Requests",
+       "errors": "Errors",
+       "last_seen": "Last request"
+      }
+     }
+    }
+   ]
+  },
+  {
+   "datasource": {
+    "type": "yesoreyeram-infinity-datasource",
+    "uid": "usage-api"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "align": "auto",
+      "cellOptions": {
+       "type": "auto"
+      },
+      "filterable": true,
+      "inspect": false
+     },
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "API-equivalent cost"
+      },
+      "properties": [
+       {
+        "id": "unit",
+        "value": "currencyUSD"
+       },
+       {
+        "id": "decimals",
+        "value": 4
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "Last request"
+      },
+      "properties": [
+       {
+        "id": "custom.width",
+        "value": 170
+       }
+      ]
+     }
+    ]
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 4,
+    "w": 12,
+    "h": 8
+   },
+   "id": 4510,
+   "options": {
+    "cellHeight": "sm",
+    "footer": {
+     "countRows": false,
+     "fields": "",
+     "reducer": [
+      "sum"
+     ],
+     "show": false
+    },
+    "showHeader": true,
+    "sortBy": [
+     {
+      "desc": true,
+      "displayName": "Requests"
+     }
+    ]
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "yesoreyeram-infinity-datasource",
+      "uid": "usage-api"
+     },
+     "format": "table",
+     "refId": "A",
+     "rootSelector": "",
+     "parser": "backend",
+     "source": "url",
+     "type": "json",
+     "url": "http://10.0.0.10:8013/api/mtgacoach-users?view=top&from=${__timeFrom}&to=${__timeTo}",
+     "url_options": {
+      "data": "",
+      "method": "GET"
+     },
+     "maxRows": 500
+    }
+   ],
+   "title": "MTGA Coach \u00b7 active people in range",
+   "type": "table",
+   "description": "Estimated public API-equivalent USD, not a self-hosting bill or customer charge. Current backend: GLM-5.3-Flash. Z.ai public rates per 1M tokens: input $0.15, cached input $0.03, output $0.50 (including reasoning tokens). GLM cache-aware pricing applies from the Nov 3, 2026 22:04 Pacific restoration; older configured GLM estimates are preserved. Actual stored backend identity selects pricing, never the current alias. Missing cache counts use the full input rate (upper estimate); local cache hits only approximate vendor eligibility. GLM source checked 2026-11-03: https://docs.z.ai/guides/overview/pricing. Historical DeepSeek-V4.1-Flash-1017 per 1M: peak cached input $0.006, uncached input $0.30, output $1.20; off-peak $0.003/$0.15/$0.60. Peak: weekdays 01:00\u201304:00 and 06:00\u201310:00 UTC excluding Chinese public holidays; schedule verified Oct 29\u2013Dec 31, 2026, otherwise peak upper estimate. DeepSeek source checked 2026-10-29: https://api-docs.deepseek.com/quick_start/pricing/",
+   "transformations": [
+    {
+     "id": "filterFieldsByName",
+     "options": {
+      "include": {
+       "names": [
+        "user",
+        "kind",
+        "requests",
+        "errors",
+        "cost_usd",
+        "last_seen"
+       ]
+      }
+     }
+    },
+    {
+     "id": "organize",
+     "options": {
+      "indexByName": {
+       "user": 0,
+       "kind": 1,
+       "requests": 2,
+       "errors": 3,
+       "cost_usd": 4,
+       "last_seen": 5
+      },
+      "renameByName": {
+       "user": "User",
+       "kind": "Access",
+       "requests": "Requests",
+       "errors": "Errors",
+       "cost_usd": "API-equivalent cost",
+       "last_seen": "Last request"
+      }
+     }
+    }
+   ]
+  },
+  {
+   "datasource": {
+    "type": "yesoreyeram-infinity-datasource",
+    "uid": "usage-api"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "align": "auto",
+      "cellOptions": {
+       "type": "auto"
+      },
+      "filterable": true,
+      "inspect": false
+     },
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "Win rate"
+      },
+      "properties": [
+       {
+        "id": "unit",
+        "value": "percent"
+       },
+       {
+        "id": "decimals",
+        "value": 1
+       },
+       {
+        "id": "noValue",
+        "value": "\u2014"
+       }
+      ]
+     }
+    ]
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 12,
+    "w": 24,
+    "h": 8
+   },
+   "id": 4720,
+   "options": {
+    "cellHeight": "sm",
+    "footer": {
+     "countRows": false,
+     "fields": "",
+     "reducer": [
+      "sum"
+     ],
+     "show": false
+    },
+    "showHeader": true,
+    "sortBy": [
+     {
+      "desc": true,
+      "displayName": "Reported games"
+     }
+    ]
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "yesoreyeram-infinity-datasource",
+      "uid": "usage-api"
+     },
+     "format": "table",
+     "refId": "A",
+     "rootSelector": "",
+     "parser": "backend",
+     "source": "url",
+     "type": "json",
+     "url": "http://10.0.0.10:8013/api/mtgacoach-outcomes?view=autopilot&from=${__timeFrom}&to=${__timeTo}",
+     "url_options": {
+      "data": "",
+      "method": "GET"
+     },
+     "maxRows": 500,
+     "columns": [
+      {
+       "selector": "user",
+       "text": "user",
+       "type": "string"
+      },
+      {
+       "selector": "access",
+       "text": "access",
+       "type": "string"
+      },
+      {
+       "selector": "play_mode",
+       "text": "play_mode",
+       "type": "string"
+      },
+      {
+       "selector": "format_name",
+       "text": "format_name",
+       "type": "string"
+      },
+      {
+       "selector": "win_rate_pct",
+       "text": "win_rate_pct",
+       "type": "number"
+      },
+      {
+       "selector": "wins",
+       "text": "wins",
+       "type": "number"
+      },
+      {
+       "selector": "losses",
+       "text": "losses",
+       "type": "number"
+      },
+      {
+       "selector": "draws",
+       "text": "draws",
+       "type": "number"
+      },
+      {
+       "selector": "unknown",
+       "text": "unknown",
+       "type": "number"
+      },
+      {
+       "selector": "games",
+       "text": "games",
+       "type": "number"
+      },
+      {
+       "selector": "sample",
+       "text": "sample",
+       "type": "string"
+      },
+      {
+       "selector": "last_report",
+       "text": "last_report",
+       "type": "timestamp"
+      }
+     ]
+    }
+   ],
+   "title": "MTGA Coach \u00b7 reported game win rate \u00b7 autopilot",
+   "type": "table",
+   "description": "Uploaded outcomes received in the selected range, deduplicated by resolved user and match. Win rate = wins/(wins+losses); draws and unknown/conflicting outcomes excluded. Fewer than 20 decided games are a small sample. Mode, format and deck come from reported metadata; missing/conflicting values remain unknown, never presumed manual. Missing uploads are not losses. Deck is the first strategy line, not a verified deck-list identity. Not complete client history.",
+   "transformations": [
+    {
+     "id": "filterFieldsByName",
+     "options": {
+      "include": {
+       "names": [
+        "user",
+        "access",
+        "play_mode",
+        "format_name",
+        "win_rate_pct",
+        "wins",
+        "losses",
+        "draws",
+        "unknown",
+        "games",
+        "sample",
+        "last_report"
+       ]
+      }
+     }
+    },
+    {
+     "id": "organize",
+     "options": {
+      "indexByName": {
+       "user": 0,
+       "access": 1,
+       "play_mode": 2,
+       "format_name": 3,
+       "win_rate_pct": 4,
+       "wins": 5,
+       "losses": 6,
+       "draws": 7,
+       "unknown": 8,
+       "games": 9,
+       "sample": 10,
+       "last_report": 11
+      },
+      "renameByName": {
+       "user": "User",
+       "access": "Access",
+       "play_mode": "Play mode",
+       "format_name": "Format",
+       "deck_name": "Deck",
+       "win_rate_pct": "Win rate",
+       "wins": "Wins",
+       "losses": "Losses",
+       "draws": "Draws",
+       "unknown": "Unknown",
+       "games": "Reported games",
+       "sample": "Sample",
+       "last_report": "Last report"
+      }
+     }
+    }
+   ]
+  },
+  {
+   "datasource": {
+    "type": "yesoreyeram-infinity-datasource",
+    "uid": "usage-api"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "align": "auto",
+      "cellOptions": {
+       "type": "auto"
+      },
+      "filterable": true,
+      "inspect": false
+     },
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "Win rate"
+      },
+      "properties": [
+       {
+        "id": "unit",
+        "value": "percent"
+       },
+       {
+        "id": "decimals",
+        "value": 1
+       },
+       {
+        "id": "noValue",
+        "value": "\u2014"
+       }
+      ]
+     }
+    ]
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 20,
+    "w": 24,
+    "h": 8
+   },
+   "id": 4721,
+   "options": {
+    "cellHeight": "sm",
+    "footer": {
+     "countRows": false,
+     "fields": "",
+     "reducer": [
+      "sum"
+     ],
+     "show": false
+    },
+    "showHeader": true,
+    "sortBy": [
+     {
+      "desc": true,
+      "displayName": "Reported games"
+     }
+    ]
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "yesoreyeram-infinity-datasource",
+      "uid": "usage-api"
+     },
+     "format": "table",
+     "refId": "A",
+     "rootSelector": "",
+     "parser": "backend",
+     "source": "url",
+     "type": "json",
+     "url": "http://10.0.0.10:8013/api/mtgacoach-outcomes?view=manual&from=${__timeFrom}&to=${__timeTo}",
+     "url_options": {
+      "data": "",
+      "method": "GET"
+     },
+     "maxRows": 500,
+     "columns": [
+      {
+       "selector": "user",
+       "text": "user",
+       "type": "string"
+      },
+      {
+       "selector": "access",
+       "text": "access",
+       "type": "string"
+      },
+      {
+       "selector": "play_mode",
+       "text": "play_mode",
+       "type": "string"
+      },
+      {
+       "selector": "format_name",
+       "text": "format_name",
+       "type": "string"
+      },
+      {
+       "selector": "win_rate_pct",
+       "text": "win_rate_pct",
+       "type": "number"
+      },
+      {
+       "selector": "wins",
+       "text": "wins",
+       "type": "number"
+      },
+      {
+       "selector": "losses",
+       "text": "losses",
+       "type": "number"
+      },
+      {
+       "selector": "draws",
+       "text": "draws",
+       "type": "number"
+      },
+      {
+       "selector": "unknown",
+       "text": "unknown",
+       "type": "number"
+      },
+      {
+       "selector": "games",
+       "text": "games",
+       "type": "number"
+      },
+      {
+       "selector": "sample",
+       "text": "sample",
+       "type": "string"
+      },
+      {
+       "selector": "last_report",
+       "text": "last_report",
+       "type": "timestamp"
+      }
+     ]
+    }
+   ],
+   "title": "MTGA Coach \u00b7 reported game win rate \u00b7 played by hand",
+   "type": "table",
+   "description": "Uploaded outcomes received in the selected range, deduplicated by resolved user and match. Win rate = wins/(wins+losses); draws and unknown/conflicting outcomes excluded. Fewer than 20 decided games are a small sample. Mode, format and deck come from reported metadata; missing/conflicting values remain unknown, never presumed manual. Missing uploads are not losses. Deck is the first strategy line, not a verified deck-list identity. Not complete client history.",
+   "transformations": [
+    {
+     "id": "filterFieldsByName",
+     "options": {
+      "include": {
+       "names": [
+        "user",
+        "access",
+        "play_mode",
+        "format_name",
+        "win_rate_pct",
+        "wins",
+        "losses",
+        "draws",
+        "unknown",
+        "games",
+        "sample",
+        "last_report"
+       ]
+      }
+     }
+    },
+    {
+     "id": "organize",
+     "options": {
+      "indexByName": {
+       "user": 0,
+       "access": 1,
+       "play_mode": 2,
+       "format_name": 3,
+       "win_rate_pct": 4,
+       "wins": 5,
+       "losses": 6,
+       "draws": 7,
+       "unknown": 8,
+       "games": 9,
+       "sample": 10,
+       "last_report": 11
+      },
+      "renameByName": {
+       "user": "User",
+       "access": "Access",
+       "play_mode": "Play mode",
+       "format_name": "Format",
+       "deck_name": "Deck",
+       "win_rate_pct": "Win rate",
+       "wins": "Wins",
+       "losses": "Losses",
+       "draws": "Draws",
+       "unknown": "Unknown",
+       "games": "Reported games",
+       "sample": "Sample",
+       "last_report": "Last report"
+      }
+     }
+    }
+   ]
+  },
+  {
+   "datasource": {
+    "type": "yesoreyeram-infinity-datasource",
+    "uid": "usage-api"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "align": "auto",
+      "cellOptions": {
+       "type": "auto"
+      },
+      "filterable": true,
+      "inspect": false
+     },
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "Win rate"
+      },
+      "properties": [
+       {
+        "id": "unit",
+        "value": "percent"
+       },
+       {
+        "id": "decimals",
+        "value": 1
+       },
+       {
+        "id": "noValue",
+        "value": "\u2014"
+       }
+      ]
+     }
+    ]
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 28,
+    "w": 24,
+    "h": 8
+   },
+   "id": 4722,
+   "options": {
+    "cellHeight": "sm",
+    "footer": {
+     "countRows": false,
+     "fields": "",
+     "reducer": [
+      "sum"
+     ],
+     "show": false
+    },
+    "showHeader": true,
+    "sortBy": [
+     {
+      "desc": true,
+      "displayName": "Reported games"
+     }
+    ]
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "yesoreyeram-infinity-datasource",
+      "uid": "usage-api"
+     },
+     "format": "table",
+     "refId": "A",
+     "rootSelector": "",
+     "parser": "backend",
+     "source": "url",
+     "type": "json",
+     "url": "http://10.0.0.10:8013/api/mtgacoach-outcomes?view=unknown&from=${__timeFrom}&to=${__timeTo}",
+     "url_options": {
+      "data": "",
+      "method": "GET"
+     },
+     "maxRows": 500,
+     "columns": [
+      {
+       "selector": "user",
+       "text": "user",
+       "type": "string"
+      },
+      {
+       "selector": "access",
+       "text": "access",
+       "type": "string"
+      },
+      {
+       "selector": "play_mode",
+       "text": "play_mode",
+       "type": "string"
+      },
+      {
+       "selector": "format_name",
+       "text": "format_name",
+       "type": "string"
+      },
+      {
+       "selector": "win_rate_pct",
+       "text": "win_rate_pct",
+       "type": "number"
+      },
+      {
+       "selector": "wins",
+       "text": "wins",
+       "type": "number"
+      },
+      {
+       "selector": "losses",
+       "text": "losses",
+       "type": "number"
+      },
+      {
+       "selector": "draws",
+       "text": "draws",
+       "type": "number"
+      },
+      {
+       "selector": "unknown",
+       "text": "unknown",
+       "type": "number"
+      },
+      {
+       "selector": "games",
+       "text": "games",
+       "type": "number"
+      },
+      {
+       "selector": "sample",
+       "text": "sample",
+       "type": "string"
+      },
+      {
+       "selector": "last_report",
+       "text": "last_report",
+       "type": "timestamp"
+      }
+     ]
+    }
+   ],
+   "title": "MTGA Coach \u00b7 reported game win rate \u00b7 unknown play mode",
+   "type": "table",
+   "description": "Uploaded outcomes received in the selected range, deduplicated by resolved user and match. Win rate = wins/(wins+losses); draws and unknown/conflicting outcomes excluded. Fewer than 20 decided games are a small sample. Mode, format and deck come from reported metadata; missing/conflicting values remain unknown, never presumed manual. Missing uploads are not losses. Deck is the first strategy line, not a verified deck-list identity. Not complete client history.",
+   "transformations": [
+    {
+     "id": "filterFieldsByName",
+     "options": {
+      "include": {
+       "names": [
+        "user",
+        "access",
+        "play_mode",
+        "format_name",
+        "win_rate_pct",
+        "wins",
+        "losses",
+        "draws",
+        "unknown",
+        "games",
+        "sample",
+        "last_report"
+       ]
+      }
+     }
+    },
+    {
+     "id": "organize",
+     "options": {
+      "indexByName": {
+       "user": 0,
+       "access": 1,
+       "play_mode": 2,
+       "format_name": 3,
+       "win_rate_pct": 4,
+       "wins": 5,
+       "losses": 6,
+       "draws": 7,
+       "unknown": 8,
+       "games": 9,
+       "sample": 10,
+       "last_report": 11
+      },
+      "renameByName": {
+       "user": "User",
+       "access": "Access",
+       "play_mode": "Play mode",
+       "format_name": "Format",
+       "deck_name": "Deck",
+       "win_rate_pct": "Win rate",
+       "wins": "Wins",
+       "losses": "Losses",
+       "draws": "Draws",
+       "unknown": "Unknown",
+       "games": "Reported games",
+       "sample": "Sample",
+       "last_report": "Last report"
+      }
+     }
+    }
+   ]
+  },
+  {
+   "datasource": {
+    "type": "yesoreyeram-infinity-datasource",
+    "uid": "usage-api"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "align": "auto",
+      "cellOptions": {
+       "type": "auto"
+      },
+      "filterable": true,
+      "inspect": false
+     },
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "Win rate"
+      },
+      "properties": [
+       {
+        "id": "unit",
+        "value": "percent"
+       },
+       {
+        "id": "decimals",
+        "value": 1
+       },
+       {
+        "id": "noValue",
+        "value": "\u2014"
+       }
+      ]
+     }
+    ]
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 36,
+    "w": 24,
+    "h": 8
+   },
+   "id": 4723,
+   "options": {
+    "cellHeight": "sm",
+    "footer": {
+     "countRows": false,
+     "fields": "",
+     "reducer": [
+      "sum"
+     ],
+     "show": false
+    },
+    "showHeader": true,
+    "sortBy": [
+     {
+      "desc": true,
+      "displayName": "Reported games"
+     }
+    ]
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "yesoreyeram-infinity-datasource",
+      "uid": "usage-api"
+     },
+     "format": "table",
+     "refId": "A",
+     "rootSelector": "",
+     "parser": "backend",
+     "source": "url",
+     "type": "json",
+     "url": "http://10.0.0.10:8013/api/mtgacoach-outcomes?view=decks&from=${__timeFrom}&to=${__timeTo}",
+     "url_options": {
+      "data": "",
+      "method": "GET"
+     },
+     "maxRows": 500,
+     "columns": [
+      {
+       "selector": "user",
+       "text": "user",
+       "type": "string"
+      },
+      {
+       "selector": "access",
+       "text": "access",
+       "type": "string"
+      },
+      {
+       "selector": "play_mode",
+       "text": "play_mode",
+       "type": "string"
+      },
+      {
+       "selector": "format_name",
+       "text": "format_name",
+       "type": "string"
+      },
+      {
+       "selector": "deck_name",
+       "text": "deck_name",
+       "type": "string"
+      },
+      {
+       "selector": "win_rate_pct",
+       "text": "win_rate_pct",
+       "type": "number"
+      },
+      {
+       "selector": "wins",
+       "text": "wins",
+       "type": "number"
+      },
+      {
+       "selector": "losses",
+       "text": "losses",
+       "type": "number"
+      },
+      {
+       "selector": "draws",
+       "text": "draws",
+       "type": "number"
+      },
+      {
+       "selector": "unknown",
+       "text": "unknown",
+       "type": "number"
+      },
+      {
+       "selector": "games",
+       "text": "games",
+       "type": "number"
+      },
+      {
+       "selector": "sample",
+       "text": "sample",
+       "type": "string"
+      },
+      {
+       "selector": "last_report",
+       "text": "last_report",
+       "type": "timestamp"
+      }
+     ]
+    }
+   ],
+   "title": "MTGA Coach \u00b7 reported game win rate \u00b7 per-deck results",
+   "type": "table",
+   "description": "Uploaded outcomes received in the selected range, deduplicated by resolved user and match. Win rate = wins/(wins+losses); draws and unknown/conflicting outcomes excluded. Fewer than 20 decided games are a small sample. Mode, format and deck come from reported metadata; missing/conflicting values remain unknown, never presumed manual. Missing uploads are not losses. Deck is the first strategy line, not a verified deck-list identity. Not complete client history.",
+   "transformations": [
+    {
+     "id": "filterFieldsByName",
+     "options": {
+      "include": {
+       "names": [
+        "user",
+        "access",
+        "play_mode",
+        "format_name",
+        "deck_name",
+        "win_rate_pct",
+        "wins",
+        "losses",
+        "draws",
+        "unknown",
+        "games",
+        "sample",
+        "last_report"
+       ]
+      }
+     }
+    },
+    {
+     "id": "organize",
+     "options": {
+      "indexByName": {
+       "user": 0,
+       "access": 1,
+       "play_mode": 2,
+       "format_name": 3,
+       "deck_name": 4,
+       "win_rate_pct": 5,
+       "wins": 6,
+       "losses": 7,
+       "draws": 8,
+       "unknown": 9,
+       "games": 10,
+       "sample": 11,
+       "last_report": 12
+      },
+      "renameByName": {
+       "user": "User",
+       "access": "Access",
+       "play_mode": "Play mode",
+       "format_name": "Format",
+       "deck_name": "Deck",
+       "win_rate_pct": "Win rate",
+       "wins": "Wins",
+       "losses": "Losses",
+       "draws": "Draws",
+       "unknown": "Unknown",
+       "games": "Reported games",
+       "sample": "Sample",
+       "last_report": "Last report"
+      }
+     }
+    }
+   ]
+  },
+  {
+   "id": 4702,
+   "title": "Latency p95 \u00b7 last 5m",
+   "description": "Backend end-to-end latency p95 over the last five minutes, across all request types. Not the tactical Coach deadline.",
+   "type": "stat",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 44,
+    "w": 4,
+    "h": 4
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "s",
+     "decimals": 1,
+     "color": {
+      "mode": "thresholds"
+     },
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     },
+     "mappings": []
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "histogram_quantile(0.95, sum by (le) (rate(vllm:e2e_request_latency_seconds_bucket{job=\"vllm-glm53\"}[5m])))",
+     "legendFormat": "End-to-end p95",
+     "refId": "C",
+     "editorMode": "code",
+     "range": false,
+     "instant": true
+    }
+   ],
+   "options": {
+    "colorMode": "value",
+    "graphMode": "none",
+    "textMode": "value",
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    }
+   }
+  },
+  {
+   "id": 4102,
+   "title": "Running \u00b7 now",
+   "description": "Requests currently executing in vLLM; these may not appear in completed LiteLLM logs yet.",
+   "type": "stat",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "gridPos": {
+    "x": 4,
+    "y": 44,
+    "w": 4,
+    "h": 4
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "decimals": 0,
+     "color": {
+      "mode": "thresholds"
+     },
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     },
+     "mappings": []
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "sum(vllm:num_requests_running{job=\"vllm-glm53\"})",
+     "legendFormat": "",
+     "refId": "A",
+     "editorMode": "code",
+     "range": false,
+     "instant": true
+    }
+   ],
+   "options": {
+    "colorMode": "value",
+    "graphMode": "none",
+    "textMode": "value",
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    }
+   }
+  },
+  {
+   "id": 4103,
+   "title": "Queued \u00b7 now",
+   "description": "Requests waiting for vLLM scheduling capacity.",
+   "type": "stat",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "gridPos": {
+    "x": 8,
+    "y": 44,
+    "w": 4,
+    "h": 4
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "decimals": 0,
+     "color": {
+      "mode": "thresholds"
+     },
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     },
+     "mappings": []
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "sum(vllm:num_requests_waiting{job=\"vllm-glm53\"})",
+     "legendFormat": "",
+     "refId": "A",
+     "editorMode": "code",
+     "range": false,
+     "instant": true
+    }
+   ],
+   "options": {
+    "colorMode": "value",
+    "graphMode": "none",
+    "textMode": "value",
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    }
+   }
+  },
+  {
+   "datasource": {
+    "type": "yesoreyeram-infinity-datasource",
+    "uid": "usage-api"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "thresholds"
+     },
+     "decimals": 0,
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     },
+     "unit": "none"
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 44,
+    "w": 4,
+    "h": 4
+   },
+   "id": 49439,
+   "options": {
+    "colorMode": "value",
+    "graphMode": "none",
+    "justifyMode": "auto",
+    "orientation": "auto",
+    "percentChangeColorMode": "standard",
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "/^requests$/",
+     "values": false
+    },
+    "showPercentChange": false,
+    "textMode": "auto",
+    "wideLayout": true
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "yesoreyeram-infinity-datasource",
+      "uid": "usage-api"
+     },
+     "format": "table",
+     "refId": "A",
+     "rootSelector": "",
+     "parser": "backend",
+     "source": "url",
+     "type": "json",
+     "url": "http://10.0.0.10:8013/api/summary?view=totals&from=${__timeFrom}&to=${__timeTo}",
+     "url_options": {
+      "data": "",
+      "method": "GET"
+     },
+     "maxRows": 500
+    }
+   ],
+   "title": "Requests \u00b7 selected range",
+   "type": "stat",
+   "description": " Ranges over 30 days use daily UTC totals; partial days remain exact. History begins with recorded usage on June 7, 2026; missing days are not invented."
+  },
+  {
+   "datasource": {
+    "type": "yesoreyeram-infinity-datasource",
+    "uid": "usage-api"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "thresholds"
+     },
+     "decimals": 0,
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       },
+       {
+        "color": "orange",
+        "value": 1
+       }
+      ]
+     },
+     "unit": "none"
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "x": 16,
+    "y": 44,
+    "w": 4,
+    "h": 4
+   },
+   "id": 48617,
+   "options": {
+    "colorMode": "value",
+    "graphMode": "none",
+    "justifyMode": "auto",
+    "orientation": "auto",
+    "percentChangeColorMode": "standard",
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "/^errors$/",
+     "values": false
+    },
+    "showPercentChange": false,
+    "textMode": "auto",
+    "wideLayout": true
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "yesoreyeram-infinity-datasource",
+      "uid": "usage-api"
+     },
+     "format": "table",
+     "refId": "A",
+     "rootSelector": "",
+     "parser": "backend",
+     "source": "url",
+     "type": "json",
+     "url": "http://10.0.0.10:8013/api/summary?view=totals&from=${__timeFrom}&to=${__timeTo}",
+     "url_options": {
+      "data": "",
+      "method": "GET"
+     },
+     "maxRows": 500
+    }
+   ],
+   "title": "Errors \u00b7 selected range",
+   "type": "stat",
+   "description": " Ranges over 30 days use daily UTC totals; partial days remain exact. History begins with recorded usage on June 7, 2026; missing days are not invented."
+  },
+  {
+   "datasource": {
+    "type": "yesoreyeram-infinity-datasource",
+    "uid": "usage-api"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "thresholds"
+     },
+     "decimals": 4,
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     },
+     "unit": "currencyUSD"
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "x": 20,
+    "y": 44,
+    "w": 4,
+    "h": 4
+   },
+   "id": 13981,
+   "options": {
+    "colorMode": "background",
+    "graphMode": "none",
+    "justifyMode": "auto",
+    "orientation": "auto",
+    "percentChangeColorMode": "standard",
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "/^cost_usd$/",
+     "values": false
+    },
+    "showPercentChange": false,
+    "textMode": "auto",
+    "wideLayout": true
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "yesoreyeram-infinity-datasource",
+      "uid": "usage-api"
+     },
+     "format": "table",
+     "refId": "A",
+     "rootSelector": "",
+     "parser": "backend",
+     "source": "url",
+     "type": "json",
+     "url": "http://10.0.0.10:8013/api/summary?view=totals&from=${__timeFrom}&to=${__timeTo}",
+     "url_options": {
+      "data": "",
+      "method": "GET"
+     },
+     "maxRows": 500
+    }
+   ],
+   "title": "API-equivalent cost \u00b7 range",
+   "type": "stat",
+   "description": "Estimated public API-equivalent USD, not a self-hosting bill or customer charge. Current backend: GLM-5.3-Flash. Z.ai public rates per 1M tokens: input $0.15, cached input $0.03, output $0.50 (including reasoning tokens). GLM cache-aware pricing applies from the Nov 3, 2026 22:04 Pacific restoration; older configured GLM estimates are preserved. Actual stored backend identity selects pricing, never the current alias. Missing cache counts use the full input rate (upper estimate); local cache hits only approximate vendor eligibility. GLM source checked 2026-11-03: https://docs.z.ai/guides/overview/pricing. Historical DeepSeek-V4.1-Flash-1017 per 1M: peak cached input $0.006, uncached input $0.30, output $1.20; off-peak $0.003/$0.15/$0.60. Peak: weekdays 01:00\u201304:00 and 06:00\u201310:00 UTC excluding Chinese public holidays; schedule verified Oct 29\u2013Dec 31, 2026, otherwise peak upper estimate. DeepSeek source checked 2026-10-29: https://api-docs.deepseek.com/quick_start/pricing/"
+  },
+  {
+   "id": 4700,
+   "title": "Public API cost basis",
+   "type": "text",
+   "gridPos": {
+    "x": 0,
+    "y": 48,
+    "w": 24,
+    "h": 3
+   },
+   "options": {
+    "mode": "markdown",
+    "content": "**Current backend: GLM-5.3-Flash** \u00b7 Per 1M tokens: **$0.15 input \u00b7 $0.03 cached input \u00b7 $0.50 output**, including reasoning. [Z.ai public pricing](https://docs.z.ai/guides/overview/pricing) \u00b7 Checked Nov 3, 2026.\n\nEstimates, not customer charges. Missing cache counts use full input price. Historical requests retain their own backend pricing. User tiles show their named time window; charts and usage tables follow the dashboard range."
+   }
+  },
+  {
+   "datasource": {
+    "type": "yesoreyeram-infinity-datasource",
+    "uid": "usage-api"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "align": "auto",
+      "cellOptions": {
+       "type": "auto"
+      },
+      "filterable": true,
+      "inspect": false
+     },
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "Input tokens"
+      },
+      "properties": [
+       {
+        "id": "unit",
+        "value": "short"
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "Output tokens"
+      },
+      "properties": [
+       {
+        "id": "unit",
+        "value": "short"
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "API-equivalent cost"
+      },
+      "properties": [
+       {
+        "id": "unit",
+        "value": "currencyUSD"
+       },
+       {
+        "id": "decimals",
+        "value": 4
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "Avg latency"
+      },
+      "properties": [
+       {
+        "id": "unit",
+        "value": "s"
+       },
+       {
+        "id": "decimals",
+        "value": 2
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "Last request"
+      },
+      "properties": [
+       {
+        "id": "custom.width",
+        "value": 170
+       }
+      ]
+     }
+    ]
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 51,
+    "w": 24,
+    "h": 8
+   },
+   "id": 3001,
+   "options": {
+    "cellHeight": "sm",
+    "footer": {
+     "countRows": false,
+     "fields": "",
+     "reducer": [
+      "sum"
+     ],
+     "show": false
+    },
+    "showHeader": true,
+    "sortBy": [
+     {
+      "desc": true,
+      "displayName": "API-equivalent cost"
+     }
+    ]
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "yesoreyeram-infinity-datasource",
+      "uid": "usage-api"
+     },
+     "format": "table",
+     "refId": "A",
+     "rootSelector": "",
+     "parser": "backend",
+     "source": "url",
+     "type": "json",
+     "url": "http://10.0.0.10:8013/api/summary?view=keys&from=${__timeFrom}&to=${__timeTo}",
+     "url_options": {
+      "data": "",
+      "method": "GET"
+     },
+     "maxRows": 500
+    }
+   ],
+   "title": "Usage by client \u00b7 selected range",
+   "type": "table",
+   "transformations": [
+    {
+     "id": "filterFieldsByName",
+     "options": {
+      "include": {
+       "names": [
+        "key_alias",
+        "requests",
+        "errors",
+        "prompt_tokens",
+        "completion_tokens",
+        "cost_usd",
+        "avg_latency_s",
+        "last_seen"
+       ]
+      }
+     }
+    },
+    {
+     "id": "organize",
+     "options": {
+      "indexByName": {
+       "key_alias": 0,
+       "requests": 1,
+       "errors": 2,
+       "prompt_tokens": 3,
+       "completion_tokens": 4,
+       "cost_usd": 5,
+       "avg_latency_s": 6,
+       "last_seen": 7
+      },
+      "renameByName": {
+       "key_alias": "Client / key",
+       "requests": "Requests",
+       "errors": "Errors",
+       "prompt_tokens": "Input tokens",
+       "completion_tokens": "Output tokens",
+       "cost_usd": "API-equivalent cost",
+       "avg_latency_s": "Avg latency",
+       "last_seen": "Last request"
+      }
+     }
+    }
+   ],
+   "description": "Estimated public API-equivalent USD, not a self-hosting bill or customer charge. Current backend: GLM-5.3-Flash. Z.ai public rates per 1M tokens: input $0.15, cached input $0.03, output $0.50 (including reasoning tokens). GLM cache-aware pricing applies from the Nov 3, 2026 22:04 Pacific restoration; older configured GLM estimates are preserved. Actual stored backend identity selects pricing, never the current alias. Missing cache counts use the full input rate (upper estimate); local cache hits only approximate vendor eligibility. GLM source checked 2026-11-03: https://docs.z.ai/guides/overview/pricing. Historical DeepSeek-V4.1-Flash-1017 per 1M: peak cached input $0.006, uncached input $0.30, output $1.20; off-peak $0.003/$0.15/$0.60. Peak: weekdays 01:00\u201304:00 and 06:00\u201310:00 UTC excluding Chinese public holidays; schedule verified Oct 29\u2013Dec 31, 2026, otherwise peak upper estimate. DeepSeek source checked 2026-10-29: https://api-docs.deepseek.com/quick_start/pricing/"
+  },
+  {
+   "datasource": {
+    "type": "yesoreyeram-infinity-datasource",
+    "uid": "usage-api"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "axisBorderShow": false,
+      "axisCenteredZero": false,
+      "axisColorMode": "text",
+      "axisLabel": "requests",
+      "axisPlacement": "left",
+      "barAlignment": 0,
+      "drawStyle": "line",
+      "fillOpacity": 8,
+      "gradientMode": "none",
+      "hideFrom": {
+       "legend": false,
+       "tooltip": false,
+       "viz": false
+      },
+      "insertNulls": false,
+      "lineInterpolation": "smooth",
+      "lineWidth": 2,
+      "pointSize": 5,
+      "scaleDistribution": {
+       "type": "linear"
+      },
+      "showPoints": "auto",
+      "spanNulls": false,
+      "stacking": {
+       "group": "A",
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     },
+     "unit": "short"
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 59,
+    "w": 12,
+    "h": 8
+   },
+   "id": 87290,
+   "interval": "1m",
+   "options": {
+    "legend": {
+     "calcs": [
+      "sum",
+      "mean"
+     ],
+     "displayMode": "table",
+     "placement": "bottom",
+     "showLegend": true,
+     "sortBy": "Desc",
+     "sortDesc": true
+    },
+    "tooltip": {
+     "hideZeros": false,
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "yesoreyeram-infinity-datasource",
+      "uid": "usage-api"
+     },
+     "format": "table",
+     "refId": "A",
+     "rootSelector": "",
+     "parser": "backend",
+     "source": "url",
+     "type": "json",
+     "url": "http://10.0.0.10:8013/api/timeseries?from=${__timeFrom}&to=${__timeTo}",
+     "url_options": {
+      "data": "",
+      "method": "GET"
+     },
+     "maxRows": 200000,
+     "columns": [
+      {
+       "selector": "time",
+       "text": "time",
+       "type": "timestamp"
+      },
+      {
+       "selector": "key_alias",
+       "text": "key_alias",
+       "type": "string"
+      },
+      {
+       "selector": "requests",
+       "text": "requests",
+       "type": "number"
+      }
+     ]
+    }
+   ],
+   "title": "Request history by client",
+   "transformations": [
+    {
+     "id": "organize",
+     "options": {
+      "excludeByName": {
+       "bucket_seconds": true,
+       "rows": true,
+       "completion_tokens": true,
+       "prompt_tokens": true,
+       "requests": false,
+       "cost_usd": true,
+       "key_alias": false,
+       "time": false
+      },
+      "indexByName": {},
+      "renameByName": {}
+     }
+    },
+    {
+     "id": "partitionByValues",
+     "options": {
+      "fields": [
+       "key_alias"
+      ]
+     }
+    }
+   ],
+   "type": "timeseries",
+   "description": " Ranges over 30 days use daily UTC totals; partial days remain exact. History begins with recorded usage on June 7, 2026; missing days are not invented."
+  },
+  {
+   "datasource": {
+    "type": "yesoreyeram-infinity-datasource",
+    "uid": "usage-api"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "axisBorderShow": false,
+      "axisCenteredZero": false,
+      "axisColorMode": "text",
+      "axisLabel": "$",
+      "axisPlacement": "left",
+      "barAlignment": 0,
+      "drawStyle": "line",
+      "fillOpacity": 8,
+      "gradientMode": "none",
+      "hideFrom": {
+       "legend": false,
+       "tooltip": false,
+       "viz": false
+      },
+      "insertNulls": false,
+      "lineInterpolation": "smooth",
+      "lineWidth": 2,
+      "pointSize": 5,
+      "scaleDistribution": {
+       "type": "linear"
+      },
+      "showPoints": "auto",
+      "spanNulls": false,
+      "stacking": {
+       "group": "A",
+       "mode": "none"
+      },
+      "thresholdsStyle": {
+       "mode": "off"
+      }
+     },
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     },
+     "unit": "currencyUSD"
+    },
+    "overrides": []
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 59,
+    "w": 12,
+    "h": 8
+   },
+   "id": 88377,
+   "interval": "1m",
+   "options": {
+    "legend": {
+     "calcs": [
+      "sum",
+      "mean"
+     ],
+     "displayMode": "table",
+     "placement": "bottom",
+     "showLegend": true,
+     "sortBy": "Desc",
+     "sortDesc": true
+    },
+    "tooltip": {
+     "hideZeros": false,
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "yesoreyeram-infinity-datasource",
+      "uid": "usage-api"
+     },
+     "format": "table",
+     "refId": "A",
+     "rootSelector": "",
+     "parser": "backend",
+     "source": "url",
+     "type": "json",
+     "url": "http://10.0.0.10:8013/api/timeseries?from=${__timeFrom}&to=${__timeTo}",
+     "url_options": {
+      "data": "",
+      "method": "GET"
+     },
+     "maxRows": 200000,
+     "columns": [
+      {
+       "selector": "time",
+       "text": "time",
+       "type": "timestamp"
+      },
+      {
+       "selector": "key_alias",
+       "text": "key_alias",
+       "type": "string"
+      },
+      {
+       "selector": "cost_usd",
+       "text": "cost_usd",
+       "type": "number"
+      }
+     ]
+    }
+   ],
+   "title": "Cost history by client",
+   "transformations": [
+    {
+     "id": "organize",
+     "options": {
+      "excludeByName": {
+       "bucket_seconds": true,
+       "rows": true,
+       "completion_tokens": true,
+       "prompt_tokens": true,
+       "requests": true,
+       "cost_usd": false,
+       "key_alias": false,
+       "time": false
+      },
+      "indexByName": {},
+      "renameByName": {}
+     }
+    },
+    {
+     "id": "partitionByValues",
+     "options": {
+      "fields": [
+       "key_alias"
+      ]
+     }
+    }
+   ],
+   "type": "timeseries",
+   "description": "Estimated public API-equivalent USD, not a self-hosting bill or customer charge. Current backend: GLM-5.3-Flash. Z.ai public rates per 1M tokens: input $0.15, cached input $0.03, output $0.50 (including reasoning tokens). GLM cache-aware pricing applies from the Nov 3, 2026 22:04 Pacific restoration; older configured GLM estimates are preserved. Actual stored backend identity selects pricing, never the current alias. Missing cache counts use the full input rate (upper estimate); local cache hits only approximate vendor eligibility. GLM source checked 2026-11-03: https://docs.z.ai/guides/overview/pricing. Historical DeepSeek-V4.1-Flash-1017 per 1M: peak cached input $0.006, uncached input $0.30, output $1.20; off-peak $0.003/$0.15/$0.60. Peak: weekdays 01:00\u201304:00 and 06:00\u201310:00 UTC excluding Chinese public holidays; schedule verified Oct 29\u2013Dec 31, 2026, otherwise peak upper estimate. DeepSeek source checked 2026-10-29: https://api-docs.deepseek.com/quick_start/pricing/"
+  },
+  {
+   "id": 4520,
+   "type": "timeseries",
+   "title": "Sobriety Copilot \u00b7 daily activity, last 30 days",
+   "description": "Distinct people per Los Angeles calendar day, with a fixed last-30-days window for context. Not a count of simultaneous online sessions.",
+   "datasource": {
+    "type": "yesoreyeram-infinity-datasource",
+    "uid": "sobriety-stats"
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "yesoreyeram-infinity-datasource",
+      "uid": "sobriety-stats"
+     },
+     "format": "table",
+     "refId": "A",
+     "rootSelector": "daily",
+     "parser": "backend",
+     "source": "url",
+     "type": "json",
+     "url": "http://10.0.0.10:8090/api/stats/active-users?days=30",
+     "url_options": {
+      "data": "",
+      "method": "GET"
+     },
+     "maxRows": 500,
+     "root_selector": "daily",
+     "columns": [
+      {
+       "selector": "time",
+       "text": "time",
+       "type": "timestamp_epoch"
+      },
+      {
+       "selector": "users",
+       "text": "All users",
+       "type": "number"
+      },
+      {
+       "selector": "app",
+       "text": "App",
+       "type": "number"
+      },
+      {
+       "selector": "web",
+       "text": "Web",
+       "type": "number"
+      },
+      {
+       "selector": "sms",
+       "text": "SMS",
+       "type": "number"
+      }
+     ]
+    }
+   ],
+   "gridPos": {
+    "x": 0,
+    "y": 67,
+    "w": 12,
+    "h": 8
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "decimals": 0,
+     "min": 0,
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "drawStyle": "bars",
+      "barAlignment": 0,
+      "fillOpacity": 60,
+      "lineWidth": 1,
+      "showPoints": "never",
+      "stacking": {
+       "group": "A",
+       "mode": "none"
+      }
+     }
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "All users"
+      },
+      "properties": [
+       {
+        "id": "custom.drawStyle",
+        "value": "line"
+       },
+       {
+        "id": "custom.lineWidth",
+        "value": 3
+       },
+       {
+        "id": "custom.fillOpacity",
+        "value": 0
+       },
+       {
+        "id": "custom.showPoints",
+        "value": "always"
+       }
+      ]
+     }
+    ]
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "timeFrom": "30d",
+   "hideTimeOverride": false
+  },
+  {
+   "id": 4205,
+   "title": "Inference latency \u00b7 first token and completion",
+   "description": "Histogram percentiles with a zoom-adaptive rate window. No value when there are no observations in range.",
+   "type": "timeseries",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 67,
+    "w": 12,
+    "h": 8
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "s",
+     "decimals": 1,
+     "color": {
+      "mode": "palette-classic"
+     },
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     },
+     "mappings": [],
+     "custom": {
+      "drawStyle": "line",
+      "lineInterpolation": "linear",
+      "lineWidth": 2,
+      "fillOpacity": 8,
+      "showPoints": "never",
+      "spanNulls": false,
+      "axisPlacement": "auto",
+      "stacking": {
+       "mode": "none",
+       "group": "A"
+      }
+     }
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "histogram_quantile(0.5, sum by (le) (rate(vllm:time_to_first_token_seconds_bucket{job=\"vllm-glm53\"}[$__rate_interval])))",
+     "legendFormat": "First token p50",
+     "refId": "A",
+     "editorMode": "code",
+     "range": true,
+     "instant": false
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "histogram_quantile(0.95, sum by (le) (rate(vllm:time_to_first_token_seconds_bucket{job=\"vllm-glm53\"}[$__rate_interval])))",
+     "legendFormat": "First token p95",
+     "refId": "B",
+     "editorMode": "code",
+     "range": true,
+     "instant": false
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "histogram_quantile(0.95, sum by (le) (rate(vllm:e2e_request_latency_seconds_bucket{job=\"vllm-glm53\"}[$__rate_interval])))",
+     "legendFormat": "End-to-end p95",
+     "refId": "C",
+     "editorMode": "code",
+     "range": true,
+     "instant": false
+    }
+   ],
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "lastNotNull",
+      "max"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   }
+  },
+  {
+   "datasource": {
+    "type": "yesoreyeram-infinity-datasource",
+    "uid": "usage-api"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "align": "auto",
+      "cellOptions": {
+       "type": "auto"
+      },
+      "filterable": true,
+      "inspect": false
+     },
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "Time"
+      },
+      "properties": [
+       {
+        "id": "custom.width",
+        "value": 170
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "Duration"
+      },
+      "properties": [
+       {
+        "id": "unit",
+        "value": "s"
+       },
+       {
+        "id": "decimals",
+        "value": 2
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "Input tokens"
+      },
+      "properties": [
+       {
+        "id": "unit",
+        "value": "short"
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "Output tokens"
+      },
+      "properties": [
+       {
+        "id": "unit",
+        "value": "short"
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "API-equivalent cost"
+      },
+      "properties": [
+       {
+        "id": "unit",
+        "value": "currencyUSD"
+       },
+       {
+        "id": "decimals",
+        "value": 4
+       }
+      ]
+     }
+    ]
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 75,
+    "w": 24,
+    "h": 9
+   },
+   "id": 3004,
+   "options": {
+    "cellHeight": "sm",
+    "footer": {
+     "countRows": false,
+     "fields": "",
+     "reducer": [
+      "sum"
+     ],
+     "show": false
+    },
+    "showHeader": true,
+    "sortBy": [
+     {
+      "desc": true,
+      "displayName": "Time"
+     }
+    ]
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "yesoreyeram-infinity-datasource",
+      "uid": "usage-api"
+     },
+     "format": "table",
+     "refId": "A",
+     "rootSelector": "",
+     "parser": "backend",
+     "source": "url",
+     "type": "json",
+     "url": "http://10.0.0.10:8013/api/requests?from=${__timeFrom}&to=${__timeTo}&limit=200",
+     "url_options": {
+      "data": "",
+      "method": "GET"
+     },
+     "maxRows": 500
+    }
+   ],
+   "title": "Recent requests \u00b7 client, result and cost",
+   "type": "table",
+   "transformations": [
+    {
+     "id": "filterFieldsByName",
+     "options": {
+      "include": {
+       "names": [
+        "time",
+        "key_alias",
+        "status",
+        "duration_s",
+        "prompt_tokens",
+        "completion_tokens",
+        "cost_usd"
+       ]
+      }
+     }
+    },
+    {
+     "id": "organize",
+     "options": {
+      "indexByName": {
+       "time": 0,
+       "key_alias": 1,
+       "status": 2,
+       "duration_s": 3,
+       "prompt_tokens": 4,
+       "completion_tokens": 5,
+       "cost_usd": 6
+      },
+      "renameByName": {
+       "time": "Time",
+       "key_alias": "Client / key",
+       "status": "Result",
+       "duration_s": "Duration",
+       "prompt_tokens": "Input tokens",
+       "completion_tokens": "Output tokens",
+       "cost_usd": "API-equivalent cost"
+      }
+     }
+    }
+   ],
+   "description": "Recent recorded gateway requests. Prompts, IP addresses, constant model aliases and empty trace links are omitted. Use Langfuse for payload investigation."
+  },
+  {
+   "id": 4710,
+   "title": "Infrastructure details \u00b7 throughput, GPU and cache",
+   "type": "row",
+   "collapsed": true,
+   "gridPos": {
+    "x": 0,
+    "y": 84,
+    "w": 24,
+    "h": 1
+   },
+   "panels": [
+    {
+     "id": 4100,
+     "title": "Output tok/s (total)",
+     "description": "Live output tok/s while the engine is actively serving (last minute, idle seconds excluded from the denominator). Zoom-independent: the same number at any dashboard range.",
+     "type": "stat",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "gridPos": {
+      "x": 0,
+      "y": 85,
+      "w": 12,
+      "h": 6
+     },
+     "fieldConfig": {
+      "defaults": {
+       "unit": "suffix: tok/s",
+       "decimals": 1,
+       "color": {
+        "mode": "thresholds"
+       },
+       "thresholds": {
+        "mode": "absolute",
+        "steps": [
+         {
+          "color": "green",
+          "value": null
+         }
+        ]
+       },
+       "mappings": []
+      },
+      "overrides": []
+     },
+     "targets": [
+      {
+       "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+       },
+       "expr": "((sum(rate(vllm:generation_tokens_total{job=\"vllm-glm53\"}[1m]))) / (avg_over_time((sum(vllm:num_requests_running{job=\"vllm-glm53\"}) > bool 0)[1m:5s])) and (avg_over_time((sum(vllm:num_requests_running{job=\"vllm-glm53\"}) > bool 0)[1m:5s])) > 0) or on() (sum(vllm:num_requests_running{job=\"vllm-glm53\"}) * 0)",
+       "legendFormat": "",
+       "refId": "A",
+       "editorMode": "code",
+       "range": false,
+       "instant": true
+      }
+     ],
+     "options": {
+      "colorMode": "value",
+      "graphMode": "none",
+      "textMode": "value",
+      "reduceOptions": {
+       "calcs": [
+        "lastNotNull"
+       ],
+       "fields": "",
+       "values": false
+      }
+     }
+    },
+    {
+     "id": 4104,
+     "title": "Decode tok/s / request",
+     "description": "Reciprocal of mean per-request time per output token over five minutes. Excludes prefill; no value when there are no recent completed requests.",
+     "type": "stat",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "gridPos": {
+      "x": 0,
+      "y": 91,
+      "w": 12,
+      "h": 6
+     },
+     "fieldConfig": {
+      "defaults": {
+       "unit": "suffix: tok/s",
+       "decimals": 1,
+       "color": {
+        "mode": "thresholds"
+       },
+       "thresholds": {
+        "mode": "absolute",
+        "steps": [
+         {
+          "color": "green",
+          "value": null
+         }
+        ]
+       },
+       "mappings": []
+      },
+      "overrides": []
+     },
+     "targets": [
+      {
+       "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+       },
+       "expr": "sum(rate(vllm:request_time_per_output_token_seconds_count{job=\"vllm-glm53\"}[5m])) / sum(rate(vllm:request_time_per_output_token_seconds_sum{job=\"vllm-glm53\"}[5m]))",
+       "legendFormat": "",
+       "refId": "A",
+       "editorMode": "code",
+       "range": false,
+       "instant": true
+      }
+     ],
+     "options": {
+      "colorMode": "value",
+      "graphMode": "none",
+      "textMode": "value",
+      "reduceOptions": {
+       "calcs": [
+        "lastNotNull"
+       ],
+       "fields": "",
+       "values": false
+      }
+     }
+    },
+    {
+     "id": 4204,
+     "title": "Inference throughput \u2014 tokens / second",
+     "description": "Per-point tok/s while actively serving: the rate window is scrape-safe ($__rate_interval) and idle seconds are excluded via the running-request fraction, so zooming out to weeks keeps real workload throughput instead of decaying toward 0. Idle spans show as 0. Stat tiles above are the pure live last-minute rates.",
+     "type": "timeseries",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "gridPos": {
+      "x": 0,
+      "y": 97,
+      "w": 12,
+      "h": 7
+     },
+     "fieldConfig": {
+      "defaults": {
+       "unit": "suffix: tok/s",
+       "decimals": 1,
+       "color": {
+        "mode": "palette-classic"
+       },
+       "thresholds": {
+        "mode": "absolute",
+        "steps": [
+         {
+          "color": "green",
+          "value": null
+         }
+        ]
+       },
+       "mappings": [],
+       "custom": {
+        "drawStyle": "line",
+        "lineInterpolation": "linear",
+        "lineWidth": 2,
+        "fillOpacity": 8,
+        "showPoints": "never",
+        "spanNulls": false,
+        "axisPlacement": "auto",
+        "stacking": {
+         "mode": "none",
+         "group": "A"
+        }
+       }
+      },
+      "overrides": []
+     },
+     "targets": [
+      {
+       "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+       },
+       "expr": "((sum(rate(vllm:generation_tokens_total{job=\"vllm-glm53\"}[$__rate_interval]))) / (avg_over_time((sum(vllm:num_requests_running{job=\"vllm-glm53\"}) > bool 0)[$__rate_interval:5s])) and (avg_over_time((sum(vllm:num_requests_running{job=\"vllm-glm53\"}) > bool 0)[$__rate_interval:5s])) > 0) or on() (sum(vllm:num_requests_running{job=\"vllm-glm53\"}) * 0)",
+       "legendFormat": "Output",
+       "refId": "A",
+       "editorMode": "code",
+       "range": true,
+       "instant": false
+      },
+      {
+       "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+       },
+       "expr": "((sum(rate(vllm:prompt_tokens_total{job=\"vllm-glm53\"}[$__rate_interval]))) / (avg_over_time((sum(vllm:num_requests_running{job=\"vllm-glm53\"}) > bool 0)[$__rate_interval:5s])) and (avg_over_time((sum(vllm:num_requests_running{job=\"vllm-glm53\"}) > bool 0)[$__rate_interval:5s])) > 0) or on() (sum(vllm:num_requests_running{job=\"vllm-glm53\"}) * 0)",
+       "legendFormat": "Input",
+       "refId": "B",
+       "editorMode": "code",
+       "range": true,
+       "instant": false
+      }
+     ],
+     "options": {
+      "legend": {
+       "displayMode": "table",
+       "placement": "bottom",
+       "calcs": [
+        "lastNotNull",
+        "max"
+       ]
+      },
+      "tooltip": {
+       "mode": "multi",
+       "sort": "desc"
+      }
+     }
+    },
+    {
+     "id": 4206,
+     "title": "Live requests \u2014 running / queued",
+     "description": "Live engine state, including requests that have not completed yet.",
+     "type": "timeseries",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "gridPos": {
+      "x": 0,
+      "y": 104,
+      "w": 12,
+      "h": 7
+     },
+     "fieldConfig": {
+      "defaults": {
+       "unit": "short",
+       "decimals": 1,
+       "color": {
+        "mode": "palette-classic"
+       },
+       "thresholds": {
+        "mode": "absolute",
+        "steps": [
+         {
+          "color": "green",
+          "value": null
+         }
+        ]
+       },
+       "mappings": [],
+       "custom": {
+        "drawStyle": "line",
+        "lineInterpolation": "linear",
+        "lineWidth": 2,
+        "fillOpacity": 8,
+        "showPoints": "never",
+        "spanNulls": false,
+        "axisPlacement": "auto",
+        "stacking": {
+         "mode": "none",
+         "group": "A"
+        }
+       }
+      },
+      "overrides": []
+     },
+     "targets": [
+      {
+       "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+       },
+       "expr": "sum(vllm:num_requests_running{job=\"vllm-glm53\"})",
+       "legendFormat": "Running",
+       "refId": "A",
+       "editorMode": "code",
+       "range": true,
+       "instant": false
+      },
+      {
+       "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+       },
+       "expr": "sum(vllm:num_requests_waiting{job=\"vllm-glm53\"})",
+       "legendFormat": "Queued",
+       "refId": "B",
+       "editorMode": "code",
+       "range": true,
+       "instant": false
+      }
+     ],
+     "options": {
+      "legend": {
+       "displayMode": "table",
+       "placement": "bottom",
+       "calcs": [
+        "lastNotNull",
+        "max"
+       ]
+      },
+      "tooltip": {
+       "mode": "multi",
+       "sort": "desc"
+      }
+     }
+    },
+    {
+     "id": 4207,
+     "title": "KV cache / prefix cache hit rate",
+     "description": "KV occupancy and five-minute token-weighted prefix-cache hit ratio. Hit rate is undefined when no cache queries occurred.",
+     "type": "timeseries",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "gridPos": {
+      "x": 0,
+      "y": 111,
+      "w": 12,
+      "h": 7
+     },
+     "fieldConfig": {
+      "defaults": {
+       "unit": "percentunit",
+       "decimals": 1,
+       "color": {
+        "mode": "palette-classic"
+       },
+       "thresholds": {
+        "mode": "absolute",
+        "steps": [
+         {
+          "color": "green",
+          "value": null
+         }
+        ]
+       },
+       "mappings": [],
+       "custom": {
+        "drawStyle": "line",
+        "lineInterpolation": "linear",
+        "lineWidth": 2,
+        "fillOpacity": 8,
+        "showPoints": "never",
+        "spanNulls": false,
+        "axisPlacement": "auto",
+        "stacking": {
+         "mode": "none",
+         "group": "A"
+        }
+       }
+      },
+      "overrides": []
+     },
+     "targets": [
+      {
+       "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+       },
+       "expr": "max(vllm:kv_cache_usage_perc{job=\"vllm-glm53\"})",
+       "legendFormat": "KV cache used",
+       "refId": "A",
+       "editorMode": "code",
+       "range": true,
+       "instant": false
+      },
+      {
+       "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+       },
+       "expr": "sum(rate(vllm:prefix_cache_hits_total{job=\"vllm-glm53\"}[5m])) / sum(rate(vllm:prefix_cache_queries_total{job=\"vllm-glm53\"}[5m]))",
+       "legendFormat": "Prefix hit rate",
+       "refId": "B",
+       "editorMode": "code",
+       "range": true,
+       "instant": false
+      }
+     ],
+     "options": {
+      "legend": {
+       "displayMode": "table",
+       "placement": "bottom",
+       "calcs": [
+        "lastNotNull",
+        "max"
+       ]
+      },
+      "tooltip": {
+       "mode": "multi",
+       "sort": "desc"
+      }
+     }
+    },
+    {
+     "id": 4200,
+     "title": "RTX PRO 6000 \u2014 GPU utilization",
+     "description": "All activity on the cards, including model loading, startup warm-up and jobs outside LiteLLM. Gaps indicate missing telemetry, not idle GPUs.",
+     "type": "timeseries",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "gridPos": {
+      "x": 0,
+      "y": 118,
+      "w": 12,
+      "h": 7
+     },
+     "fieldConfig": {
+      "defaults": {
+       "unit": "percent",
+       "decimals": 1,
+       "color": {
+        "mode": "palette-classic"
+       },
+       "thresholds": {
+        "mode": "absolute",
+        "steps": [
+         {
+          "color": "green",
+          "value": null
+         }
+        ]
+       },
+       "mappings": [],
+       "custom": {
+        "drawStyle": "line",
+        "lineInterpolation": "linear",
+        "lineWidth": 2,
+        "fillOpacity": 8,
+        "showPoints": "never",
+        "spanNulls": false,
+        "axisPlacement": "auto",
+        "stacking": {
+         "mode": "none",
+         "group": "A"
+        }
+       }
+      },
+      "overrides": []
+     },
+     "targets": [
+      {
+       "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+       },
+       "expr": "DCGM_FI_DEV_GPU_UTIL{job=\"dcgm-gpu\",modelName=~\".*RTX PRO 6000.*\"}",
+       "legendFormat": "GPU {{gpu}}",
+       "refId": "A",
+       "editorMode": "code",
+       "range": true,
+       "instant": false
+      }
+     ],
+     "options": {
+      "legend": {
+       "displayMode": "table",
+       "placement": "bottom",
+       "calcs": [
+        "lastNotNull",
+        "max"
+       ]
+      },
+      "tooltip": {
+       "mode": "multi",
+       "sort": "desc"
+      }
+     }
+    },
+    {
+     "id": 4201,
+     "title": "RTX PRO 6000 \u2014 VRAM used",
+     "description": "Allocated GPU memory, including model weights and KV cache reservations.",
+     "type": "timeseries",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "gridPos": {
+      "x": 0,
+      "y": 125,
+      "w": 12,
+      "h": 7
+     },
+     "fieldConfig": {
+      "defaults": {
+       "unit": "bytes",
+       "decimals": 1,
+       "color": {
+        "mode": "palette-classic"
+       },
+       "thresholds": {
+        "mode": "absolute",
+        "steps": [
+         {
+          "color": "green",
+          "value": null
+         }
+        ]
+       },
+       "mappings": [],
+       "custom": {
+        "drawStyle": "line",
+        "lineInterpolation": "linear",
+        "lineWidth": 2,
+        "fillOpacity": 8,
+        "showPoints": "never",
+        "spanNulls": false,
+        "axisPlacement": "auto",
+        "stacking": {
+         "mode": "none",
+         "group": "A"
+        }
+       }
+      },
+      "overrides": []
+     },
+     "targets": [
+      {
+       "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+       },
+       "expr": "DCGM_FI_DEV_FB_USED{job=\"dcgm-gpu\",modelName=~\".*RTX PRO 6000.*\"} * 1024 * 1024",
+       "legendFormat": "GPU {{gpu}}",
+       "refId": "A",
+       "editorMode": "code",
+       "range": true,
+       "instant": false
+      }
+     ],
+     "options": {
+      "legend": {
+       "displayMode": "table",
+       "placement": "bottom",
+       "calcs": [
+        "lastNotNull",
+        "max"
+       ]
+      },
+      "tooltip": {
+       "mode": "multi",
+       "sort": "desc"
+      }
+     }
+    },
+    {
+     "id": 4202,
+     "title": "RTX PRO 6000 \u2014 power",
+     "description": "Board power reported by NVIDIA DCGM.",
+     "type": "timeseries",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "gridPos": {
+      "x": 0,
+      "y": 132,
+      "w": 12,
+      "h": 7
+     },
+     "fieldConfig": {
+      "defaults": {
+       "unit": "watt",
+       "decimals": 1,
+       "color": {
+        "mode": "palette-classic"
+       },
+       "thresholds": {
+        "mode": "absolute",
+        "steps": [
+         {
+          "color": "green",
+          "value": null
+         }
+        ]
+       },
+       "mappings": [],
+       "custom": {
+        "drawStyle": "line",
+        "lineInterpolation": "linear",
+        "lineWidth": 2,
+        "fillOpacity": 8,
+        "showPoints": "never",
+        "spanNulls": false,
+        "axisPlacement": "auto",
+        "stacking": {
+         "mode": "none",
+         "group": "A"
+        }
+       }
+      },
+      "overrides": []
+     },
+     "targets": [
+      {
+       "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+       },
+       "expr": "DCGM_FI_DEV_POWER_USAGE{job=\"dcgm-gpu\",modelName=~\".*RTX PRO 6000.*\"}",
+       "legendFormat": "GPU {{gpu}}",
+       "refId": "A",
+       "editorMode": "code",
+       "range": true,
+       "instant": false
+      }
+     ],
+     "options": {
+      "legend": {
+       "displayMode": "table",
+       "placement": "bottom",
+       "calcs": [
+        "lastNotNull",
+        "max"
+       ]
+      },
+      "tooltip": {
+       "mode": "multi",
+       "sort": "desc"
+      }
+     }
+    },
+    {
+     "id": 4203,
+     "title": "RTX PRO 6000 \u2014 temperature",
+     "description": "",
+     "type": "timeseries",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "gridPos": {
+      "x": 0,
+      "y": 139,
+      "w": 12,
+      "h": 7
+     },
+     "fieldConfig": {
+      "defaults": {
+       "unit": "celsius",
+       "decimals": 1,
+       "color": {
+        "mode": "palette-classic"
+       },
+       "thresholds": {
+        "mode": "absolute",
+        "steps": [
+         {
+          "color": "green",
+          "value": null
+         }
+        ]
+       },
+       "mappings": [],
+       "custom": {
+        "drawStyle": "line",
+        "lineInterpolation": "linear",
+        "lineWidth": 2,
+        "fillOpacity": 8,
+        "showPoints": "never",
+        "spanNulls": false,
+        "axisPlacement": "auto",
+        "stacking": {
+         "mode": "none",
+         "group": "A"
+        }
+       }
+      },
+      "overrides": []
+     },
+     "targets": [
+      {
+       "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+       },
+       "expr": "DCGM_FI_DEV_GPU_TEMP{job=\"dcgm-gpu\",modelName=~\".*RTX PRO 6000.*\"}",
+       "legendFormat": "GPU {{gpu}}",
+       "refId": "A",
+       "editorMode": "code",
+       "range": true,
+       "instant": false
+      }
+     ],
+     "options": {
+      "legend": {
+       "displayMode": "table",
+       "placement": "bottom",
+       "calcs": [
+        "lastNotNull",
+        "max"
+       ]
+      },
+      "tooltip": {
+       "mode": "multi",
+       "sort": "desc"
+      }
+     }
+    }
+   ]
+  },
+  {
+   "id": 4711,
+   "title": "Trial lifecycle, protection and history coverage",
+   "type": "row",
+   "collapsed": true,
+   "gridPos": {
+    "x": 0,
+    "y": 85,
+    "w": 24,
+    "h": 1
+   },
+   "panels": [
+    {
+     "datasource": {
+      "type": "yesoreyeram-infinity-datasource",
+      "uid": "usage-api"
+     },
+     "fieldConfig": {
+      "defaults": {
+       "color": {
+        "mode": "thresholds"
+       },
+       "decimals": null,
+       "mappings": [],
+       "thresholds": {
+        "mode": "absolute",
+        "steps": [
+         {
+          "color": "green",
+          "value": null
+         }
+        ]
+       },
+       "unit": "none"
+      },
+      "overrides": []
+     },
+     "gridPos": {
+      "x": 0,
+      "y": 86,
+      "w": 12,
+      "h": 6
+     },
+     "id": 85664,
+     "options": {
+      "colorMode": "value",
+      "graphMode": "none",
+      "justifyMode": "auto",
+      "orientation": "auto",
+      "percentChangeColorMode": "standard",
+      "reduceOptions": {
+       "calcs": [
+        "lastNotNull"
+       ],
+       "fields": "/^minted_in_window$/",
+       "values": false
+      },
+      "showPercentChange": false,
+      "textMode": "auto",
+      "wideLayout": true
+     },
+     "targets": [
+      {
+       "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "usage-api"
+       },
+       "format": "table",
+       "refId": "A",
+       "rootSelector": "",
+       "parser": "backend",
+       "source": "url",
+       "type": "json",
+       "url": "http://10.0.0.10:8013/api/trials?view=totals&from=${__timeFrom}&to=${__timeTo}",
+       "url_options": {
+        "data": "",
+        "method": "GET"
+       },
+       "maxRows": 500
+      }
+     ],
+     "title": "Trials minted (range)",
+     "type": "stat",
+     "description": " Ranges over 30 days use daily UTC totals; partial days remain exact. History begins with recorded usage on June 7, 2026; missing days are not invented."
+    },
+    {
+     "datasource": {
+      "type": "yesoreyeram-infinity-datasource",
+      "uid": "usage-api"
+     },
+     "fieldConfig": {
+      "defaults": {
+       "color": {
+        "mode": "thresholds"
+       },
+       "decimals": null,
+       "mappings": [],
+       "thresholds": {
+        "mode": "absolute",
+        "steps": [
+         {
+          "color": "green",
+          "value": null
+         },
+         {
+          "color": "orange",
+          "value": 1
+         }
+        ]
+       },
+       "unit": "none"
+      },
+      "overrides": []
+     },
+     "gridPos": {
+      "x": 0,
+      "y": 92,
+      "w": 12,
+      "h": 6
+     },
+     "id": 88697,
+     "options": {
+      "colorMode": "value",
+      "graphMode": "none",
+      "justifyMode": "auto",
+      "orientation": "auto",
+      "percentChangeColorMode": "standard",
+      "reduceOptions": {
+       "calcs": [
+        "lastNotNull"
+       ],
+       "fields": "/^near_budget$/",
+       "values": false
+      },
+      "showPercentChange": false,
+      "textMode": "auto",
+      "wideLayout": true
+     },
+     "targets": [
+      {
+       "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "usage-api"
+       },
+       "format": "table",
+       "refId": "A",
+       "rootSelector": "",
+       "parser": "backend",
+       "source": "url",
+       "type": "json",
+       "url": "http://10.0.0.10:8013/api/trials?view=totals&from=${__timeFrom}&to=${__timeTo}",
+       "url_options": {
+        "data": "",
+        "method": "GET"
+       },
+       "maxRows": 500
+      }
+     ],
+     "title": "Active trials \u226580% budget",
+     "type": "stat",
+     "description": " Ranges over 30 days use daily UTC totals; partial days remain exact. History begins with recorded usage on June 7, 2026; missing days are not invented."
+    },
+    {
+     "datasource": {
+      "type": "yesoreyeram-infinity-datasource",
+      "uid": "usage-api"
+     },
+     "fieldConfig": {
+      "defaults": {
+       "color": {
+        "mode": "thresholds"
+       },
+       "decimals": null,
+       "mappings": [],
+       "thresholds": {
+        "mode": "absolute",
+        "steps": [
+         {
+          "color": "green",
+          "value": null
+         },
+         {
+          "color": "orange",
+          "value": 1
+         }
+        ]
+       },
+       "unit": "none"
+      },
+      "overrides": []
+     },
+     "gridPos": {
+      "x": 0,
+      "y": 98,
+      "w": 12,
+      "h": 6
+     },
+     "id": 9708,
+     "options": {
+      "colorMode": "value",
+      "graphMode": "none",
+      "justifyMode": "auto",
+      "orientation": "auto",
+      "percentChangeColorMode": "standard",
+      "reduceOptions": {
+       "calcs": [
+        "lastNotNull"
+       ],
+       "fields": "/^errors_in_window$/",
+       "values": false
+      },
+      "showPercentChange": false,
+      "textMode": "auto",
+      "wideLayout": true
+     },
+     "targets": [
+      {
+       "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "usage-api"
+       },
+       "format": "table",
+       "refId": "A",
+       "rootSelector": "",
+       "parser": "backend",
+       "source": "url",
+       "type": "json",
+       "url": "http://10.0.0.10:8013/api/trials?view=totals&from=${__timeFrom}&to=${__timeTo}",
+       "url_options": {
+        "data": "",
+        "method": "GET"
+       },
+       "maxRows": 500
+      }
+     ],
+     "title": "Trial errors / rate limits (range)",
+     "type": "stat",
+     "description": " Ranges over 30 days use daily UTC totals; partial days remain exact. History begins with recorded usage on June 7, 2026; missing days are not invented."
+    },
+    {
+     "id": 4400,
+     "title": "Protection monitor \u2014 delivery status",
+     "type": "table",
+     "datasource": {
+      "type": "yesoreyeram-infinity-datasource",
+      "uid": "usage-api"
+     },
+     "description": "Checks every 30 seconds. Durable events use safe key IDs only. Notification delivery is not configured until an approved route is available. Ranges over 30 days use daily UTC totals; partial days remain exact. History begins with recorded usage on June 7, 2026; missing days are not invented.",
+     "gridPos": {
+      "x": 0,
+      "y": 104,
+      "w": 24,
+      "h": 7
+     },
+     "targets": [
+      {
+       "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "usage-api"
+       },
+       "format": "table",
+       "refId": "A",
+       "rootSelector": "",
+       "parser": "backend",
+       "source": "url",
+       "type": "json",
+       "url": "http://10.0.0.10:8013/api/protection/status",
+       "url_options": {
+        "data": "",
+        "method": "GET"
+       },
+       "maxRows": 500
+      }
+     ],
+     "fieldConfig": {
+      "defaults": {},
+      "overrides": []
+     },
+     "options": {
+      "showHeader": true
+     }
+    },
+    {
+     "id": 4401,
+     "title": "Protection alerts \u2014 safe key IDs",
+     "type": "table",
+     "datasource": {
+      "type": "yesoreyeram-infinity-datasource",
+      "uid": "usage-api"
+     },
+     "description": "Checks every 30 seconds. Durable events use safe key IDs only. Notification delivery is not configured until an approved route is available. Ranges over 30 days use daily UTC totals; partial days remain exact. History begins with recorded usage on June 7, 2026; missing days are not invented.",
+     "gridPos": {
+      "x": 0,
+      "y": 111,
+      "w": 24,
+      "h": 7
+     },
+     "targets": [
+      {
+       "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "usage-api"
+       },
+       "format": "table",
+       "refId": "A",
+       "rootSelector": "",
+       "parser": "backend",
+       "source": "url",
+       "type": "json",
+       "url": "http://10.0.0.10:8013/api/protection/events",
+       "url_options": {
+        "data": "",
+        "method": "GET"
+       },
+       "maxRows": 500
+      }
+     ],
+     "fieldConfig": {
+      "defaults": {},
+      "overrides": []
+     },
+     "options": {
+      "showHeader": true
+     }
+    },
+    {
+     "id": 4600,
+     "title": "History coverage and capacity",
+     "type": "table",
+     "datasource": {
+      "type": "yesoreyeram-infinity-datasource",
+      "uid": "usage-api"
+     },
+     "targets": [
+      {
+       "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "usage-api"
+       },
+       "format": "table",
+       "refId": "A",
+       "rootSelector": "",
+       "parser": "backend",
+       "source": "url",
+       "type": "json",
+       "url": "http://10.0.0.10:8013/api/history",
+       "url_options": {
+        "data": "",
+        "method": "GET"
+       },
+       "maxRows": 500
+      }
+     ],
+     "gridPos": {
+      "x": 0,
+      "y": 118,
+      "w": 24,
+      "h": 7
+     },
+     "description": "Metrics retention: 400 days with a 50 GiB capacity cap and advance warnings. Usage metadata: at least 400 days; daily totals: at least five years. Existing records are preserved. Missing historical metrics cannot be recovered by extending retention. Ranges over 30 days use daily UTC totals; partial days remain exact. History begins with recorded usage on June 7, 2026; missing days are not invented.",
+     "fieldConfig": {
+      "defaults": {},
+      "overrides": [
+       {
+        "matcher": {
+         "id": "byName",
+         "options": "Capacity status"
+        },
+        "properties": [
+         {
+          "id": "custom.width",
+          "value": 280
+         }
+        ]
+       }
+      ]
+     },
+     "options": {
+      "showHeader": true
+     },
+     "transformations": [
+      {
+       "id": "organize",
+       "options": {
+        "excludeByName": {
+         "usage_newest_archived_utc": true,
+         "archived_requests": true,
+         "rollup_updated_epoch": true,
+         "database_bytes": true,
+         "disk_free_bytes": true,
+         "deletion_enabled": true,
+         "history_note": true,
+         "metrics_block_bytes": true,
+         "metrics_projected_400d_bytes": true
+        },
+        "indexByName": {
+         "capacity_status": 0,
+         "metrics_retention": 1,
+         "metrics_size_cap": 2,
+         "metrics_oldest_utc": 3,
+         "usage_oldest_utc": 4,
+         "metadata_minimum_days": 5,
+         "daily_minimum_days": 6
+        },
+        "renameByName": {
+         "capacity_status": "Capacity status",
+         "metrics_retention": "Metrics retention",
+         "metrics_size_cap": "Capacity limit",
+         "metrics_oldest_utc": "Metrics since (UTC)",
+         "usage_oldest_utc": "Usage since (UTC)",
+         "metadata_minimum_days": "Request metadata days",
+         "daily_minimum_days": "Daily totals days"
+        }
+       }
+      }
+     ]
+    }
+   ]
+  }
+ ],
+ "preload": false,
+ "refresh": "10s",
+ "schemaVersion": 41,
+ "tags": [
+  "litellm",
+  "usage",
+  "cost"
+ ],
+ "templating": {
+  "list": []
+ },
+ "time": {
+  "from": "now-6h",
+  "to": "now"
+ },
+ "timepicker": {
+  "time_options": [
+   "6h",
+   "24h",
+   "7d",
+   "30d",
+   "90d",
+   "1y",
+   "400d",
+   "5y"
+  ]
+ },
+ "timezone": "browser",
+ "description": "Metrics retention is 400 days; samples before October 15, 2026 have expired. Usage records begin June 7, 2026. Long ranges use daily totals. Live active-backend performance and RTX PRO 6000 hardware. Called model names and served backend identity remain separate. Usage charts show bucket totals. Estimated public API-equivalent USD, not a self-hosting bill or customer charge. Current backend: GLM-5.3-Flash. Z.ai public rates per 1M tokens: input $0.15, cached input $0.03, output $0.50 (including reasoning tokens). GLM cache-aware pricing applies from the Nov 3, 2026 22:04 Pacific restoration; older configured GLM estimates are preserved. Actual stored backend identity selects pricing, never the current alias. Missing cache counts use the full input rate (upper estimate); local cache hits only approximate vendor eligibility. GLM source checked 2026-11-03: https://docs.z.ai/guides/overview/pricing. Historical DeepSeek-V4.1-Flash-1017 per 1M: peak cached input $0.006, uncached input $0.30, output $1.20; off-peak $0.003/$0.15/$0.60. Peak: weekdays 01:00\u201304:00 and 06:00\u201310:00 UTC excluding Chinese public holidays; schedule verified Oct 29\u2013Dec 31, 2026, otherwise peak upper estimate. DeepSeek source checked 2026-10-29: https://api-docs.deepseek.com/quick_start/pricing/",
+ "title": "AI Usage",
+ "uid": "ai-usage",
+ "version": 1,
+ "weekStart": ""
+}
