@@ -84,9 +84,7 @@ def test_missing_mixed_unknown_never_qualifies(calls):
         lambda s: s["observation"].update(truncated=True),
         lambda s: s["observation"].update(complete=False),
         lambda s: s["observation"]["calls"][0].update(served_model=None),
-        lambda s: s["observation"]["calls"].append(
-            copy.deepcopy(s["observation"]["calls"][0])
-        ),
+        lambda s: s["observation"]["calls"].append(copy.deepcopy(s["observation"]["calls"][0])),
     ],
 )
 def test_incomplete_conflicting_or_shared_evidence_rejects(mutate):
