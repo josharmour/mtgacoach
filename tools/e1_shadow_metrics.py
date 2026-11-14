@@ -2,6 +2,7 @@
 """Offline E1 evidence inventory. Never treats replay potential as observed savings."""
 
 import argparse
+import hashlib
 import json
 from collections import Counter, defaultdict
 
@@ -13,12 +14,29 @@ def summarize(bundles):
     types = defaultdict(Counter)
     singletons = Counter()
     calls = 0
+    fingerprints = {}
+    duplicates = 0
     for bundle in bundles:
         if not is_match_bundle(bundle):
             continue
         match = bundle.get("match_id")
         if not match:
             continue
+        if type(match) is not str:
+            raise ValueError("invalid match identity in E1 evidence")
+        # Repeated copies are not independent observations. A different copy
+        # of the same match may be partial or contradictory: never guess which
+        # is authoritative or deduplicate individual BO3 events without IDs.
+        fingerprint = hashlib.sha256(
+            json.dumps(bundle, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+        ).digest()
+        previous = fingerprints.get(match)
+        if previous is not None:
+            if previous != fingerprint:
+                raise ValueError("conflicting copies of a match in E1 evidence")
+            duplicates += 1
+            continue
+        fingerprints[match] = fingerprint
         matches.add(match)
         metrics = summarize_bundle(bundle)
         calls += sum(bucket["calls"] for bucket in metrics["call_classes"].values())
@@ -35,6 +53,7 @@ def summarize(bundles):
             bucket["agreements"] += event["proposed"] == event["model"]
     return {
         "matches": len(matches),
+        "duplicate_bundles_ignored": duplicates,
         "recorded_calls": calls,
         "recorded_calls_per_match": calls / len(matches) if matches else None,
         "raw_singleton_model_answers_by_type": dict(singletons),
@@ -52,4 +71,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("directory")
     args = parser.parse_args()
-    print(json.dumps(summarize(load_bundle(p) for p in iter_bundle_paths(args.directory)), indent=2))
+    try:
+        result = summarize(load_bundle(p) for p in iter_bundle_paths(args.directory))
+    except (OSError, ValueError, TypeError, KeyError):
+        parser.exit(2, "invalid or conflicting E1 evidence\n")
+    print(json.dumps(result, indent=2))
