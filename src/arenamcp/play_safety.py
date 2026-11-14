@@ -1127,9 +1127,14 @@ def card_facts_removal_reason(card: dict, state: dict, metadata: dict) -> str:
     if local is None:
         return ""
     for permanent_card in state.get("battlefield", []) or []:
+        text = str(permanent_card.get("oracle_text") or "").lower()
+        # Replacement/prevention/reflection effects may apply globally, even
+        # from an opponent's permanent. Do not certify a printed damage total
+        # as harmless in their presence; leave those interactions unevaluated.
+        if re.search(r"\bdamage\b", text):
+            return ""
         if (permanent_card.get("controller_seat_id") or permanent_card.get("owner_seat_id")) != local:
             continue
-        text = str(permanent_card.get("oracle_text") or "").lower()
         # A triggered/static engine can make the cast, entry, damage or death
         # valuable independently. A safety veto requires absence of such value.
         if re.search(

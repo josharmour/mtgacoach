@@ -192,3 +192,21 @@ def test_two_damage_entries_use_optimistic_sum(case):
     _, state, card, record, meta = case
     record["effects"].append(dict(record["effects"][0]))
     assert card_facts_removal_reason(card, state, meta) == ""  # 8 total can kill the7/7
+
+
+@pytest.mark.parametrize("controller", [1, 2, None])
+def test_global_damage_modifier_never_certifies_no_kill(case, controller):
+    """212434 reviewer perturbation: opponent Dictate makes four damage lethal to7/7."""
+    _, state, card, _, meta = case
+    state["battlefield"].append(
+        {
+            "name": "Dictate of the Twin Gods",
+            "type_line": "Enchantment",
+            "controller_seat_id": controller,
+            "oracle_text": "If a source would deal damage to a permanent or player, it deals double that damage to that permanent or player instead.",
+        }
+    )
+    assert unsafe_play_reason(state, card, "cast", meta) == ""
+    # Generic replacement wording, not a named-card exception.
+    state["battlefield"][-1].update(name="Global modifier", oracle_text="Sources deal triple damage instead.")
+    assert unsafe_play_reason(state, card, "cast", meta) == ""
