@@ -1134,3 +1134,82 @@ __all__ = [
     "unmodelled_cast",
     "unmodelled_effect",
 ]
+
+
+def planner_certain_pick(result, decision, state) -> str | None:
+    """E1: complete, non-tactical, fully covered menu with a clear survivor.
+
+    Unknown mappings and alternative costs abstain. Pass maps to the searched
+    no-cast line only in main two with no pending land development. This is a
+    shadow candidate, not evidence that the activation gate has been met.
+    """
+    import math
+
+    try:
+        if (
+            decision.request_type != "ActionsAvailable"
+            or len(decision.options) < 2
+            or decision.can_cancel
+            or not _usable(result)
+            or result.bounded
+            or result.dead_in is not None
+            or result.dead_in_greedy is not None
+            or result.all_dead_at_first
+            or result.cast_trigger_risk
+            or result.posture == "lethal"
+            or state.get("stack")
+            or not result.model.our_turn
+            or result.model.stack_nonempty
+            or result.model.unknown_bodies
+        ):
+            return None
+        if decision.selection_is_valid([]) or (
+            decision.can_pass and not any(_is_pass(o) for o in decision.options)
+        ):
+            return None
+        from arenamcp.board_assessment import assess
+
+        assessment = assess(state)
+        if assessment.lethal_now or assessment.survival_mode or assessment.unknown_bodies:
+            return None
+        evaluated = []
+        for option in decision.options:
+            if option.payable is False or not decision.selection_is_valid([option.option_id]):
+                return None
+            meta = option.meta or {}
+            if meta.get("alternative") or meta.get("alternativeCostText") or meta.get("choiceKind"):
+                return None
+            if _is_pass(option):
+                line = result.first_action.get(("nocast",))
+                if (
+                    result.model.phase != "Phase_Main2"
+                    or line is None
+                    or not line.steps
+                    or line.steps[0].land
+                ):
+                    return None
+            else:
+                if _unmodelled_finisher(result, option, state):
+                    return None
+                key = action_key(option, state)
+                line = result.first_action.get(key) if key is not None else None
+            if (
+                line is None
+                or not line.complete
+                or line.unsupported
+                or line.cls != ALIVE
+                or line.dead_at is not None
+                or line.win_at is not None
+                or not math.isfinite(line.v)
+                or line.ranked != line.score
+            ):
+                return None
+            evaluated.append((line.v, line.timing, option.option_id))
+        evaluated.sort(reverse=True)
+        if len({row[1] for row in evaluated}) != 1:
+            return None
+        if evaluated[0][0] - evaluated[1][0] < LINE_GUARD_MARGIN:
+            return None
+        return evaluated[0][2]
+    except (AttributeError, TypeError, ValueError, KeyError):
+        return None

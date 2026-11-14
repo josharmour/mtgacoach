@@ -69,7 +69,7 @@ def test_single_action_window_never_reaches_the_model():
     assert model.efforts == []
 
 
-def test_single_target_and_pass_only_windows_keep_their_model_call():
+def test_cancelable_target_keeps_model_but_forced_pass_does_not():
     """Deliberate exclusions: cast-or-decline and the pass reasoning are real content."""
     state = _our_main()
     state["hand"].append(_card(230, "Lightning Strike", 2))
@@ -101,7 +101,7 @@ def test_single_target_and_pass_only_windows_keep_their_model_call():
     model2 = _Model(_reply("pass", "hold everything"))
     planner2 = _planner(model2)
     assert planner2.plan_decision_options(pass_only, state) == ["pass"]
-    assert len(model2.efforts) == 1
+    assert len(model2.efforts) == 0
 
 
 def test_the_fast_path_skips_an_unpayable_or_unvalidatable_single_option():

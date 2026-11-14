@@ -14,6 +14,7 @@ import os
 
 GUARD_MODES = ("off", "shadow", "on")
 GUARD_ENV = {
+    "planner_certain": "ARENAMCP_PLANNER_CERTAIN",
     "line": "ARENAMCP_LINE_GUARD",
     "mode": "ARENAMCP_MODE_GUARD",
     "line_gap": "ARENAMCP_LINE_GAP",
@@ -27,6 +28,7 @@ GUARD_SETTINGS = {kind: f"guard_{kind}" for kind in GUARD_ENV}
 # empty declarations of c0af235f T12 (#178) and match 2149ea96 (#189). The mode guard (one shadow
 # verdict ever) and the attack-line guard (none) stay in shadow until their logs make a case.
 GUARD_DEFAULTS = {
+    "planner_certain": "shadow",
     "line": "on",
     "mode": "shadow",
     "line_gap": "on",
@@ -35,6 +37,10 @@ GUARD_DEFAULTS = {
 }
 # (menu title, tooltip) for the desktop app's Tools > Autopilot Guards.
 GUARD_LABELS = {
+    "planner_certain": (
+        "Planner Certain",
+        "Skip the model only when every offered action has a complete surviving line and one clearly leads. Shadow logs agreement without skipping.",
+    ),
     "line": (
         "Line Guard",
         "Replaces a pick (or the game plan's step for this turn) that the line search finds clearly "
