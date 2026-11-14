@@ -6,6 +6,28 @@ from arenamcp.ability_synthesizer import Damage, cast_time_entries
 from arenamcp.claim_language import conditional_claim, negated_claim
 
 
+def _asserted_claim(text, claim):
+    """Keep governing prefix denial in scope, not just the named subject.
+
+    Ambiguous denial anywhere in the current statement abstains. Independent
+    statements and contrastive boundaries reset the scope; no global change to
+    claim_language callers that supply their own subject boundaries.
+    """
+    if claim is None:
+        return False
+    lowered = text.lower()
+    if len(lowered) != len(text):
+        return False  # preserve span offsets; unusual case mapping is unknown
+    text = lowered
+    boundary = re.compile(r"[.!?;|\n]|\b(?:but|however|yet)\b", re.I)
+    start = 0
+    for match in boundary.finditer(text, 0, claim.start()):
+        start = match.end()
+    following = boundary.search(text, claim.end())
+    end = following.start() if following else len(text)
+    return not negated_claim(text, start, end) and not conditional_claim(text, start, claim.end())
+
+
 def record_outcome_notes(source, meta, state, reasoning):
     from arenamcp.game_plan import _keyword_truth
     from arenamcp.line_search_moves import _known_record, _record_key
@@ -52,11 +74,7 @@ def record_outcome_notes(source, meta, state, reasoning):
             text,
             re.I,
         )
-        if (
-            claim
-            and not negated_claim(text, claim.start(), claim.end())
-            and not conditional_claim(text, claim.start(), claim.end())
-        ):
+        if _asserted_claim(text, claim):
             notes.append(f"{name}'s selected {mode.name} mode does not leave its body on the battlefield.")
     entries = cast_time_entries(record)
     if not entries or any(e.conditions or not isinstance(e.effect, Damage) for e in entries):
@@ -77,12 +95,7 @@ def record_outcome_notes(source, meta, state, reasoning):
             text,
             re.I,
         )
-        if (
-            claim
-            and not negated_claim(text, claim.start(), claim.end())
-            and not conditional_claim(text, claim.start(), claim.end())
-            and amount < target["toughness"]
-        ):
+        if _asserted_claim(text, claim) and amount < target["toughness"]:
             notes.append(
                 f"{name}'s recorded {amount} damage cannot by itself kill {target_name} at {target['toughness']} toughness."
             )

@@ -267,3 +267,84 @@ def test_record_outcomes_conservative_abstention(monkeypatch, change):
         reason = "Fury kills Griselbrand with its four damage."
         state["battlefield"][0]["damage_marked"] = 3
     assert record_outcome_notes(state["hand"][0], meta, state, reason) == []
+
+
+@pytest.mark.parametrize(
+    "claim",
+    [
+        "Fury survives to attack next turn",
+        "Fury kills Griselbrand with its four damage",
+        "Evoking Fury leaves a double-striking 3/3 body on our battlefield",
+    ],
+)
+@pytest.mark.parametrize(
+    "frame",
+    [
+        "It is not true that {}.",
+        "We cannot assume that {}.",
+        "Don't assume {}.",
+        "We can’t conclude that {}.",
+        "It isn't the case that {}.",
+        "{} is not true.",
+        "If {} we would win.",
+        "Suppose {}.",
+    ],
+)
+def test_record_claim_governing_denial_and_condition_matrix(monkeypatch, claim, frame):
+    from arenamcp.outcome_claims import record_outcome_notes
+
+    known_fury(monkeypatch)
+    state, _ = fixture()
+    meta = {"alternativeCostText": "Evoke—Exile a red card from your hand."}
+    assert record_outcome_notes(state["hand"][0], meta, state, frame.format(claim)) == []
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    [
+        "We cannot pass. ",
+        "We cannot pass; ",
+        "We cannot pass, but ",
+        "We cannot pass. However, ",
+    ],
+)
+@pytest.mark.parametrize(
+    "claim",
+    [
+        "Fury survives to attack next turn.",
+        "Fury kills Griselbrand with its four damage.",
+    ],
+)
+def test_record_denial_does_not_leak_across_statement_boundaries(monkeypatch, prefix, claim):
+    from arenamcp.outcome_claims import record_outcome_notes
+
+    known_fury(monkeypatch)
+    state, _ = fixture()
+    meta = {"alternativeCostText": "Evoke—Exile a red card from your hand."}
+    assert record_outcome_notes(state["hand"][0], meta, state, prefix + claim)
+
+
+@pytest.mark.parametrize(
+    "claim",
+    [
+        "Fury survives to attack next turn",
+        "Fury kills Griselbrand with its four damage",
+        "Evoking Fury leaves a double-striking 3/3 body on our battlefield",
+    ],
+)
+def test_prefix_denial_keeps_legal_choice_at_public_boundary(monkeypatch, claim):
+    import json
+
+    known_fury(monkeypatch)
+    state, menu = fixture()
+    menu.options[0].meta["alternativeCostText"] = "Evoke—Exile a red card from your hand."
+    backend = Mock()
+    backend.complete.return_value = json.dumps(
+        {"option_ids": ["cast"], "reasoning": "It is not true that " + claim + "."}
+    )
+    planner = ActionPlanner(backend, separate_strategy_planning=False, land_drop_first=False)
+    monkeypatch.setattr(planner, "_line_prompt_context", lambda *a: (None, "", {"cast": "unknown"}))
+    monkeypatch.setattr(planner, "_sized_budget", lambda *a: 30)
+    assert planner.plan_decision_options(menu, state) == ["cast"]
+    assert backend.complete.call_count == 1
+    assert not planner.last_llm_failure
