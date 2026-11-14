@@ -168,3 +168,12 @@ def test_meta_context_cannot_impersonate_card_or_numeric_game_reference(tmp_path
         path = tmp_path / "bundle.json"
         path.write_text(json.dumps(bundle))
         assert b.build_cases([path])[0] == []
+
+
+def test_payable_accepts_only_none_or_exact_boolean(tmp_path):
+    for value in ({"customer": "Opaque Customer"}, ["private"], "yes", 1, 0):
+        bundle = sample()
+        bundle["packet"]["decisions"][0]["pending_decision"]["options"][0]["payable"] = value
+        path = tmp_path / "bundle.json"
+        path.write_text(json.dumps(bundle))
+        assert b.build_cases([path])[0] == []

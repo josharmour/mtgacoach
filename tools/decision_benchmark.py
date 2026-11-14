@@ -465,6 +465,8 @@ def assert_case_schema(snapshot, pending):
             raise UnsafeCase("option fields")
         if not isinstance(option["option_id"], str) or not isinstance(option["label"], str):
             raise UnsafeCase("option type")
+        if option.get("payable") is not None and type(option["payable"]) is not bool:
+            raise UnsafeCase("option payable type")
         assert_record_schema(option.get("meta", {}), "meta")
     for slot in pending.get("slots", []):
         if set(slot) - {f.name for f in dataclasses.fields(TargetSlot)} or not all(
