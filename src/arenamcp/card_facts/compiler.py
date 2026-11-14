@@ -442,7 +442,20 @@ def _raw_native_type_problems(data: dict[str, Any]) -> list[str]:
     effects = data.get("effects")
     for index, entry in enumerate(effects if isinstance(effects, list) else []):
         effect = entry.get("effect") if isinstance(entry, dict) else None
-        if not isinstance(effect, dict) or effect.get("effect_type") != "CreateToken":
+        if not isinstance(effect, dict):
+            continue
+        tag = effect.get("effect_type")
+        native_integers = {
+            "GainLife": ("amount",),
+            "Draw": ("count",),
+            "Damage": ("amount",),
+            "Pump": ("power", "toughness"),
+            "AddMana": ("amount",),
+            "PutCounters": ("count",),
+        }
+        if isinstance(tag, str) and tag in native_integers:
+            fields(effect, f"effects[{index}].effect", integers=native_integers[tag])
+        if tag != "CreateToken":
             continue
         if "spec" in effect:
             fields(
