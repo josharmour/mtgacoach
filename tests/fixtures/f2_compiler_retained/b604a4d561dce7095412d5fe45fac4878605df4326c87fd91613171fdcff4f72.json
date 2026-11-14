@@ -1,0 +1,113 @@
+{
+  "body": {
+    "keywords": [],
+    "loyalty": 3,
+    "power": null,
+    "toughness": null
+  },
+  "compiled_at": "2026-11-11T15:27:00Z",
+  "compiled_by": "card_facts.compiler",
+  "confidence": "high",
+  "effects": [
+    {
+      "conditions": [
+        "you may create the token"
+      ],
+      "effect": {
+        "effect_type": "CreateToken",
+        "spec": {
+          "attacking": false,
+          "copy_of_self": false,
+          "count": 1,
+          "keywords": [
+            "trample",
+            "haste"
+          ],
+          "legendary": true,
+          "name": "Boo",
+          "not_legendary": false,
+          "per_opponent": false,
+          "power": 1,
+          "subtypes": [
+            "Hamster"
+          ],
+          "tapped": false,
+          "toughness": 1,
+          "types": [
+            "creature"
+          ]
+        }
+      },
+      "trigger": "ETB and at the beginning of your upkeep"
+    },
+    {
+      "conditions": [],
+      "effect": {
+        "count": 3,
+        "counter_type": "+1/+1",
+        "effect_type": "PutCounters",
+        "target": "up to one target creature with trample or haste"
+      },
+      "trigger": "activated (+1)"
+    },
+    {
+      "conditions": [],
+      "effect": {
+        "effect_type": "Unknown",
+        "text": "Sacrifice a creature. When you do, Minsc & Boo deals X damage to any target, where X is that creature's power. If the sacrificed creature was a Hamster, draw X cards."
+      },
+      "trigger": "activated (−2)"
+    }
+  ],
+  "limited": {},
+  "mana": [],
+  "mana_cost": "{2}{R}{G}",
+  "modes": [
+    {
+      "cost": {
+        "discard": 0,
+        "exile_from_graveyard": 0,
+        "life": 0,
+        "mana": "{2}{R}{G}",
+        "sacrifice": null,
+        "tap": false
+      },
+      "cost_text": "{2}{R}{G}",
+      "name": "cast",
+      "stays_on_battlefield": true
+    },
+    {
+      "cost": {
+        "discard": 0,
+        "exile_from_graveyard": 0,
+        "life": 0,
+        "mana": "",
+        "sacrifice": null,
+        "tap": false
+      },
+      "cost_text": "+1",
+      "name": "activate (+1)",
+      "stays_on_battlefield": true
+    },
+    {
+      "cost": {
+        "discard": 0,
+        "exile_from_graveyard": 0,
+        "life": 0,
+        "mana": "",
+        "sacrifice": null,
+        "tap": false
+      },
+      "cost_text": "−2",
+      "name": "activate (−2)",
+      "stays_on_battlefield": true
+    }
+  ],
+  "name": "Minsc & Boo, Timeless Heroes",
+  "notes": "'Can be your commander' is a deckbuilding statement, not a game action. The −2 ability uses variable X (sacrificed creature's power) and cannot be expressed numerically without board state; represented as Unknown verbatim. Trample/haste on the token creation are token keywords, not keywords of the planeswalker itself.",
+  "relationships": {},
+  "rules_hash": "b604a4d561dce7095412d5fe45fac4878605df4326c87fd91613171fdcff4f72",
+  "schema_version": 1,
+  "threat": {},
+  "type_line": "Legendary Planeswalker — Minsc"
+}

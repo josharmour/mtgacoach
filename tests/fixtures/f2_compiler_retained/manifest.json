@@ -1,0 +1,26 @@
+{
+  "source": "/home/joshu/repos/mtgacoach/fable-november-reports/F2.md",
+  "source_sha256": "6dfd1c6e2f9c8c8934956d718479ed3f16ea9bd1ba0507837ac5347f4806682a",
+  "records": [
+    {
+      "name": "Fury",
+      "rules_hash": "16de70d3bc41dc6b54e586972e52ee768fd860813c36d6d6a23219915bf112f3"
+    },
+    {
+      "name": "Lotus Cobra",
+      "rules_hash": "777fdc7927b1791ef64a2f9808e1ffa2cd87bf63d77924c87fe05a842a7971cb"
+    },
+    {
+      "name": "Chrome Mox",
+      "rules_hash": "8b9922d53cacb849fbb091ce1fd0c54dec7a08a14c46afad80364ee6a95f0873"
+    },
+    {
+      "name": "Sylvan Library",
+      "rules_hash": "a4963e7545f75bbf862d10097e25ca93f94ff2408d03e7c46650b87f79596ecb"
+    },
+    {
+      "name": "Minsc & Boo, Timeless Heroes",
+      "rules_hash": "b604a4d561dce7095412d5fe45fac4878605df4326c87fd91613171fdcff4f72"
+    }
+  ]
+}

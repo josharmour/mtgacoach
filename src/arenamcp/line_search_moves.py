@@ -2055,6 +2055,9 @@ def _known_record(name: str, oracle_text: str, type_line: str, mana_cost: str) -
         return None
     if any(isinstance(entry.effect, UnknownEffect) for entry in record.effects):
         return None
+    from arenamcp.card_facts.search_adapter import search_record
+
+    record = search_record(record, card)
     _KNOWN_RECORDS[key] = (payload, record)
     return record
 

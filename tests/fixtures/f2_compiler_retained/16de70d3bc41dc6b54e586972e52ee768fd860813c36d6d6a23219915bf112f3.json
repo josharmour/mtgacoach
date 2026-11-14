@@ -1,0 +1,70 @@
+{
+  "body": {
+    "keywords": [
+      "double strike"
+    ],
+    "loyalty": null,
+    "power": "3",
+    "toughness": "3"
+  },
+  "compiled_at": "2026-11-11T15:26:46Z",
+  "compiled_by": "card_facts.compiler",
+  "confidence": "high",
+  "effects": [
+    {
+      "conditions": [],
+      "effect": {
+        "amount": 4,
+        "effect_type": "Damage",
+        "target": "divided as you choose among any number of target creatures and/or planeswalkers"
+      },
+      "trigger": "ETB"
+    },
+    {
+      "conditions": [],
+      "effect": {
+        "effect_type": "Unknown",
+        "text": "Evoke—Exile a red card from your hand."
+      },
+      "trigger": "evoke (this creature was cast for its evoke cost)"
+    }
+  ],
+  "limited": {},
+  "mana": [],
+  "mana_cost": "{3}{R}{R}",
+  "modes": [
+    {
+      "cost": {
+        "discard": 0,
+        "exile_from_graveyard": 0,
+        "life": 0,
+        "mana": "{3}{R}{R}",
+        "sacrifice": null,
+        "tap": false
+      },
+      "cost_text": "{3}{R}{R}",
+      "name": "cast",
+      "stays_on_battlefield": true
+    },
+    {
+      "cost": {
+        "discard": 0,
+        "exile_from_graveyard": 0,
+        "life": 0,
+        "mana": "",
+        "sacrifice": null,
+        "tap": false
+      },
+      "cost_text": "Exile a red card from your hand.",
+      "name": "evoke",
+      "stays_on_battlefield": false
+    }
+  ],
+  "name": "Fury",
+  "notes": "Evoke cost exiles a red card from the hand; the schema's cost field only models exile_from_graveyard, so the evoke cost is captured via cost_text and an Unknown effect entry. When evoked, Fury is sacrificed as part of the evoke mechanic (not stated on the card itself).",
+  "relationships": {},
+  "rules_hash": "16de70d3bc41dc6b54e586972e52ee768fd860813c36d6d6a23219915bf112f3",
+  "schema_version": 1,
+  "threat": {},
+  "type_line": "Creature — Elemental Incarnation"
+}

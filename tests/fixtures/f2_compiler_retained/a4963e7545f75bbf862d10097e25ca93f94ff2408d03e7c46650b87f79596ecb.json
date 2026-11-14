@@ -1,0 +1,58 @@
+{
+  "body": {
+    "keywords": [],
+    "loyalty": null,
+    "power": null,
+    "toughness": null
+  },
+  "compiled_at": "2026-11-11T15:26:50Z",
+  "compiled_by": "card_facts.compiler",
+  "confidence": "high",
+  "effects": [
+    {
+      "conditions": [
+        "you may draw two additional cards"
+      ],
+      "effect": {
+        "count": 2,
+        "effect_type": "Draw"
+      },
+      "trigger": "at the beginning of your draw step"
+    },
+    {
+      "conditions": [
+        "choose two cards in your hand drawn this turn"
+      ],
+      "effect": {
+        "effect_type": "Unknown",
+        "text": "For each of those cards, pay 4 life or put the card on top of your library."
+      },
+      "trigger": "if you drew two additional cards this way, when choosing two cards in your hand drawn this turn"
+    }
+  ],
+  "limited": {},
+  "mana": [],
+  "mana_cost": "{1}{G}",
+  "modes": [
+    {
+      "cost": {
+        "discard": 0,
+        "exile_from_graveyard": 0,
+        "life": 0,
+        "mana": "{1}{G}",
+        "sacrifice": null,
+        "tap": false
+      },
+      "cost_text": "{1}{G}",
+      "name": "cast",
+      "stays_on_battlefield": true
+    }
+  ],
+  "name": "Sylvan Library",
+  "notes": "",
+  "relationships": {},
+  "rules_hash": "a4963e7545f75bbf862d10097e25ca93f94ff2408d03e7c46650b87f79596ecb",
+  "schema_version": 1,
+  "threat": {},
+  "type_line": "Enchantment"
+}

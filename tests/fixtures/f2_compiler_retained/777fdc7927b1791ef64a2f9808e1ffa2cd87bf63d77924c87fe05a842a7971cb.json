@@ -1,0 +1,48 @@
+{
+  "body": {
+    "keywords": [
+      "landfall"
+    ],
+    "loyalty": null,
+    "power": "2",
+    "toughness": "1"
+  },
+  "compiled_at": "2026-11-11T15:26:53Z",
+  "compiled_by": "card_facts.compiler",
+  "confidence": "high",
+  "effects": [
+    {
+      "conditions": [],
+      "effect": {
+        "effect_type": "Unknown",
+        "text": "add one mana of any color"
+      },
+      "trigger": "a land you control enters (landfall)"
+    }
+  ],
+  "limited": {},
+  "mana": [],
+  "mana_cost": "{1}{G}",
+  "modes": [
+    {
+      "cost": {
+        "discard": 0,
+        "exile_from_graveyard": 0,
+        "life": 0,
+        "mana": "{1}{G}",
+        "sacrifice": null,
+        "tap": false
+      },
+      "cost_text": "{1}{G}",
+      "name": "cast",
+      "stays_on_battlefield": true
+    }
+  ],
+  "name": "Lotus Cobra",
+  "notes": "The landfall trigger produces one mana of any color, which the AddMana schema (fixed mana symbol) cannot represent exactly, so it is recorded as Unknown with the verbatim text.",
+  "relationships": {},
+  "rules_hash": "777fdc7927b1791ef64a2f9808e1ffa2cd87bf63d77924c87fe05a842a7971cb",
+  "schema_version": 1,
+  "threat": {},
+  "type_line": "Creature — Snake"
+}
