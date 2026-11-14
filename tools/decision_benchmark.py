@@ -759,11 +759,11 @@ def build_cases(paths):
     return list(unique.values()), manifest, dict(counts)
 
 
-class ModelRequired(BaseException):
-    """Escapes production fallback handling rather than manufacturing a reply."""
+class ModelRequired(Exception):
+    """Inert generation refusal; replay counters override any production fallback."""
 
 
-class BackendInterfaceUnsupported(BaseException):
+class BackendInterfaceUnsupported(Exception):
     """Unimplemented backend capability is a harness error, not model demand."""
 
 
@@ -773,6 +773,7 @@ class NoModel:
 
     def __init__(self):
         self.generation_attempts = 0
+        self.interface_errors = 0
 
     def available(self):
         return True
@@ -787,6 +788,7 @@ class NoModel:
     def __getattr__(self, name):
         if name.startswith("_"):
             raise AttributeError(name)
+        self.interface_errors += 1
         raise BackendInterfaceUnsupported()
 
 
@@ -817,6 +819,16 @@ def replay(case):
             result.update(status="error", error="BackendInterfaceUnsupported")
         except Exception as error:
             result.update(status="error", error=type(error).__name__)
+    # Production may catch a refusal and manufacture a fallback. That is not
+    # a deterministic answer independent of generation. Capability failures
+    # likewise remain harness errors even if the production probe tolerates them.
+    if backend.interface_errors:
+        result.update(status="error", error="BackendInterfaceUnsupported", chosen=[])
+        result.pop("withheld_reason", None)
+    elif backend.generation_attempts:
+        result.update(status="withheld", withheld_reason="generation_required", chosen=[])
+        result.pop("error", None)
+    result["interface_errors"] = backend.interface_errors
     result["generation_attempts"] = backend.generation_attempts
     result["seconds"] = time.perf_counter() - start
     return result

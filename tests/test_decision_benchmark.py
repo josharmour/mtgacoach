@@ -553,3 +553,59 @@ def test_replay_distinguishes_generation_from_interface_failure(tmp_path, monkey
     assert result["status"] == "error"
     assert result["error"] == "BackendInterfaceUnsupported"
     assert result["generation_attempts"] == 0
+
+
+def test_actual_hedge_refusal_not_counted_as_deterministic_fallback(tmp_path, monkeypatch):
+    import time
+
+    from arenamcp.action_planner import ActionPlanner
+
+    path = tmp_path / "bundle.json"
+    path.write_text(json.dumps(sample()))
+    case = b.build_cases([path])[0][0]
+    case["snapshot"]["state"].update(zones={}, local_seat_id=1, battlefield=[], turn={})
+
+    def real_hedge_then_fallback(self, *args):
+        try:
+            self._hedged_decision(
+                lambda *a, **k: self._backend.complete("synthetic"),
+                lambda reply: ({}, ["mull:keep"]),
+                "synthetic",
+                normal_budget=5,
+                high_budget=5,
+            )
+        except Exception:
+            return ["mull:keep"]
+
+    monkeypatch.setattr(ActionPlanner, "plan_decision_options", real_hedge_then_fallback)
+    started = time.monotonic()
+    result = b.replay(case)
+    assert time.monotonic() - started < 2
+    assert result["generation_attempts"] >= 1
+    assert result["status"] == "withheld"
+    assert result["chosen"] == []
+    assert result["withheld_reason"] == "generation_required"
+
+
+def test_swallowed_capability_error_is_still_harness_error(tmp_path, monkeypatch):
+    from arenamcp.action_planner import ActionPlanner
+
+    path = tmp_path / "bundle.json"
+    path.write_text(json.dumps(sample()))
+    case = b.build_cases([path])[0][0]
+    case["snapshot"]["state"].update(zones={}, local_seat_id=1, battlefield=[], turn={})
+
+    def swallowed(self, *args):
+        try:
+            _ = self._backend.unimplemented_probe
+        except Exception:
+            pass
+        return ["mull:keep"]
+
+    monkeypatch.setattr(ActionPlanner, "plan_decision_options", swallowed)
+    result = b.replay(case)
+    assert result["status"] == "error"
+    assert result["error"] == "BackendInterfaceUnsupported"
+    assert result["interface_errors"] == 1
+    assert result["generation_attempts"] == 0
+    assert result["chosen"] == []
