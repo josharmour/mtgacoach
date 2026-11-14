@@ -335,6 +335,10 @@ def test_record_denial_does_not_leak_across_statement_boundaries(monkeypatch, pr
 def test_prefix_denial_keeps_legal_choice_at_public_boundary(monkeypatch, claim):
     import json
 
+    # This existing one-call contract is the default (E4 OFF) policy.
+    # The paired policy matrix separately exercises the enabled high promotion.
+    monkeypatch.setenv("ARENAMCP_PIVOTAL_THINKING", "0")
+
     known_fury(monkeypatch)
     state, menu = fixture()
     menu.options[0].meta["alternativeCostText"] = "Evoke—Exile a red card from your hand."
