@@ -397,7 +397,26 @@ def assert_case_schema(snapshot, pending):
                     "",
                 }:
                     continue
-                if k == "step" and isinstance(v, str) and re.fullmatch(r"(?:Step_)?[A-Za-z]+", v):
+                if k == "step" and v in {
+                    "",
+                    "Step_None",
+                    "Step_Untap",
+                    "Step_Upkeep",
+                    "Step_Draw",
+                    "Step_Main",
+                    "Step_PreCombatMain",
+                    "Step_BeginCombat",
+                    "Step_DeclareAttack",
+                    "Step_DeclareAttackers",
+                    "Step_DeclareBlock",
+                    "Step_DeclareBlockers",
+                    "Step_FirstStrikeDamage",
+                    "Step_CombatDamage",
+                    "Step_EndCombat",
+                    "Step_PostCombatMain",
+                    "Step_End",
+                    "Step_Cleanup",
+                }:
                     continue
                 raise UnsafeCase("turn field")
         elif key == "_zone_aliases":

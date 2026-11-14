@@ -194,3 +194,17 @@ def test_numeric_identity_game_reference_collision_is_rejected(tmp_path):
         path.write_text(json.dumps(bundle))
         cases, _, counts = b.build_cases([path])
         assert not cases, counts
+
+
+def test_game_step_is_bounded_enum(tmp_path):
+    for step, accepted in [
+        ("Step_Draw", True),
+        ("Step_DeclareAttack", True),
+        ("OpaqueCustomer", False),
+        ("Step_X", False),
+    ]:
+        bundle = sample()
+        bundle["packet"]["decisions"][0]["state_snapshot"]["state"]["turn"] = {"step": step}
+        path = tmp_path / "bundle.json"
+        path.write_text(json.dumps(bundle))
+        assert bool(b.build_cases([path])[0]) is accepted
