@@ -6,8 +6,12 @@ The explicit snapshot/revision binding is an assertion, not attestation.
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
+import os
+import stat
+from pathlib import Path
 
 from tools import head_to_head as report
 from tools import head_to_head_provenance as provenance
@@ -69,3 +73,61 @@ def analyze(protocol, evidence):
         "acceptance": "not_assessed; real twenty-game and runtime provenance gates remain open",
     }
     return result
+
+
+MAX_INPUT_BYTES = 16 * 1024 * 1024
+
+
+def _pairs(items):
+    result = {}
+    for key, value in items:
+        if key in result:
+            raise ValueError("duplicate JSON field")
+        result[key] = value
+    return result
+
+
+def _constant(value):
+    raise ValueError("nonfinite JSON number")
+
+
+def _read_json(path):
+    # Avoid blocking on pipes/devices. No discovery or automatic bundle upgrade.
+    descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise ValueError("not a regular file")
+        stream = os.fdopen(descriptor, "rb")
+    except BaseException:
+        os.close(descriptor)
+        raise
+    with stream:
+        data = stream.read(MAX_INPUT_BYTES + 1)
+    if len(data) > MAX_INPUT_BYTES:
+        raise ValueError("input limit")
+    return json.loads(data.decode("utf-8"), object_pairs_hook=_pairs, parse_constant=_constant)
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--run", required=True, type=Path, help="explicit local protocol JSON")
+    parser.add_argument("--evidence", required=True, type=Path, help="explicit local joined-evidence array")
+    parser.add_argument("--format", choices=("json", "table"), default="table")
+    args = parser.parse_args(argv)
+    try:
+        result = analyze(_read_json(args.run), _read_json(args.evidence))
+        if args.format == "json":
+            output = json.dumps(result, sort_keys=True, allow_nan=False)
+        else:
+            output = (
+                report.table(result)
+                + "\n"
+                + "\n".join(f"Provenance {key}: {value}" for key, value in result["provenance"].items())
+            )
+    except (OSError, ValueError, TypeError, KeyError, OverflowError, RecursionError):
+        parser.exit(2, "invalid local head-to-head evidence\n")
+    print(output)
+
+
+if __name__ == "__main__":
+    main()
