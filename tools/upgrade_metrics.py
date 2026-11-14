@@ -441,11 +441,28 @@ def final_rope_seconds(clock):
     return out
 
 
+def successful_submit(line):
+    """Only an explicit successful bridge result is an observed answer."""
+    if "GRE bridge submitted " in line:
+        return True
+    match = re.search(r"mac bridge submit_\w+:\s*(.*)$", line)
+    if not match:
+        return False
+    try:
+        result = ast.literal_eval(match.group(1))
+    except (ValueError, SyntaxError):
+        return False
+    return isinstance(result, dict) and result.get("ok") is True
+
+
 def surfaced_request_events(coach_lines, clock, local_seat=None):
     """Ask->answer seconds and rope left for each surfaced priority request.
 
     Returns (events, unanswered_by_type) where each event is
-    {"event_type", "ask_to_ans_s", "rope_left_s"}.
+    {"event_type", "ask_to_ans_s", "rope_left_s"}. Attribution is bounded
+    log-marker matching, not proof of every Arena request identity: these
+    markers carry no request IDs. Supersession, cancellation and failed or
+    unproven mac submissions cannot establish an answer.
     """
     events = []
     unanswered = Counter()
@@ -461,7 +478,13 @@ def surfaced_request_events(coach_lines, clock, local_seat=None):
             later = coach_line_epoch(coach_lines[j])
             if later is not None and later - ask > _ANSWER_WINDOW_S:
                 break
-            if ANY_SUBMIT_RE.search(coach_lines[j]):
+            # A new surfaced request or cancellation closes this ask. Never
+            # borrow a later request's answer, including undated boundaries.
+            if SURFACED_REQUEST_RE.search(coach_lines[j]) or REQUEST_CHANGED_RE.search(coach_lines[j]):
+                break
+            if successful_submit(coach_lines[j]):
+                if later is not None and later < ask:
+                    break
                 answer_epoch = later  # may be None if the submit line is undated
                 break
         if answer_epoch is None:
@@ -788,6 +811,8 @@ def aggregate_t1(match_folds):
             pm["surfaced_events"] += 1
             pm["events_by_type"][ev["event_type"]].append(ev)
         pm["unanswered_by_type"].update(t1["unanswered_by_type"])
+        for event_type, count in t1["unanswered_by_type"].items():
+            by_type[event_type]["unanswered"] += count
         for key, dst_list in (
             ("hop_waits_s", hop),
             ("cancelled_plan_s", cancels),

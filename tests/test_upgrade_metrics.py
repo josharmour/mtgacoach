@@ -571,3 +571,50 @@ def test_clock_unknown_timer_ownership_is_not_guessed():
         ),
     }
     assert um.rope_seconds_left(um.gre_clock_timeline([event]), um.gre_event_epoch(event), 1) is None
+
+
+@pytest.mark.parametrize(
+    "boundary",
+    [
+        "post-cast priority: new block request surfaced",
+        "request changed during planning",
+    ],
+)
+def test_t1_superseded_request_does_not_borrow_later_answer(boundary):
+    lines = [
+        "2026-11-08 22:00:00.000 post-cast priority: new action request surfaced",
+        "2026-11-08 22:00:02.000 " + boundary,
+        _t1_pass("2026-11-08 22:00:05.000"),
+    ]
+    events, unanswered = um.surfaced_request_events(lines, [])
+    assert unanswered == {"action": 1}
+    assert [event["ask_to_ans_s"] for event in events] == ([3.0] if "surfaced" in boundary else [])
+
+
+@pytest.mark.parametrize("result", ["{'ok': False}", "{'ok': 1}", "{}", "broken", "{'ok': True} garbage"])
+def test_t1_failed_or_unproven_submit_is_not_answer(result):
+    lines = [
+        "2026-11-08 22:00:00.000 post-cast priority: new action request surfaced",
+        "2026-11-08 22:00:01.000 mac bridge submit_pass: " + result,
+    ]
+    assert um.surfaced_request_events(lines, []) == ([], {"action": 1})
+    lines.append("2026-11-08 22:00:03.000 mac bridge submit_pass: {'ok': True}")
+    events, unanswered = um.surfaced_request_events(lines, [])
+    assert not unanswered
+    assert [event["ask_to_ans_s"] for event in events] == [3.0]
+
+
+def test_t1_unanswered_only_types_survive_global_aggregation():
+    fold = {
+        "t1": {
+            "events": [],
+            "unanswered_by_type": {"block": 2},
+            "hop_waits_s": [],
+            "cancelled_plan_s": [],
+            "redundant_pass_cycles_s": [],
+        }
+    }
+    output = um.aggregate_t1({"one": fold, "two": fold})
+    assert output["by_event_type"]["block"]["unanswered"] == 4
+    assert output["by_event_type"]["block"]["answered"] == 0
+    assert output["per_match"]["one"]["unanswered_by_type"] == {"block": 2}
