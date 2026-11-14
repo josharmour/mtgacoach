@@ -272,6 +272,8 @@ def assert_record_schema(value, context):
                 valid = isinstance(item, dict) and all(
                     k
                     in {
+                        "unknown",
+                        "Flying",
                         "P1P1",
                         "M1M1",
                         "Loyalty",

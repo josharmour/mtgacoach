@@ -107,3 +107,8 @@ def test_legal_labels_require_renderer_grammar_and_existing_card_names():
     assert not s.legal_labels(["Cast Private Customer [OK]"], state)
     assert not s.legal_labels(["Action: PrivateCustomer"], state)
     assert not s.legal_labels(["Cast Fury [PRIVATE]"], state)
+
+
+def test_exact_production_context_alias_not_arbitrary_case_or_identity():
+    assert s.ACTION_CONTEXT({"type": "actions_available"})
+    assert not s.ACTION_CONTEXT({"type": "actions_available_PrivateCustomer"})

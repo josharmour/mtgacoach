@@ -295,3 +295,38 @@ def test_grouped_schema_builder_preserves_action_graph_and_rejects_collision(tmp
     bundle["account_id"] = 3
     path.write_text(json.dumps(bundle))
     assert b.build_cases([path])[0] == []
+
+
+def test_counter_unknown_label_preserved_without_semantic_interpretation(tmp_path):
+    for counters, accepted in [
+        ({"unknown": 2, "Flying": 1}, True),
+        ({"PrivateCustomer": 2}, False),
+        ({"unknown": "PrivateCustomer"}, False),
+    ]:
+        bundle = sample()
+        bundle["packet"]["decisions"][0]["state_snapshot"]["state"]["hand"][0]["counters"] = counters
+        path = tmp_path / "bundle.json"
+        path.write_text(json.dumps(bundle))
+        cases, _, _ = b.build_cases([path])
+        assert bool(cases) is accepted
+        if cases:
+            assert cases[0]["snapshot"]["state"]["hand"][0]["counters"] == counters
+
+
+def test_deck_arena_ids_exact_integers_and_identity_collisions(tmp_path):
+    for deck, private, accepted in [
+        ([42, 43], None, True),
+        (["private"], None, False),
+        ([True], None, False),
+        ([42], 42, False),
+    ]:
+        bundle = sample()
+        bundle["packet"]["decisions"][0]["state_snapshot"]["state"]["deck_cards"] = deck
+        if private is not None:
+            bundle["account_id"] = private
+        path = tmp_path / "bundle.json"
+        path.write_text(json.dumps(bundle))
+        cases, _, _ = b.build_cases([path])
+        assert bool(cases) is accepted
+        if cases:
+            assert cases[0]["snapshot"]["state"]["deck_cards"] == deck

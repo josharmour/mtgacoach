@@ -189,7 +189,7 @@ FACE = record({"grp_id": integer, "name": text, "oracle_text": text, "type_line"
 PROMPT = record({"promptId": integer, "parameters": EMPTY})
 ACTION_CONTEXT = record(
     {
-        "type": enum("ActionsAvailable"),
+        "type": enum("ActionsAvailable", "actions_available"),
         "requestType": enum("ActionsAvailable"),
         "requestClass": enum("ActionsAvailableRequest"),
         "prompt": PROMPT,
@@ -256,6 +256,8 @@ def extended_field(context, key, value):
 
 
 def state_field(key, value, card_check):
+    if key == "deck_cards":
+        return sequence(integer)(value)
     if key == "controlled_turn":
         return CONTROLLED(value)
     if key == "decision_context":
