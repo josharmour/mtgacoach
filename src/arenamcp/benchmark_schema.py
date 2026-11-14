@@ -91,6 +91,7 @@ ACTION = enum(
         for v in (
             "Activate",
             "ActivateMana",
+            "Activate_Mana",
             "AssignDamage",
             "Attack",
             "AttackWithGroup",

@@ -112,3 +112,11 @@ def test_legal_labels_require_renderer_grammar_and_existing_card_names():
 def test_exact_production_context_alias_not_arbitrary_case_or_identity():
     assert s.ACTION_CONTEXT({"type": "actions_available"})
     assert not s.ACTION_CONTEXT({"type": "actions_available_PrivateCustomer"})
+
+
+def test_legacy_mana_action_alias_preserved_across_structural_paths():
+    assert s.ACTION("ActionType_Activate_Mana")
+    assert s.ACTION_CONTEXT({"action_types": ["ActionType_Activate_Mana"]})
+    assert s.extended_field("meta", "actionType", "ActionType_Activate_Mana")
+    assert s.legal_labels(["Action: Activate_Mana"], {})
+    assert not s.ACTION("ActionType_Activate_Mana_PrivateCustomer")
