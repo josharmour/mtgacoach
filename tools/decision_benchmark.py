@@ -76,6 +76,21 @@ def public_snapshot_event(value, key, item, path):
     )
 
 
+def producer_role_label(key, item, path, schema):
+    """Recognize only v1 producer-redacted opponent-name source fields."""
+    if type(schema) is not int or schema != 1 or key != "opponent_name" or type(item) is not str:
+        return False
+    if path == ("packet",):
+        return item == "opponent"
+    role_path = path == ("final_state",) or (
+        len(path) == 4
+        and path[0] == "bug_reports"
+        and type(path[1]) is int
+        and path[2:] == ("report", "game_state")
+    )
+    return role_path and item in {"you", "opponent"}
+
+
 def normalized_key(key):
     return str(key).lower().replace("_", "").replace("-", "")
 
@@ -90,12 +105,16 @@ def private_key(key):
     }
 
 
-def discover_identities(value, player=False, *, path=()):
+def discover_identities(value, player=False, *, path=(), schema=None):
     found = set()
+    if not path and isinstance(value, dict):
+        schema = value.get("schema")
     if isinstance(value, dict):
         for key, item in value.items():
             sensitive = private_key(key) or (player and normalized_key(key) in {"name", "id"})
-            if sensitive and public_snapshot_event(value, key, item, path):
+            if sensitive and (
+                public_snapshot_event(value, key, item, path) or producer_role_label(key, item, path, schema)
+            ):
                 continue
             if sensitive:
 
@@ -111,10 +130,14 @@ def discover_identities(value, player=False, *, path=()):
 
                 strings(item)
             else:
-                found.update(discover_identities(item, normalized_key(key) == "players", path=path + (key,)))
+                found.update(
+                    discover_identities(
+                        item, normalized_key(key) == "players", path=path + (key,), schema=schema
+                    )
+                )
     elif isinstance(value, list):
         for index, item in enumerate(value):
-            found.update(discover_identities(item, player, path=path + (index,)))
+            found.update(discover_identities(item, player, path=path + (index,), schema=schema))
     return found
 
 

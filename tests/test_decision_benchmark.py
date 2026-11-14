@@ -428,3 +428,40 @@ def test_event_roles_do_not_extend_to_similarly_named_metadata():
         {"final_state": {"metadata": node}},
     ):
         assert "Ladder" in b.discover_identities(copy.deepcopy(data))
+
+
+def test_producer_role_tokens_are_not_oracle_identity_collisions(tmp_path):
+    data = sample()
+    data["schema"] = 1
+    data["packet"]["opponent_name"] = "opponent"
+    data["final_state"] = {"opponent_name": "you"}
+    data["bug_reports"] = [{"report": {"game_state": {"opponent_name": "opponent"}}}]
+    state = data["packet"]["decisions"][0]["state_snapshot"]["state"]
+    state["hand"][0]["oracle_text"] = "When you cast this spell, target opponent loses 1 life."
+    assert not {"you", "opponent"} & b.discover_identities(data)
+    path = tmp_path / "bundle.json"
+    path.write_text(json.dumps(data))
+    cases, _, counts = b.build_cases([path])
+    assert counts["eligible"] == 1
+    assert cases[0]["snapshot"]["state"]["hand"][0]["oracle_text"] == state["hand"][0]["oracle_text"]
+
+
+def test_producer_role_tokens_require_exact_schema_paths_and_spelling():
+    for schema in (None, 0, 2, True, "1"):
+        assert "opponent" in b.discover_identities(
+            {"schema": schema, "packet": {"opponent_name": "opponent"}}
+        )
+    for path_node in (
+        {"metadata": {"opponent_name": "opponent"}},
+        {"finalState": {"opponent_name": "opponent"}},
+        {"final_state": {"metadata": {"opponent_name": "opponent"}}},
+        {"bug_reports": {"0": {"report": {"game_state": {"opponent_name": "opponent"}}}}},
+        {"packet": {"opponentName": "opponent"}},
+    ):
+        assert "opponent" in b.discover_identities({"schema": 1, **path_node})
+    for text in ("Opponent", "You", "you", "raw customer"):
+        assert text in b.discover_identities({"schema": 1, "packet": {"opponent_name": text}})
+    for key in ("account_id", "player_name", "username"):
+        for token in ("you", "opponent", "You", "Opponent"):
+            data = {"schema": 1, "packet": {"opponent_name": "opponent"}, "final_state": {key: token}}
+            assert token in b.discover_identities(data)
