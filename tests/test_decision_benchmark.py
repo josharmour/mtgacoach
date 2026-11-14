@@ -330,3 +330,50 @@ def test_deck_arena_ids_exact_integers_and_identity_collisions(tmp_path):
         assert bool(cases) is accepted
         if cases:
             assert cases[0]["snapshot"]["state"]["deck_cards"] == deck
+
+
+def test_native_public_event_alias_not_identity(tmp_path):
+    data = sample()
+    state = data["packet"]["decisions"][0]["state_snapshot"]["state"]
+    state.update(format_name="Ladder", event_id="Ladder")
+    assert "Ladder" not in b.discover_identities(data)
+    path = tmp_path / "bundle.json"
+    path.write_text(json.dumps(data))
+    cases, _, counts = b.build_cases([path])
+    assert counts["eligible"] == 1
+    assert cases[0]["snapshot"]["state"]["format_name"] == "Ladder"
+    assert "event_id" not in cases[0]["snapshot"]["state"]
+
+
+def test_public_event_exemption_is_exact_path_and_value():
+    data = sample()
+    state = data["packet"]["decisions"][0]["state_snapshot"]["state"]
+    state.update(format_name="Ladder", event_id="Ladder")
+    for location in (data, data["packet"], state["players"][0]):
+        location["event_id"] = "Ladder"
+        assert "Ladder" in b.discover_identities(data)
+        del location["event_id"]
+    for event, fmt in [
+        ("Opaque Customer", "Ladder"),
+        ("Ladder", "Standard"),
+        ("Opaque Customer", "Opaque Customer"),
+    ]:
+        state.update(event_id=event, format_name=fmt)
+        assert event in b.discover_identities(data)
+    state.update(event_id="Ladder", format_name="Ladder")
+    state["eventId"] = "Ladder"
+    assert "Ladder" in b.discover_identities(data)
+
+
+def test_public_format_collision_with_real_identity_rejected(tmp_path):
+    for private in ("account_id", "player_name", "playerId"):
+        data = sample()
+        state = data["packet"]["decisions"][0]["state_snapshot"]["state"]
+        state.update(format_name="Ladder", event_id="Ladder")
+        state["players"][0][private] = "Ladder"
+        assert "Ladder" in b.discover_identities(data)
+        path = tmp_path / "bundle.json"
+        path.write_text(json.dumps(data))
+        cases, _, counts = b.build_cases([path])
+        assert not cases
+        assert counts["unsafe_schema_or_identity"] == 1

@@ -28,6 +28,42 @@ PRIVATE = {
 }
 
 
+PUBLIC_FORMATS = frozenset(
+    {
+        "Brawl",
+        "Brawl Ladder",
+        "Ladder",
+        "Standard",
+        "Historic",
+        "Timeless",
+        "Alchemy",
+        "Explorer",
+        "Draft",
+        "Sealed",
+        "Limited",
+        "",
+    }
+)
+
+
+def public_snapshot_event(value, key, item, path):
+    """Classify only the native snapshot format alias, never other identity sources.
+
+    The event field is still stripped from exported payloads. This only avoids
+    treating a validated public format enum as a customer identity globally.
+    """
+    return (
+        len(path) == 5
+        and path[:2] == ("packet", "decisions")
+        and type(path[2]) is int
+        and path[3:] == ("state_snapshot", "state")
+        and key == "event_id"
+        and type(item) is str
+        and item in PUBLIC_FORMATS
+        and item == value.get("format_name")
+    )
+
+
 def normalized_key(key):
     return str(key).lower().replace("_", "").replace("-", "")
 
@@ -42,11 +78,13 @@ def private_key(key):
     }
 
 
-def discover_identities(value, player=False):
+def discover_identities(value, player=False, *, path=()):
     found = set()
     if isinstance(value, dict):
         for key, item in value.items():
             sensitive = private_key(key) or (player and normalized_key(key) in {"name", "id"})
+            if sensitive and public_snapshot_event(value, key, item, path):
+                continue
             if sensitive:
 
                 def strings(node):
@@ -61,10 +99,10 @@ def discover_identities(value, player=False):
 
                 strings(item)
             else:
-                found.update(discover_identities(item, normalized_key(key) == "players"))
+                found.update(discover_identities(item, normalized_key(key) == "players", path=path + (key,)))
     elif isinstance(value, list):
-        for item in value:
-            found.update(discover_identities(item, player))
+        for index, item in enumerate(value):
+            found.update(discover_identities(item, player, path=path + (index,)))
     return found
 
 
@@ -488,20 +526,7 @@ def assert_case_schema(snapshot, pending):
             ):
                 raise UnsafeCase("zone aliases")
         elif key == "format_name":
-            if value not in {
-                "Brawl",
-                "Brawl Ladder",
-                "Ladder",
-                "Standard",
-                "Historic",
-                "Timeless",
-                "Alchemy",
-                "Explorer",
-                "Draft",
-                "Sealed",
-                "Limited",
-                "",
-            }:
+            if type(value) is not str or value not in PUBLIC_FORMATS:
                 raise UnsafeCase("format")
         elif key == "legal_actions":
             if not legal_labels(value, state):
