@@ -159,3 +159,12 @@ def test_semantic_identity_collision_and_unknown_schema_fail_closed(tmp_path):
         cases, _, counts = b.build_cases([path])
         assert not cases, counts
         assert json.loads(path.read_text()) == bundle
+
+
+def test_meta_context_cannot_impersonate_card_or_numeric_game_reference(tmp_path):
+    for meta in ({"name": "Opaque Customer", "type_line": "Account"}, {"source_id": "customer-private-123"}):
+        bundle = sample()
+        bundle["packet"]["decisions"][0]["pending_decision"]["options"][0]["meta"] = meta
+        path = tmp_path / "bundle.json"
+        path.write_text(json.dumps(bundle))
+        assert b.build_cases([path])[0] == []

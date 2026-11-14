@@ -28,347 +28,6 @@ PRIVATE = {
 }
 
 
-# Frozen v1 observed structural vocabulary; new fields require explicit review.
-_SCHEMA_KEYS = frozenset(
-    (
-        "Burden",
-        "C",
-        "Charge",
-        "Colorless",
-        "Energy",
-        "Finality",
-        "Flying",
-        "G",
-        "Green",
-        "Lore",
-        "Loyalty",
-        "M1M1",
-        "P1P1",
-        "Plan",
-        "Quest",
-        "R",
-        "Stun",
-        "Time",
-        "U",
-        "W",
-        "Wish",
-        "_ability_grp_id",
-        "_alternative",
-        "_alternative_grp_id",
-        "_autotap_lands",
-        "_bridge_actions",
-        "_bridge_allow_undo",
-        "_bridge_can_cancel",
-        "_bridge_can_pass",
-        "_bridge_game_state_id",
-        "_bridge_request_class",
-        "_bridge_request_type",
-        "_bridge_source",
-        "_castable",
-        "_mana_cost_str",
-        "_return_credit_blocked",
-        "_source_id",
-        "_unaffordable",
-        "_zone_aliases",
-        "abilityGrpId",
-        "ability_grp_ids",
-        "ability_text",
-        "actionType",
-        "action_types",
-        "active_player",
-        "affectedId",
-        "affectorId",
-        "allowCancel",
-        "allowFailToFind",
-        "alternative",
-        "alternativeCostText",
-        "alternativeGrpId",
-        "alternativeSourceZcid",
-        "assumeCanBePaidFor",
-        "attached_to_id",
-        "attack_target_id",
-        "attackerInstanceId",
-        "autoTapActions",
-        "autoTapSolution",
-        "base_grp_id",
-        "battlefield",
-        "can_cancel",
-        "can_pass",
-        "candidate_ids",
-        "card",
-        "card_grp_id",
-        "card_name",
-        "card_types",
-        "castingTimeOptionReq",
-        "castingTimeOptionType",
-        "childIndex",
-        "choice",
-        "choiceKind",
-        "class_level",
-        "cmc",
-        "color",
-        "color_id",
-        "color_production",
-        "colors",
-        "command",
-        "commander_casts",
-        "commander_grp_ids",
-        "commander_ids",
-        "commander_return",
-        "context",
-        "context_raw",
-        "controlled_turn",
-        "controller_seat_id",
-        "count",
-        "counters",
-        "ctoId",
-        "damage",
-        "damage_taken",
-        "damaged_this_turn",
-        "death_swing",
-        "deciding_for_opponent",
-        "decision_context",
-        "decision_player",
-        "decision_seat_id",
-        "deck_cards",
-        "designations",
-        "door_token_seen",
-        "dungeon_status",
-        "entered_via_play_land",
-        "event_id",
-        "excludedOptions",
-        "exile",
-        "face_down",
-        "face_down_reason",
-        "facetId",
-        "format_name",
-        "freeMulliganCount",
-        "gameStateId",
-        "game_number",
-        "graveyard",
-        "groupSpecs",
-        "groupType",
-        "grpId",
-        "grp_id",
-        "hand",
-        "hand_complete",
-        "hand_count",
-        "hand_loss",
-        "hasAutoTap",
-        "has_enduring_story",
-        "haveTriggersBeenApplied",
-        "highlight",
-        "id",
-        "id_type",
-        "identity_known",
-        "ids",
-        "instanceId",
-        "instanceIds",
-        "instance_id",
-        "isBatchable",
-        "isManaAbilityWithSideEffect",
-        "isRequired",
-        "is_attacking",
-        "is_blocked",
-        "is_blocking",
-        "is_copy",
-        "is_local",
-        "is_room",
-        "is_tapped",
-        "itemsSought",
-        "itemsToSearch",
-        "keywords",
-        "label",
-        "lands_played",
-        "legalAction",
-        "legalDamageRecipients",
-        "legal_actions",
-        "legal_actions_raw",
-        "library_count",
-        "library_count_source",
-        "life_gained_this_game",
-        "life_gained_this_turn",
-        "life_total",
-        "linkedSelections",
-        "list_type",
-        "local_graveyard",
-        "local_seat_id",
-        "london_mulligan",
-        "lower",
-        "lowerBound",
-        "loyalty",
-        "mana",
-        "manaColor",
-        "manaCost",
-        "manaId",
-        "manaPaymentConditions",
-        "manaPaymentOption",
-        "manaPaymentOptions",
-        "manaPayments",
-        "manaSelections",
-        "manaSpentMatters",
-        "mana_cost",
-        "mana_pool",
-        "match_id",
-        "max",
-        "maxActivations",
-        "maxFind",
-        "maxSel",
-        "maxTargets",
-        "maxValue",
-        "max_select",
-        "max_targets",
-        "max_weight",
-        "mechanics",
-        "meta",
-        "min",
-        "minSel",
-        "minTargets",
-        "min_select",
-        "min_targets",
-        "min_weight",
-        "modalOptions",
-        "modalReq",
-        "msgId",
-        "mulliganCount",
-        "mulligan_count",
-        "name",
-        "num_actions",
-        "num_options",
-        "numberValue",
-        "numericInputReq",
-        "numericInputType",
-        "numericValue",
-        "objectId",
-        "object_kind",
-        "opponent_controlled_by_you",
-        "opponent_graveyard",
-        "opponent_hand_count",
-        "opponent_library_count",
-        "opponent_seat_id",
-        "optionIndex",
-        "option_cards",
-        "option_context",
-        "option_id",
-        "option_ids",
-        "optionalActionMessage",
-        "optionalActionTypes",
-        "optional_action_types",
-        "options",
-        "oracle_text",
-        "owner_seat_id",
-        "parameterName",
-        "parameters",
-        "parent_instance_id",
-        "payable",
-        "pending_combat_steps",
-        "pending_selection_objects",
-        "phase",
-        "playerIdToPrompt",
-        "playerSystemSeatId",
-        "player_seat",
-        "players",
-        "power",
-        "prior_prompt",
-        "priority_player",
-        "prompt",
-        "promptCardIds",
-        "promptCards",
-        "promptId",
-        "promptText",
-        "prompt_card_ids",
-        "prompt_cards",
-        "prompt_id",
-        "prompt_source_id",
-        "prompt_text",
-        "raw",
-        "recipientCards",
-        "recipientIds",
-        "recipient_ids",
-        "recipient_names",
-        "recipients",
-        "related_faces",
-        "repeatedSelectAllowed",
-        "requestClass",
-        "requestType",
-        "request_id",
-        "request_type",
-        "seat_id",
-        "selected",
-        "selectedColor",
-        "selectedDamageRecipient",
-        "selectionCount",
-        "selection_context",
-        "selection_source_grp_id",
-        "shouldStop",
-        "slots",
-        "sourceId",
-        "source_card",
-        "source_card_oracle_text",
-        "source_id",
-        "source_label",
-        "source_oracle_text",
-        "source_parent_instance_id",
-        "spec_index",
-        "specs",
-        "srcInstanceId",
-        "stack",
-        "stage",
-        "state",
-        "static_list",
-        "status",
-        "step",
-        "stepSize",
-        "subZoneType",
-        "sub_zone",
-        "subtype_id",
-        "subtypes",
-        "summarized",
-        "summoning_sickness",
-        "super_types",
-        "symbol",
-        "systemSeatIds",
-        "targetId",
-        "targetIdx",
-        "targetInstanceId",
-        "targetSourceZoneId",
-        "target_idx",
-        "targeting",
-        "targetingAbilityGrpId",
-        "targetingPlayer",
-        "targets",
-        "team_id",
-        "timeout_count",
-        "title_id",
-        "token_creator",
-        "token_creator_id",
-        "toughness",
-        "turn",
-        "turn_entered_battlefield",
-        "turn_number",
-        "type",
-        "type_line",
-        "unfiltered_ids",
-        "uniqueAbilityId",
-        "unknown",
-        "upper",
-        "upperBound",
-        "validationType",
-        "value",
-        "valueCase",
-        "version",
-        "visibility",
-        "weight",
-        "you_controlled_by_opponent",
-        "zone",
-        "zoneType",
-        "zone_id",
-        "zones",
-        "zonesToSearch",
-    )
-)
-
-
 def normalized_key(key):
     return str(key).lower().replace("_", "").replace("-", "")
 
@@ -439,8 +98,6 @@ def sanitize_semantics(value, identities, *, player=False, presentation=False):
                 continue
             if str(key).isdecimal() and str(key) in identities:
                 raise UnsafeCase("identity in dynamic dictionary key")
-            if key not in _SCHEMA_KEYS and not str(key).isdecimal():
-                raise UnsafeCase("unrecognized schema field")
             # Generic name fields outside player records must identify game cards.
             if key == "name" and not any(
                 k in value for k in ("instance_id", "grp_id", "type_line", "card_types")
@@ -459,6 +116,361 @@ def sanitize_semantics(value, identities, *, player=False, presentation=False):
                 raise UnsafeCase("identity overlaps semantic field")
             return sanitized
     return value
+
+
+# Deliberately bounded replay schema. Unsupported populated containers are rejected,
+# not dropped; widening requires a reviewed semantic field contract.
+_CARD_TEXT = {
+    "name",
+    "card_name",
+    "oracle_text",
+    "type_line",
+    "mana_cost",
+    "object_kind",
+    "zone",
+    "visibility",
+    "face_down_reason",
+}
+_CARD_LIST_TEXT = {
+    "card_types",
+    "subtypes",
+    "super_types",
+    "keywords",
+    "colors",
+    "color_production",
+    "mechanics",
+}
+_CARD_NUM = {
+    "instance_id",
+    "grp_id",
+    "base_grp_id",
+    "controller_seat_id",
+    "owner_seat_id",
+    "power",
+    "toughness",
+    "cmc",
+    "damage",
+    "zone_id",
+    "parent_instance_id",
+    "attack_target_id",
+    "turn_entered_battlefield",
+    "loyalty",
+    "class_level",
+    "token_creator_id",
+    "attached_to_id",
+}
+_CARD_BOOL = {
+    "is_tapped",
+    "is_attacking",
+    "is_blocking",
+    "is_blocked",
+    "summoning_sickness",
+    "is_copy",
+    "face_down",
+    "identity_known",
+    "is_room",
+    "damaged_this_turn",
+    "entered_via_play_land",
+}
+_META_NUM = {
+    "instanceId",
+    "instance_id",
+    "grpId",
+    "grp_id",
+    "source_id",
+    "sourceId",
+    "abilityGrpId",
+    "alternativeGrpId",
+    "alternativeSourceZcid",
+    "_source_id",
+    "_ability_grp_id",
+    "_alternative_grp_id",
+    "source_parent_instance_id",
+    "card_grp_id",
+    "target_idx",
+    "targetIdx",
+    "choice",
+    "ctoId",
+    "childIndex",
+    "min",
+    "max",
+    "lower",
+    "upper",
+    "minTargets",
+    "maxTargets",
+    "selected",
+    "spec_index",
+    "weight",
+}
+_META_BOOL = {
+    "_alternative",
+    "alternative",
+    "_castable",
+    "_unaffordable",
+    "hasAutoTap",
+    "assumeCanBePaidFor",
+    "isRequired",
+    "isBatchable",
+    "isManaAbilityWithSideEffect",
+    "repeatedSelectAllowed",
+}
+_META_TEXT = {
+    "alternativeCostText",
+    "ability_text",
+    "source_oracle_text",
+    "source_card_oracle_text",
+    "mana_cost",
+    "_mana_cost_str",
+    "choiceKind",
+}
+
+
+def numeric(value):
+    return type(value) in (int, float) or (
+        isinstance(value, str) and re.fullmatch(r"-?\d+(?:\.\d+)?", value) is not None
+    )
+
+
+def numeric_tree(value):
+    if isinstance(value, dict):
+        return all(str(k).isdecimal() and numeric_tree(v) for k, v in value.items())
+    if isinstance(value, list):
+        return all(numeric_tree(v) for v in value)
+    return numeric(value)
+
+
+def assert_record_schema(value, context):
+    if not isinstance(value, dict):
+        raise UnsafeCase("expected typed container")
+    for key, item in value.items():
+        if private_key(key) or (context == "player" and key in {"name", "id"}):
+            continue
+        valid = False
+        if context == "card":
+            if key in _CARD_TEXT:
+                valid = isinstance(item, str)
+            elif key in _CARD_LIST_TEXT:
+                valid = isinstance(item, list) and all(isinstance(v, str) for v in item)
+            elif key in _CARD_NUM:
+                valid = item is None or numeric(item)
+            elif key in _CARD_BOOL:
+                valid = type(item) is bool
+            elif key == "counters":
+                valid = isinstance(item, dict) and all(
+                    k
+                    in {
+                        "P1P1",
+                        "M1M1",
+                        "Loyalty",
+                        "Lore",
+                        "Charge",
+                        "Stun",
+                        "Time",
+                        "Finality",
+                        "Energy",
+                        "Quest",
+                        "Wish",
+                        "Burden",
+                        "Plan",
+                    }
+                    and numeric(v)
+                    for k, v in item.items()
+                )
+        elif context == "meta":
+            if key in _META_NUM:
+                valid = item is None or numeric(item)
+            elif key in _META_BOOL:
+                valid = item is None or type(item) is bool
+            elif key in _META_TEXT:
+                valid = isinstance(item, str)
+            elif key == "actionType":
+                valid = item in {
+                    "ActionType_Cast",
+                    "ActionType_Play",
+                    "ActionType_Activate",
+                    "ActionType_Pass",
+                    "ActionType_ActivateMana",
+                    "ActionType_Special",
+                }
+            elif key in {"card", "source_card"}:
+                assert_record_schema(item, "card")
+                valid = True
+        elif context == "player":
+            if key in {
+                "seat_id",
+                "life_total",
+                "life_gained_this_turn",
+                "life_gained_this_game",
+                "lands_played",
+                "team_id",
+                "controller_seat_id",
+                "mulligan_count",
+                "timeout_count",
+            }:
+                valid = numeric(item)
+            elif key in {"is_local", "has_enduring_story"}:
+                valid = type(item) is bool
+            elif key in {"mana_pool", "counters"}:
+                valid = isinstance(item, dict) and all(
+                    k
+                    in {
+                        "W",
+                        "U",
+                        "B",
+                        "R",
+                        "G",
+                        "C",
+                        "White",
+                        "Blue",
+                        "Black",
+                        "Red",
+                        "Green",
+                        "Colorless",
+                        "Energy",
+                        "Poison",
+                    }
+                    and numeric(v)
+                    for k, v in item.items()
+                )
+            elif key == "commander_ids":
+                valid = isinstance(item, list) and all(numeric(v) for v in item)
+            elif key == "status":
+                valid = item in {
+                    "InGame",
+                    "Playing",
+                    "PlayerStatus_InGame",
+                    "PlayerStatus_Conceded",
+                    "Conceded",
+                    "Won",
+                    "Lost",
+                    "",
+                }
+            elif key == "designations":
+                valid = item in ([], {})
+        if not valid:
+            raise UnsafeCase("unsupported " + context + " field or type: " + key)
+
+
+def assert_case_schema(snapshot, pending):
+    from arenamcp.decision_snapshot import _STATE_KEYS
+    from arenamcp.decisions import PendingDecision, TargetSlot
+
+    if set(snapshot) - {"version", "state"}:
+        raise UnsafeCase("snapshot fields")
+    state = snapshot["state"]
+    if set(state) - set(_STATE_KEYS) - {"zones", "_zone_aliases"}:
+        raise UnsafeCase("state fields")
+    for key, value in state.items():
+        if private_key(key):
+            continue
+        if key in {"hand", "battlefield", "graveyard", "exile", "command", "stack", "deck_cards"}:
+            if not isinstance(value, list):
+                raise UnsafeCase("card list")
+            for card in value:
+                assert_record_schema(card, "card")
+        elif key == "players":
+            if not isinstance(value, list):
+                raise UnsafeCase("players list")
+            for player in value:
+                assert_record_schema(player, "player")
+        elif key == "turn":
+            if not isinstance(value, dict):
+                raise UnsafeCase("turn")
+            for k, v in value.items():
+                if k in {"active_player", "priority_player", "decision_player", "turn_number"} and numeric(v):
+                    continue
+                if k == "phase" and v in {
+                    "Phase_Beginning",
+                    "Phase_Main1",
+                    "Phase_Combat",
+                    "Phase_Main2",
+                    "Phase_Ending",
+                    "",
+                }:
+                    continue
+                if k == "step" and isinstance(v, str) and re.fullmatch(r"(?:Step_)?[A-Za-z]+", v):
+                    continue
+                raise UnsafeCase("turn field")
+        elif key == "_zone_aliases":
+            if not isinstance(value, list) or any(
+                v not in {"battlefield", "hand", "my_hand", "graveyard", "exile", "command", "stack"}
+                for v in value
+            ):
+                raise UnsafeCase("zone aliases")
+        elif key == "format_name":
+            if value not in {
+                "Brawl",
+                "Standard",
+                "Historic",
+                "Timeless",
+                "Alchemy",
+                "Explorer",
+                "Draft",
+                "Sealed",
+                "Limited",
+                "",
+            }:
+                raise UnsafeCase("format")
+        elif key in {"legal_actions", "legal_actions_raw", "_bridge_actions"}:
+            if not isinstance(value, list):
+                raise UnsafeCase("actions")
+            for action in value:
+                assert_record_schema(action, "meta")
+        elif (
+            value in (None, [], {}, False, True)
+            or numeric(value)
+            or key in {"commander_grp_ids", "commander_casts", "damage_taken"}
+            and numeric_tree(value)
+        ):
+            continue
+        else:
+            raise UnsafeCase("unsupported populated state container: " + key)
+    allowed = {f.name for f in dataclasses.fields(PendingDecision)}
+    if set(pending) - allowed:
+        raise UnsafeCase("pending fields")
+    for key, value in pending.items():
+        if key in {"options", "slots"}:
+            continue
+        if (
+            key in {"request_id"}
+            and isinstance(value, list)
+            and len(value) == 2
+            and all(numeric(v) for v in value)
+        ):
+            continue
+        if key in {"min_select", "max_select", "min_weight", "max_weight", "source_instance_id"} and (
+            value is None or numeric(value)
+        ):
+            continue
+        if key in {"can_pass", "can_cancel"} and type(value) is bool:
+            continue
+        if key == "request_type" and value in {
+            "ActionsAvailable",
+            "Mulligan",
+            "Search",
+            "OptionalAction",
+            "SelectN",
+            "SelectTargets",
+            "CastingTimeOptions",
+            "Group",
+        }:
+            continue
+        if key in {"source_label", "prompt_text", "source_oracle_text"} and isinstance(value, str):
+            continue
+        if key in {"selection_context", "option_context"} and value is None:
+            continue
+        raise UnsafeCase("unsupported pending field/type: " + key)
+    for option in pending["options"]:
+        if set(option) - {"option_id", "label", "payable", "meta"}:
+            raise UnsafeCase("option fields")
+        if not isinstance(option["option_id"], str) or not isinstance(option["label"], str):
+            raise UnsafeCase("option type")
+        assert_record_schema(option.get("meta", {}), "meta")
+    for slot in pending.get("slots", []):
+        if set(slot) - {f.name for f in dataclasses.fields(TargetSlot)} or not all(
+            numeric_tree(v) for v in slot.values()
+        ):
+            raise UnsafeCase("slot")
 
 
 def typed_decision(data):
@@ -516,6 +528,7 @@ def build_cases(paths):
                 counts["invalid_result"] += 1
                 continue
             try:
+                assert_case_schema(snapshot, pending)
                 payload = {
                     "snapshot": sanitize_semantics(snapshot, identities),
                     "decision": sanitize_semantics(pending, identities),
