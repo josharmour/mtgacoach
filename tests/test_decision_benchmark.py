@@ -185,6 +185,7 @@ def test_numeric_identity_game_reference_collision_is_rejected(tmp_path):
         (924681, 924681.0),
         (924681.0, 924681),
         ("924681.0", 924681),
+        (924681.0, "924681"),
     ):
         bundle = sample()
         bundle["account_id"] = private

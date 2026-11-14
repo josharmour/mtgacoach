@@ -96,8 +96,8 @@ def sanitize_semantics(value, identities, *, player=False, presentation=False):
         for key, item in value.items():
             if private_key(key) or (player and normalized_key(key) in {"name", "id"}):
                 continue
-            if str(key).isdecimal() and str(key) in identities:
-                raise UnsafeCase("identity in dynamic dictionary key")
+            if numeric(str(key)):
+                sanitize_semantics(str(key), identities)
             # Generic name fields outside player records must identify game cards.
             if key == "name" and not any(
                 k in value for k in ("instance_id", "grp_id", "type_line", "card_types")
@@ -109,7 +109,7 @@ def sanitize_semantics(value, identities, *, player=False, presentation=False):
         return result
     if isinstance(value, list):
         return [sanitize_semantics(v, identities, player=player, presentation=presentation) for v in value]
-    if type(value) in (int, float):
+    if type(value) in (int, float) or (isinstance(value, str) and numeric(value)):
         from decimal import Decimal, InvalidOperation
 
         for identity in identities:
