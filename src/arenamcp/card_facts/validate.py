@@ -111,7 +111,7 @@ def _check_modes(record: CardFacts, card: PrintedCard) -> list[str]:
         mode_name = normalise(mode.name)
         if not mode_name:
             continue
-        if mode_name == "cast" and mode.cost.mana and normalise(mode.cost.mana) != normalise(card.mana_cost):
+        if mode_name == "cast" and normalise(mode.cost.mana) != normalise(card.mana_cost):
             problems.append(
                 f"mode '{mode.name}': cast cost {mode.cost.mana} but printed mana cost is {card.mana_cost}"
             )
@@ -139,6 +139,9 @@ def _validate(record: CardFacts, card: PrintedCard) -> list[str]:
 
     if normalise(record.mana_cost) != normalise(card.mana_cost):
         problems.append(f"mana_cost: printed '{card.mana_cost}' but record states '{record.mana_cost}'")
+
+    if normalise(record.type_line) != normalise(card.type_line):
+        problems.append(f"type_line: printed '{card.type_line}' but record states '{record.type_line}'")
 
     problems.extend(_check_stats(record.body, card))
 
