@@ -185,3 +185,85 @@ def test_changed_revised_pick_with_outcome_contradiction_is_also_rejected():
             "",
             False,
         )
+
+
+def known_fury(monkeypatch):
+    from arenamcp import line_search_moves
+    from arenamcp.card_facts.schema import card_facts_from_dict
+
+    record = card_facts_from_dict(
+        {
+            "name": "Fury",
+            "effects": [
+                {
+                    "trigger": "ENTERS_THE_BATTLEFIELD",
+                    "effect": {"effect_type": "Damage", "amount": 4, "target": "target creature"},
+                }
+            ],
+            "modes": [
+                {
+                    "name": "evoke",
+                    "cost_text": "Exile a red card from your hand.",
+                    "cost": {"mana": ""},
+                    "stays_on_battlefield": False,
+                }
+            ],
+        }
+    )
+    monkeypatch.setattr(line_search_moves, "_known_record", lambda *a: record)
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "Evoking Fury leaves a double-striking 3/3 body on our battlefield.",
+        "Fury deals four damage and survives to attack next turn.",
+        "Fury kills Griselbrand with its four damage.",
+    ],
+)
+@pytest.mark.parametrize("blocked", [False, True])
+def test_record_outcomes_reask_or_fallback_without_resubmitting(monkeypatch, reason, blocked):
+    import json
+
+    known_fury(monkeypatch)
+    state, menu = fixture()
+    menu.options[0].meta["alternativeCostText"] = "Evoke—Exile a red card from your hand."
+    backend = Mock()
+    backend.complete.side_effect = [
+        json.dumps({"option_ids": ["cast"], "reasoning": reason}),
+        json.dumps({"option_ids": ["pass"], "reasoning": "Pass safely."}),
+    ]
+    planner = ActionPlanner(backend, separate_strategy_planning=blocked, land_drop_first=False)
+    monkeypatch.setattr(planner, "_line_prompt_context", lambda *a: (None, "", {"cast": "unknown"}))
+    monkeypatch.setattr(planner, "_sized_budget", lambda *a: 30)
+    assert planner.plan_decision_options(menu, state) == ["pass"]
+    assert backend.complete.call_count == (1 if blocked else 2)
+
+
+@pytest.mark.parametrize(
+    "change", ["hard_cast", "negated", "conditional", "unknown_record", "return_engine", "marked_damage"]
+)
+def test_record_outcomes_conservative_abstention(monkeypatch, change):
+    from arenamcp import line_search_moves
+    from arenamcp.outcome_claims import record_outcome_notes
+
+    known_fury(monkeypatch)
+    state, menu = fixture()
+    meta = {"alternativeCostText": "Evoke—Exile a red card from your hand."}
+    reason = "Fury survives to attack next turn."
+    if change == "hard_cast":
+        meta = {}
+    elif change == "negated":
+        reason = "Fury does not survive to attack next turn."
+    elif change == "conditional":
+        reason = "If we return it, Fury survives to attack next turn."
+    elif change == "unknown_record":
+        monkeypatch.setattr(line_search_moves, "_known_record", lambda *a: None)
+    elif change == "return_engine":
+        state["battlefield"].append(
+            {"name": "Return engine", "oracle_text": "When a creature dies, return it."}
+        )
+    else:
+        reason = "Fury kills Griselbrand with its four damage."
+        state["battlefield"][0]["damage_marked"] = 3
+    assert record_outcome_notes(state["hand"][0], meta, state, reason) == []

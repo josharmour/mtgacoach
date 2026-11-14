@@ -5474,6 +5474,13 @@ class ActionPlanner(_ActionLegalityMixin):
             filtered = tuple(o for o in decision.options if o.option_id != attack_only.get("chosen"))
             if filtered:
                 effective = replace(decision, options=filtered)
+        rejected = trace.get("outcome_rejected_ids", []) if isinstance(trace, dict) else []
+        if getattr(self, "last_llm_failure", "") == "set_aside" and rejected:
+            filtered = tuple(o for o in effective.options if o.option_id not in rejected)
+            if not filtered:
+                trace.update(fallback="no_uncontradicted_option", validated_ids=[])
+                return []  # do not submit the disproved unevaluated action
+            effective = replace(effective, options=filtered)
         picked, why = board_math_option_pick(effective, game_state)
         source, board_pick = "board_math", picked
         line = line_fallback_option_pick(effective, game_state, picked)
@@ -5603,6 +5610,8 @@ class ActionPlanner(_ActionLegalityMixin):
             return data, chosen
         kinds = [kind for kind, _text in concerns]
         trace = self._last_decision_trace if isinstance(self._last_decision_trace, dict) else {}
+        if "unevaluated_outcome" in kinds:
+            trace["outcome_rejected_ids"] = list(chosen)
         if answered_high:
             hard = [
                 (kind, text)
@@ -5706,6 +5715,7 @@ class ActionPlanner(_ActionLegalityMixin):
             text for kind, text in concerns_for(new_chosen, new_data) if kind == "unevaluated_outcome"
         ]
         if unresolved:
+            trace["outcome_rejected_ids"] = list(set(trace.get("outcome_rejected_ids", [])) | set(new_chosen))
             raise SecondLookError(f"second-look outcome remains contradicted: {unresolved[0]}")
         if new_chosen == chosen:
             from arenamcp.game_plan import decision_claim_notes
@@ -5745,6 +5755,7 @@ class ActionPlanner(_ActionLegalityMixin):
                     str(new_data.get("reasoning") or "")[:160],
                 )
                 raise SecondLookError(f"second-look re-pick {new_chosen} refuted: {refuted[0][:160]}")
+        trace.pop("outcome_rejected_ids", None)
         trace["second_look"] = {
             "concerns": [text for _kind, text in concerns],
             "first": chosen,
@@ -6299,6 +6310,9 @@ class ActionPlanner(_ActionLegalityMixin):
             text = name + " " + text
         cast_ids = [source.get("instance_id")] if meta.get("actionType") == "ActionType_Cast" else []
         notes = decision_claim_notes(text, state, cast_ids=cast_ids)
+        from arenamcp.outcome_claims import record_outcome_notes
+
+        notes.extend(record_outcome_notes(source, meta, state, reasoning))
         # A narrow anonymous-body claim, not a generic occurrence of "block":
         # selected cast "leaves a ... body that blocks the flyer". Existing
         # keyword truth accounts for grants and abstains on unknown rules.
