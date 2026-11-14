@@ -257,7 +257,13 @@ because the text says three).
 entry in modes/effects.
 4. Keyword abilities named in the type line or rules text (flying, lifelink, \
 ward 2, ...) all go in body.keywords; ward keeps its number out of the name.
-5. Output valid JSON only — no markdown fences, no commentary.
+5. Current TokenSpec cannot represent token colors or affirmative legendary status.
+For a token-creation sentence that states either, use Unknown with the entire
+original sentence verbatim; do not emit a lossy CreateToken or extension fields.
+Keep loyalty costs, optional physical exile payments, linked-card mana colors,
+and conditional resolutions explicit; if no native fields express them exactly,
+retain the original statement as Unknown rather than guessing executable effects.
+6. Output valid JSON only — no markdown fences, no commentary.
 """
 
 
@@ -332,6 +338,47 @@ def extract_json_object(text: str) -> dict[str, Any] | None:
         if isinstance(data, dict):
             return data
         pos = brace + end_index
+
+
+def _token_contract_problems(data: dict[str, Any], printed: PrintedCard) -> list[str]:
+    """Reject a bounded known schema near-fit; never infer new token semantics.
+
+    Only explicit create...color/legendary...token clauses are recognized.
+    Other wording is not certified by absence of a finding. Mixed token clauses
+    remain conservative because the current schema has no source-span binding.
+    """
+    sentences = re.split(r"(?<=[.!?])\s+|\n+", printed.oracle_text)
+    unsupported = [
+        sentence
+        for sentence in sentences
+        if re.search(
+            r"\bcreate\b[^.;\n]*\b(?:white|blue|black|red|green|colorless|legendary)\b[^.;\n]*\btokens?\b",
+            sentence,
+            re.IGNORECASE,
+        )
+    ]
+    if not unsupported:
+        return []
+    effects = data.get("effects")
+    if not isinstance(effects, list):
+        return ["unrepresentable token statement requires verbatim Unknown"]
+    typed = False
+    unknown = set()
+    for entry in effects:
+        effect = entry.get("effect") if isinstance(entry, dict) else None
+        if not isinstance(effect, dict):
+            continue
+        typed |= effect.get("effect_type") == "CreateToken"
+        if effect.get("effect_type") == "Unknown" and isinstance(effect.get("text"), str):
+            unknown.add(effect["text"])
+    problems = []
+    if typed:
+        problems.append(
+            "TokenSpec cannot preserve stated token color/legendary status; use verbatim Unknown, not CreateToken"
+        )
+    if any(sentence not in unknown for sentence in unsupported):
+        problems.append("unrepresentable token statement requires verbatim Unknown")
+    return problems
 
 
 def _stamp(record_data: dict[str, Any], printed: PrintedCard) -> CardFacts:
@@ -465,7 +512,7 @@ def compile_one(
         else:
             try:
                 record_candidate = _stamp(dict(data), printed)
-                problems = validate(record_candidate, printed)
+                problems = validate(record_candidate, printed) + _token_contract_problems(data, printed)
                 record = record_candidate if not problems else record_candidate
             except Exception as error:
                 record = None
