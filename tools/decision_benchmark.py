@@ -376,7 +376,7 @@ def assert_case_schema(snapshot, pending):
     for key, value in state.items():
         if private_key(key):
             continue
-        from arenamcp.benchmark_schema import state_field
+        from arenamcp.benchmark_schema import legal_labels, state_field
 
         def card_check(card):
             try:
@@ -501,7 +501,10 @@ def assert_case_schema(snapshot, pending):
                 "",
             }:
                 raise UnsafeCase("format")
-        elif key in {"legal_actions", "legal_actions_raw", "_bridge_actions"}:
+        elif key == "legal_actions":
+            if not legal_labels(value, state):
+                raise UnsafeCase("legal action renderer grammar")
+        elif key in {"legal_actions_raw", "_bridge_actions"}:
             if value is None:
                 continue
             if not isinstance(value, list):

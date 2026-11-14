@@ -279,3 +279,38 @@ def state_field(key, value, card_check):
     if key == "pending_selection_objects":
         return sequence(card_check)(value)
     return False
+
+
+def legal_labels(value, state):
+    """Validate source renderer grammar against names already in card records."""
+    import re
+
+    if not isinstance(value, list):
+        return False
+    names = {"Land", "Spell"}
+    for zone in ("hand", "battlefield", "graveyard", "exile", "command", "stack", "deck_cards"):
+        for card in state.get(zone) or []:
+            if isinstance(card, dict):
+                if isinstance(card.get("name"), str):
+                    names.add(card["name"])
+                for face in card.get("related_faces") or []:
+                    if isinstance(face, dict) and isinstance(face.get("name"), str):
+                        names.add(face["name"])
+    for label in value:
+        if not isinstance(label, str):
+            return False
+        if label == "Pass":
+            continue
+        if label.startswith("Action: ") and ACTION("ActionType_" + label[len("Action: ") :]):
+            continue
+        stem = re.sub(r" \[OK\]$", "", label)
+        stem = re.sub(r" \[NEED:(?:\{[0-9WUBRGCXYZ/]+\})+\]$", "", stem)
+        if stem == "Activate Ability":
+            continue
+        if any(
+            stem.startswith(prefix) and stem[len(prefix) :] in names
+            for prefix in ("Play Land: ", "Cast ", "Activate Ability: ")
+        ):
+            continue
+        return False
+    return True

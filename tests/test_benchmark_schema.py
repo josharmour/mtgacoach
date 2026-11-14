@@ -97,3 +97,13 @@ def test_card_faces_do_not_permit_identity_fields_or_string_ids():
     assert not s.extended_field("card", "related_faces", [{**face, "account_id": "secret"}])
     assert not s.extended_field("meta", "name", "Private Customer")
     assert not s.extended_field("meta", "source_id", "Private Customer")
+
+
+def test_legal_labels_require_renderer_grammar_and_existing_card_names():
+    state = {"hand": [{"name": "Fury"}]}
+    assert s.legal_labels(
+        ["Cast Fury [OK]", "Pass", "Action: ActivateMana", "Activate Ability: Fury [NEED:{1}{R}]"], state
+    )
+    assert not s.legal_labels(["Cast Private Customer [OK]"], state)
+    assert not s.legal_labels(["Action: PrivateCustomer"], state)
+    assert not s.legal_labels(["Cast Fury [PRIVATE]"], state)
