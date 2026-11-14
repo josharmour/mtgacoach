@@ -575,46 +575,59 @@ def test_q4_dimensions_and_idempotent_migration(env):
     mb.init_db()
     mb.init_db()
     with db.get_db() as conn:
-        columns = {r[1] for r in conn.execute('PRAGMA table_info(match_bundles)')}
-    assert {'autopilot_enabled', 'format_name', 'deck_name'} <= columns
-    data = _bundle(final_state={'format_name': ' Ranked '})
-    data['packet']['deck_strategy'] = ' Deck Name \nprivate full strategy'
+        columns = {r[1] for r in conn.execute("PRAGMA table_info(match_bundles)")}
+    assert {"autopilot_enabled", "format_name", "deck_name"} <= columns
+    data = _bundle(final_state={"format_name": " Ranked "})
+    data["packet"]["deck_strategy"] = " Deck Name \nprivate full strategy"
     dims = mb._outcome_dimensions(data)
-    assert dims == {'autopilot_enabled': True, 'format_name': 'Ranked', 'deck_name': 'Deck Name'}
-    data['settings_subset']['autopilot_enabled'] = 'false'
-    assert mb._outcome_dimensions(data)['autopilot_enabled'] is None
-    assert mb._outcome_dimensions({}) == {'autopilot_enabled': None, 'format_name': None, 'deck_name': None}
-    assert mb.insert_bundle(owner='q4', install_id=INSTALL_ID, match_id=MATCH_ID,
-                            license_key='test', auth_source='test', size=1, path='fixture',
-                            app_version='test', platform='test', result='win', schema_version=1, **dims)
-    row = mb.find_bundle(INSTALL_ID, MATCH_ID, 'q4')
-    assert row['autopilot_enabled'] == 1
-    assert row['format_name'] == 'Ranked'
-    assert row['deck_name'] == 'Deck Name'
+    assert dims == {"autopilot_enabled": True, "format_name": "Ranked", "deck_name": "Deck Name"}
+    data["settings_subset"]["autopilot_enabled"] = "false"
+    assert mb._outcome_dimensions(data)["autopilot_enabled"] is None
+    assert mb._outcome_dimensions({}) == {"autopilot_enabled": None, "format_name": None, "deck_name": None}
+    assert mb.insert_bundle(
+        owner="q4",
+        install_id=INSTALL_ID,
+        match_id=MATCH_ID,
+        license_key="test",
+        auth_source="test",
+        size=1,
+        path="fixture",
+        app_version="test",
+        platform="test",
+        result="win",
+        schema_version=1,
+        **dims,
+    )
+    row = mb.find_bundle(INSTALL_ID, MATCH_ID, "q4")
+    assert row["autopilot_enabled"] == 1
+    assert row["format_name"] == "Ranked"
+    assert row["deck_name"] == "Deck Name"
 
 
 def test_q4_upload_persists_and_duplicate_keeps_original(env):
     _, db, _, mb, _, client, _ = env
     key = _subscriber(db)
-    data = _bundle(final_state={'format_name': 'Ranked'})
-    data['packet']['deck_strategy'] = 'Deck A\nprivate strategy'
+    data = _bundle(final_state={"format_name": "Ranked"})
+    data["packet"]["deck_strategy"] = "Deck A\nprivate strategy"
     assert _post(client, key, data).status_code == 200
     row = mb.find_bundle(INSTALL_ID, MATCH_ID, _owner(key))
-    assert (row['autopilot_enabled'], row['format_name'], row['deck_name']) == (1, 'Ranked', 'Deck A')
-    data['settings_subset']['autopilot_enabled'] = False
-    assert _post(client, key, data).json()['status'] == 'duplicate'
-    assert mb.find_bundle(INSTALL_ID, MATCH_ID, _owner(key))['autopilot_enabled'] == 1
+    assert (row["autopilot_enabled"], row["format_name"], row["deck_name"]) == (1, "Ranked", "Deck A")
+    data["settings_subset"]["autopilot_enabled"] = False
+    assert _post(client, key, data).json()["status"] == "duplicate"
+    assert mb.find_bundle(INSTALL_ID, MATCH_ID, _owner(key))["autopilot_enabled"] == 1
 
 
 def test_q4_migration_preserves_legacy_unknown(env):
     _, db, _, mb, _, _, _ = env
     with db.get_db() as conn:
-        for col in ['autopilot_enabled', 'format_name', 'deck_name']:
-            conn.execute(f'ALTER TABLE match_bundles DROP COLUMN {col}')
-        conn.execute("INSERT INTO match_bundles(owner,install_id,match_id,received_at,size,path) VALUES ('legacy','i','m',10,1,'x')")
+        for col in ["autopilot_enabled", "format_name", "deck_name"]:
+            conn.execute(f"ALTER TABLE match_bundles DROP COLUMN {col}")
+        conn.execute(
+            "INSERT INTO match_bundles(owner,install_id,match_id,received_at,size,path) VALUES ('legacy','i','m',10,1,'x')"
+        )
     mb.init_db()
     mb.init_db()
-    row = mb.find_bundle('i', 'm', 'legacy')
-    assert row['autopilot_enabled'] is None
-    assert row['format_name'] is None
-    assert row['deck_name'] is None
+    row = mb.find_bundle("i", "m", "legacy")
+    assert row["autopilot_enabled"] is None
+    assert row["format_name"] is None
+    assert row["deck_name"] is None
