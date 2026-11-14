@@ -59,6 +59,9 @@ from __future__ import annotations
 
 import dataclasses
 import functools
+import hashlib
+import json
+import logging
 import re
 import time
 from dataclasses import dataclass, field
@@ -66,6 +69,14 @@ from itertools import combinations, permutations, product
 from types import SimpleNamespace
 from typing import Any, Protocol
 
+from arenamcp.ability_synthesizer import (
+    AddMana,
+    Exile,
+    UnknownEffect,
+    cast_time_entries,
+    record_cast_text,
+    render_effect_sentence,
+)
 from arenamcp.attack_potential import annotated, attack_round
 from arenamcp.board_assessment import (
     _LIFEGAIN,
@@ -108,6 +119,8 @@ from arenamcp.board_assessment import (
     ward_cost,
 )
 from arenamcp.board_model import BoardModel, _regular_damage_part, cast_bans, spell_banned
+from arenamcp.card_facts.client import facts_for, hash_for_card
+from arenamcp.card_facts.schema import card_facts_from_dict
 from arenamcp.cast_growth_risk import grown, per_cast_growth
 from arenamcp.cast_triggers import cast_pumps, spell_kinds
 from arenamcp.combat_keywords import has_combat_keyword
@@ -124,7 +137,9 @@ from arenamcp.entry_draw_transition import (
 )
 from arenamcp.land_mana import land_colors, mana_source, refresh_sources
 from arenamcp.legend_rule import resolve_legends
-from arenamcp.mulligan_policy import _mana_value, _pip_matching, hand_card
+from arenamcp.mulligan_policy import _mana_value, _pip_matching, _pips, hand_card
+
+LOGGER = logging.getLogger(__name__)
 
 # Outcome classes, compared before timing and value.
 WIN, ALIVE, DEAD = 2, 1, 0
@@ -1505,6 +1520,19 @@ class Variant:
     walker: int = 0
     # Creature tokens counted on the board as it resolves (``named_token_specs``: Hare Apparent).
     named_tokens: tuple = ()
+    # Cards an alternate cost consumes from your hand (evoke's "Exile a red card from
+    # your hand.", imprint): how many, and what they must match (colour word, type
+    # restrictions). Paid in ``_apply_casts``; eligibility checked when the variant is
+    # offered (``_consumable``) so an unpayable cost is never scheduled.
+    consumes: int = 0
+    consume_spec: tuple[str, frozenset] = ("", frozenset())
+    # The body enters this turn and is sacrificed as its enters trigger resolves
+    # (evoke): its ETB effects apply, but it never attacks, blocks or survives.
+    ephemeral: bool = False
+    # A rock whose produced colours are the exiled card's colours (Chrome Mox-style
+    # imprint), bound to the cards actually paid in ``_apply_casts`` (#A1 round 5).
+    imprint_rock: bool = False
+    payment: tuple[int, ...] = ()  # exact hand indexes exiled; chosen before set evaluation
 
 
 @dataclass(eq=False)
@@ -1956,7 +1984,321 @@ def _x_unmodelled(card: dict, role: str) -> bool:
     return role not in ("draw", "selection", "counter") and not card_flow(_cast_text(card))
 
 
+_RECORD_USE_LOGGED: set[str] = set()
+
+
+def _record_key(card: dict) -> tuple[str, str, str, str]:
+    """The card-facts lookup key of a card dict (cached-callable arguments)."""
+    return (
+        card.get("name") or "",
+        card.get("oracle_text") or "",
+        card.get("type_line") or "",
+        card.get("mana_cost") or "",
+    )
+
+
+_KNOWN_RECORDS: dict[tuple[str, str, str, str], tuple[str, Any]] = {}
+
+
+def reset_record_cache() -> None:
+    """Forget remembered records (tests).
+
+    Normal code never needs this: a record is remembered only under the digest
+    of the payload it was parsed from, so a store that later serves different
+    data for the same card (the compiler refreshing a record, or an S3
+    background fetch landing) is re-read and re-parsed on the next call.
+    """
+    _KNOWN_RECORDS.clear()
+
+
+def _payload_digest(data: Any) -> str:
+    """A stable fingerprint of a record's raw payload (cache validity)."""
+    try:
+        return hashlib.sha256(json.dumps(data, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+    except Exception:
+        return ""
+
+
+def _known_record(name: str, oracle_text: str, type_line: str, mana_cost: str) -> Any:
+    """The card's card-facts record when it exists and every effect is a known type.
+
+    Records fill gaps only: the text parser goes first. A miss (no record yet,
+    an unreadable record, any ``unknown`` effect) returns None and the card
+    stays exactly as the text parser left it — and is NOT remembered, so a
+    record the S3 client fetches in the background is noticed on the next call
+    (the client answers from memory or disk and dedupes its fetches, so the
+    repeated misses are cheap by design).
+
+    A hit is remembered under the digest of the payload it was parsed from.
+    The store is still consulted on every call (a memory-dict lookup), so a
+    payload that changes — e.g. a known record refreshed into one holding an
+    ``unknown`` effect — is re-parsed and the card falls back to its text-parser
+    behaviour without anyone resetting anything.
+    """
+    key = (name, oracle_text, type_line, mana_cost)
+    card = {"name": name, "oracle_text": oracle_text, "type_line": type_line, "mana_cost": mana_cost}
+    digest = hash_for_card(card)
+    if not digest:
+        return None
+    data = facts_for([card]).get(digest)
+    if data is None:
+        return None
+    payload = _payload_digest(data)
+    if not payload:
+        return None
+    cached = _KNOWN_RECORDS.get(key)
+    if cached is not None and cached[0] == payload:
+        return cached[1]
+    try:
+        record = card_facts_from_dict(data)
+    except Exception:
+        return None
+    if any(isinstance(entry.effect, UnknownEffect) for entry in record.effects):
+        return None
+    _KNOWN_RECORDS[key] = (payload, record)
+    return record
+
+
+def _log_record_use(name: str) -> None:
+    """Log once per match per card that a record filled a gap (A1 observability)."""
+    if name not in _RECORD_USE_LOGGED:
+        _RECORD_USE_LOGGED.add(name)
+        LOGGER.info("card facts record used for %s (text parser left it unmodelled)", name)
+
+
+def reset_record_use_log() -> None:
+    """Forget which cards already had a record-use log line.
+
+    The coach serves matches back to back in one process; call this when a new
+    match starts so Do item 4's "once per card per match" holds there too.
+    """
+    _RECORD_USE_LOGGED.clear()
+
+
+def _record_line_valued(name: str, line: str) -> bool:
+    """Whether one rendered record sentence is something the search values.
+
+    The same predicate ``Moves._variants`` applies to a record line it adopts
+    as a mode (``classify`` kinds, readable token specs, face damage), so the
+    ``unmodelled_effect`` gate and the variants cannot disagree.
+    """
+    pseudo = {"name": name, "oracle_text": line, "type_line": ""}
+    return bool(
+        classify(name, line)[0] != "other"
+        or token_specs(_cast_text(pseudo))
+        or named_token_specs(_cast_text(pseudo), name)
+        or any(face_damage(pseudo))
+    )
+
+
+def _record_represents(record: Any, name: str, card: dict | None = None) -> bool:
+    """Whether the record's cast-time effects and modes are ALL represented in the search.
+
+    Delegates to ``_record_semantics`` so the gate (``unmodelled_effect``) and the
+    fill (``Moves._variants``) can never disagree about what a record contributes:
+    every cast-time/own-enters effect must fold into bounded semantics (mana rock,
+    land-entry mana, hand-consumption payment) or render into a sentence the search
+    values, and every mode must have a payable cost. Anything else — an effect type
+    with no cast-time representation (draw, counterspell), a condition the search
+    cannot evaluate, an unparsable hand cost — keeps the card unmodelled
+    (conservative; A1 review rounds 2-4).
+    """
+    return _record_semantics(record, name, card) is not None
+
+
+_HAND_CONSUMPTION_RE = re.compile(
+    r"\b(?P<count>a|an|one|two|three|\d+)\s+"
+    r"(?:(?P<nonartifact>nonartifact)[,\s]+)?(?:(?P<nonland>nonland)[,\s]+)?"
+    r"(?P<color>white|blue|black|red|green)?\s*cards? from your hand\.?",
+    re.IGNORECASE,
+)
+_HAND_COUNT_WORDS = {"a": 1, "an": 1, "one": 1, "two": 2, "three": 3}
+_PIP_COLORS = {"W": "white", "U": "blue", "B": "black", "R": "red", "G": "green"}
+
+
+def _hand_consumption(text: str, *, exile_target: bool = False) -> tuple[int, str, frozenset] | None:
+    """A cost or effect that consumes cards from your hand ("Exile a red card from your
+    hand.", "exile a nonartifact, nonland card from your hand"): ``(count, colour,
+    restrictions)``. None when the sentence mentions hand cards but cannot be parsed —
+    the search then stays conservative and offers no variant that would pay it.
+    """
+    lowered = (text or "").lower().strip()
+    # Only Exile effect targets omit the verb. Alternate costs must explicitly
+    # exile; discard/sacrifice/conditional costs have different game semantics.
+    if not exile_target:
+        if not lowered.startswith("exile "):
+            return None
+        lowered = lowered[len("exile ") :]
+    match = _HAND_CONSUMPTION_RE.fullmatch(lowered)
+    if match is None:
+        return None
+    count_word = match.group("count").lower()
+    count = _HAND_COUNT_WORDS.get(count_word) or int(count_word)
+    if count < 1 or count > 3:  # an unbounded hand cost is not worth modelling
+        return None
+    color = match.group("color") or ""
+    restrictions = frozenset(g for g in ("nonartifact", "nonland") if match.group(g))
+    return count, color, restrictions
+
+
+def _hand_card_matches(card: dict, color: str, restrictions: frozenset) -> bool:
+    """Whether a hand card can pay a hand-consumption cost (evoke's exile, imprint)."""
+    type_line = str(card.get("type_line") or "")
+    if "nonland" in restrictions and "Land" in type_line:
+        return False
+    if "nonartifact" in restrictions and "Artifact" in type_line:
+        return False
+    if color:
+        colors = _body_colors(card)
+        if colors is None or color not in {_PIP_COLORS[p] for p in colors}:
+            return False
+    return True
+
+
+_IMPRINT_COLORS_RE = re.compile(r"mana of any of the exiled card's colors", re.IGNORECASE)
+_LANDFALL_MANA_RE = re.compile(
+    r"(?:landfall\s*[—–-]\s*)?whenever a land you control enters(?: the battlefield)?, "
+    r"add one mana of any colou?r\.",
+    re.IGNORECASE,
+)
+
+
+def _landfall_mana_card(card: dict | None) -> bool:
+    # The current record trigger tag omits its subject. Bind it to complete oracle
+    # text, not a substring, until the schema carries the triggering object.
+    text = re.sub(r"<[^>]*>", "", str((card or {}).get("oracle_text") or "")).strip()
+    return bool(_LANDFALL_MANA_RE.fullmatch(text))
+
+
+def _cost_mana_value(mana: str) -> int | None:
+    """An alternate cost's mana value ("{3}{R}{R}" -> 5); None when it has an X (the
+    search cannot bound what the caster would pay into it)."""
+    upper = (mana or "").upper()
+    if not re.fullmatch(r"(?:\{(?:[0-9]+|[WUBRG])\})*", upper):
+        return None  # hybrid, phyrexian, X and colorless require distinct payment rules
+    return sum(int(n) if n.isdigit() else 1 for n in re.findall(r"\{([^}]+)\}", upper))
+
+
+def _record_semantics(record: Any, name: str, card: dict | None = None) -> dict | None:
+    """Bounded record semantics, or None when timing/payment cannot be represented.
+
+    Landfall's lossy legacy trigger tag is accepted only with matching complete
+    oracle text. Its mana is added by sources() on an actual land entry with an
+    already-present creature, never used to reduce casting cost. Imprint is a
+    chosen hand payment with produced colors bound to that exact card.
+    """
+    entries = cast_time_entries(record)
+    if len(entries) != len(record.effects):
+        return None  # never erase death/attack/other effects omitted by cast-time projection
+    if not entries and not record.modes:
+        return None  # defensive: callers require one of the two
+    rock, consume = False, None
+    landfall_mana = False
+    for entry in entries:
+        if entry.conditions or entry.trigger not in (
+            "",
+            "CAST",
+            "ENTERS_THE_BATTLEFIELD",
+            "ENTERS_THE_BATTLEFIELD_OR_EVOKE",
+        ):
+            return None
+        effect = entry.effect
+        if isinstance(effect, AddMana):
+            if rock or landfall_mana:
+                return None  # multiple mana effects are not a single source
+            if entry.trigger == "":
+                if not _IMPRINT_COLORS_RE.search(str((card or {}).get("oracle_text") or "")):
+                    return None  # no generic activated-mana timing/payment representation
+                if "may exile" not in str((card or {}).get("oracle_text") or "").lower():
+                    return None
+                # This source represents exactly one tap-only activation. The
+                # record schema does not encode activation costs, so bind the
+                # complete oracle activation rather than trusting an AddMana tag.
+                oracle = str((card or {}).get("oracle_text") or "")
+                activation = oracle.split("\n")[-1].strip()
+                if (
+                    effect.amount != 1
+                    or effect.mana.lower() not in ("any color", "any colour")
+                    or not re.fullmatch(
+                        r"\{(?:oT|T)\}: Add one mana of any of the exiled card's colors\.",
+                        activation,
+                        re.IGNORECASE,
+                    )
+                ):
+                    return None
+                rock = True
+            elif entry.trigger == "ENTERS_THE_BATTLEFIELD":
+                if (
+                    _landfall_mana_card(card)
+                    and effect.amount == 1
+                    and effect.mana.lower() in ("any color", "any colour")
+                ):
+                    landfall_mana = True
+                else:
+                    return None  # post-resolution mana cannot pay this spell's casting cost
+            else:
+                return None  # mana on another timing (attack/dies/cast): unbounded
+            continue
+        if isinstance(effect, Exile):
+            spec = _hand_consumption(effect.target, exile_target=True)
+            if spec is None or consume is not None:
+                return None
+            consume = spec
+            continue
+        sentence = render_effect_sentence(effect)
+        if not sentence or not _record_line_valued(name, sentence):
+            return None
+    if landfall_mana and (len(entries) != 1 or record.modes):
+        return None  # compound triggers need a richer event representation
+    modes = []
+    for mode in record.modes:
+        cost = mode.cost
+        if cost.tap or cost.sacrifice is not None or cost.life or cost.discard or cost.exile_from_graveyard:
+            return None  # a cost extra the cast application does not pay
+        mana_value = _cost_mana_value(cost.mana or "")
+        if mana_value is None:
+            return None
+        consumption = _hand_consumption(mode.cost_text)
+        if consumption is None and re.search(r"cards?", (mode.cost_text or "").lower()):
+            return None  # a hand cost we cannot parse: stay conservative
+        modes.append((mode.name, cost.mana or "", mana_value, consumption, bool(mode.stays_on_battlefield)))
+    return {
+        "landfall_mana": landfall_mana,
+        "rock": rock,
+        # Chrome Mox-style: the rock's colours are the exiled card's colours, not any
+        # colour (#A1 review round 5); bound to the actually-paid cards at application.
+        "imprint_rock": bool(
+            consume is not None and _IMPRINT_COLORS_RE.search(str((card or {}).get("oracle_text") or ""))
+        ),
+        "consume": consume,
+        "modes": tuple(modes),
+    }
+
+
 def unmodelled_effect(card: dict | None, result: Any = None) -> str:
+    """``_unmodelled_effect_reasons``, with a card-facts record filling the gap (A1).
+
+    The one gap a record fills is a permanent whose own enters trigger the text
+    parser cannot value: when its record exists and every cast-time effect and
+    every mode is representable (``_record_represents``), ``Moves._variants``
+    merges those effects into the hard cast — and applies the record's bounded
+    semantics (land-entry mana, a rock's production, an imprint-style hand cost,
+    evoke-style alternate costs) — so the gap stops counting as unmodelled. Every
+    other gap keeps today's reason: no record shape yet represents pumps, auras,
+    X costs or unreadable tokens, and pretending otherwise would clear the flag
+    without the variants gaining anything.
+    """
+    reason = _unmodelled_effect_reasons(card, result)
+    if reason == "its triggered ability" and isinstance(card, dict):
+        name = str(card.get("name") or "")
+        record = _known_record(*_record_key(card))
+        if record is not None and _record_represents(record, name, card):
+            _log_record_use(name)
+            return ""
+    return reason
+
+
+def _unmodelled_effect_reasons(card: dict | None, result: Any = None) -> str:
     """What casting ``card`` does that the line search does not model; '' when it models it all.
 
     The search (``Moves._variants``) values a creature's body, creature
@@ -2624,6 +2966,30 @@ class Moves:
             etb_reach = etb if reach is not None and reach[0] != "fight" else None
             match = _LIFEGAIN.search(cast_text) if not oracle_modes else None
             alt, each = (0, 0) if oracle_modes else face_damage(etb)
+            # A card-facts record fills what the text parser left unmodelled (#A1): its
+            # cast-time/enters effects rendered through the same parsers, merged only into
+            # slots the card's own text left empty.
+            record = None if oracle_modes else _known_record(*_record_key(card))
+            rec_text = (
+                record_cast_text(record)
+                if record is not None and _trigger_unmodelled(card, spell.name)
+                else ""
+            )
+            if rec_text:
+                rec_etb = {"name": spell.name, "oracle_text": rec_text, "type_line": ""}
+                if reach is None or reach[0] == "fight":
+                    rec_reach = removal_reach(rec_etb)
+                    if rec_reach is not None:
+                        reach, etb_reach = rec_reach, rec_etb
+                if match is None:
+                    match = _LIFEGAIN.search(rec_text)
+                if not alt and not each:
+                    alt, each = face_damage(rec_etb)
+                if not base_specs:
+                    # Creature tokens the record states and the text parser missed: read
+                    # with the same token parser, only into a slot the card's own text
+                    # left empty.
+                    base_specs = list(token_specs(_cast_text(rec_etb)) or ())
             bounce = etb_reach is not None and reach[0] == "bounce"
         elif spell.role == "creature":
             # A noncreature that makes creature tokens (card_role calls it a creature): the rest
@@ -2663,9 +3029,22 @@ class Moves:
             and not any(classify(spell.name, b)[0] != "other" for b in oracle_modes)
             and unmodelled_effect(card)
         ):
-            # Nothing it does is valued (a pump, an aura, a fog, a planeswalker): never cast in a
-            # line, where a placeholder value would put it ahead of holding it.
-            plain, variants = None, []
+            # Nothing its text does is valued (a pump, an aura, a fog, a planeswalker): never cast
+            # in a line, where a placeholder value would put it ahead of holding it — unless a
+            # card-facts record supplies valued effects (#A1): its rendered lines that the search
+            # values (``_record_line_valued``, the same predicate as the unmodelled gate) stand in
+            # as the modes.
+            record = _known_record(*_record_key(card))
+            rescued = tuple(
+                line
+                for line in (record_cast_text(record).splitlines() if record is not None else ())
+                if _record_line_valued(spell.name, line)
+            )
+            if rescued:
+                oracle_modes = rescued  # read by the mode loop below like the card's own bullets
+                variants = []
+            else:
+                plain, variants = None, []
         else:
             modes = [(i, b, *classify(spell.name, b)) for i, b in enumerate(oracle_modes)]
             if all(kind == "other" for _i, _b, kind, *_rest in modes):
@@ -2703,8 +3082,56 @@ class Moves:
                     sweep=sweep,
                 )
                 variants += [var, *aimed(var, mode_alt)]
+            # A card-facts record completes what the text parser missed (#A1): bounded
+            # semantics only — event-bound landfall mana, a rock's production,
+            # an imprint-style hand cost paid on the cast, and payable alternate costs
+            # (evoke) whose lifecycle the cast application respects. The unmodelled gate
+            # (``unmodelled_effect``) cleared only because EVERY cast-time effect and
+            # every mode is representable (``_record_represents``); this fill mirrors
+            # exactly that predicate, so the variants really gain what the record states.
+            extras: list = []
+            if (
+                plain is not None
+                # The card's OWN text left a triggered-ability gap that only the record
+                # closed (``unmodelled_effect`` cleared it via ``_record_represents``):
+                # a card its text parser already values fully keeps exactly its text-built
+                # variants, so record semantics can never double-count parsed effects.
+                and _unmodelled_effect_reasons(card) == "its triggered ability"
+                and not any(classify(spell.name, b)[0] != "other" for b in oracle_modes)
+                and unmodelled_effect(card) == ""
+            ):
+                record = _known_record(*_record_key(card))
+                semantics = _record_semantics(record, spell.name, card)
+                if semantics is not None:
+                    if semantics["consume"] is not None:
+                        count, color, restrictions = semantics["consume"]
+                        plain = dataclasses.replace(
+                            plain,
+                            consumes=count,
+                            consume_spec=(color, restrictions),
+                            imprint_rock=semantics["imprint_rock"],
+                        )
+                    if plain.imprint_rock:
+                        extras.append(dataclasses.replace(plain, consumes=0, rock=False, imprint_rock=False))
+                    for mode_name, mode_mana, mv_cost, consumption, stays in semantics["modes"]:
+                        if body is None and not stays:
+                            continue  # an ephemeral alternate needs a body to leave again
+                        if mv_cost == spell.mana_value and consumption is None and stays:
+                            continue  # identical to the hard cast
+                        cons_count, cons_color, cons_restrictions = consumption or (0, "", frozenset())
+                        extras.append(
+                            dataclasses.replace(
+                                make(None, mode_name, reach=plain.reach),
+                                mana_value=mv_cost,
+                                pips=_pips(mode_mana),
+                                consumes=cons_count,
+                                consume_spec=(cons_color, cons_restrictions),
+                                ephemeral=body is not None and not stays,
+                            )
+                        )
             if not variants and plain is not None:
                 variants = [plain, *aimed(plain, alt)]
+            variants.extend(extras)
         if info.landcycling is not None:
             kind = _CYCLE_KIND.search(_text(card))
             fetch = _CYCLE_FETCH.get(kind.group(1), "") if kind else ""
@@ -2717,7 +3144,14 @@ class Moves:
         sneak = self._sneak_variant(hs, body)
         if sneak is not None:
             variants.append(sneak)
-        return tuple(variants), plain
+        # Baseline bypasses cast-set choice enumeration: use legal decline, never an
+        # unbound imprint cost. Fully evaluated lines retain all exact payments.
+        baseline_plain = (
+            dataclasses.replace(plain, consumes=0, rock=False, imprint_rock=False)
+            if plain is not None and plain.imprint_rock
+            else plain
+        )
+        return tuple(variants), baseline_plain
 
     def _sneak_variant(self, hs: HandSpell, body: dict | None) -> Variant | None:
         """A creature with Sneak cast in our declare-blockers step (``sneak``; ledger #156): its
@@ -3011,7 +3445,19 @@ class Moves:
         if land is not None and getattr(land.source, "land_card", None):
             board.append(land.source.land_card)
         before_rocks = refresh_sources(before_rocks, board)
-        return before_rocks, before_rocks + list(node.rocks)
+        temporary = []
+        if land is not None:
+            for body in node.ours:
+                card = body.get("_card") or body
+                if not _landfall_mana_card(card):
+                    continue
+                record = _known_record(*_record_key(card))
+                semantics = _record_semantics(record, _name(card), card) if record is not None else None
+                if semantics is not None and semantics["landfall_mana"]:
+                    temporary.append(SimpleNamespace(produces=frozenset("WUBRG"), name=_name(card)))
+        # Only existing permanents see this land entry; newly cast bodies do not.
+        # Temporary mana is used in this main phase and is not stored in node.rocks.
+        return before_rocks, before_rocks + list(node.rocks) + temporary
 
     def land_options(self, node: Node) -> list:
         """One land per class (colours, enters tapped), at most three; [None] when no drop.
@@ -3708,6 +4154,8 @@ class Moves:
                     continue
                 if (banned and var.kind in ("cast", "sneak")) or var.loss >= node.our_life:
                     continue
+                if var.consumes and not self._consumable(node, var):
+                    continue  # an alternate cost whose hand payment cannot be made now (#A1)
                 if var.chip:  # one piece of a combined kill (completed below, or the set is dropped)
                     items.extend((var, t) for t in self.chip_targets(node, position, var, len(sources)))
                 elif var.walker:  # burn at one of their planeswalkers
@@ -3721,7 +4169,21 @@ class Moves:
                 else:
                     items.append((var, None))
             if items:
-                options.append((position, items))
+                paid_items = []
+                for variant, target in items:
+                    if not variant.consumes:
+                        paid_items.append((variant, target))
+                        continue
+                    color, restrictions = variant.consume_spec
+                    eligible = [
+                        i
+                        for i in node.hand
+                        if i != variant.spell
+                        and _hand_card_matches(self.spells[i].spell.card, color, restrictions)
+                    ]
+                    for payment in combinations(eligible, variant.consumes):
+                        paid_items.append((dataclasses.replace(variant, payment=payment), target))
+                options.append((position, paid_items))
         need = {b["instance_id"]: b["toughness"] - self.marked(b, node) for b in theirs}
         names = [self.spells[i].name for i in node.hand]
         scored: list[tuple] = [((), 0.0, 0)]
@@ -3741,6 +4203,10 @@ class Moves:
                         for b in range(a + 1, size)
                     ):
                         continue
+                    casting = {v.spell for v, _ in choice}
+                    paid = [i for v, _ in choice for i in v.payment]
+                    if len(paid) != len(set(paid)) or casting.intersection(paid):
+                        continue  # no card can be both cast and exiled, or paid twice
                     hit = [t["instance_id"] for v, t in choice if t is not None and not (v.chip or v.walker)]
                     if any(v.walker for v, _ in choice) and self._spare_walker_burn(choice):
                         continue
@@ -3780,6 +4246,26 @@ class Moves:
         scored.sort(key=lambda item: (-round(item[1], 6), -item[2], self.choice_text(item[0])))
         result = self._cast_memo[key] = [item[0] for item in scored]
         return result
+
+    def _consumable(self, node, var) -> bool:
+        """Whether a variant's hand-consumption cost can be paid from this node's hand (#A1).
+
+        Counts the hand cards (excluding the card being cast) that match the cost's
+        colour word and type restrictions ("Exile a red card from your hand.",
+        "exile a nonartifact, nonland card from your hand."). A cost that cannot be
+        paid is never scheduled, so the search never pretends to pay it.
+        """
+        color, restrictions = var.consume_spec
+        pool = 0
+        for index in node.hand:
+            if index == var.spell:
+                continue  # the card itself is leaving the hand as the cast
+            card = self.spells[index].spell.card
+            if _hand_card_matches(card, color, restrictions):
+                pool += 1
+                if pool >= var.consumes:
+                    return True
+        return False
 
     @staticmethod
     def _spare_walker_burn(choice) -> bool:
@@ -4149,6 +4635,28 @@ class Moves:
         )
 
     def _apply_casts(self, mid: Mid, start: int = 0, chipped: dict[int, int] | None = None) -> None:
+        # Evoke's sacrifice is only a plain disappearance when no visible
+        # death/replacement/return interaction exists. Do not simulate a false
+        # end-state: the existing unsupported-continuation path marks the whole
+        # choice unmodelled and drops it before costs or ETB effects are applied.
+        if any(v.ephemeral for v, _ in mid.casts):
+            from arenamcp.sacrifice_continuation import UnsupportedContinuation
+
+            cards = list(self.model.our_permanents) + list(self._their_noncreature_permanents())
+            cards += [b.get("_card") or b for b in (*mid.ours, *mid.theirs)]
+            cards += [self.spells[v.spell].spell.card for v, _ in mid.casts]
+            if any(
+                re.search(
+                    r"\b(?:dies|die|dying|graveyard|undying|persist)\b"
+                    r"|\bleav(?:e|es|ing) the battlefield\b"
+                    r"|\bwhenever[^.\n]*sacrifice\b|\bwhen you sacrifice\b",
+                    _text(card),
+                )
+                for card in cards
+            ):
+                reason = "evoke death/replacement/return interaction unmodelled"
+                self._unmodelled_response(mid.casts, reason)
+                raise UnsupportedContinuation(reason)
         mid.applied = True
         chipped = {} if chipped is None else chipped  # damage combined-kill pieces dealt each target so far
         for index in range(start, len(mid.casts)):
@@ -4156,8 +4664,26 @@ class Moves:
             if var.kind == "sneak":
                 continue  # cast after their blocks (``finish``)
             hs = self.spells[var.spell]
-            if var.spell in mid.hand:
-                mid.hand.remove(var.spell)
+            if var.spell not in mid.hand:
+                raise ValueError("cast card is no longer available")
+            if var.consumes:
+                color, restrictions = var.consume_spec
+                if (
+                    len(var.payment) != var.consumes
+                    or len(set(var.payment)) != var.consumes
+                    or var.spell in var.payment
+                    or any(
+                        i not in mid.hand
+                        or not _hand_card_matches(self.spells[i].spell.card, color, restrictions)
+                        for i in var.payment
+                    )
+                ):
+                    raise ValueError("unavailable exact hand payment")
+            mid.hand.remove(var.spell)
+            paid_colors: set = set()
+            for paid_index in var.payment:
+                mid.hand.remove(paid_index)
+                paid_colors.update(_body_colors(self.spells[paid_index].spell.card) or ())
             if var.kind == "cycle":  # an untapped basic (its type, or the most needed colour), next turn
                 mid.cycles.append(hs.name)
                 color = var.fetch or self._needed_color(mid.hand)
@@ -4214,6 +4740,13 @@ class Moves:
                     mid.opp_life += self._enters_under_them(body, mid.our_tapped)
                 if body is var.body and not mid.entry_draw_blocked:
                     self._entry_draw(mid, body)
+            if var.ephemeral and var.body is not None:
+                # Evoke sacrifices it as its enters trigger resolves (#A1 review round
+                # 5): the ETB effects above resolved, and the body is gone before any
+                # combat — it never attacks, blocks or survives to the next node.
+                iid = var.body["instance_id"]
+                mid.ours = [b for b in mid.ours if b["instance_id"] != iid]
+                mid.entered.pop(iid, None)
             # A board-counted ETB resolves after legend-rule state actions.
             mid.ours = self.rescale(mid.ours)
             named = self._named_bodies(var, mid.ours)
@@ -4275,7 +4808,12 @@ class Moves:
             mid.our_life += var.gain
             mid.gained += var.gain
             if var.rock:
-                mid.rocks.append(SimpleNamespace(produces=frozenset("WUBRGC"), name=hs.name))
+                # An imprint-bound rock (Chrome Mox) produces only the colours of the
+                # card its cast actually exiled (#A1 review round 5); a payment that
+                # gave no colours (declined/unmatched imprint) adds no mana at all.
+                produces = frozenset(paid_colors) if var.imprint_rock else frozenset("WUBRGC")
+                if produces:
+                    mid.rocks.append(SimpleNamespace(produces=produces, name=hs.name))
             mid.ours = self.rescale(mid.ours)  # "+1/+0 for each other creature you control" (#157)
             if mid.entry_draw_branches:
                 self._fork_entry_draw(mid, index + 1, chipped)
@@ -4639,7 +5177,10 @@ class Moves:
         self._end_step(mid)
         # An offered free exile cast proves permission now, not after this turn.
         mid.hand = [i for i in mid.hand if not self.spells[i].spell.card.get("_current_exile_offer")]
-        carry.update(ours=tuple(mid.ours), hand=tuple(mid.hand))
+        carry.update(
+            ours=tuple(mid.ours),
+            hand=tuple(mid.hand),
+        )
         if opponent_loss.draw_loses:
             return dataclasses.replace(
                 node,
@@ -4993,7 +5534,7 @@ class Moves:
             hs = self.spells[index]
             if zone_ban and hs.spell.zone != "hand":
                 continue
-            casts = [v for v in hs.variants if v.kind == "cast"]
+            casts = [v for v in hs.variants if v.kind == "cast" and not v.consumes]
             if not casts:
                 continue
             face = max(v.face for v in casts)
@@ -5061,7 +5602,9 @@ class Moves:
             if zone_ban and self.spells[index].spell.zone != "hand":
                 continue
             instant = [
-                v for v in self.spells[index].variants if v.kind == "cast" and v.instant and v.loss < life
+                v
+                for v in self.spells[index].variants
+                if v.kind == "cast" and v.instant and not v.consumes and v.loss < life
             ]
             killers = [v for v in instant if v.reach is not None]
             bodied = [v for v in instant if _bodies(v)]

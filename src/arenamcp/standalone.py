@@ -2242,6 +2242,16 @@ class StandaloneCoach(
                     except Exception:
                         pass
 
+                    # A1: card-facts record-use log lines are once per card
+                    # per match; forget them with the other coaching state so
+                    # a card served in two matches logs again.
+                    try:
+                        from arenamcp import line_search_moves
+
+                        line_search_moves.reset_record_use_log()
+                    except Exception:
+                        pass
+
                     # Fallback for a game end the signal above never brought.
                     # A move to another match proves the game is over; a drop
                     # to no match without a game end is a reset Arena resumes

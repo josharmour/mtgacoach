@@ -1509,3 +1509,686 @@ def test_last_mana_compares_removal_and_ground_creature_against_the_return_attac
     assert result.best.steps[0].casts == ("Seam Rip",)
     assert not result.best.steps[0].cast_trigger_lethal
     assert result.first_action[("cast", 42, None)].steps[0].cast_trigger_lethal
+
+
+# --- A1: the planner reads card facts for cards it cannot parse -----------------------
+# Real logged cases: the cards below are copied verbatim from the match packets
+# (paths under the evidence copy of ~/.arenamcp), and the "can't value" symptoms
+# from standalone.log (game_plan validation, 2026-11-06/08 sessions).
+
+_FURY_CARD = {
+    "name": "Fury",
+    "oracle_text": "Double strike\nWhen this creature enters, it deals 4 damage divided as you choose"
+    " among any number of target creatures and/or planeswalkers.\nEvoke\u2014Exile a red card from your hand.",
+    "type_line": "Creature \u2014 Elemental Incarnation",
+    "mana_cost": "{3}{R}{R}",
+    "power": "4",  # the printed body: a record must never leave it on the battlefield
+    "toughness": "4",  # when the mode says it does not stay (evoke)
+}  # packet_20261108_202900_12ead896-be78-41ba-a95b-1e59565c95b5.json
+_LOTUS_COBRA_CARD = {
+    "name": "Lotus Cobra",
+    "oracle_text": "<i>Landfall</i> \u2014 Whenever a land you control enters, add one mana of any color.",
+    "type_line": "Creature \u2014 Snake",
+    "mana_cost": "{1}{G}",
+    "power": "2",
+    "toughness": "1",
+}  # packet_20261108_183413_9a3389b8-cff0-4f91-9353-f46cd8d6cb92.json
+_CHROME_MOX_CARD = {
+    "name": "Chrome Mox",
+    "oracle_text": "<i>Imprint</i> \u2014 When this artifact enters, you may exile a nonartifact, nonland card"
+    " from your hand.\n{oT}: Add one mana of any of the exiled card's colors.",
+    "type_line": "Artifact",
+    "mana_cost": "{0}",
+}  # packet_20261108_182732_385fcb7c-50e1-4ac5-93fe-33045576c87a.json
+_SHOCK_CARD = {  # a second red card: Fury's evoke exile cost is PAYABLE, and still no
+    "name": "Shock",  # variant may be invented for it (the search cannot consume the cost)
+    "oracle_text": "Shock deals 2 damage to any target.",
+    "type_line": "Instant",
+    "mana_cost": "{1}{R}",
+}
+
+_FURY_RECORD = {
+    "name": "Fury",
+    "type_line": _FURY_CARD["type_line"],
+    "mana_cost": _FURY_CARD["mana_cost"],
+    "body": {"power": "4", "toughness": "4", "keywords": ("Double strike",)},
+    "effects": [
+        {
+            "trigger": "ENTERS_THE_BATTLEFIELD_OR_EVOKE",
+            "effect": {
+                "effect_type": "Damage",
+                "amount": 4,
+                "target": "divided among any number of target creatures and/or planeswalkers",
+            },
+        }
+    ],
+    "modes": [
+        {
+            "name": "evoke",
+            "cost_text": "Exile a red card from your hand.",
+            "cost": {"mana": ""},
+            "stays_on_battlefield": False,
+        }
+    ],
+}
+_LOTUS_COBRA_RECORD = {
+    # The compiler modelled only the landfall mana: a known type the search has no
+    # cast-time representation for, so the card must stay unmodelled (round 2).
+    "name": "Lotus Cobra",
+    "type_line": _LOTUS_COBRA_CARD["type_line"],
+    "mana_cost": _LOTUS_COBRA_CARD["mana_cost"],
+    "body": {"power": "2", "toughness": "1"},
+    "effects": [
+        {
+            "trigger": "ENTERS_THE_BATTLEFIELD",
+            "effect": {"effect_type": "AddMana", "mana": "any color", "amount": 1},
+        }
+    ],
+    "modes": [],
+}
+_CHROME_MOX_RECORD = {
+    # AddMana + Exile: neither has a cast-time representation; conservative.
+    "name": "Chrome Mox",
+    "type_line": _CHROME_MOX_CARD["type_line"],
+    "mana_cost": _CHROME_MOX_CARD["mana_cost"],
+    "effects": [
+        {"trigger": "", "effect": {"effect_type": "AddMana", "mana": "any color", "amount": 1}},
+        {
+            "trigger": "ENTERS_THE_BATTLEFIELD",
+            "effect": {"effect_type": "Exile", "target": "a nonartifact, nonland card from your hand"},
+        },
+    ],
+    "modes": [],
+}
+_FURY_CONDITIONED_RECORD = {  # review round 2 probe: a condition the search cannot evaluate
+    "name": "Fury",
+    "type_line": _FURY_CARD["type_line"],
+    "mana_cost": _FURY_CARD["mana_cost"],
+    "body": {"power": "4", "toughness": "4"},
+    "effects": [
+        {
+            "trigger": "",
+            "effect": {
+                "effect_type": "Damage",
+                "amount": 4,
+                "target": "divided among any number of target creatures and/or planeswalkers",
+            },
+            "conditions": ["only if you control three artifacts"],  # JSON: a list
+        }
+    ],
+    "modes": [],
+}
+_FURY_UNKNOWN_RECORD = {  # the compiler could not model the ETB sentence: rule 3 keeps today's behaviour
+    "name": "Fury",
+    "type_line": _FURY_CARD["type_line"],
+    "mana_cost": _FURY_CARD["mana_cost"],
+    "effects": [
+        {
+            "trigger": "",
+            "effect": {"effect_type": "Unknown", "text": "it deals 4 damage divided as you choose"},
+        }
+    ],
+    "modes": [],
+}
+
+
+@pytest.fixture(autouse=True)
+def _isolated_record_state():
+    """A1: record cache and use-log state never leak between tests in either
+    direction (a test must not inherit another test's remembered records)."""
+    from arenamcp import line_search_moves as lsm
+
+    lsm.reset_record_cache()
+    lsm.reset_record_use_log()
+    yield
+
+
+def _with_records(monkeypatch, records) -> dict:
+    """Serve ``records`` ((card dict, record dict) pairs) from a mutable fake client.
+
+    Returns the backing store: a test may add a record mid-test to imitate the
+    S3 background fetch landing AFTER an earlier miss was served (round 2).
+    """
+    from arenamcp import line_search_moves as lsm
+    from arenamcp.card_facts.client import hash_for_card
+
+    store = {hash_for_card(card): rec for card, rec in records}
+    calls: list[int] = []
+
+    def fake_facts_for(cards):
+        calls.append(1)
+        out = {}
+        for c in cards or []:
+            d = hash_for_card(c)
+            if d in store:
+                out[d] = store[d]
+        return out
+
+    monkeypatch.setattr(lsm, "facts_for", fake_facts_for)
+    lsm.reset_record_cache()
+    store["_calls"] = calls  # type: ignore[assignment]
+    return store
+
+
+def _a1_board(*cards: dict) -> dict:
+    source = _two_creatures()
+    for i, extra in enumerate(cards):
+        source["hand"].append({"instance_id": 900 + i, **extra})
+    return source
+
+
+def _a1_variants(source: dict) -> dict:
+    """name → (variants, plain) as Moves builds them, with the production search run."""
+    from arenamcp import line_search_moves as lsm
+
+    ba._CACHE.clear()
+    with mock.patch.dict(os.environ, {"ARENAMCP_LINE_SEARCH": "0"}):
+        model = build_board_model(deepcopy(source))
+        original = lsm.Moves._variants
+        seen: dict = {}
+
+        def spy(self, hs):
+            out = original(self, hs)
+            seen[hs.name] = out
+            return out
+
+        with mock.patch.object(lsm.Moves, "_variants", spy):
+            search_lines(model, survival=True, lethal_now=False, hard_ms=1e9)
+    ba._CACHE.clear()
+    return seen
+
+
+def test_fury_hard_cast_and_evoke_valued_from_record(monkeypatch, caplog):
+    """standalone.log:2102062 'can't value: Fury (its triggered ability)' — with a
+    record the hard cast's ETB damage is removal reach AND the evoke mode becomes a
+    real variant: mana value 0, one red hand card paid on the cast, and the 4/4 body
+    is sacrificed before combat (stays_on_battlefield False)."""
+
+    from arenamcp import line_search_moves as lsm
+    from arenamcp.card_facts.schema import card_facts_from_dict
+
+    record = card_facts_from_dict(_FURY_RECORD)
+    assert [m.stays_on_battlefield for m in record.modes] == [False]  # fixture sanity
+
+    source = _a1_board(_FURY_CARD, _SHOCK_CARD)
+    before = _a1_variants(source)
+    assert lsm.unmodelled_effect(dict(_FURY_CARD)) == "its triggered ability"
+    # Real 4/4 body: the hard cast is valued as a body alone, but the ETB damage is not
+    # (reach None) and no evoke variant exists without the record.
+    assert before["Fury"][1] is not None and before["Fury"][1].reach is None
+    assert all(v.mana_value == 5 for v in before["Fury"][0])
+
+    _with_records(monkeypatch, [(_FURY_CARD, _FURY_RECORD)])
+    with caplog.at_level("INFO", logger="arenamcp.line_search_moves"):
+        after = _a1_variants(source)
+        assert lsm.unmodelled_effect(dict(_FURY_CARD)) == ""
+        assert sum("card facts record used for Fury" in rec.message for rec in caplog.records) == 1
+    plain = after["Fury"][1]
+    assert plain is not None and plain.reach is not None  # the hard cast values the ETB damage
+    evokes = [v for v in after["Fury"][0] if v.mana_value == 0]
+    assert len(evokes) == 1  # exactly one evoke variant, from the record's mode
+    evoke = evokes[0]
+    assert evoke.consumes == 1 and evoke.consume_spec == ("red", frozenset())
+    assert evoke.ephemeral  # stays_on_battlefield False: gone from the next search node
+    assert (evoke.body or {}) == (plain.body or {})
+    assert evoke.reach == plain.reach  # the ETB damage fires on the evoke too
+    hard = [v for v in after["Fury"][0] if v.mana_value == 5]
+    assert hard and all(not v.ephemeral and not v.consumes for v in hard)
+
+
+def test_record_arrival_after_cached_miss_is_noticed(monkeypatch):
+    """Review round 2 probe 1: a miss must not be remembered. The S3 client fetches in
+    the background; once the record lands, the very next call sees it — no cache reset."""
+    from arenamcp import line_search_moves as lsm
+    from arenamcp.card_facts.client import hash_for_card
+
+    store = _with_records(monkeypatch, [])  # the server holds nothing yet
+    assert lsm.unmodelled_effect(dict(_FURY_CARD)) == "its triggered ability"
+
+    store[hash_for_card(_FURY_CARD)] = _FURY_RECORD  # the background fetch lands
+    assert lsm.unmodelled_effect(dict(_FURY_CARD)) == ""
+    assert len(store["_calls"]) >= 2  # the client was asked again after the miss
+
+
+def test_lotus_cobra_landfall_mana_is_not_a_cast_discount(monkeypatch):
+    """Oracle: "Whenever a land you control enters, add one mana of any color" — the
+    mana arrives when a LAND enters, never when the Cobra is cast (#A1 review round 5).
+    The record's ETB AddMana is therefore NOT folded into the payable casting cost:
+    its casting variants are exactly the
+    text-parser baseline — {1}{G}, no discount, no consumption."""
+    import dataclasses
+
+    from arenamcp import line_search_moves as lsm
+    from arenamcp.ability_synthesizer import record_cast_text
+    from arenamcp.card_facts.schema import card_facts_from_dict
+
+    assert record_cast_text(card_facts_from_dict(_LOTUS_COBRA_RECORD)) == ""
+
+    source = _a1_board(_LOTUS_COBRA_CARD)
+    baseline = _a1_variants(source)
+    baseline_reason = lsm.unmodelled_effect(dict(_LOTUS_COBRA_CARD))
+    assert baseline_reason == "its triggered ability"
+
+    _with_records(monkeypatch, [(_LOTUS_COBRA_CARD, _LOTUS_COBRA_RECORD)])
+    after = _a1_variants(source)
+    # Future land entries are represented separately; casting still costs two.
+    assert lsm.unmodelled_effect(dict(_LOTUS_COBRA_CARD)) == ""
+    base_plain, after_plain = baseline["Lotus Cobra"][1], after["Lotus Cobra"][1]
+    assert base_plain is not None and after_plain is not None
+    assert base_plain.mana_value == 2 and after_plain.mana_value == 2  # still {1}{G}
+
+    # Variant is eq=False: compare field dicts, not identities.
+    def as_dicts(variants):
+        return [dataclasses.asdict(v) for v in variants]
+
+    assert as_dicts(after["Lotus Cobra"][0]) == as_dicts(baseline["Lotus Cobra"][0])
+    assert all(not v.consumes and not v.ephemeral for v in after["Lotus Cobra"][0])
+
+
+def test_chrome_mox_imprint_cost_paid_from_record(monkeypatch):
+    """standalone.log:2104931 'can't value: Chrome Mox (its triggered ability)' — the
+    AddMana + Exile record makes the rock's cast pay its imprint: one nonartifact,
+    nonland hand card is consumed on the cast; the rock itself is unchanged."""
+    import dataclasses
+
+    from arenamcp import line_search_moves as lsm
+    from arenamcp.ability_synthesizer import record_cast_text
+    from arenamcp.card_facts.schema import card_facts_from_dict
+
+    assert record_cast_text(card_facts_from_dict(_CHROME_MOX_RECORD)) == ""
+
+    source = _a1_board(_CHROME_MOX_CARD)
+    baseline = _a1_variants(source)
+    baseline_reason = lsm.unmodelled_effect(dict(_CHROME_MOX_CARD))
+    assert baseline_reason == "its triggered ability"
+    assert baseline["Chrome Mox"][1] is not None and baseline["Chrome Mox"][1].rock
+
+    _with_records(monkeypatch, [(_CHROME_MOX_CARD, _CHROME_MOX_RECORD)])
+    after = _a1_variants(source)
+    assert lsm.unmodelled_effect(dict(_CHROME_MOX_CARD)) == ""
+    plain = next(v for v in after["Chrome Mox"][0] if v.imprint_rock)
+    assert plain is not None and plain.rock  # still a mana rock
+    assert plain.imprint_rock  # its colours come from the exiled card, not any colour
+    assert plain.consumes == 1  # the imprint exile is paid on the cast
+    assert plain.consume_spec == ("", frozenset({"nonartifact", "nonland"}))
+    assert plain.mana_value == 0  # {0}: no discount to fold
+
+    # Variant is eq=False: compare field dicts, not identities.
+    def unimprinted(variants):
+        return [
+            dataclasses.asdict(
+                dataclasses.replace(v, consumes=0, consume_spec=("", frozenset()), imprint_rock=False)
+            )
+            for v in variants
+        ]
+
+    assert unimprinted([v for v in after["Chrome Mox"][0] if v.imprint_rock]) == unimprinted(
+        baseline["Chrome Mox"][0]
+    )
+    assert any(not v.rock and not v.consumes for v in after["Chrome Mox"][0])
+    assert not after["Chrome Mox"][1].rock  # baseline declines optional imprint
+    assert all(not v.ephemeral for v in after["Chrome Mox"][0])
+
+
+def test_conditioned_record_effect_not_rendered_unconditionally(monkeypatch):
+    """Review round 2 probe 3: a record effect under a condition the search cannot
+    evaluate is not rendered as an unconditional 4 damage — the card stays unmodelled
+    and its variants are exactly what they were without a record."""
+    import dataclasses
+
+    from arenamcp import line_search_moves as lsm
+    from arenamcp.ability_synthesizer import record_cast_text
+    from arenamcp.card_facts.schema import card_facts_from_dict
+
+    assert record_cast_text(card_facts_from_dict(_FURY_CONDITIONED_RECORD)) == ""
+
+    source = _a1_board(_FURY_CARD, _SHOCK_CARD)
+    baseline = _a1_variants(source)
+    baseline_reason = lsm.unmodelled_effect(dict(_FURY_CARD))
+
+    _with_records(monkeypatch, [(_FURY_CARD, _FURY_CONDITIONED_RECORD)])
+    after = _a1_variants(source)
+    assert lsm.unmodelled_effect(dict(_FURY_CARD)) == baseline_reason == "its triggered ability"
+    assert [dataclasses.asdict(v) for v in after["Fury"][0]] == [
+        dataclasses.asdict(v) for v in baseline["Fury"][0]
+    ]
+    assert (after["Fury"][1] is None) == (baseline["Fury"][1] is None)
+
+
+def test_card_facts_record_with_unknown_effect_changes_nothing(monkeypatch):
+    """Rule 3: a record with any unknown effect leaves the card unmodelled, as today."""
+    import dataclasses
+
+    from arenamcp import line_search_moves as lsm
+
+    source = _a1_board(_FURY_CARD, _SHOCK_CARD)
+    baseline = _a1_variants(source)
+    baseline_reason = lsm.unmodelled_effect(dict(_FURY_CARD))
+
+    _with_records(monkeypatch, [(_FURY_CARD, _FURY_UNKNOWN_RECORD)])
+    after = _a1_variants(source)
+    assert lsm.unmodelled_effect(dict(_FURY_CARD)) == baseline_reason == "its triggered ability"
+    assert [dataclasses.asdict(v) for v in after["Fury"][0]] == [
+        dataclasses.asdict(v) for v in baseline["Fury"][0]
+    ]
+    assert (after["Fury"][1] is None) == (baseline["Fury"][1] is None)
+
+
+def test_missing_record_behaves_exactly_as_before(monkeypatch):
+    """A card with no record behaves exactly as before: same reason, same variants."""
+    import dataclasses
+
+    from arenamcp import line_search_moves as lsm
+
+    cards = (_FURY_CARD, _LOTUS_COBRA_CARD, _CHROME_MOX_CARD)
+    unpatched = {c["name"]: (_a1_variants(_a1_board(c)), lsm.unmodelled_effect(dict(c))) for c in cards}
+
+    _with_records(monkeypatch, [])  # the client answers, but holds no record for any of them
+    for extra in cards:
+        name = extra["name"]
+        after = _a1_variants(_a1_board(extra))
+        base_vars, base_reason = unpatched[name]
+        assert lsm.unmodelled_effect(dict(extra)) == base_reason
+        assert [dataclasses.asdict(v) for v in after[name][0]] == [
+            dataclasses.asdict(v) for v in base_vars[name][0]
+        ]
+        assert (after[name][1] is None) == (base_vars[name][1] is None)
+
+
+def test_record_use_log_resets_between_matches(caplog):
+    """Do item 4: once per card per MATCH — reset_record_use_log() lets the log
+    fire again for the same card in the next match (the coach serves matches
+    back to back in one process)."""
+    from arenamcp import line_search_moves as lsm
+
+    lsm.reset_record_use_log()
+    try:
+        with caplog.at_level("INFO", logger="arenamcp.line_search_moves"):
+            lsm._log_record_use("Fury")
+            lsm._log_record_use("Fury")  # same match: suppressed
+            assert sum("card facts record used for Fury" in rec.message for rec in caplog.records) == 1
+            lsm.reset_record_use_log()  # new match begins
+            lsm._log_record_use("Fury")
+            assert sum("card facts record used for Fury" in rec.message for rec in caplog.records) == 2
+    finally:
+        lsm.reset_record_use_log()
+
+
+def test_known_record_refreshes_when_store_serves_new_payload(monkeypatch):
+    """Review round 3: a known record the store later replaces with one holding an
+    unknown effect flips the card back to unmodelled on the very next call — no
+    manual cache reset (the optimistic parse must not outlive its payload)."""
+    from arenamcp import line_search_moves as lsm
+    from arenamcp.card_facts.client import hash_for_card
+
+    store = _with_records(monkeypatch, [(_FURY_CARD, _FURY_RECORD)])
+    assert lsm.unmodelled_effect(dict(_FURY_CARD)) == ""
+
+    store[hash_for_card(_FURY_CARD)] = _FURY_UNKNOWN_RECORD  # a compiler refresh lands
+    assert lsm.unmodelled_effect(dict(_FURY_CARD)) == "its triggered ability"
+
+    store[hash_for_card(_FURY_CARD)] = _FURY_RECORD  # ...and back to known again
+    assert lsm.unmodelled_effect(dict(_FURY_CARD)) == ""
+
+
+def test_unknown_record_refreshes_into_known_without_reset(monkeypatch):
+    """Review round 3: the reverse refresh — an unknown-effect record replaced by a
+    known one is picked up on the next call without anyone resetting the cache."""
+    from arenamcp import line_search_moves as lsm
+    from arenamcp.card_facts.client import hash_for_card
+
+    store = _with_records(monkeypatch, [(_FURY_CARD, _FURY_UNKNOWN_RECORD)])
+    assert lsm.unmodelled_effect(dict(_FURY_CARD)) == "its triggered ability"
+
+    store[hash_for_card(_FURY_CARD)] = _FURY_RECORD  # the compiler models the effect
+    assert lsm.unmodelled_effect(dict(_FURY_CARD)) == ""
+
+
+def test_match_boundary_resets_the_record_use_log():
+    """Review round 3: the per-match reset has a production caller — the coach's
+    match-boundary block resets it alongside the other coaching state."""
+    import inspect
+
+    from arenamcp import standalone
+
+    source = inspect.getsource(standalone)
+    marker = source.index("Match boundary detected")
+    window = source[marker : marker + 4000]
+    assert "reset_record_use_log()" in window
+
+
+def test_a1_payments_and_evoke_are_applied_to_real_search_nodes(monkeypatch):
+    """A1 captured Fury/Chrome Mox cases: inspect actual transitions, not variant flags."""
+    from arenamcp import line_search_moves as lsm
+
+    _with_records(monkeypatch, [(_FURY_CARD, _FURY_RECORD), (_CHROME_MOX_CARD, _CHROME_MOX_RECORD)])
+    blue = {"name": "Blue payment", "type_line": "Sorcery", "mana_cost": "{U}", "oracle_text": ""}
+    source = _a1_board(_FURY_CARD, _CHROME_MOX_CARD, _SHOCK_CARD, blue)
+    source = amend(source, cards={950: {"oracle_text": ""}})  # plain body, no graveyard engine
+    observed = []
+    apply = lsm.Moves._apply_casts
+
+    def inspect(self, mid, *args, **kwargs):
+        before = set(mid.hand)
+        apply(self, mid, *args, **kwargs)
+        casting = {v.spell for v, _ in mid.casts}
+        paid = [i for v, _ in mid.casts for i in v.payment]
+        assert not casting.intersection(paid)
+        assert len(paid) == len(set(paid))
+        assert set(paid).issubset(before)
+        assert not set(paid).intersection(mid.hand)
+        for var, _ in mid.casts:
+            if var.ephemeral:
+                assert all(b["instance_id"] != var.body["instance_id"] for b in mid.ours)
+                observed.append("evoke")
+            if var.imprint_rock:
+                expected = set().union(
+                    *(lsm._body_colors(self.spells[i].spell.card) or set() for i in var.payment)
+                )
+                rocks = [r for r in mid.rocks if r.name == self.spells[var.spell].name]
+                assert rocks and rocks[-1].produces == frozenset(expected)
+                observed.append(tuple(sorted(expected)))
+            elif self.spells[var.spell].name == "Chrome Mox":
+                assert not var.consumes and not var.rock
+                observed.append("decline")
+
+    monkeypatch.setattr(lsm.Moves, "_apply_casts", inspect)
+    _a1_variants(source)
+    assert "evoke" in observed
+    assert "decline" in observed
+    assert ("R",) in observed and ("U",) in observed
+
+
+def test_a1_landfall_mana_requires_existing_body_and_real_land_entry(monkeypatch):
+    """Cobra captured oracle: tapped land still triggers; no entry means no mana."""
+    from types import SimpleNamespace
+
+    from arenamcp import line_search_moves as lsm
+
+    _with_records(monkeypatch, [(_LOTUS_COBRA_CARD, _LOTUS_COBRA_RECORD)])
+    moves = lsm.Moves.__new__(lsm.Moves)
+    moves.our_turn = True
+    moves.model = SimpleNamespace(sources_now=[], sources_all=[], our_permanents=[])
+    body = {"instance_id": 900, "_card": dict(_LOTUS_COBRA_CARD)}
+    node = SimpleNamespace(k=0, played=(), rocks=(), ours=(body,))
+    land = lsm.Land(
+        42,
+        "Tapped land",
+        frozenset({"G"}),
+        True,
+        SimpleNamespace(produces=frozenset({"G"}), name="Tapped land"),
+    )
+    assert moves.sources(node, None) == ([], [])
+    base, all_sources = moves.sources(node, land)
+    assert not base and len(all_sources) == 1 and all_sources[0].produces == frozenset("WUBRG")
+    node.ours = ()
+    assert moves.sources(node, land) == ([], [])  # not yet cast: no trigger
+
+
+def test_a1_self_entry_mana_never_prepays_cast_and_unknown_costs_abstain():
+    from arenamcp import line_search_moves as lsm
+    from arenamcp.card_facts.schema import card_facts_from_dict
+
+    card = dict(_LOTUS_COBRA_CARD, oracle_text="When this creature enters, add one mana of any color.")
+    assert lsm._record_semantics(card_facts_from_dict(_LOTUS_COBRA_RECORD), card["name"], card) is None
+    for cost in ("{C}", "{2/R}", "{R/P}", "{X}", "not mana"):
+        assert lsm._cost_mana_value(cost) is None
+    assert lsm._cost_mana_value("{3}{R}{R}") == 5
+
+
+def test_a1_captured_case_unevaluated_count_improves_without_model(monkeypatch):
+    from arenamcp import line_search_moves as lsm
+
+    cases = [
+        (_FURY_CARD, _FURY_RECORD),
+        (_LOTUS_COBRA_CARD, _LOTUS_COBRA_RECORD),
+        (_CHROME_MOX_CARD, _CHROME_MOX_RECORD),
+    ]
+    _with_records(monkeypatch, [])
+    before = sum(bool(lsm.unmodelled_effect(dict(card))) for card, _ in cases)
+    _with_records(monkeypatch, cases)
+    after = sum(bool(lsm.unmodelled_effect(dict(card))) for card, _ in cases)
+    assert (before, after) == (3, 0)  # captured-card test boards, not live-match evidence
+
+
+@pytest.mark.parametrize("mutation", ["amount", "mana", "cost", "restriction", "death"])
+def test_a1_imprint_unsupported_record_keeps_missing_record_transitions(monkeypatch, mutation):
+    from arenamcp import line_search_moves as lsm
+    from arenamcp.card_facts.schema import card_facts_from_dict
+
+    card, record = deepcopy(_CHROME_MOX_CARD), deepcopy(_CHROME_MOX_RECORD)
+    if mutation == "amount":
+        record["effects"][0]["effect"]["amount"] = 2
+    elif mutation == "mana":
+        record["effects"][0]["effect"]["mana"] = "red"
+    elif mutation == "cost":
+        card["oracle_text"] = card["oracle_text"].replace("{oT}:", "{1}, {oT}:")
+    elif mutation == "restriction":
+        card["oracle_text"] += " Activate only during your turn."
+    else:
+        record["effects"].append(
+            {"trigger": "DIES", "effect": {"effect_type": "AddMana", "mana": "any color", "amount": 1}}
+        )
+    assert lsm._record_semantics(card_facts_from_dict(record), card["name"], card) is None
+    # Run the real search and compare actual applied states against no record,
+    # not merely the unmodelled flag or generated variants.
+    states = []
+    original = lsm.Moves._apply_casts
+
+    def capture(self, mid, *args, **kwargs):
+        original(self, mid, *args, **kwargs)
+        states.append(
+            (
+                tuple(sorted(mid.hand)),
+                tuple(sorted(r.name for r in mid.rocks)),
+                tuple(sorted(b["instance_id"] for b in mid.ours)),
+                mid.our_life,
+                mid.opp_life,
+            )
+        )
+
+    monkeypatch.setattr(lsm.Moves, "_apply_casts", capture)
+    _with_records(monkeypatch, [])
+    _a1_variants(_a1_board(card, _SHOCK_CARD))
+    expected = list(states)
+    states.clear()
+    _with_records(monkeypatch, [(card, record)])
+    _a1_variants(_a1_board(card, _SHOCK_CARD))
+    assert states and states == expected
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Whenever another creature dies, each opponent loses 1 life.",
+        "When this creature dies, return it to the battlefield.",
+        "If a creature would die, exile it instead.",
+        "Undying",
+        "Whenever you sacrifice a permanent, create a 1/1 creature token.",
+    ],
+)
+def test_a1_evoke_interactions_abstain_before_mutating_actual_mid(monkeypatch, text):
+    from arenamcp import line_search_moves as lsm
+    from arenamcp.sacrifice_continuation import UnsupportedContinuation
+
+    _with_records(monkeypatch, [(_FURY_CARD, _FURY_RECORD)])
+    original = lsm.Moves._apply_casts
+    rejected = []
+
+    def probe(self, mid, *args, **kwargs):
+        if any(v.ephemeral for v, _ in mid.casts):
+            # Add a visible interaction to the real search node at application.
+            body = {
+                "instance_id": 987654,
+                "_card": {"name": "Interaction", "oracle_text": text, "type_line": "Creature"},
+            }
+            mid.theirs.append(body)
+            before = deepcopy((mid.hand, mid.ours, mid.theirs, mid.our_life, mid.opp_life, mid.rocks))
+            with pytest.raises(UnsupportedContinuation):
+                original(self, mid, *args, **kwargs)
+            assert (mid.hand, mid.ours, mid.theirs, mid.our_life, mid.opp_life, mid.rocks) == before
+            assert "Fury" in self.public_unmodelled
+            rejected.append(True)
+            raise UnsupportedContinuation("tested unsupported evoke interaction")
+        original(self, mid, *args, **kwargs)
+
+    monkeypatch.setattr(lsm.Moves, "_apply_casts", probe)
+    _a1_variants(_a1_board(_FURY_CARD, _SHOCK_CARD))
+    assert rejected
+
+
+def test_a1_default_lookup_is_hermetic_and_records_are_explicit(monkeypatch):
+    from arenamcp import line_search_moves as lsm
+    from arenamcp.card_facts import client
+
+    # Neither imported entry point may instantiate a shared client or inspect
+    # real disk data. Explicit fake-record tests can still override the default.
+    def forbidden_client():
+        raise AssertionError("shared client accessed")
+
+    monkeypatch.setattr(client, "shared_client", forbidden_client)
+    assert client.facts_for([_FURY_CARD]) == {}
+    assert lsm.facts_for([_FURY_CARD]) == {}
+    with pytest.raises(AssertionError, match="explicitly faked"):
+        client._default_opener("unused", b"", {})
+    _with_records(monkeypatch, [(_FURY_CARD, _FURY_RECORD)])
+    assert lsm.unmodelled_effect(_FURY_CARD) == ""
+
+
+@pytest.mark.parametrize("word,count", [("four", 4), ("five", 5), ("six", 6)])
+def test_a1_hand_count_parser_does_not_overwrite_token_counts(word, count):
+    from arenamcp.line_search_moves import token_specs
+
+    assert token_specs(f"create {word} 1/1 red goblin creature tokens.") == [
+        (count, 1, 1, (), "Goblin token")
+    ]
+
+
+@pytest.mark.parametrize(
+    "cost",
+    [
+        "Discard a red card from your hand.",
+        "Exile a red card from your hand only if you control a Mountain.",
+        "Exile a red card from your hand and pay 3 life.",
+        "Reveal a red card from your hand.",
+        "Exile a red card from your hand or sacrifice a creature.",
+    ],
+)
+def test_a1_unrepresented_hand_costs_do_not_gain_evoke_transitions(monkeypatch, cost):
+    from arenamcp import line_search_moves as lsm
+
+    record = deepcopy(_FURY_RECORD)
+    record["modes"][0]["cost_text"] = cost
+    _with_records(monkeypatch, [(_FURY_CARD, record)])
+    seen = []
+    original = lsm.Moves._apply_casts
+
+    def inspect(self, mid, *args, **kwargs):
+        original(self, mid, *args, **kwargs)
+        seen.append(True)
+        assert not any(v.ephemeral or v.payment for v, _ in mid.casts)
+
+    monkeypatch.setattr(lsm.Moves, "_apply_casts", inspect)
+    _a1_variants(_a1_board(_FURY_CARD, _SHOCK_CARD))
+    assert seen
+    assert lsm.unmodelled_effect(_FURY_CARD) == "its triggered ability"
