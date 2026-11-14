@@ -177,3 +177,19 @@ def test_payable_accepts_only_none_or_exact_boolean(tmp_path):
         path = tmp_path / "bundle.json"
         path.write_text(json.dumps(bundle))
         assert b.build_cases([path])[0] == []
+
+
+def test_numeric_identity_game_reference_collision_is_rejected(tmp_path):
+    for private, reference in (
+        (924681, 924681),
+        (924681, 924681.0),
+        (924681.0, 924681),
+        ("924681.0", 924681),
+    ):
+        bundle = sample()
+        bundle["account_id"] = private
+        bundle["packet"]["decisions"][0]["pending_decision"]["options"][0]["meta"] = {"source_id": reference}
+        path = tmp_path / "bundle.json"
+        path.write_text(json.dumps(bundle))
+        cases, _, counts = b.build_cases([path])
+        assert not cases, counts

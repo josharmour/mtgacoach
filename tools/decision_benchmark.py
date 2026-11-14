@@ -50,7 +50,7 @@ def discover_identities(value, player=False):
             if sensitive:
 
                 def strings(node):
-                    if isinstance(node, (str, int)) and not isinstance(node, bool):
+                    if isinstance(node, (str, int, float)) and not isinstance(node, bool):
                         found.add(str(node))
                     elif isinstance(node, dict):
                         for v in node.values():
@@ -109,6 +109,15 @@ def sanitize_semantics(value, identities, *, player=False, presentation=False):
         return result
     if isinstance(value, list):
         return [sanitize_semantics(v, identities, player=player, presentation=presentation) for v in value]
+    if type(value) in (int, float):
+        from decimal import Decimal, InvalidOperation
+
+        for identity in identities:
+            try:
+                if Decimal(str(value)) == Decimal(identity):
+                    raise UnsafeCase("numeric identity overlaps semantic field")
+            except InvalidOperation:
+                continue
     if isinstance(value, str):
         sanitized = scrub(value, identities)
         if sanitized != value:
