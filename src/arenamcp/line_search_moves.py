@@ -2173,6 +2173,48 @@ def _landfall_mana_card(card: dict | None) -> bool:
     return bool(_LANDFALL_MANA_RE.fullmatch(text))
 
 
+def _event_landfall_mana(record: Any, card: dict) -> bool:
+    """Recognize only the complete one-mana land-entry event on an existing body.
+
+    This is not cast-time normalization. Preserve the compiled record and its
+    normal cast mode; never use this capability to pay for casting that body.
+    Source text binds both event subject and output, including the model's
+    otherwise ambiguous "any" spelling. Unknown/compound effects still abstain.
+    """
+    if record is None or not _landfall_mana_card(card) or len(record.effects) != 1:
+        return False
+    entry = record.effects[0]
+    trigger = str(entry.trigger).strip()
+    if entry.conditions or not re.fullmatch(
+        r"(?:landfall\s*[—–-]\s*)?whenever a land you control enters(?: the battlefield)?",
+        trigger,
+        re.IGNORECASE,
+    ):
+        return False
+    effect = entry.effect
+    if not isinstance(effect, AddMana) or type(effect.amount) is not int or effect.amount != 1:
+        return False
+    if effect.mana.strip().casefold() not in ("any", "any color", "any colour"):
+        return False
+    if record.name != _name(card) or record.mana_cost != str(card.get("mana_cost") or ""):
+        return False
+    if len(record.modes) != 1:
+        return False
+    mode = record.modes[0]
+    cost = mode.cost
+    return bool(
+        mode.name.strip().casefold() == "cast"
+        and cost.mana == record.mana_cost
+        and mode.cost_text == record.mana_cost
+        and mode.stays_on_battlefield is True
+        and not cost.tap
+        and cost.sacrifice is None
+        and not cost.life
+        and not cost.discard
+        and not cost.exile_from_graveyard
+    )
+
+
 def _cost_mana_value(mana: str) -> int | None:
     """An alternate cost's mana value ("{3}{R}{R}" -> 5); None when it has an X (the
     search cannot bound what the caster would pay into it)."""
@@ -3456,7 +3498,9 @@ class Moves:
                     continue
                 record = _known_record(*_record_key(card))
                 semantics = _record_semantics(record, _name(card), card) if record is not None else None
-                if semantics is not None and semantics["landfall_mana"]:
+                if _event_landfall_mana(record, card) or (
+                    semantics is not None and semantics["landfall_mana"]
+                ):
                     temporary.append(SimpleNamespace(produces=frozenset("WUBRG"), name=_name(card)))
         # Only existing permanents see this land entry; newly cast bodies do not.
         # Temporary mana is used in this main phase and is not stored in node.rocks.

@@ -1,0 +1,60 @@
+{
+  "attempts": 1,
+  "name": "Lotus Cobra",
+  "problems": [],
+  "record": {
+    "body": {
+      "keywords": [],
+      "loyalty": null,
+      "power": "2",
+      "toughness": "1"
+    },
+    "compiled_at": "2026-11-14T15:37:07Z",
+    "compiled_by": "card_facts.compiler",
+    "confidence": "high",
+    "effects": [
+      {
+        "conditions": [],
+        "effect": {
+          "amount": 1,
+          "effect_type": "AddMana",
+          "mana": "any"
+        },
+        "trigger": "landfall — whenever a land you control enters"
+      }
+    ],
+    "limited": {},
+    "mana": [
+      {
+        "condition": "whenever a land you control enters (landfall)",
+        "mana": "any"
+      }
+    ],
+    "mana_cost": "{1}{G}",
+    "modes": [
+      {
+        "cost": {
+          "discard": 0,
+          "exile_from_graveyard": 0,
+          "life": 0,
+          "mana": "{1}{G}",
+          "sacrifice": null,
+          "tap": false
+        },
+        "cost_text": "{1}{G}",
+        "name": "cast",
+        "stays_on_battlefield": true
+      }
+    ],
+    "name": "Lotus Cobra",
+    "notes": "Landfall trigger adds one mana of any color; 'any' is chosen by the player, not a fixed color.",
+    "relationships": {},
+    "rules_hash": "777fdc7927b1791ef64a2f9808e1ffa2cd87bf63d77924c87fe05a842a7971cb",
+    "schema_version": 1,
+    "threat": {},
+    "type_line": "Creature — Snake"
+  },
+  "rules_hash": "777fdc7927b1791ef64a2f9808e1ffa2cd87bf63d77924c87fe05a842a7971cb",
+  "seconds": 3.05682296899613,
+  "status": "compiled"
+}
