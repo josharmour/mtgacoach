@@ -8,6 +8,7 @@ import dataclasses
 import gzip
 import hashlib
 import json
+import re
 import time
 from pathlib import Path
 
@@ -27,23 +28,71 @@ PRIVATE = {
 }
 
 
+def normalized_key(key):
+    return str(key).lower().replace("_", "").replace("-", "")
+
+
+def private_key(key):
+    return normalized_key(key) in {normalized_key(k) for k in PRIVATE} | {
+        "playernames",
+        "opponentnames",
+        "accountids",
+        "usernames",
+    }
+
+
+def discover_identities(value, player=False):
+    found = set()
+    if isinstance(value, dict):
+        for key, item in value.items():
+            sensitive = private_key(key) or (player and normalized_key(key) in {"name", "id"})
+            if sensitive:
+
+                def strings(node):
+                    if isinstance(node, str):
+                        found.add(node)
+                    elif isinstance(node, dict):
+                        for v in node.values():
+                            strings(v)
+                    elif isinstance(node, list):
+                        for v in node:
+                            strings(v)
+
+                strings(item)
+            else:
+                found.update(discover_identities(item, normalized_key(key) == "players"))
+    elif isinstance(value, list):
+        for item in value:
+            found.update(discover_identities(item, player))
+    return found
+
+
 def scrub(value, identities=(), *, player=False):
     if isinstance(value, dict):
         result = {}
-        private_keys = {k.replace("_", "") for k in PRIVATE}
         for key, item in value.items():
-            normalized = key.lower().replace("_", "").replace("-", "")
-            if normalized in private_keys or (player and normalized in {"name", "id"}):
+            if private_key(key) or (player and normalized_key(key) in {"name", "id"}):
                 continue
-            result[key] = scrub(item, identities, player=key == "players")
+            result[key] = scrub(item, identities, player=normalized_key(key) == "players")
         return result
     if isinstance(value, list):
         return [scrub(v, identities, player=player) for v in value]
     if isinstance(value, str):
-        for identity in identities:
-            if identity and len(identity) > 3:
-                value = value.replace(identity, "[redacted]")
+        for identity in sorted(identities, key=len, reverse=True):
+            if identity:
+                value = re.sub(r"(?<!\w)" + re.escape(identity) + r"(?!\w)", "[redacted]", value, flags=re.I)
     return value
+
+
+def typed_decision(data):
+    from arenamcp.decisions import DecisionOption, PendingDecision, TargetSlot
+
+    fields = {f.name for f in dataclasses.fields(PendingDecision)}
+    values = {k: v for k, v in data.items() if k in fields}
+    values["options"] = tuple(DecisionOption(**o) for o in values["options"])
+    values["slots"] = tuple(TargetSlot(**s) for s in values.get("slots", []))
+    values["request_id"] = tuple(values["request_id"])
+    return PendingDecision(**values)
 
 
 def build_cases(paths):
@@ -59,12 +108,7 @@ def build_cases(paths):
             counts["missing_match"] += 1
             continue
         group = hashlib.sha256(str(match).encode()).hexdigest()
-        identities = [
-            str(v)
-            for obj in (bundle, packet)
-            for k, v in obj.items()
-            if k.lower() in PRIVATE and isinstance(v, str)
-        ]
+        identities = discover_identities(bundle)
         for index, decision in enumerate(packet.get("decisions", [])):
             counts["decisions"] += 1
             snapshot = decision.get("state_snapshot")
@@ -84,10 +128,23 @@ def build_cases(paths):
             if any(c not in ids for c in chosen):
                 counts["unmatched_chosen"] += 1
                 continue
+            try:
+                valid = typed_decision(pending).selection_is_valid(chosen)
+            except (TypeError, ValueError, KeyError, AttributeError):
+                valid = False
+            if not valid:
+                counts["invalid_selection"] += 1
+                continue
+            if bundle.get("result") not in {"win", "loss", "draw", "unknown", None}:
+                counts["invalid_result"] += 1
+                continue
+            if scrub(chosen, identities) != chosen:
+                counts["private_option_id"] += 1
+                continue
             payload = {
                 "snapshot": scrub(snapshot, identities),
                 "decision": scrub(pending, identities),
-                "chosen": chosen,
+                "chosen": scrub(chosen, identities),
                 "result": bundle.get("result"),
             }
             digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
@@ -133,20 +190,14 @@ def replay(case):
 
     from arenamcp.action_planner import ActionPlanner
     from arenamcp.decision_snapshot import game_state_from_snapshot
-    from arenamcp.decisions import DecisionOption, PendingDecision, TargetSlot
 
-    fields = {f.name for f in dataclasses.fields(PendingDecision)}
-    data = {k: v for k, v in case["decision"].items() if k in fields}
-    data["options"] = tuple(DecisionOption(**o) for o in data["options"])
-    data["slots"] = tuple(TargetSlot(**s) for s in data.get("slots", []))
-    data["request_id"] = tuple(data["request_id"])
-    decision = PendingDecision(**data)
+    decision = typed_decision(case["decision"])
     start = time.perf_counter()
     result = {"case_id": case["case_id"], "status": "withheld", "chosen": []}
     # No cached or remote facts silently change the benchmark input.
     with (
-        patch("arenamcp.card_facts.client.facts_for", return_value=None),
-        patch("arenamcp.line_search_moves.facts_for", return_value=None),
+        patch("arenamcp.card_facts.client.facts_for", return_value={}),
+        patch("arenamcp.line_search_moves.facts_for", return_value={}),
     ):
         try:
             planner = ActionPlanner(NoModel())

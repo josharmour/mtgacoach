@@ -108,3 +108,31 @@ def test_unknown_snapshot_not_reconstructed(tmp_path):
     path.write_text(json.dumps(bundle))
     cases, _, counts = b.build_cases([path])
     assert cases == [] and counts["no_v1_snapshot"] == 1
+
+
+def test_nested_identity_discovery_including_maps_and_short_names(tmp_path):
+    bundle = sample()
+    bundle["playerName"] = "Amy"
+    bundle["packet"]["player_names"] = {"1": "Hidden Opponent"}
+    d = bundle["packet"]["decisions"][0]
+    d["pending_decision"]["options"][0]["label"] = "Keep against Amy and Hidden Opponent"
+    path = tmp_path / "bundle.json"
+    path.write_text(json.dumps(bundle))
+    cases, _, _ = b.build_cases([path])
+    assert cases
+    text = json.dumps(cases)
+    assert "Amy" not in text and "Hidden Opponent" not in text
+    assert "Fury" in text
+
+
+def test_invalid_selections_and_result_are_excluded(tmp_path):
+    for chosen in ([], ["mull:keep", "mull:keep"]):
+        bundle = sample()
+        bundle["packet"]["decisions"][0]["chosen_options"] = chosen
+        path = tmp_path / "bundle.json"
+        path.write_text(json.dumps(bundle))
+        assert b.build_cases([path])[0] == []
+    bundle = sample()
+    bundle["result"] = "Private Person won"
+    path.write_text(json.dumps(bundle))
+    assert b.build_cases([path])[0] == []
