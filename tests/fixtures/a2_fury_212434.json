@@ -1,0 +1,289 @@
+{
+  "provenance": "bug_20261109_212434, recent_decisions21:24:11. Board/card fields from report; Fury returned from graveyard and paid Ritual from exile to reconstruct pre-cast hand. No captured B1 snapshot exists.",
+  "state": {
+    "local_seat_id": 2,
+    "turn": {
+      "turn_number": 5,
+      "phase": "Main1",
+      "step": "None",
+      "active_player": 2
+    },
+    "players": [
+      {
+        "seat_id": 1,
+        "life_total": 14,
+        "is_local": false
+      },
+      {
+        "seat_id": 2,
+        "life_total": 25,
+        "is_local": true
+      }
+    ],
+    "battlefield": [
+      {
+        "name": "Gemstone Caverns",
+        "oracle_text": "If this card is in your opening hand and you're not the starting player, you may begin the game with Gemstone Caverns on the battlefield with a luck counter on it. If you do, exile a card from your hand.\n{oT}: Add {oC}. If Gemstone Caverns has a luck counter on it, instead add one mana of any color.",
+        "type_line": "Legendary Land",
+        "mana_cost": "",
+        "power": null,
+        "toughness": null,
+        "instance_id": 446,
+        "grp_id": 97115,
+        "owner_seat_id": 2,
+        "controller_seat_id": 2,
+        "is_attacking": false,
+        "is_blocking": false,
+        "damage": 0,
+        "damaged_this_turn": false,
+        "is_tapped": false,
+        "color_production": [
+          "Green",
+          "Colorless"
+        ]
+      },
+      {
+        "name": "Swamp",
+        "oracle_text": "({T}: Add {B}.)",
+        "type_line": "Basic Land \u2014 Swamp",
+        "mana_cost": "",
+        "power": null,
+        "toughness": null,
+        "instance_id": 448,
+        "grp_id": 70503,
+        "owner_seat_id": 1,
+        "controller_seat_id": 1,
+        "is_attacking": false,
+        "is_blocking": false,
+        "damage": 0,
+        "damaged_this_turn": false,
+        "is_tapped": false,
+        "color_production": [
+          "Black",
+          "Green"
+        ]
+      },
+      {
+        "name": "Chrome Mox",
+        "oracle_text": "<i>Imprint</i> \u2014 When this artifact enters, you may exile a nonartifact, nonland card from your hand.\n{oT}: Add one mana of any of the exiled card's colors.",
+        "type_line": "Artifact",
+        "mana_cost": "{0}",
+        "power": null,
+        "toughness": null,
+        "instance_id": 449,
+        "grp_id": 95114,
+        "owner_seat_id": 1,
+        "controller_seat_id": 1,
+        "is_attacking": false,
+        "is_blocking": false,
+        "damage": 0,
+        "damaged_this_turn": false,
+        "is_tapped": false,
+        "color_production": []
+      },
+      {
+        "name": "Yavimaya, Cradle of Growth",
+        "oracle_text": "Each land is a Forest in addition to its other land types.",
+        "type_line": "Legendary Land",
+        "mana_cost": "",
+        "power": null,
+        "toughness": null,
+        "instance_id": 453,
+        "grp_id": 77064,
+        "owner_seat_id": 2,
+        "controller_seat_id": 2,
+        "is_attacking": false,
+        "is_blocking": false,
+        "damage": 0,
+        "damaged_this_turn": false,
+        "is_tapped": false,
+        "color_production": [
+          "Green"
+        ]
+      },
+      {
+        "name": "Swamp",
+        "oracle_text": "({T}: Add {B}.)",
+        "type_line": "Basic Land \u2014 Swamp",
+        "mana_cost": "",
+        "power": null,
+        "toughness": null,
+        "instance_id": 560,
+        "grp_id": 70503,
+        "owner_seat_id": 1,
+        "controller_seat_id": 1,
+        "is_attacking": false,
+        "is_blocking": false,
+        "damage": 0,
+        "damaged_this_turn": false,
+        "is_tapped": false,
+        "color_production": [
+          "Black",
+          "Green"
+        ]
+      },
+      {
+        "name": "Griselbrand",
+        "oracle_text": "Flying\nLifelink\nPay 7 life: Draw seven cards.",
+        "type_line": "Legendary Creature \u2014 Demon",
+        "mana_cost": "{4}{B}{B}{B}{B}",
+        "power": 7,
+        "toughness": 7,
+        "instance_id": 744,
+        "grp_id": 86644,
+        "owner_seat_id": 1,
+        "controller_seat_id": 1,
+        "keywords": [
+          "flying",
+          "lifelink"
+        ],
+        "is_attacking": false,
+        "is_blocking": false,
+        "damage": 0,
+        "damaged_this_turn": false,
+        "is_tapped": false,
+        "color_production": [],
+        "colors": [
+          "Black"
+        ]
+      },
+      {
+        "name": "Commercial District",
+        "oracle_text": "This land enters tapped.\nWhen this land enters, surveil 1.\n{oT}: Add {oR}.\n{oT}: Add {oG}.",
+        "type_line": "Land \u2014 Mountain Forest",
+        "mana_cost": "",
+        "power": null,
+        "toughness": null,
+        "instance_id": 747,
+        "grp_id": 89181,
+        "owner_seat_id": 2,
+        "controller_seat_id": 2,
+        "is_attacking": false,
+        "is_blocking": false,
+        "damage": 0,
+        "damaged_this_turn": false,
+        "is_tapped": true,
+        "color_production": [
+          "Red",
+          "Green"
+        ]
+      }
+    ],
+    "hand": [
+      {
+        "name": "Wrenn and Six",
+        "oracle_text": "[+1]: Return up to one target land card from your graveyard to your hand.\n[-1]: Wrenn and Six deals 1 damage to any target.\n[-7]: You get an emblem with \"Instant and sorcery cards in your graveyard have retrace.\"",
+        "type_line": "Legendary Planeswalker \u2014 Wrenn",
+        "mana_cost": "{R}{G}",
+        "power": null,
+        "toughness": null,
+        "instance_id": 347,
+        "grp_id": 71558,
+        "owner_seat_id": 2,
+        "controller_seat_id": 2,
+        "is_attacking": false,
+        "is_blocking": false,
+        "damage": 0,
+        "damaged_this_turn": false,
+        "is_tapped": false,
+        "color_production": [],
+        "colors": [
+          "Red",
+          "Green"
+        ]
+      },
+      {
+        "name": "Fable of the Mirror-Breaker",
+        "oracle_text": "Create a 2/2 red Goblin Shaman creature token with \"Whenever this token attacks, create a Treasure token.\"\nYou may discard up to two cards. If you do, draw that many cards.\nExile this Saga, then return it to the battlefield transformed under your control.",
+        "type_line": "Enchantment \u2014 Saga",
+        "mana_cost": "{2}{R}",
+        "power": null,
+        "toughness": null,
+        "instance_id": 349,
+        "grp_id": 79570,
+        "owner_seat_id": 2,
+        "controller_seat_id": 2,
+        "is_attacking": false,
+        "is_blocking": false,
+        "damage": 0,
+        "damaged_this_turn": false,
+        "is_tapped": false,
+        "color_production": [],
+        "colors": [
+          "Red"
+        ]
+      },
+      {
+        "name": "Flame Slash",
+        "oracle_text": "Flame Slash deals 4 damage to target creature.",
+        "type_line": "Sorcery",
+        "mana_cost": "{R}",
+        "power": null,
+        "toughness": null,
+        "instance_id": 746,
+        "grp_id": 56493,
+        "owner_seat_id": 2,
+        "controller_seat_id": 2,
+        "is_attacking": false,
+        "is_blocking": false,
+        "damage": 0,
+        "damaged_this_turn": false,
+        "is_tapped": false,
+        "color_production": [],
+        "colors": [
+          "Red"
+        ]
+      },
+      {
+        "name": "Fury",
+        "oracle_text": "Double strike\nWhen this creature enters, it deals 4 damage divided as you choose among any number of target creatures and/or planeswalkers.\nEvoke\u2014Exile a red card from your hand.",
+        "type_line": "Creature \u2014 Elemental Incarnation",
+        "mana_cost": "{3}{R}{R}",
+        "power": 3,
+        "toughness": 3,
+        "instance_id": 348,
+        "grp_id": 91167,
+        "owner_seat_id": 2,
+        "controller_seat_id": 2,
+        "keywords": [
+          "double strike"
+        ],
+        "is_attacking": false,
+        "is_blocking": false,
+        "damage": 0,
+        "damaged_this_turn": false,
+        "is_tapped": false,
+        "color_production": [],
+        "colors": [
+          "Red"
+        ]
+      },
+      {
+        "name": "Pyretic Ritual",
+        "oracle_text": "Add {oRoRoR}.",
+        "type_line": "Instant",
+        "mana_cost": "{1}{R}",
+        "power": null,
+        "toughness": null,
+        "instance_id": 750,
+        "grp_id": 102798,
+        "owner_seat_id": 2,
+        "controller_seat_id": 2,
+        "is_attacking": false,
+        "is_blocking": false,
+        "damage": 0,
+        "damaged_this_turn": false,
+        "is_tapped": false,
+        "color_production": [],
+        "colors": [
+          "Red"
+        ]
+      }
+    ]
+  },
+  "options": [
+    "Cast Fury [alternative cost: Evoke\u2014Exile a red card from your hand.]",
+    "Pass"
+  ],
+  "reasoning": "Evoking Fury (exiling redundant burn Flame Slash per rule_3) pings Griselbrand down to 3/7 and leaves a double-striking 3/3 body that blocks the flyer next turn, buying time for Wrenn/Fable development."
+}

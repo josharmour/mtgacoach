@@ -1068,6 +1068,165 @@ def damage_removal_kills_nothing(card: dict, state: dict) -> str:
     return f"{damage} damage kills no opposing creature (toughness {toughness})"
 
 
+def card_facts_removal_reason(card: dict, state: dict, metadata: dict) -> str:
+    """A2: bounded, record-backed no-value removal; unknown effects never veto.
+
+    bug_20261109_212434 evoked a damage-only creature at a surviving flyer,
+    incorrectly expecting the body to remain. The offered alternative cost,
+    not the card name or its presence in the hand, selects the lifecycle.
+    """
+    from arenamcp.ability_synthesizer import Damage, Destroy, Exile
+    from arenamcp.card_facts.client import facts_for, hash_for_card
+    from arenamcp.card_facts.schema import card_facts_from_dict
+
+    digest = hash_for_card(card)
+    if not digest:
+        return ""
+    try:
+        data = facts_for([card]).get(digest)
+        if data is None:
+            return ""
+        record = card_facts_from_dict(data)
+    except Exception:
+        return ""
+    # S3 authenticates cache records by rules hash; injected/corrupt records
+    # must not turn a different card's effect into a veto.
+    if record.rules_hash != digest:
+        return ""
+    if not isinstance(record.name, str) or record.name.casefold() != str(card.get("name", "")).casefold():
+        return ""
+    permanent = not any(t in str(card.get("type_line", "")).lower() for t in ("instant", "sorcery"))
+    alternative = str(metadata.get("alternativeCostText") or "").strip().casefold()
+    if permanent:
+        # No body is lost on a hard cast. Unknown alternative modes also keep
+        # the play; never infer evoke from a zero mana cost alone.
+        modes = [
+            m
+            for m in record.modes
+            if isinstance(m.name, str) and m.name and alternative.startswith(m.name.casefold() + "—")
+        ]
+        if len(modes) != 1 or modes[0].stays_on_battlefield is not False:
+            return ""
+    elif alternative:
+        return ""  # unsupported alternate spell lifecycle
+    entries = record.effects
+    if not entries or any(
+        e.conditions
+        or not isinstance(e.trigger, str)
+        or e.trigger.upper() not in ("", "CAST", "ENTERS_THE_BATTLEFIELD", "ENTERS_THE_BATTLEFIELD_OR_EVOKE")
+        for e in entries
+    ):
+        return ""
+    # Do not erase card flow, tokens, life gain, death/reanimation value or
+    # unknown clauses merely because the same record also contains damage.
+    if any(not isinstance(e.effect, (Damage, Destroy, Exile)) for e in entries):
+        return ""
+    if record.mana or death_trigger_benefit(card) or state.get("stack"):
+        return ""
+    local = _local_seat(state)
+    if local is None:
+        return ""
+    for permanent_card in state.get("battlefield", []) or []:
+        if (permanent_card.get("controller_seat_id") or permanent_card.get("owner_seat_id")) != local:
+            continue
+        text = str(permanent_card.get("oracle_text") or "").lower()
+        # A triggered/static engine can make the cast, entry, damage or death
+        # valuable independently. A safety veto requires absence of such value.
+        if re.search(
+            r"whenever|when (?:a|another|one or more|you)|damage|deathtouch|lifelink|(?:return|sacrifice|exile)[^.]*creature",
+            text,
+        ):
+            return ""
+    if (
+        any(str(k).lower() in ("lifelink", "deathtouch") for k in record.body.keywords)
+        or has_combat_keyword(card, "lifelink")
+        or has_combat_keyword(card, "deathtouch")
+    ):
+        return ""
+    damages = [e.effect for e in entries if isinstance(e.effect, Damage)]
+    if not damages:
+        # Reuse the established mandatory-target guard without loosening its
+        # optional/target/type exceptions. Mixed removal effects remain unknown.
+        if len(entries) != 1:
+            return ""
+        effect = entries[0].effect
+        if not isinstance(effect.target, str):
+            return ""
+        target = effect.target.strip().lower()
+        if target not in (
+            "creature",
+            "target creature",
+            "artifact",
+            "target artifact",
+            "enchantment",
+            "target enchantment",
+            "planeswalker",
+            "target planeswalker",
+        ):
+            return ""
+        verb = "Destroy" if isinstance(effect, Destroy) else "Exile"
+        pseudo = {**card, "oracle_text": f"{verb} target {target.removeprefix('target ')}."}
+        return (
+            "record-backed mandatory removal has no opposing target"
+            if removal_lacks_opponent_target(pseudo, state)
+            else ""
+        )
+    if len(damages) != len(entries):
+        return ""
+    allowed = {
+        "target creature",
+        "target creature or planeswalker",
+        "any target",
+        "target player",
+        "target opponent",
+        "each opponent",
+        "divided among any number of target creatures and/or planeswalkers",
+    }
+    if any(
+        type(e.amount) is not int
+        or e.amount <= 0
+        or not isinstance(e.target, str)
+        or e.target.lower() not in allowed
+        for e in damages
+    ):
+        return ""
+    total = sum(e.amount for e in damages)  # optimistic combined damage: never understate a possible kill
+    face = sum(
+        e.amount
+        for e in damages
+        if e.target.lower() in ("any target", "target player", "target opponent", "each opponent")
+    )
+    if face:
+        opponents = [p for p in state.get("players", []) if p.get("seat_id") != local]
+        if not opponents or any(
+            type(p.get("life_total")) is not int or p["life_total"] <= face for p in opponents
+        ):
+            return ""
+    opposing = [
+        p
+        for p in state.get("battlefield", []) or []
+        if (p.get("controller_seat_id") or p.get("owner_seat_id")) != local
+    ]
+    if any(not p.get("type_line") for p in opposing):
+        return ""
+    if any(e.target.lower() == "any target" for e in damages) and any(
+        "battle" in str(p.get("type_line", "")).lower() for p in opposing
+    ):
+        return ""
+    hits_walkers = any(
+        "planeswalker" in e.target.lower() or e.target.lower() == "any target" for e in damages
+    )
+    if hits_walkers and any("planeswalker" in str(p.get("type_line", "")).lower() for p in opposing):
+        return ""
+    hits_creatures = any("creature" in e.target.lower() or e.target.lower() == "any target" for e in damages)
+    creatures = (
+        [p for p in opposing if "creature" in str(p.get("type_line", "")).lower()] if hits_creatures else []
+    )
+    if any(damage_would_kill(p, total) is not False for p in creatures):
+        return ""
+    return f"record-backed {total} damage kills no opposing creature and leaves no permanent behind"
+
+
 POWER_ONLY_DEBUFF = re.compile(r"\bgets? [-\u2212]\d+/[-\u2212]0\b", re.IGNORECASE)
 _COUNTER_MODE = re.compile(r"^\W*counter target\b[^.]*\bspell\b", re.IGNORECASE)
 _POWER_ONLY_MODE = re.compile(
@@ -1846,6 +2005,7 @@ def unsafe_play_reason(state: dict, card: dict, action_type: str, metadata: dict
         reason = (
             redundant_legend_cast(state, card)
             or damage_removal_kills_nothing(card, state)
+            or card_facts_removal_reason(card, state, metadata)
             or power_only_debuff_wasted(card, state)
             or temporary_shrink_wasted(card, state)
             or counter_tax_payable_wasted(card, state)
