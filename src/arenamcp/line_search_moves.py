@@ -2109,27 +2109,31 @@ def _record_represents(record: Any, name: str, card: dict | None = None) -> bool
 _HAND_CONSUMPTION_RE = re.compile(
     r"\b(?P<count>a|an|one|two|three|\d+)\s+"
     r"(?:(?P<nonartifact>nonartifact)[,\s]+)?(?:(?P<nonland>nonland)[,\s]+)?"
-    r"(?P<color>white|blue|black|red|green)?\s*cards?\b",
+    r"(?P<color>white|blue|black|red|green)?\s*cards? from your hand\.?",
     re.IGNORECASE,
 )
-_COUNT_WORDS = {"a": 1, "an": 1, "one": 1, "two": 2, "three": 3}
+_HAND_COUNT_WORDS = {"a": 1, "an": 1, "one": 1, "two": 2, "three": 3}
 _PIP_COLORS = {"W": "white", "U": "blue", "B": "black", "R": "red", "G": "green"}
 
 
-def _hand_consumption(text: str) -> tuple[int, str, frozenset] | None:
+def _hand_consumption(text: str, *, exile_target: bool = False) -> tuple[int, str, frozenset] | None:
     """A cost or effect that consumes cards from your hand ("Exile a red card from your
     hand.", "exile a nonartifact, nonland card from your hand"): ``(count, colour,
     restrictions)``. None when the sentence mentions hand cards but cannot be parsed —
     the search then stays conservative and offers no variant that would pay it.
     """
-    lowered = (text or "").lower()
-    if "card" not in lowered or "hand" not in lowered:
-        return None
-    match = _HAND_CONSUMPTION_RE.search(lowered)
+    lowered = (text or "").lower().strip()
+    # Only Exile effect targets omit the verb. Alternate costs must explicitly
+    # exile; discard/sacrifice/conditional costs have different game semantics.
+    if not exile_target:
+        if not lowered.startswith("exile "):
+            return None
+        lowered = lowered[len("exile ") :]
+    match = _HAND_CONSUMPTION_RE.fullmatch(lowered)
     if match is None:
         return None
     count_word = match.group("count").lower()
-    count = _COUNT_WORDS.get(count_word) or int(count_word)
+    count = _HAND_COUNT_WORDS.get(count_word) or int(count_word)
     if count < 1 or count > 3:  # an unbounded hand cost is not worth modelling
         return None
     color = match.group("color") or ""
@@ -2236,7 +2240,7 @@ def _record_semantics(record: Any, name: str, card: dict | None = None) -> dict 
                 return None  # mana on another timing (attack/dies/cast): unbounded
             continue
         if isinstance(effect, Exile):
-            spec = _hand_consumption(effect.target)
+            spec = _hand_consumption(effect.target, exile_target=True)
             if spec is None or consume is not None:
                 return None
             consume = spec

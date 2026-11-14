@@ -2153,3 +2153,42 @@ def test_a1_default_lookup_is_hermetic_and_records_are_explicit(monkeypatch):
         client._default_opener("unused", b"", {})
     _with_records(monkeypatch, [(_FURY_CARD, _FURY_RECORD)])
     assert lsm.unmodelled_effect(_FURY_CARD) == ""
+
+
+@pytest.mark.parametrize("word,count", [("four", 4), ("five", 5), ("six", 6)])
+def test_a1_hand_count_parser_does_not_overwrite_token_counts(word, count):
+    from arenamcp.line_search_moves import token_specs
+
+    assert token_specs(f"create {word} 1/1 red goblin creature tokens.") == [
+        (count, 1, 1, (), "Goblin token")
+    ]
+
+
+@pytest.mark.parametrize(
+    "cost",
+    [
+        "Discard a red card from your hand.",
+        "Exile a red card from your hand only if you control a Mountain.",
+        "Exile a red card from your hand and pay 3 life.",
+        "Reveal a red card from your hand.",
+        "Exile a red card from your hand or sacrifice a creature.",
+    ],
+)
+def test_a1_unrepresented_hand_costs_do_not_gain_evoke_transitions(monkeypatch, cost):
+    from arenamcp import line_search_moves as lsm
+
+    record = deepcopy(_FURY_RECORD)
+    record["modes"][0]["cost_text"] = cost
+    _with_records(monkeypatch, [(_FURY_CARD, record)])
+    seen = []
+    original = lsm.Moves._apply_casts
+
+    def inspect(self, mid, *args, **kwargs):
+        original(self, mid, *args, **kwargs)
+        seen.append(True)
+        assert not any(v.ephemeral or v.payment for v, _ in mid.casts)
+
+    monkeypatch.setattr(lsm.Moves, "_apply_casts", inspect)
+    _a1_variants(_a1_board(_FURY_CARD, _SHOCK_CARD))
+    assert seen
+    assert lsm.unmodelled_effect(_FURY_CARD) == "its triggered ability"
