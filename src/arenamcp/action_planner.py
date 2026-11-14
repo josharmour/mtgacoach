@@ -1081,6 +1081,16 @@ class ActionPlanner(_ActionLegalityMixin):
         Raises :class:`LLMUnavailableError` for an error-sentinel answer
         (legacy backends without raise_on_error), so no caller ever parses one.
         """
+
+        def require_current_request():
+            # Local hedge/repair tokens must not hide an already-cancelled
+            # outer request. Refuse before dispatch, including legacy retries.
+            if call_class.startswith("decision."):
+                outer = getattr(self, "_decision_cancel_event", None)
+                if any(token is not None and token.is_set() for token in (outer, cancel_event)):
+                    raise LLMUnavailableError("request changed during planning")
+
+        require_current_request()
         if yield_background and call_class.startswith("decision."):
             self._yield_background()
         complete = self._backend.complete
@@ -1105,6 +1115,7 @@ class ActionPlanner(_ActionLegalityMixin):
         extras = _accepted_extras(complete, extras)
         try:
             try:
+                require_current_request()
                 response = complete(
                     system_prompt,
                     user_message,
@@ -1123,6 +1134,7 @@ class ActionPlanner(_ActionLegalityMixin):
                 ):
                     raise
                 extras.pop("response_format")
+                require_current_request()
                 response = complete(
                     system_prompt,
                     user_message,
@@ -1135,8 +1147,10 @@ class ActionPlanner(_ActionLegalityMixin):
         except TypeError:
             # Older backends: no raise_on_error / request budget / temperature.
             try:
+                require_current_request()
                 response = complete(system_prompt, user_message, max_tokens, temperature=0.0)
             except TypeError:
+                require_current_request()
                 response = complete(system_prompt, user_message)
         if response and is_backend_error_text(response):
             raise LLMUnavailableError(str(response)[:200])
