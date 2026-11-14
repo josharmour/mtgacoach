@@ -229,7 +229,11 @@ MANA_SELECTION = record(
     }
 )
 TARGET = record(
-    {"targetIdx": integer, "targets": sequence(record({"targetInstanceId": integer, "highlight": HIGHLIGHT}))}
+    {
+        "targetIdx": integer,
+        "targetId": integer,
+        "targets": sequence(record({"targetInstanceId": integer, "highlight": HIGHLIGHT})),
+    }
 )
 FACE = record({"grp_id": integer, "name": text, "oracle_text": text, "type_line": text, "mana_cost": text})
 PROMPT = record({"promptId": integer, "parameters": EMPTY})

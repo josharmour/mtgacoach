@@ -141,3 +141,11 @@ def test_native_action_aliases_and_stringified_cost_colors_are_bounded():
     assert not s.MANA_COST([{"color": '["Private Customer"]', "count": 1}])
     assert not s.MANA_COST([{"color": '{"account":"secret"}', "count": 1}])
     assert not s.MANA_COST([{"color": [{"account": "secret"}], "count": 1}])
+
+
+def test_native_target_id_shape_preserved_with_strict_numeric_reference():
+    target = {"targetId": 1, "targets": [{"targetInstanceId": 42, "highlight": "Hot"}]}
+    assert s.TARGET(target)
+    assert not s.TARGET({**target, "targetId": "Private Customer"})
+    assert not s.TARGET({**target, "targetId": True})
+    assert not s.TARGET({**target, "customer": "secret"})
