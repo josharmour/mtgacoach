@@ -91,6 +91,40 @@ def producer_role_label(key, item, path, schema):
     return role_path and item in {"you", "opponent"}
 
 
+def producer_role_map(value, key, item, path, schema):
+    """Recognize only complete, seat-aligned native producer-redacted maps."""
+    role_path = path == ("final_state",) or (
+        len(path) == 4
+        and path[0] == "bug_reports"
+        and type(path[1]) is int
+        and path[2:] == ("report", "game_state")
+    )
+    local = value.get("local_seat_id")
+    if (
+        type(schema) is not int
+        or schema != 1
+        or not role_path
+        or key != "player_names"
+        or not isinstance(item, dict)
+        or not item
+        or type(local) is not int
+        or local not in {1, 2, 3, 4}
+    ):
+        return False
+    seats = set()
+    for seat, role in item.items():
+        if not (
+            (type(seat) is int and seat in {1, 2, 3, 4})
+            or (type(seat) is str and seat in {"1", "2", "3", "4"})
+        ):
+            return False
+        number = int(seat)
+        if number in seats or type(role) is not str or role != ("you" if number == local else "opponent"):
+            return False
+        seats.add(number)
+    return local in seats
+
+
 def normalized_key(key):
     return str(key).lower().replace("_", "").replace("-", "")
 
@@ -113,7 +147,9 @@ def discover_identities(value, player=False, *, path=(), schema=None):
         for key, item in value.items():
             sensitive = private_key(key) or (player and normalized_key(key) in {"name", "id"})
             if sensitive and (
-                public_snapshot_event(value, key, item, path) or producer_role_label(key, item, path, schema)
+                public_snapshot_event(value, key, item, path)
+                or producer_role_label(key, item, path, schema)
+                or producer_role_map(value, key, item, path, schema)
             ):
                 continue
             if sensitive:

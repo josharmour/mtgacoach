@@ -465,3 +465,45 @@ def test_producer_role_tokens_require_exact_schema_paths_and_spelling():
         for token in ("you", "opponent", "You", "Opponent"):
             data = {"schema": 1, "packet": {"opponent_name": "opponent"}, "final_state": {key: token}}
             assert token in b.discover_identities(data)
+
+
+def test_native_role_maps_are_seat_aligned_and_still_stripped(tmp_path):
+    data = sample()
+    data["schema"] = 1
+    data["final_state"] = {"local_seat_id": 1, "player_names": {"1": "you", "2": "opponent"}}
+    data["bug_reports"] = [
+        {"report": {"game_state": {"local_seat_id": 2, "player_names": {"1": "opponent", "2": "you"}}}}
+    ]
+    assert not {"you", "opponent"} & b.discover_identities(data)
+    assert b.sanitize_semantics(data["final_state"], set()) == {"local_seat_id": 1}
+    state = data["packet"]["decisions"][0]["state_snapshot"]["state"]
+    state["hand"][0]["oracle_text"] = "You and target opponent draw a card."
+    path = tmp_path / "bundle.json"
+    path.write_text(json.dumps(data))
+    assert b.build_cases([path])[2]["eligible"] == 1
+
+
+def test_role_map_rejects_ambiguous_shapes_and_other_identities():
+    for mapping in (
+        {"1": "you", "2": "Private Person"},
+        {"1": "opponent", "2": "you"},
+        {"01": "you", "2": "opponent"},
+        {True: "you", "2": "opponent"},
+        {"1": "You", "2": "Opponent"},
+        {"1": "you", 1: "you", "2": "opponent"},
+        {"1": "you", "customer": "opponent"},
+    ):
+        data = {"schema": 1, "final_state": {"local_seat_id": 1, "player_names": mapping}}
+        assert b.discover_identities(data)
+    valid = {"local_seat_id": 1, "player_names": {"1": "you", "2": "opponent"}}
+    for data in (
+        {"schema": True, "final_state": valid},
+        {"schema": 2, "final_state": valid},
+        {"schema": 1, "packet": valid},
+        {"schema": 1, "metadata": {"final_state": valid}},
+        {"schema": 1, "final_state": {"player_names": valid["player_names"]}},
+    ):
+        assert {"you", "opponent"} <= b.discover_identities(data)
+    for key in ("account_id", "player_name", "username"):
+        data = {"schema": 1, "final_state": valid, key: "You"}
+        assert "You" in b.discover_identities(data)
