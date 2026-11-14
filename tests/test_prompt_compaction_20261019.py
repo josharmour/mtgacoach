@@ -255,6 +255,12 @@ def test_a_big_typed_prompt_gets_the_later_first_token_and_keeps_its_answer_time
             result = super().complete(*args, **kwargs)
             if kwargs.get("reasoning_effort") != "high":
                 self.normal_called.set()
+            else:
+                # This fixture measures the normal leg's budget, not whether
+                # a fast high answer may legitimately cancel it before dispatch.
+                # Hold the synthetic high answer until normal has recorded its
+                # arguments, so thread scheduling cannot erase the observation.
+                assert self.normal_called.wait(5.0), "normal budget leg was not dispatched"
             return result
 
     state = _state(T19)
