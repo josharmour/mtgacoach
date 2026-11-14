@@ -4695,20 +4695,20 @@ class ActionPlanner(_ActionLegalityMixin):
             # model call even with one candidate: cast-or-decline, fail-to-find
             # and the harmful-target gates are real content there.
             return None
-        if decision.can_cancel:
+        if decision.can_cancel or decision.can_pass:
             return None
         option = decision.options[0]
-        if option.payable is False:
+        if option.payable is False or option.meta.get("repeatedSelectAllowed"):
             return None
         if option.option_id in ("pass", DECLINE_DECISION, NO_TARGETS_DECISION):
             return None
-        if not decision.min_select <= 1 <= decision.max_select:
+        if decision.min_select != 1 or decision.max_select < 1:
             return None
         chosen = [option.option_id]
         try:
-            valid = decision.selection_is_valid(chosen)
-        except Exception:  # a validation surprise must not block the submit
-            valid = True
+            valid = decision.selection_is_valid(chosen) and not decision.selection_is_valid([])
+        except Exception:  # uncertainty must retain the normal guarded decision path
+            return None
         if not valid:
             return None
         why = f"Only {option.label or option.option_id} is legal in this window; submitting it directly."
@@ -4721,7 +4721,7 @@ class ActionPlanner(_ActionLegalityMixin):
     # How long a completed answer may serve an identical re-presented window (#226(b)).
     _ANSWER_REUSE_TTL_S = 30.0
 
-    def _decision_cache_key(self, decision: Any) -> tuple:
+    def _decision_cache_key(self, decision: Any) -> str:
         """What makes two typed windows the same question (ledger #226(b)).
 
         The request id (game-state id, msg id) is deliberately NOT part of it:
@@ -4732,13 +4732,12 @@ class ActionPlanner(_ActionLegalityMixin):
         an ActionsAvailable menu's ``idx:N`` ids are positional, so the label
         must disambiguate a re-ordered or reshaped menu.
         """
-        return (
-            decision.request_type,
-            str(decision.source_label or ""),
-            int(decision.min_select or 0),
-            int(decision.max_select or 0),
-            tuple(sorted((o.option_id, o.label, o.payable) for o in decision.options)),
-        )
+        # Include all menu semantics, but not the transport request identity.
+        from dataclasses import asdict
+
+        payload = asdict(decision)
+        payload.pop("request_id", None)
+        return json.dumps(payload, sort_keys=True, default=str)
 
     def _reusable_answer(self, decision: Any, game_state: dict[str, Any]) -> list[str] | None:
         """The cached answer to an identical window re-presented this turn, or None.
@@ -4758,7 +4757,7 @@ class ActionPlanner(_ActionLegalityMixin):
             return None
         if entry.get("window") != self._turn_window_of(game_state):
             return None
-        if entry.get("sig") != self._reuse_state_signature(game_state):
+        if entry.get("sig") != self._reuse_state_signature(game_state, decision):
             return None
         chosen = list(entry["chosen"])
         if not chosen or not set(chosen).issubset(decision.option_ids()):
@@ -4767,7 +4766,7 @@ class ActionPlanner(_ActionLegalityMixin):
             if not decision.selection_is_valid(chosen):
                 return None
         except Exception:
-            pass
+            return None
         self._last_decision_option_ids = chosen
         self._last_decision_reasoning = (
             f"{entry.get('reasoning') or 'Decided moments ago.'} (the same window was re-presented; "
@@ -4793,7 +4792,7 @@ class ActionPlanner(_ActionLegalityMixin):
             "reasoning": str(reasoning or "")[:400],
             "turn": (game_state.get("turn") or {}).get("turn_number"),
             "window": self._turn_window_of(game_state),
-            "sig": self._reuse_state_signature(game_state),
+            "sig": self._reuse_state_signature(game_state, decision),
             "at": time.monotonic(),
         }
 
@@ -4807,23 +4806,25 @@ class ActionPlanner(_ActionLegalityMixin):
             return None
 
     @staticmethod
-    def _reuse_state_signature(game_state: dict[str, Any]) -> tuple:
-        """That nothing but the request id moved between the two windows (#226(b)).
+    def _reuse_state_signature(game_state: dict[str, Any], decision: Any = None) -> str:
+        """Exact decision-relevant snapshot, excluding transport counters only.
 
-        The decision memory's board signature (turn, life, permanents, stack)
-        plus each permanent's controller and the hand size: a re-presented
-        window over a changed board — a controller swap, a new card — is a
-        new question even when its option list looks identical.
+        Hand identities, mana, controllers, card facts and match identity must
+        not collapse merely because counts and labels remain the same.
         """
-        from arenamcp.decision_memory import board_signature
+        from arenamcp.equipment_relay import relay_cast_costs
 
-        controllers = tuple(
-            sorted(
-                (int(card.get("instance_id") or 0), card.get("controller_seat_id"))
-                for card in game_state.get("battlefield") or []
-            )
-        )
-        return (board_signature(game_state), controllers, len(game_state.get("hand") or []))
+        snapshot = {k: v for k, v in game_state.items() if k not in {"game_state_id", "timestamp"}}
+        # Public entry adds this deterministic evidence before cache lookup.
+        # Normalize an unwrapped snapshot the same way, retaining an existing
+        # quote (which may predate offered-action filtering), never dropping it.
+        if "_equipment_relay_costs" not in snapshot:
+            snapshot["_equipment_relay_costs"] = relay_cast_costs(game_state)
+        if decision is not None:
+            from arenamcp.offered_casts import bind_offered_casts
+
+            _, snapshot = bind_offered_casts(decision, snapshot)
+        return json.dumps(snapshot, sort_keys=True, default=str)
 
     # ── #227: damage our own resolved burn left on their creatures ────────
 
@@ -9721,6 +9722,8 @@ class ActionPlanner(_ActionLegalityMixin):
         raise errors[0]
 
     def _llm_decision_options(self, decision: Any, game_state: dict[str, Any]) -> list[str]:
+        # Direct callers deliberately request model reasoning and its semantic
+        # safeguards. Forced action handling belongs to the public filtered path.
         from arenamcp.decision_clock import model_deadline as arena_model_deadline
 
         # Include prompt/search preparation in the Arena deadline, including
@@ -9735,6 +9738,22 @@ class ActionPlanner(_ActionLegalityMixin):
         self._last_llm_asked = True
         # Tags and LINES read the snapshot the guards assess (one search, cached).
         line_source, lines_text, unmodelled = self._line_prompt_context(decision, game_state)
+        from arenamcp.line_guard import guard_mode, planner_certain_pick
+
+        certainty_mode = guard_mode("planner_certain")
+        certain = (
+            planner_certain_pick(line_source, decision, game_state)
+            if certainty_mode != "off" and not unmodelled
+            else None
+        )
+        if certain is not None and certainty_mode == "on":
+            self._last_llm_asked = False
+            self._last_decision_option_ids = [certain]
+            self._last_decision_reasoning = (
+                "Every offered action was evaluated; one surviving line clearly leads."
+            )
+            self._last_decision_trace = {"policy": "planner_certain", "validated_ids": [certain]}
+            return [certain]
         tag_state = game_state
         target_hints = (
             self._target_highlights(decision, game_state) if decision.request_type == "SelectTargets" else {}
@@ -10612,6 +10631,16 @@ class ActionPlanner(_ActionLegalityMixin):
             reasoning=self._last_decision_reasoning,
             target_controllers=self._last_decision_target_controllers,
         )
+        if certain is not None:
+            observation = {
+                "proposed": [certain],
+                "model": list(chosen),
+                "agreement": chosen == [certain],
+                "mode": certainty_mode,
+                "decision_type": decision.request_type,
+            }
+            self._last_decision_trace["planner_certain"] = observation
+            logger.info("planner-certain shadow: %s", json.dumps(observation, sort_keys=True))
         logger.info(
             "typed-decision choice %s: %s", chosen, self._last_decision_reasoning or "reason not supplied"
         )

@@ -34,6 +34,7 @@ def fresh_settings(tmp_path, monkeypatch):
 
 def test_the_recommended_defaults(fresh_settings):
     assert gs.GUARD_DEFAULTS == {
+        "planner_certain": "shadow",
         "line": "on",
         "mode": "shadow",
         "line_gap": "on",
@@ -48,7 +49,7 @@ def test_the_recommended_defaults(fresh_settings):
     )
     assert line_guard.guard_mode is gs.guard_mode  # one reader for every guard
     assert gs.describe_guard_modes() == (
-        "line=on (default), mode=shadow (default), line_gap=on (default), "
+        "planner_certain=shadow (default), line=on (default), mode=shadow (default), line_gap=on (default), "
         "attack_line=shadow (default), attack_push=on (default)"
     )
 
