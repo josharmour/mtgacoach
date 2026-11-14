@@ -122,8 +122,6 @@ def _local_card(grp_id: int, epoch: int) -> dict[str, Any]:
         for key in ("name", "type_line", "mana_cost", "cmc", "power", "toughness", "oracle_text")
     }
     result["related_faces"] = getattr(card, "related_faces", [])
-    result["linked_face_ids"] = getattr(card, "linked_face_ids", [])
-    result["card_faces"] = getattr(card, "card_faces", [])
     if card.name and card.type_line and card.oracle_text:
         with _cache_lock:
             # Retain the source object so its identity cannot be reused while cached.
