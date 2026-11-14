@@ -428,6 +428,8 @@ def assert_case_schema(snapshot, pending):
         elif key == "format_name":
             if value not in {
                 "Brawl",
+                "Brawl Ladder",
+                "Ladder",
                 "Standard",
                 "Historic",
                 "Timeless",

@@ -208,3 +208,20 @@ def test_game_step_is_bounded_enum(tmp_path):
         path = tmp_path / "bundle.json"
         path.write_text(json.dumps(bundle))
         assert bool(b.build_cases([path])[0]) is accepted
+
+
+def test_observed_public_ladder_formats_preserved_not_free_form(tmp_path):
+    for format_name, accepted in [
+        ("Ladder", True),
+        ("Brawl Ladder", True),
+        ("Ladder OpaqueCustomer", False),
+        ("QuickDraft BLB 20261107", False),
+    ]:
+        bundle = sample()
+        bundle["packet"]["decisions"][0]["state_snapshot"]["state"]["format_name"] = format_name
+        path = tmp_path / "bundle.json"
+        path.write_text(json.dumps(bundle))
+        cases, _, _ = b.build_cases([path])
+        assert bool(cases) is accepted
+        if cases:
+            assert cases[0]["snapshot"]["state"]["format_name"] == format_name
