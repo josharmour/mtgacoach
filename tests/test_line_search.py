@@ -2135,3 +2135,21 @@ def test_a1_evoke_interactions_abstain_before_mutating_actual_mid(monkeypatch, t
     monkeypatch.setattr(lsm.Moves, "_apply_casts", probe)
     _a1_variants(_a1_board(_FURY_CARD, _SHOCK_CARD))
     assert rejected
+
+
+def test_a1_default_lookup_is_hermetic_and_records_are_explicit(monkeypatch):
+    from arenamcp import line_search_moves as lsm
+    from arenamcp.card_facts import client
+
+    # Neither imported entry point may instantiate a shared client or inspect
+    # real disk data. Explicit fake-record tests can still override the default.
+    def forbidden_client():
+        raise AssertionError("shared client accessed")
+
+    monkeypatch.setattr(client, "shared_client", forbidden_client)
+    assert client.facts_for([_FURY_CARD]) == {}
+    assert lsm.facts_for([_FURY_CARD]) == {}
+    with pytest.raises(AssertionError, match="explicitly faked"):
+        client._default_opener("unused", b"", {})
+    _with_records(monkeypatch, [(_FURY_CARD, _FURY_RECORD)])
+    assert lsm.unmodelled_effect(_FURY_CARD) == ""
