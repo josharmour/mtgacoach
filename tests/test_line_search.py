@@ -1698,11 +1698,11 @@ def _a1_variants(source: dict) -> dict:
     return seen
 
 
-def test_fury_hard_cast_valued_from_record_evoke_left_unmodelled(monkeypatch, caplog):
-    """standalone.log:2102062 'can't value: Fury (its triggered ability)' — with a record
-    the hard cast's ETB damage is removal reach. The evoke mode (stays_on_battlefield
-    False, exile cost) is NOT invented as a variant even with the exile payable: the
-    search cannot consume another hand card or remove the entered body (round 2)."""
+def test_fury_hard_cast_and_evoke_valued_from_record(monkeypatch, caplog):
+    """standalone.log:2102062 'can't value: Fury (its triggered ability)' — with a
+    record the hard cast's ETB damage is removal reach AND the evoke mode becomes a
+    real variant: mana value 0, one red hand card paid on the cast, and the 4/4 body
+    leaves again at the next upkeep (stays_on_battlefield False)."""
 
     from arenamcp import line_search_moves as lsm
     from arenamcp.card_facts.schema import card_facts_from_dict
@@ -1714,7 +1714,7 @@ def test_fury_hard_cast_valued_from_record_evoke_left_unmodelled(monkeypatch, ca
     before = _a1_variants(source)
     assert lsm.unmodelled_effect(dict(_FURY_CARD)) == "its triggered ability"
     # Real 4/4 body: the hard cast is valued as a body alone, but the ETB damage is not
-    # (reach None) and no free evoke variant exists.
+    # (reach None) and no evoke variant exists without the record.
     assert before["Fury"][1] is not None and before["Fury"][1].reach is None
     assert all(v.mana_value == 5 for v in before["Fury"][0])
 
@@ -1725,9 +1725,15 @@ def test_fury_hard_cast_valued_from_record_evoke_left_unmodelled(monkeypatch, ca
         assert sum("card facts record used for Fury" in rec.message for rec in caplog.records) == 1
     plain = after["Fury"][1]
     assert plain is not None and plain.reach is not None  # the hard cast values the ETB damage
-    assert all(v.mana_value == 5 for v in after["Fury"][0])  # {3}{R}{R}: no free evoke variant
-    assert not any(v.mana_value == 0 for v in after["Fury"][0])
-    assert all((v.body or {}) == (plain.body or {}) for v in after["Fury"][0])
+    evokes = [v for v in after["Fury"][0] if v.mana_value == 0]
+    assert len(evokes) == 1  # exactly one evoke variant, from the record's mode
+    evoke = evokes[0]
+    assert evoke.consumes == 1 and evoke.consume_spec == ("red", frozenset())
+    assert evoke.ephemeral  # stays_on_battlefield False: gone from the next search node
+    assert (evoke.body or {}) == (plain.body or {})
+    assert evoke.reach == plain.reach  # the ETB damage fires on the evoke too
+    hard = [v for v in after["Fury"][0] if v.mana_value == 5]
+    assert hard and all(not v.ephemeral and not v.consumes for v in hard)
 
 
 def test_record_arrival_after_cached_miss_is_noticed(monkeypatch):
@@ -1744,10 +1750,12 @@ def test_record_arrival_after_cached_miss_is_noticed(monkeypatch):
     assert len(store["_calls"]) >= 2  # the client was asked again after the miss
 
 
-def test_lotus_cobra_addmana_record_stays_unmodelled(monkeypatch):
-    """standalone.log:2113541 'can't value: Lotus Cobra (its triggered ability)' — an
-    AddMana-only record has no cast-time representation in the search, so the card stays
-    unmodelled and its variants are exactly what they were without a record (round 2)."""
+def test_lotus_cobra_landfall_mana_is_not_a_cast_discount(monkeypatch):
+    """Oracle: "Whenever a land you control enters, add one mana of any color" — the
+    mana arrives when a LAND enters, never when the Cobra is cast (#A1 review round 5).
+    The record's ETB AddMana is therefore NOT folded into the payable casting cost:
+    the card stays unmodelled (conservative) and its variants are exactly the
+    text-parser baseline — {1}{G}, no discount, no consumption."""
     import dataclasses
 
     from arenamcp import line_search_moves as lsm
@@ -1763,17 +1771,25 @@ def test_lotus_cobra_addmana_record_stays_unmodelled(monkeypatch):
 
     _with_records(monkeypatch, [(_LOTUS_COBRA_CARD, _LOTUS_COBRA_RECORD)])
     after = _a1_variants(source)
+    # The land-entry trigger is not self-bound: no cast-time representation exists,
+    # so the record must NOT clear the unmodelled flag nor discount the cast.
     assert lsm.unmodelled_effect(dict(_LOTUS_COBRA_CARD)) == baseline_reason
-    assert [dataclasses.asdict(v) for v in after["Lotus Cobra"][0]] == [
-        dataclasses.asdict(v) for v in baseline["Lotus Cobra"][0]
-    ]
-    assert (after["Lotus Cobra"][1] is None) == (baseline["Lotus Cobra"][1] is None)
+    base_plain, after_plain = baseline["Lotus Cobra"][1], after["Lotus Cobra"][1]
+    assert base_plain is not None and after_plain is not None
+    assert base_plain.mana_value == 2 and after_plain.mana_value == 2  # still {1}{G}
+
+    # Variant is eq=False: compare field dicts, not identities.
+    def as_dicts(variants):
+        return [dataclasses.asdict(v) for v in variants]
+
+    assert as_dicts(after["Lotus Cobra"][0]) == as_dicts(baseline["Lotus Cobra"][0])
+    assert all(not v.consumes and not v.ephemeral for v in after["Lotus Cobra"][0])
 
 
-def test_chrome_mox_partial_record_stays_unmodelled(monkeypatch):
-    """standalone.log:2104931 'can't value: Chrome Mox (its triggered ability)' — an
-    AddMana + Exile record has no cast-time representation either: the rock cast is
-    unchanged and the card stays unmodelled (round 2)."""
+def test_chrome_mox_imprint_cost_paid_from_record(monkeypatch):
+    """standalone.log:2104931 'can't value: Chrome Mox (its triggered ability)' — the
+    AddMana + Exile record makes the rock's cast pay its imprint: one nonartifact,
+    nonland hand card is consumed on the cast; the rock itself is unchanged."""
     import dataclasses
 
     from arenamcp import line_search_moves as lsm
@@ -1790,11 +1806,25 @@ def test_chrome_mox_partial_record_stays_unmodelled(monkeypatch):
 
     _with_records(monkeypatch, [(_CHROME_MOX_CARD, _CHROME_MOX_RECORD)])
     after = _a1_variants(source)
-    assert lsm.unmodelled_effect(dict(_CHROME_MOX_CARD)) == baseline_reason
-    assert [dataclasses.asdict(v) for v in after["Chrome Mox"][0]] == [
-        dataclasses.asdict(v) for v in baseline["Chrome Mox"][0]
-    ]
-    assert after["Chrome Mox"][1] is not None and after["Chrome Mox"][1].rock
+    assert lsm.unmodelled_effect(dict(_CHROME_MOX_CARD)) == ""
+    plain = after["Chrome Mox"][1]
+    assert plain is not None and plain.rock  # still a mana rock
+    assert plain.imprint_rock  # its colours come from the exiled card, not any colour
+    assert plain.consumes == 1  # the imprint exile is paid on the cast
+    assert plain.consume_spec == ("", frozenset({"nonartifact", "nonland"}))
+    assert plain.mana_value == 0  # {0}: no discount to fold
+
+    # Variant is eq=False: compare field dicts, not identities.
+    def unimprinted(variants):
+        return [
+            dataclasses.asdict(
+                dataclasses.replace(v, consumes=0, consume_spec=("", frozenset()), imprint_rock=False)
+            )
+            for v in variants
+        ]
+
+    assert unimprinted(after["Chrome Mox"][0]) == unimprinted(baseline["Chrome Mox"][0])
+    assert all(not v.ephemeral for v in after["Chrome Mox"][0])
 
 
 def test_conditioned_record_effect_not_rendered_unconditionally(monkeypatch):
