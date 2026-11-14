@@ -2198,7 +2198,13 @@ def _event_landfall_mana(record: Any, card: dict) -> bool:
             return any(unknown_fields(item) for item in value.values())
         return False
 
-    if record.confidence != "high" or unknown_fields(record):
+    if (
+        record.confidence != "high"
+        or unknown_fields(record)
+        or record.relationships
+        or record.limited
+        or record.threat
+    ):
         return False
     entry = record.effects[0]
     trigger = str(entry.trigger).strip()

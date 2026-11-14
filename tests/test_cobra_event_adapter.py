@@ -113,3 +113,10 @@ def test_only_high_confidence_event_admission(confidence):
     data = raw()
     data["confidence"] = confidence
     assert not lsm._event_landfall_mana(card_facts_from_dict(data), _LOTUS_COBRA_CARD)
+
+
+@pytest.mark.parametrize("field", ["relationships", "limited", "threat"])
+def test_reserved_semantic_fields_must_be_empty(field):
+    data = raw()
+    data[field] = {"additional_condition": "Only after another payment"}
+    assert not lsm._event_landfall_mana(card_facts_from_dict(data), _LOTUS_COBRA_CARD)

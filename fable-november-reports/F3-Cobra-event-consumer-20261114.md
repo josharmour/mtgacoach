@@ -30,3 +30,11 @@ normalizes those obligations. The exact seven independent failing cases now
 pass, alongside distinct-body mana accounting and positive real-record tests.
 243 combined tests pass locally; independent successor review remains required.
 No actual model call or record regeneration occurred.
+
+## Reserved-field rework
+
+00078dc was rejected for ignoring nonempty relationships/limited/threat
+reserved dictionaries. Their contents have no supported event semantics under
+F1, so the predicate now refuses any nonempty reserved field rather than
+interpreting or discarding it. Original pilot's empty dictionaries still pass.
+No evidence or acceptance gate is waived; independent re-review required.
