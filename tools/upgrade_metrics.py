@@ -34,6 +34,7 @@ from __future__ import annotations
 import argparse
 import ast
 import gzip
+import hashlib
 import json
 import os
 import re
@@ -1205,6 +1206,84 @@ def render_report(agg):
     return "\n".join(out)
 
 
+def pivotal_thinking_summary(bundles):
+    """E4: observed per-decision thinking, never requested budgets or missing=0.
+
+    Uses final decision traces so a low-first unknown choice later promoted to
+    pivotal contributes its entire thinking total to pivotal, not two cohorts.
+    Failure-rate acceptance is intentionally unavailable without comparable
+    complete watchdog/default telemetry; token evidence alone cannot pass E4.
+    """
+    categories = {
+        k: {"decisions": 0, "complete_decisions": 0, "reasoning_tokens": 0} for k in ("pivotal", "routine")
+    }
+    matches = set()
+    fingerprints = {}
+    duplicates = 0
+    for bundle in bundles:
+        match = bundle.get("match_id")
+        if not match:
+            continue
+        if type(match) is not str:
+            raise ValueError("invalid match identity in E4 evidence")
+        # Full-bundle equality only: never guess which conflicting copy is
+        # authoritative or collapse distinct BO3 decisions within one bundle.
+        fingerprint = hashlib.sha256(
+            json.dumps(bundle, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+        ).digest()
+        previous = fingerprints.get(match)
+        if previous is not None:
+            if previous != fingerprint:
+                raise ValueError("conflicting copies of a match in E4 evidence")
+            duplicates += 1
+            continue
+        fingerprints[match] = fingerprint
+        observations = [
+            (row.get("trace") or {}).get("pivotal_thinking") or {}
+            for row in (bundle.get("packet") or {}).get("decisions") or []
+        ]
+        for line in (bundle.get("coach_log") or {}).get("lines") or []:
+            if "E4 declaration metrics: " not in line:
+                continue
+            try:
+                event = json.loads(line.split("E4 declaration metrics: ", 1)[1])
+                if isinstance(event, dict):
+                    observations.append(event)
+            except (ValueError, TypeError):
+                continue
+        for evidence in observations:
+            category = evidence.get("category")
+            if category not in categories:
+                continue
+            matches.add(match)
+            bucket = categories[category]
+            bucket["decisions"] += 1
+            calls = evidence.get("call_usage") or []
+            count = evidence.get("calls")
+            values = [c.get("reasoning_tokens") for c in calls]
+            if not calls or count != len(calls) or any(type(v) is not int or v < 0 for v in values):
+                continue
+            bucket["complete_decisions"] += 1
+            bucket["reasoning_tokens"] += sum(values)
+    for bucket in categories.values():
+        bucket["average_thinking_tokens"] = (
+            bucket["reasoning_tokens"] / bucket["complete_decisions"]
+            if bucket["complete_decisions"] == bucket["decisions"] and bucket["complete_decisions"]
+            else None
+        )
+    pivotal, routine = (categories[k]["average_thinking_tokens"] for k in ("pivotal", "routine"))
+    ratio = pivotal / routine if pivotal is not None and routine is not None and routine > 0 else None
+    return {
+        "observed_matches": len(matches),
+        "duplicate_bundles_ignored": duplicates,
+        "categories": categories,
+        "pivotal_routine_ratio": ratio,
+        "tenfold_token_gate_met": ratio is not None and ratio >= 10,
+        "timeout_watchdog_fallback_gate_met": None,
+        "overall_e4_gate_met": False,
+    }
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
         description="Reproduce the Fable November baseline metrics from match bundles."
@@ -1225,12 +1304,18 @@ def main(argv=None):
     parser.add_argument(
         "--json", action="store_true", help="emit the aggregated metrics as JSON instead of text"
     )
+    parser.add_argument(
+        "--pivotal",
+        action="store_true",
+        help="E4 observed per-decision thinking evidence (JSON; does not waive failure-rate gate)",
+    )
     args = parser.parse_args(argv)
 
     if not os.path.isdir(args.bundles_dir):
         parser.error(f"bundles directory not found: {args.bundles_dir}")
 
     summaries = []
+    pivotal_bundles = []
     for path in iter_bundle_paths(args.bundles_dir):
         bundle = load_bundle(path)
         if not is_match_bundle(bundle):
@@ -1239,6 +1324,8 @@ def main(argv=None):
         if args.since and summary["day"] < args.since:
             continue
         summaries.append(summary)
+        if args.pivotal:
+            pivotal_bundles.append(bundle)
 
     if not summaries:
         print(
@@ -1246,6 +1333,14 @@ def main(argv=None):
             file=sys.stderr,
         )
         return 1
+
+    if args.pivotal:
+        try:
+            result = pivotal_thinking_summary(pivotal_bundles)
+        except (ValueError, TypeError):
+            parser.exit(2, "invalid or conflicting E4 evidence\n")
+        print(json.dumps(result, indent=2))
+        return 0
 
     agg = aggregate(summaries)
     if args.json:
