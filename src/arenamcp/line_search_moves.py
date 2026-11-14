@@ -2191,7 +2191,12 @@ def _record_semantics(record: Any, name: str, card: dict | None = None) -> dict 
     rock, consume = False, None
     landfall_mana = False
     for entry in entries:
-        if entry.conditions or entry.trigger not in ("", "CAST", "ENTERS_THE_BATTLEFIELD"):
+        if entry.conditions or entry.trigger not in (
+            "",
+            "CAST",
+            "ENTERS_THE_BATTLEFIELD",
+            "ENTERS_THE_BATTLEFIELD_OR_EVOKE",
+        ):
             return None
         effect = entry.effect
         if isinstance(effect, AddMana):
