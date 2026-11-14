@@ -763,14 +763,31 @@ class ModelRequired(BaseException):
     """Escapes production fallback handling rather than manufacturing a reply."""
 
 
+class BackendInterfaceUnsupported(BaseException):
+    """Unimplemented backend capability is a harness error, not model demand."""
+
+
 class NoModel:
+    model = None
+    last_request_metrics = None
+
+    def __init__(self):
+        self.generation_attempts = 0
+
+    def available(self):
+        return True
+
+    def degraded(self):
+        return False
+
     def complete(self, *args, **kwargs):
+        self.generation_attempts += 1
         raise ModelRequired()
 
     def __getattr__(self, name):
         if name.startswith("_"):
             raise AttributeError(name)
-        raise ModelRequired()
+        raise BackendInterfaceUnsupported()
 
 
 def replay(case):
@@ -788,15 +805,19 @@ def replay(case):
         patch("arenamcp.line_search_moves.facts_for", return_value={}),
     ):
         try:
-            planner = ActionPlanner(NoModel())
+            backend = NoModel()
+            planner = ActionPlanner(backend)
             chosen = planner.plan_decision_options(decision, game_state_from_snapshot(case["snapshot"]))
             result.update(
                 status="answered" if decision.selection_is_valid(chosen) else "invalid", chosen=chosen
             )
         except ModelRequired:
-            pass
+            result["withheld_reason"] = "generation_required"
+        except BackendInterfaceUnsupported:
+            result.update(status="error", error="BackendInterfaceUnsupported")
         except Exception as error:
             result.update(status="error", error=type(error).__name__)
+    result["generation_attempts"] = backend.generation_attempts
     result["seconds"] = time.perf_counter() - start
     return result
 

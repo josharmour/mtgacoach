@@ -97,7 +97,7 @@ def test_backend_is_fail_closed():
 
     with pytest.raises(b.ModelRequired):
         b.NoModel().complete("not sent")
-    with pytest.raises(b.ModelRequired):
+    with pytest.raises(b.BackendInterfaceUnsupported):
         _ = b.NoModel().unknown_interface
 
 
@@ -507,3 +507,49 @@ def test_role_map_rejects_ambiguous_shapes_and_other_identities():
     for key in ("account_id", "player_name", "username"):
         data = {"schema": 1, "final_state": valid, key: "You"}
         assert "You" in b.discover_identities(data)
+
+
+def test_inert_backend_capabilities_do_not_mean_model_demand():
+    from arenamcp.action_planner import llm_circuit_open, llm_degraded
+
+    backend = b.NoModel()
+    assert not llm_circuit_open(backend)
+    assert not llm_degraded(backend)
+    assert backend.model is None
+    assert backend.last_request_metrics is None
+    assert backend.generation_attempts == 0
+
+
+def test_replay_distinguishes_generation_from_interface_failure(tmp_path, monkeypatch):
+    from arenamcp.action_planner import ActionPlanner
+
+    path = tmp_path / "bundle.json"
+    path.write_text(json.dumps(sample()))
+    case = b.build_cases([path])[0][0]
+
+    case["snapshot"]["state"].update(
+        zones={},
+        local_seat_id=1,
+        battlefield=[],
+        turn={"active_player": 1, "turn_number": 1, "phase": "Phase_Main1"},
+    )
+
+    def generation(self, *args):
+        assert self._backend.available()
+        assert not self._backend.degraded()
+        self._backend.complete("synthetic prompt")
+
+    monkeypatch.setattr(ActionPlanner, "plan_decision_options", generation)
+    result = b.replay(case)
+    assert result["status"] == "withheld"
+    assert result["generation_attempts"] == 1
+    assert result["withheld_reason"] == "generation_required"
+
+    def unsupported(self, *args):
+        return self._backend.unimplemented_status
+
+    monkeypatch.setattr(ActionPlanner, "plan_decision_options", unsupported)
+    result = b.replay(case)
+    assert result["status"] == "error"
+    assert result["error"] == "BackendInterfaceUnsupported"
+    assert result["generation_attempts"] == 0
