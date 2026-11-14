@@ -261,3 +261,37 @@ def test_actual_turn_aliases_and_pending_combat_shape_preserved(tmp_path):
         assert bool(cases) is accepted
         if cases:
             assert cases[0]["snapshot"]["state"]["turn"] == current
+
+
+def test_grouped_schema_builder_preserves_action_graph_and_rejects_collision(tmp_path):
+    from tests.test_benchmark_schema import action_structures
+
+    bundle = sample()
+    d = bundle["packet"]["decisions"][0]
+    d["pending_decision"]["request_type"] = "ActionsAvailable"
+    state = d["state_snapshot"]["state"]
+    state.update(
+        controlled_turn={
+            "opponent_controlled_by_you": False,
+            "you_controlled_by_opponent": False,
+            "deciding_for_opponent": False,
+        },
+        zones={"library_count": 40, "library_count_source": "log_zone_membership"},
+        decision_context={
+            "type": "ActionsAvailable",
+            "requestType": "ActionsAvailable",
+            "requestClass": "ActionsAvailableRequest",
+            "sourceId": 2,
+            "prompt": {"promptId": 1, "parameters": []},
+        },
+    )
+    meta = {"actionType": "ActionType_Cast", "instanceId": 7, **action_structures()}
+    d["pending_decision"]["options"][0]["meta"] = meta
+    path = tmp_path / "bundle.json"
+    path.write_text(json.dumps(bundle))
+    cases, _, counts = b.build_cases([path])
+    assert len(cases) == 1, counts
+    assert cases[0]["decision"]["options"][0]["meta"] == meta
+    bundle["account_id"] = 3
+    path.write_text(json.dumps(bundle))
+    assert b.build_cases([path])[0] == []

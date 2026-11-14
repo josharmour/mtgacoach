@@ -254,6 +254,10 @@ def assert_record_schema(value, context):
     for key, item in value.items():
         if private_key(key) or (context == "player" and key in {"name", "id"}):
             continue
+        from arenamcp.benchmark_schema import extended_field
+
+        if extended_field(context, key, item):
+            continue
         valid = False
         if context == "card":
             if key in _CARD_TEXT:
@@ -372,6 +376,17 @@ def assert_case_schema(snapshot, pending):
     for key, value in state.items():
         if private_key(key):
             continue
+        from arenamcp.benchmark_schema import state_field
+
+        def card_check(card):
+            try:
+                assert_record_schema(card, "card")
+                return True
+            except (UnsafeCase, TypeError, ValueError):
+                return False
+
+        if state_field(key, value, card_check):
+            continue
         if key in {"hand", "battlefield", "graveyard", "exile", "command", "stack", "deck_cards"}:
             if not isinstance(value, list):
                 raise UnsafeCase("card list")
@@ -487,6 +502,8 @@ def assert_case_schema(snapshot, pending):
             }:
                 raise UnsafeCase("format")
         elif key in {"legal_actions", "legal_actions_raw", "_bridge_actions"}:
+            if value is None:
+                continue
             if not isinstance(value, list):
                 raise UnsafeCase("actions")
             for action in value:
