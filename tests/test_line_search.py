@@ -1964,6 +1964,7 @@ def test_a1_payments_and_evoke_are_applied_to_real_search_nodes(monkeypatch):
     _with_records(monkeypatch, [(_FURY_CARD, _FURY_RECORD), (_CHROME_MOX_CARD, _CHROME_MOX_RECORD)])
     blue = {"name": "Blue payment", "type_line": "Sorcery", "mana_cost": "{U}", "oracle_text": ""}
     source = _a1_board(_FURY_CARD, _CHROME_MOX_CARD, _SHOCK_CARD, blue)
+    source = amend(source, cards={950: {"oracle_text": ""}})  # plain body, no graveyard engine
     observed = []
     apply = lsm.Moves._apply_casts
 
@@ -2048,3 +2049,89 @@ def test_a1_captured_case_unevaluated_count_improves_without_model(monkeypatch):
     _with_records(monkeypatch, cases)
     after = sum(bool(lsm.unmodelled_effect(dict(card))) for card, _ in cases)
     assert (before, after) == (3, 0)  # captured-card test boards, not live-match evidence
+
+
+@pytest.mark.parametrize("mutation", ["amount", "mana", "cost", "restriction", "death"])
+def test_a1_imprint_unsupported_record_keeps_missing_record_transitions(monkeypatch, mutation):
+    from arenamcp import line_search_moves as lsm
+    from arenamcp.card_facts.schema import card_facts_from_dict
+
+    card, record = deepcopy(_CHROME_MOX_CARD), deepcopy(_CHROME_MOX_RECORD)
+    if mutation == "amount":
+        record["effects"][0]["effect"]["amount"] = 2
+    elif mutation == "mana":
+        record["effects"][0]["effect"]["mana"] = "red"
+    elif mutation == "cost":
+        card["oracle_text"] = card["oracle_text"].replace("{oT}:", "{1}, {oT}:")
+    elif mutation == "restriction":
+        card["oracle_text"] += " Activate only during your turn."
+    else:
+        record["effects"].append(
+            {"trigger": "DIES", "effect": {"effect_type": "AddMana", "mana": "any color", "amount": 1}}
+        )
+    assert lsm._record_semantics(card_facts_from_dict(record), card["name"], card) is None
+    # Run the real search and compare actual applied states against no record,
+    # not merely the unmodelled flag or generated variants.
+    states = []
+    original = lsm.Moves._apply_casts
+
+    def capture(self, mid, *args, **kwargs):
+        original(self, mid, *args, **kwargs)
+        states.append(
+            (
+                tuple(sorted(mid.hand)),
+                tuple(sorted(r.name for r in mid.rocks)),
+                tuple(sorted(b["instance_id"] for b in mid.ours)),
+                mid.our_life,
+                mid.opp_life,
+            )
+        )
+
+    monkeypatch.setattr(lsm.Moves, "_apply_casts", capture)
+    _with_records(monkeypatch, [])
+    _a1_variants(_a1_board(card, _SHOCK_CARD))
+    expected = list(states)
+    states.clear()
+    _with_records(monkeypatch, [(card, record)])
+    _a1_variants(_a1_board(card, _SHOCK_CARD))
+    assert states and states == expected
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Whenever another creature dies, each opponent loses 1 life.",
+        "When this creature dies, return it to the battlefield.",
+        "If a creature would die, exile it instead.",
+        "Undying",
+        "Whenever you sacrifice a permanent, create a 1/1 creature token.",
+    ],
+)
+def test_a1_evoke_interactions_abstain_before_mutating_actual_mid(monkeypatch, text):
+    from arenamcp import line_search_moves as lsm
+    from arenamcp.sacrifice_continuation import UnsupportedContinuation
+
+    _with_records(monkeypatch, [(_FURY_CARD, _FURY_RECORD)])
+    original = lsm.Moves._apply_casts
+    rejected = []
+
+    def probe(self, mid, *args, **kwargs):
+        if any(v.ephemeral for v, _ in mid.casts):
+            # Add a visible interaction to the real search node at application.
+            body = {
+                "instance_id": 987654,
+                "_card": {"name": "Interaction", "oracle_text": text, "type_line": "Creature"},
+            }
+            mid.theirs.append(body)
+            before = deepcopy((mid.hand, mid.ours, mid.theirs, mid.our_life, mid.opp_life, mid.rocks))
+            with pytest.raises(UnsupportedContinuation):
+                original(self, mid, *args, **kwargs)
+            assert (mid.hand, mid.ours, mid.theirs, mid.our_life, mid.opp_life, mid.rocks) == before
+            assert "Fury" in self.public_unmodelled
+            rejected.append(True)
+            raise UnsupportedContinuation("tested unsupported evoke interaction")
+        original(self, mid, *args, **kwargs)
+
+    monkeypatch.setattr(lsm.Moves, "_apply_casts", probe)
+    _a1_variants(_a1_board(_FURY_CARD, _SHOCK_CARD))
+    assert rejected

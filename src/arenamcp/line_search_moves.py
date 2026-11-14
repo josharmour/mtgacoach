@@ -2184,19 +2184,38 @@ def _record_semantics(record: Any, name: str, card: dict | None = None) -> dict 
     chosen hand payment with produced colors bound to that exact card.
     """
     entries = cast_time_entries(record)
+    if len(entries) != len(record.effects):
+        return None  # never erase death/attack/other effects omitted by cast-time projection
     if not entries and not record.modes:
         return None  # defensive: callers require one of the two
     rock, consume = False, None
     landfall_mana = False
     for entry in entries:
-        if entry.conditions:
+        if entry.conditions or entry.trigger not in ("", "CAST", "ENTERS_THE_BATTLEFIELD"):
             return None
         effect = entry.effect
         if isinstance(effect, AddMana):
+            if rock or landfall_mana:
+                return None  # multiple mana effects are not a single source
             if entry.trigger == "":
                 if not _IMPRINT_COLORS_RE.search(str((card or {}).get("oracle_text") or "")):
                     return None  # no generic activated-mana timing/payment representation
                 if "may exile" not in str((card or {}).get("oracle_text") or "").lower():
+                    return None
+                # This source represents exactly one tap-only activation. The
+                # record schema does not encode activation costs, so bind the
+                # complete oracle activation rather than trusting an AddMana tag.
+                oracle = str((card or {}).get("oracle_text") or "")
+                activation = oracle.split("\n")[-1].strip()
+                if (
+                    effect.amount != 1
+                    or effect.mana.lower() not in ("any color", "any colour")
+                    or not re.fullmatch(
+                        r"\{(?:oT|T)\}: Add one mana of any of the exiled card's colors\.",
+                        activation,
+                        re.IGNORECASE,
+                    )
+                ):
                     return None
                 rock = True
             elif entry.trigger == "ENTERS_THE_BATTLEFIELD":
@@ -2213,7 +2232,7 @@ def _record_semantics(record: Any, name: str, card: dict | None = None) -> dict 
             continue
         if isinstance(effect, Exile):
             spec = _hand_consumption(effect.target)
-            if spec is None:
+            if spec is None or consume is not None:
                 return None
             consume = spec
             continue
@@ -4607,6 +4626,28 @@ class Moves:
         )
 
     def _apply_casts(self, mid: Mid, start: int = 0, chipped: dict[int, int] | None = None) -> None:
+        # Evoke's sacrifice is only a plain disappearance when no visible
+        # death/replacement/return interaction exists. Do not simulate a false
+        # end-state: the existing unsupported-continuation path marks the whole
+        # choice unmodelled and drops it before costs or ETB effects are applied.
+        if any(v.ephemeral for v, _ in mid.casts):
+            from arenamcp.sacrifice_continuation import UnsupportedContinuation
+
+            cards = list(self.model.our_permanents) + list(self._their_noncreature_permanents())
+            cards += [b.get("_card") or b for b in (*mid.ours, *mid.theirs)]
+            cards += [self.spells[v.spell].spell.card for v, _ in mid.casts]
+            if any(
+                re.search(
+                    r"\b(?:dies|die|dying|graveyard|undying|persist)\b"
+                    r"|\bleav(?:e|es|ing) the battlefield\b"
+                    r"|\bwhenever[^.\n]*sacrifice\b|\bwhen you sacrifice\b",
+                    _text(card),
+                )
+                for card in cards
+            ):
+                reason = "evoke death/replacement/return interaction unmodelled"
+                self._unmodelled_response(mid.casts, reason)
+                raise UnsupportedContinuation(reason)
         mid.applied = True
         chipped = {} if chipped is None else chipped  # damage combined-kill pieces dealt each target so far
         for index in range(start, len(mid.casts)):
