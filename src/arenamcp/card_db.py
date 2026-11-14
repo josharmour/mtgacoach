@@ -348,6 +348,19 @@ class FallbackCardDatabase:
         return list(self._sources)
 
     @staticmethod
+    def _same_identity(left: str, right: str) -> bool:
+        """Require the same named face; numeric IDs are not cross-source identity.
+
+        Do not match a front face to a back face or to combined ``A // B``
+        text. Exact combined names still match each other. Unknown names do
+        not establish identity, even if both sources use the same placeholder.
+        """
+        left, right = " ".join(left.split()), " ".join(right.split())
+        if is_unknown_card_name(left) or is_unknown_card_name(right):
+            return False
+        return left.casefold() == right.casefold()
+
+    @staticmethod
     def _is_token(card: CardInfo) -> bool:
         if getattr(card, "is_token", False):
             return True
@@ -427,6 +440,10 @@ class FallbackCardDatabase:
 
             if best is None:
                 best = result
+            elif not self._same_identity(best.name, result.name):
+                # Arena and third-party IDs can collide (Island vs Plains).
+                # Never graft another card/face's rules or costs onto best.
+                continue
 
             # If we have oracle_text AND don't need enrichment, we're done
             if best.oracle_text and not self._needs_enrichment(best):
@@ -478,7 +495,7 @@ class FallbackCardDatabase:
                 )
                 continue
 
-            if result is not None:
+            if result is not None and self._same_identity(name, result.name):
                 return result
 
         return None
