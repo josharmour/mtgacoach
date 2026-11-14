@@ -177,3 +177,42 @@ def test_server_shaped_zones_are_realiased() -> None:
     restored = game_state_from_snapshot(snapshot)
     assert restored == gs
     assert restored["zones"]["battlefield"] is restored["battlefield"]
+
+
+@pytest.mark.parametrize("zones", [None, {}])
+def test_snapshot_without_zone_metadata_restores(zones) -> None:
+    # The serializer intentionally omits empty zone metadata. Both accepted
+    # input shapes must remain replayable, without changing legacy aliases.
+    original = {"turn": {"turn_number": 3}, "hand": [{"instance_id": 17}]}
+    if zones is not None:
+        original["zones"] = zones
+    snapshot = build_decision_snapshot(original)
+    assert snapshot is not None and "zones" not in snapshot["state"]
+    retained = copy.deepcopy(snapshot)
+    restored = game_state_from_snapshot(snapshot)
+    assert restored["turn"] == original["turn"]
+    assert restored["hand"] == original["hand"]
+    if zones is None:
+        assert restored["zones"]["hand"] is restored["hand"]
+        assert restored["zones"]["my_hand"] is restored["hand"]
+    else:
+        assert restored["zones"] == {}
+    restored["hand"][0]["instance_id"] = 99
+    assert snapshot == retained
+    assert original["hand"][0]["instance_id"] == 17
+
+
+@pytest.mark.parametrize("snapshot", [None, {}, {"version": 1, "state": {}}])
+def test_empty_snapshot_restores_default_empty_zone_aliases(snapshot) -> None:
+    restored = game_state_from_snapshot(snapshot)
+    assert set(restored) == {"zones"}
+    assert set(restored["zones"]) == {
+        "battlefield",
+        "command",
+        "exile",
+        "graveyard",
+        "hand",
+        "my_hand",
+        "stack",
+    }
+    assert all(value == [] for value in restored["zones"].values())

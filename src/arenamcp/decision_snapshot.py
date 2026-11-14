@@ -133,7 +133,7 @@ def game_state_from_snapshot(snapshot: dict[str, Any] | None) -> dict[str, Any]:
     """
     state = copy.deepcopy((snapshot or {}).get("state") or {})
     aliases = state.pop("_zone_aliases", None)
-    zones = dict(state.pop("zones") or {})
+    zones = dict(state.pop("zones", {}) or {})
     if aliases is None:
         # The server's public zones always alias the card lists.
         aliases = ["battlefield", "command", "exile", "graveyard", "hand", "my_hand", "stack"]
