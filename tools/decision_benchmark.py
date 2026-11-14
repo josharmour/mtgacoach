@@ -389,6 +389,12 @@ def assert_case_schema(snapshot, pending):
                 if k in {"active_player", "priority_player", "decision_player", "turn_number"} and numeric(v):
                     continue
                 if k == "phase" and v in {
+                    "None",
+                    "Beginning",
+                    "Main1",
+                    "Combat",
+                    "Main2",
+                    "Ending",
                     "Phase_Beginning",
                     "Phase_Main1",
                     "Phase_Combat",
@@ -399,6 +405,23 @@ def assert_case_schema(snapshot, pending):
                     continue
                 if k == "step" and v in {
                     "",
+                    "None",
+                    "Untap",
+                    "Upkeep",
+                    "Draw",
+                    "Main",
+                    "PreCombatMain",
+                    "BeginCombat",
+                    "DeclareAttack",
+                    "DeclareAttackers",
+                    "DeclareBlock",
+                    "DeclareBlockers",
+                    "FirstStrikeDamage",
+                    "CombatDamage",
+                    "EndCombat",
+                    "PostCombatMain",
+                    "End",
+                    "Cleanup",
                     "Step_None",
                     "Step_Untap",
                     "Step_Upkeep",
@@ -417,6 +440,28 @@ def assert_case_schema(snapshot, pending):
                     "Step_End",
                     "Step_Cleanup",
                 }:
+                    continue
+                if k == "stage" and v in {"Start", "Play"}:
+                    continue
+                if k == "pending_combat_steps" and isinstance(v, list):
+                    for combat_step in v:
+                        if not isinstance(combat_step, dict) or set(combat_step) != {
+                            "active_player",
+                            "step",
+                            "turn",
+                        }:
+                            raise UnsafeCase("combat_step combat shape")
+                        if type(combat_step["active_player"]) is not int or combat_step[
+                            "active_player"
+                        ] not in {
+                            1,
+                            2,
+                        }:
+                            raise UnsafeCase("combat_step combat seat")
+                        if type(combat_step["turn"]) is not int or combat_step["turn"] < 0:
+                            raise UnsafeCase("combat_step combat turn")
+                        if combat_step["step"] not in {"Step_DeclareAttack", "Step_DeclareBlock"}:
+                            raise UnsafeCase("combat_step combat step")
                     continue
                 raise UnsafeCase("turn field")
         elif key == "_zone_aliases":

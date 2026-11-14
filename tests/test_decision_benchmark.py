@@ -225,3 +225,39 @@ def test_observed_public_ladder_formats_preserved_not_free_form(tmp_path):
         assert bool(cases) is accepted
         if cases:
             assert cases[0]["snapshot"]["state"]["format_name"] == format_name
+
+
+def test_actual_turn_aliases_and_pending_combat_shape_preserved(tmp_path):
+    import copy
+
+    turn = {
+        "phase": "Main1",
+        "step": "None",
+        "stage": "Play",
+        "pending_combat_steps": [{"active_player": 2, "turn": 3, "step": "Step_DeclareBlock"}],
+    }
+    for change, accepted in [
+        (None, True),
+        ("stage", False),
+        ("step", False),
+        ("pending_extra", False),
+        ("pending_turn", False),
+        ("pending_step", False),
+    ]:
+        current = copy.deepcopy(turn)
+        if change in {"stage", "step"}:
+            current[change] = "OpaqueCustomer"
+        elif change == "pending_extra":
+            current["pending_combat_steps"][0]["customer"] = "secret"
+        elif change == "pending_turn":
+            current["pending_combat_steps"][0]["turn"] = "private"
+        elif change == "pending_step":
+            current["pending_combat_steps"][0]["step"] = "OpaqueCustomer"
+        bundle = sample()
+        bundle["packet"]["decisions"][0]["state_snapshot"]["state"]["turn"] = current
+        path = tmp_path / "bundle.json"
+        path.write_text(json.dumps(bundle))
+        cases, _, _ = b.build_cases([path])
+        assert bool(cases) is accepted
+        if cases:
+            assert cases[0]["snapshot"]["state"]["turn"] == current
