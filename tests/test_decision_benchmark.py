@@ -136,3 +136,26 @@ def test_invalid_selections_and_result_are_excluded(tmp_path):
     bundle["result"] = "Private Person won"
     path.write_text(json.dumps(bundle))
     assert b.build_cases([path])[0] == []
+
+
+def test_semantic_identity_collision_and_unknown_schema_fail_closed(tmp_path):
+    for kind in ("card_collision", "unchosen_id", "unknown_meta", "numeric_key"):
+        bundle = sample()
+        bundle["player_id"] = "Secret Account"
+        decision = bundle["packet"]["decisions"][0]
+        if kind == "card_collision":
+            bundle["player_name"] = "Fury"
+        elif kind == "unchosen_id":
+            decision["pending_decision"]["options"].append(
+                {"option_id": "Secret Account", "label": "Other", "payable": None, "meta": {}}
+            )
+        elif kind == "numeric_key":
+            bundle["account_id"] = 12345
+            decision["pending_decision"]["options"][0]["meta"]["12345"] = "hidden"
+        else:
+            decision["pending_decision"]["options"][0]["meta"]["customer_notes"] = "private"
+        path = tmp_path / "bundle.json"
+        path.write_text(json.dumps(bundle))
+        cases, _, counts = b.build_cases([path])
+        assert not cases, counts
+        assert json.loads(path.read_text()) == bundle

@@ -28,6 +28,347 @@ PRIVATE = {
 }
 
 
+# Frozen v1 observed structural vocabulary; new fields require explicit review.
+_SCHEMA_KEYS = frozenset(
+    (
+        "Burden",
+        "C",
+        "Charge",
+        "Colorless",
+        "Energy",
+        "Finality",
+        "Flying",
+        "G",
+        "Green",
+        "Lore",
+        "Loyalty",
+        "M1M1",
+        "P1P1",
+        "Plan",
+        "Quest",
+        "R",
+        "Stun",
+        "Time",
+        "U",
+        "W",
+        "Wish",
+        "_ability_grp_id",
+        "_alternative",
+        "_alternative_grp_id",
+        "_autotap_lands",
+        "_bridge_actions",
+        "_bridge_allow_undo",
+        "_bridge_can_cancel",
+        "_bridge_can_pass",
+        "_bridge_game_state_id",
+        "_bridge_request_class",
+        "_bridge_request_type",
+        "_bridge_source",
+        "_castable",
+        "_mana_cost_str",
+        "_return_credit_blocked",
+        "_source_id",
+        "_unaffordable",
+        "_zone_aliases",
+        "abilityGrpId",
+        "ability_grp_ids",
+        "ability_text",
+        "actionType",
+        "action_types",
+        "active_player",
+        "affectedId",
+        "affectorId",
+        "allowCancel",
+        "allowFailToFind",
+        "alternative",
+        "alternativeCostText",
+        "alternativeGrpId",
+        "alternativeSourceZcid",
+        "assumeCanBePaidFor",
+        "attached_to_id",
+        "attack_target_id",
+        "attackerInstanceId",
+        "autoTapActions",
+        "autoTapSolution",
+        "base_grp_id",
+        "battlefield",
+        "can_cancel",
+        "can_pass",
+        "candidate_ids",
+        "card",
+        "card_grp_id",
+        "card_name",
+        "card_types",
+        "castingTimeOptionReq",
+        "castingTimeOptionType",
+        "childIndex",
+        "choice",
+        "choiceKind",
+        "class_level",
+        "cmc",
+        "color",
+        "color_id",
+        "color_production",
+        "colors",
+        "command",
+        "commander_casts",
+        "commander_grp_ids",
+        "commander_ids",
+        "commander_return",
+        "context",
+        "context_raw",
+        "controlled_turn",
+        "controller_seat_id",
+        "count",
+        "counters",
+        "ctoId",
+        "damage",
+        "damage_taken",
+        "damaged_this_turn",
+        "death_swing",
+        "deciding_for_opponent",
+        "decision_context",
+        "decision_player",
+        "decision_seat_id",
+        "deck_cards",
+        "designations",
+        "door_token_seen",
+        "dungeon_status",
+        "entered_via_play_land",
+        "event_id",
+        "excludedOptions",
+        "exile",
+        "face_down",
+        "face_down_reason",
+        "facetId",
+        "format_name",
+        "freeMulliganCount",
+        "gameStateId",
+        "game_number",
+        "graveyard",
+        "groupSpecs",
+        "groupType",
+        "grpId",
+        "grp_id",
+        "hand",
+        "hand_complete",
+        "hand_count",
+        "hand_loss",
+        "hasAutoTap",
+        "has_enduring_story",
+        "haveTriggersBeenApplied",
+        "highlight",
+        "id",
+        "id_type",
+        "identity_known",
+        "ids",
+        "instanceId",
+        "instanceIds",
+        "instance_id",
+        "isBatchable",
+        "isManaAbilityWithSideEffect",
+        "isRequired",
+        "is_attacking",
+        "is_blocked",
+        "is_blocking",
+        "is_copy",
+        "is_local",
+        "is_room",
+        "is_tapped",
+        "itemsSought",
+        "itemsToSearch",
+        "keywords",
+        "label",
+        "lands_played",
+        "legalAction",
+        "legalDamageRecipients",
+        "legal_actions",
+        "legal_actions_raw",
+        "library_count",
+        "library_count_source",
+        "life_gained_this_game",
+        "life_gained_this_turn",
+        "life_total",
+        "linkedSelections",
+        "list_type",
+        "local_graveyard",
+        "local_seat_id",
+        "london_mulligan",
+        "lower",
+        "lowerBound",
+        "loyalty",
+        "mana",
+        "manaColor",
+        "manaCost",
+        "manaId",
+        "manaPaymentConditions",
+        "manaPaymentOption",
+        "manaPaymentOptions",
+        "manaPayments",
+        "manaSelections",
+        "manaSpentMatters",
+        "mana_cost",
+        "mana_pool",
+        "match_id",
+        "max",
+        "maxActivations",
+        "maxFind",
+        "maxSel",
+        "maxTargets",
+        "maxValue",
+        "max_select",
+        "max_targets",
+        "max_weight",
+        "mechanics",
+        "meta",
+        "min",
+        "minSel",
+        "minTargets",
+        "min_select",
+        "min_targets",
+        "min_weight",
+        "modalOptions",
+        "modalReq",
+        "msgId",
+        "mulliganCount",
+        "mulligan_count",
+        "name",
+        "num_actions",
+        "num_options",
+        "numberValue",
+        "numericInputReq",
+        "numericInputType",
+        "numericValue",
+        "objectId",
+        "object_kind",
+        "opponent_controlled_by_you",
+        "opponent_graveyard",
+        "opponent_hand_count",
+        "opponent_library_count",
+        "opponent_seat_id",
+        "optionIndex",
+        "option_cards",
+        "option_context",
+        "option_id",
+        "option_ids",
+        "optionalActionMessage",
+        "optionalActionTypes",
+        "optional_action_types",
+        "options",
+        "oracle_text",
+        "owner_seat_id",
+        "parameterName",
+        "parameters",
+        "parent_instance_id",
+        "payable",
+        "pending_combat_steps",
+        "pending_selection_objects",
+        "phase",
+        "playerIdToPrompt",
+        "playerSystemSeatId",
+        "player_seat",
+        "players",
+        "power",
+        "prior_prompt",
+        "priority_player",
+        "prompt",
+        "promptCardIds",
+        "promptCards",
+        "promptId",
+        "promptText",
+        "prompt_card_ids",
+        "prompt_cards",
+        "prompt_id",
+        "prompt_source_id",
+        "prompt_text",
+        "raw",
+        "recipientCards",
+        "recipientIds",
+        "recipient_ids",
+        "recipient_names",
+        "recipients",
+        "related_faces",
+        "repeatedSelectAllowed",
+        "requestClass",
+        "requestType",
+        "request_id",
+        "request_type",
+        "seat_id",
+        "selected",
+        "selectedColor",
+        "selectedDamageRecipient",
+        "selectionCount",
+        "selection_context",
+        "selection_source_grp_id",
+        "shouldStop",
+        "slots",
+        "sourceId",
+        "source_card",
+        "source_card_oracle_text",
+        "source_id",
+        "source_label",
+        "source_oracle_text",
+        "source_parent_instance_id",
+        "spec_index",
+        "specs",
+        "srcInstanceId",
+        "stack",
+        "stage",
+        "state",
+        "static_list",
+        "status",
+        "step",
+        "stepSize",
+        "subZoneType",
+        "sub_zone",
+        "subtype_id",
+        "subtypes",
+        "summarized",
+        "summoning_sickness",
+        "super_types",
+        "symbol",
+        "systemSeatIds",
+        "targetId",
+        "targetIdx",
+        "targetInstanceId",
+        "targetSourceZoneId",
+        "target_idx",
+        "targeting",
+        "targetingAbilityGrpId",
+        "targetingPlayer",
+        "targets",
+        "team_id",
+        "timeout_count",
+        "title_id",
+        "token_creator",
+        "token_creator_id",
+        "toughness",
+        "turn",
+        "turn_entered_battlefield",
+        "turn_number",
+        "type",
+        "type_line",
+        "unfiltered_ids",
+        "uniqueAbilityId",
+        "unknown",
+        "upper",
+        "upperBound",
+        "validationType",
+        "value",
+        "valueCase",
+        "version",
+        "visibility",
+        "weight",
+        "you_controlled_by_opponent",
+        "zone",
+        "zoneType",
+        "zone_id",
+        "zones",
+        "zonesToSearch",
+    )
+)
+
+
 def normalized_key(key):
     return str(key).lower().replace("_", "").replace("-", "")
 
@@ -35,6 +376,7 @@ def normalized_key(key):
 def private_key(key):
     return normalized_key(key) in {normalized_key(k) for k in PRIVATE} | {
         "playernames",
+        "playerid",
         "opponentnames",
         "accountids",
         "usernames",
@@ -49,8 +391,8 @@ def discover_identities(value, player=False):
             if sensitive:
 
                 def strings(node):
-                    if isinstance(node, str):
-                        found.add(node)
+                    if isinstance(node, (str, int)) and not isinstance(node, bool):
+                        found.add(str(node))
                     elif isinstance(node, dict):
                         for v in node.values():
                             strings(v)
@@ -80,7 +422,42 @@ def scrub(value, identities=(), *, player=False):
     if isinstance(value, str):
         for identity in sorted(identities, key=len, reverse=True):
             if identity:
-                value = re.sub(r"(?<!\w)" + re.escape(identity) + r"(?!\w)", "[redacted]", value, flags=re.I)
+                value = re.sub(re.escape(identity), "[redacted]", value, flags=re.I)
+    return value
+
+
+class UnsafeCase(ValueError):
+    pass
+
+
+def sanitize_semantics(value, identities, *, player=False, presentation=False):
+    """Remove identity fields; never rewrite game semantics or opaque references."""
+    if isinstance(value, dict):
+        result = {}
+        for key, item in value.items():
+            if private_key(key) or (player and normalized_key(key) in {"name", "id"}):
+                continue
+            if str(key).isdecimal() and str(key) in identities:
+                raise UnsafeCase("identity in dynamic dictionary key")
+            if key not in _SCHEMA_KEYS and not str(key).isdecimal():
+                raise UnsafeCase("unrecognized schema field")
+            # Generic name fields outside player records must identify game cards.
+            if key == "name" and not any(
+                k in value for k in ("instance_id", "grp_id", "type_line", "card_types")
+            ):
+                raise UnsafeCase("untyped name field")
+            result[key] = sanitize_semantics(
+                item, identities, player=normalized_key(key) == "players", presentation=key == "label"
+            )
+        return result
+    if isinstance(value, list):
+        return [sanitize_semantics(v, identities, player=player, presentation=presentation) for v in value]
+    if isinstance(value, str):
+        sanitized = scrub(value, identities)
+        if sanitized != value:
+            if not presentation:
+                raise UnsafeCase("identity overlaps semantic field")
+            return sanitized
     return value
 
 
@@ -138,15 +515,18 @@ def build_cases(paths):
             if bundle.get("result") not in {"win", "loss", "draw", "unknown", None}:
                 counts["invalid_result"] += 1
                 continue
-            if scrub(chosen, identities) != chosen:
-                counts["private_option_id"] += 1
+            try:
+                payload = {
+                    "snapshot": sanitize_semantics(snapshot, identities),
+                    "decision": sanitize_semantics(pending, identities),
+                    "chosen": sanitize_semantics(chosen, identities),
+                    "result": bundle.get("result"),
+                }
+                if not typed_decision(payload["decision"]).selection_is_valid(payload["chosen"]):
+                    raise UnsafeCase("sanitized selection invalid")
+            except (UnsafeCase, TypeError, ValueError, KeyError):
+                counts["unsafe_schema_or_identity"] += 1
                 continue
-            payload = {
-                "snapshot": scrub(snapshot, identities),
-                "decision": scrub(pending, identities),
-                "chosen": scrub(chosen, identities),
-                "result": bundle.get("result"),
-            }
             digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
             case_id = hashlib.sha256((group + digest).encode()).hexdigest()
             cases.append(
