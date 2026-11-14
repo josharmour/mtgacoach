@@ -387,7 +387,7 @@ def test_t1_hop_limit_watchdog_wait():
 
 def test_t1_cancelled_planning_waste():
     t1 = um.summarize_bundle(T1_BUNDLE)["t1"]
-    assert t1["cancelled_plan_s"] == [pytest.approx(3.0)]
+    assert t1["cancellation_marker_families"] == ["other"]
 
 
 def test_t1_final_clock_snapshot_records_local_seat_and_timers():
@@ -483,7 +483,8 @@ def test_t1_aggregate_and_render():
     assert by_type["rope_left_at_answer"]["min_s"] == pytest.approx(75.0)
 
     assert t1["hop_limit_watchdog_waits"]["total_s"] == pytest.approx(0.2)
-    assert t1["cancelled_planning_calls"]["total_s"] == pytest.approx(3.0)
+    assert t1["cancellation_markers"]["marker_count"] == 1
+    assert t1["cancellation_markers"]["attributable_duration_s"] is None
     assert t1["redundant_pass_cycles"]["total_s"] == pytest.approx(5.2)
 
     pm = t1["per_match"]["9e858d62"]
@@ -610,7 +611,7 @@ def test_t1_unanswered_only_types_survive_global_aggregation():
             "events": [],
             "unanswered_by_type": {"block": 2},
             "hop_waits_s": [],
-            "cancelled_plan_s": [],
+            "cancellation_marker_families": [],
             "redundant_pass_cycles_s": [],
         }
     }
@@ -618,3 +619,34 @@ def test_t1_unanswered_only_types_survive_global_aggregation():
     assert output["by_event_type"]["block"]["unanswered"] == 4
     assert output["by_event_type"]["block"]["answered"] == 0
     assert output["per_match"]["one"]["unanswered_by_type"] == {"block": 2}
+
+
+def test_cancellation_markers_never_infer_unique_calls_or_elapsed_cost():
+    lines = [
+        "2026-11-08 22:00:00.000 Planning actions for action window",
+        "2026-11-08 22:00:03.000 typed-decision: request changed during planning",
+        "2026-11-08 22:00:03.000 Backend returned error sentinel; no plan: request changed during planning",
+        "2026-11-08 22:00:03.000 Autopilot: request changed during planning",
+        "2026-11-08 22:00:03.000 plan_decision_options LLM path failed: request changed during planning",
+        "no timestamp request changed during planning",
+    ]
+    families = um.cancellation_marker_families(lines)
+    out = um.cancellation_summary(families)
+    assert out["marker_count"] == 5
+    assert all(value == 1 for value in out["families"].values())
+    assert out["unique_requests"] is None
+    assert out["attributable_duration_s"] is None
+    assert out["causal_time_rank_eligible"] is False
+    # Repeated logging is counted honestly, not deduplicated into guessed calls.
+    assert um.cancellation_summary(families * 2)["marker_count"] == 10
+    assert um.cancellation_summary([])["attributable_duration_s"] is None
+
+
+def test_cancellation_report_does_not_advertise_unproven_waste():
+    agg = um.aggregate([um.summarize_bundle(T1_BUNDLE)])
+    text = um.render_report(agg)
+    assert "log markers" in text
+    assert "attributable duration unproven" in text
+    assert "cancel marks" in text
+    assert "wasting" not in text
+    assert "cancelled_planning_calls" not in agg["t1"]

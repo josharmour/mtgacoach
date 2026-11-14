@@ -82,8 +82,6 @@ _ROPE_SIDES = {"TimerType_ActivePlayer": "active", "TimerType_NonActivePlayer": 
 _ANSWER_SEARCH_LINES = 80  # surface -> answer lookahead (log lines)
 _ANSWER_WINDOW_S = 120.0  # ...and max seconds between ask and answer
 _HOP_WAIT_WINDOW_S = 90.0  # hop-limit yield -> watchdog answer window
-_CANCEL_LOOKBACK_LINES = 60  # cancel -> planning-start lookback (lines)
-_CANCEL_LOOKBACK_S = 120.0  # ...and max seconds
 _SUBMIT_DEDUPE_S = 0.5  # mac + GRE bridges log one submission twice
 
 # "Clearing stale decision 'Priority' (window change to turn=9 active=1
@@ -537,25 +535,39 @@ def hop_limit_waits(coach_lines):
     return waits
 
 
-def cancelled_planning_waste(coach_lines):
-    """Seconds of planning thrown away when the request changed mid-plan."""
-    wastes = []
-    for i, line in enumerate(coach_lines):
+def cancellation_marker_families(coach_lines):
+    """Count log markers, not independent requests or attributable elapsed time.
+
+    Layered notices lack stable request identity; nearest preceding start cannot
+    establish causal pairing or additive waste, even after deduplication.
+    """
+    families = []
+    for line in coach_lines:
         if not REQUEST_CHANGED_RE.search(line):
             continue
-        cancel = coach_line_epoch(line)
-        if cancel is None:
-            continue
-        for j in range(i - 1, max(-1, i - _CANCEL_LOOKBACK_LINES), -1):
-            earlier_line = coach_lines[j]
-            earlier = coach_line_epoch(earlier_line)
-            if earlier is not None and cancel - earlier > _CANCEL_LOOKBACK_S:
-                break
-            if PLAN_TRIGGER_RE.search(earlier_line):
-                if earlier is not None and earlier <= cancel:
-                    wastes.append(round(cancel - earlier, 3))
-                break
-    return wastes
+        if "typed-decision:" in line:
+            family = "typed_decision"
+        elif "Backend returned error sentinel" in line:
+            family = "backend_error_sentinel"
+        elif "Autopilot:" in line:
+            family = "autopilot"
+        elif "LLM path failed" in line:
+            family = "planner_path_failure"
+        else:
+            family = "other"
+        families.append(family)
+    return families
+
+
+def cancellation_summary(families):
+    return {
+        "marker_count": len(families),
+        "families": dict(sorted(Counter(families).items())),
+        "unique_requests": None,
+        "attributable_duration_s": None,
+        "causal_time_rank_eligible": False,
+        "interpretation": "layered log markers; request identity and causal duration unproven",
+    }
 
 
 def redundant_pass_cycles(coach_lines):
@@ -638,7 +650,7 @@ def t1_bundle_metrics(bundle):
         "events": events,
         "unanswered_by_type": dict(unanswered),
         "hop_waits_s": hop_limit_waits(coach_lines),
-        "cancelled_plan_s": cancelled_planning_waste(coach_lines),
+        "cancellation_marker_families": cancellation_marker_families(coach_lines),
         "redundant_pass_cycles_s": redundant_pass_cycles(coach_lines),
         "local_seat": local_seat,
         "final_timers_by_seat": final_rope_seconds(clock),
@@ -683,7 +695,7 @@ def summarize_bundle(bundle):
             "events": [],
             "unanswered_by_type": Counter(),
             "hop_waits_s": [],
-            "cancelled_plan_s": [],
+            "cancellation_marker_families": [],
             "redundant_pass_cycles_s": [],
         },
     }
@@ -766,7 +778,7 @@ def _merge(dst, src):
     t1_dst, t1_src = dst["t1"], src["t1"]
     t1_dst["events"].extend(t1_src["events"])
     t1_dst["unanswered_by_type"].update(t1_src["unanswered_by_type"])
-    for key in ("hop_waits_s", "cancelled_plan_s", "redundant_pass_cycles_s"):
+    for key in ("hop_waits_s", "cancellation_marker_families", "redundant_pass_cycles_s"):
         t1_dst[key].extend(t1_src[key])
     dst["games"] += 1
 
@@ -798,7 +810,7 @@ def aggregate_t1(match_folds):
                 "events_by_type": defaultdict(list),
                 "unanswered_by_type": Counter(),
                 "hop_waits_s": [],
-                "cancelled_plan_s": [],
+                "cancellation_marker_families": [],
                 "redundant_pass_cycles_s": [],
             },
         )
@@ -815,7 +827,7 @@ def aggregate_t1(match_folds):
             by_type[event_type]["unanswered"] += count
         for key, dst_list in (
             ("hop_waits_s", hop),
-            ("cancelled_plan_s", cancels),
+            ("cancellation_marker_families", cancels),
             ("redundant_pass_cycles_s", cycles),
         ):
             dst_list.extend(t1[key])
@@ -846,7 +858,7 @@ def aggregate_t1(match_folds):
             "unanswered_by_type": dict(pm["unanswered_by_type"]),
             "events_by_type": {},
             "hop_waits": _stat_block(pm["hop_waits_s"]),
-            "cancelled_planning": _stat_block(pm["cancelled_plan_s"]),
+            "cancellation_markers": cancellation_summary(pm["cancellation_marker_families"]),
             "redundant_pass_cycles": _stat_block(pm["redundant_pass_cycles_s"]),
         }
         for etype, evs in pm["events_by_type"].items():
@@ -869,7 +881,7 @@ def aggregate_t1(match_folds):
     return {
         "by_event_type": by_type_out,
         "hop_limit_watchdog_waits": _stat_block(hop),
-        "cancelled_planning_calls": _stat_block(cancels),
+        "cancellation_markers": cancellation_summary(cancels),
         "redundant_pass_cycles": cycles_block,
         "per_match": per_match_out,
     }
@@ -903,7 +915,7 @@ def aggregate(summaries):
                     "events": [],
                     "unanswered_by_type": Counter(),
                     "hop_waits_s": [],
-                    "cancelled_plan_s": [],
+                    "cancellation_marker_families": [],
                     "redundant_pass_cycles_s": [],
                 },
                 "_latest": None,
@@ -1127,7 +1139,7 @@ def render_report(agg):
             f"{_secs(rope['min_s']):>12}{row['unanswered']:>7}"
         )
     hop = t1.get("hop_limit_watchdog_waits") or {}
-    cancels = t1.get("cancelled_planning_calls") or {}
+    cancels = t1.get("cancellation_markers") or {}
     cycles = t1.get("redundant_pass_cycles") or {}
     out.append(
         f"Watchdog waits after hop-limit yield: {hop.get('n', 0)} events, "
@@ -1135,9 +1147,12 @@ def render_report(agg):
         f"(median {_secs(hop.get('median_s'))} s)"
     )
     out.append(
-        f"Planning cancelled by request change: {cancels.get('n', 0)} calls "
-        f"wasting {cancels.get('total_s', 0.0):.1f} s "
-        f"(median {_secs(cancels.get('median_s'))} s)"
+        f"Request-change cancellation: {cancels.get('marker_count', 0)} log markers; "
+        "unique requests and attributable duration unproven (excluded from causal-time ranking)"
+    )
+    out.append(
+        "  marker families: "
+        + ", ".join(f"{name}={count}" for name, count in sorted(cancels.get("families", {}).items()))
     )
     out.append(
         f"Candidate redundant model calls on unchanged pass windows: "
@@ -1157,7 +1172,7 @@ def render_report(agg):
         for mid, entry in per_match.items()
         if entry.get("surfaced_events")
         or entry["hop_waits"]["n"]
-        or entry["cancelled_planning"]["n"]
+        or entry["cancellation_markers"]["marker_count"]
         or entry["redundant_pass_cycles"]["n"]
     }
     if interesting:
@@ -1167,7 +1182,7 @@ def render_report(agg):
             f"matches had measurable clock events):"
         )
         out.append(
-            f"{'match':<40}{'surf n/med s':>14}{'rope min s':>12}{'hop s':>8}{'cancel s':>10}{'cyc n/s':>14}"
+            f"{'match':<40}{'surf n/med s':>14}{'rope min s':>12}{'hop s':>8}{'cancel marks':>12}{'cyc n/s':>14}"
         )
         for mid, entry in sorted(interesting.items()):
             types = entry.get("events_by_type") or {}
@@ -1182,11 +1197,9 @@ def render_report(agg):
             cyc_cell = f"{cyc['n']}/{cyc['total_s']:.1f}" if cyc["n"] else "-"
             surf_cell = f"{surf_n}/{surf_med:.2f}" if surf_n else "-"
             hop_cell = f"{entry['hop_waits']['total_s']:.1f}" if entry["hop_waits"]["n"] else "-"
-            cancel_cell = (
-                f"{entry['cancelled_planning']['total_s']:.1f}" if entry["cancelled_planning"]["n"] else "-"
-            )
+            cancel_cell = str(entry["cancellation_markers"]["marker_count"])
             out.append(
-                f"{mid:<40}{surf_cell:>14}{_secs(rope_min):>12}{hop_cell:>8}{cancel_cell:>10}{cyc_cell:>14}"
+                f"{mid:<40}{surf_cell:>14}{_secs(rope_min):>12}{hop_cell:>8}{cancel_cell:>12}{cyc_cell:>14}"
             )
 
     return "\n".join(out)
