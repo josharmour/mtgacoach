@@ -2117,7 +2117,13 @@ class ProxyBackend:
 
             self._note_served_model(served_model, alias=call.request_alias if call is not None else None)
             content = "".join(chunks)
-            if "</think>" in content:
+            if (
+                call is not None
+                and call.call_class == "background.commentary"
+                and ("<think>" in content or "</think>" in content)
+            ):
+                content = ""  # Ambiguous channel framing is not final audit JSON.
+            elif "</think>" in content:
                 content = content.split("</think>")[-1].strip()
             if call is not None and call.call_class == "background.commentary":
                 # Audits must use completed final-channel JSON, never a fragment
@@ -2191,7 +2197,13 @@ class ProxyBackend:
         response = request()
         message = response.choices[0].message
         content = message.content or ""
-        if "</think>" in content:
+        if (
+            call is not None
+            and call.call_class == "background.commentary"
+            and ("<think>" in content or "</think>" in content)
+        ):
+            content = ""
+        elif "</think>" in content:
             content = content.split("</think>")[-1].strip()
         reasoning = (
             getattr(message, "reasoning_content", None)

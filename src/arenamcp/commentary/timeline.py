@@ -15,7 +15,12 @@ def position_fingerprint(observation, scope=""):
         },
     }
     private = observation.private_state
-    if scope.startswith("facts:"):
+    if scope.startswith("audit:"):
+        from .audited_facts import scope_keys, value
+
+        public = [value(observation, key) for key in scope_keys(scope)]
+        private = {}
+    elif scope.startswith("facts:"):
         parts = set(scope.removeprefix("facts:").split(","))
         # Exact full components, not relaxed predicates. Only known audited
         # dependency sets may select this scope; unknown facts keep full scope.
@@ -154,39 +159,3 @@ def historical_scope(scope, dependencies, text):
             r"\b(?:now|currently|still|might|could|next|will|would|if|hand|waiting)\b", text, re.I
         )
     )
-
-
-def generated_position_scope(dependencies, facts, fallback):
-    """Bind audited position claims to known exact observation components.
-
-    Called only after native verification. Never infer dependency absence from
-    prose, or narrow unknown/computed evidence. Identity is always retained.
-    """
-    if not dependencies:
-        return fallback
-    parts = {"identity"}
-    for key in dependencies:
-        if key == "state:battlefield":
-            parts.add("battlefield")
-        elif key == "state:board":
-            parts.add("zones")
-        elif re.fullmatch(r"state:player:[0-9]+", key):
-            parts.add("players")
-        elif key == "state:local_seat":
-            pass
-        elif re.fullmatch(r"private:hand:[0-9]+", key):
-            parts.add("private")
-        else:
-            return fallback
-    # Card facts may include life-dependent arithmetic even without an explicit
-    # player ref. Preserve that premise rather than treating it as timeless rules.
-    for key, fact in facts.items():
-        if not key.startswith(("state:", "private:", "event:", "card:")):
-            return fallback
-        if fact.get("kind") == "game_read":
-            return fallback
-        if key.startswith("card:") and "hypothetical_arithmetic" in fact:
-            parts.add("players")
-        elif key.startswith(("state:", "private:")) and key not in dependencies:
-            return fallback
-    return "facts:" + ",".join(sorted(parts))

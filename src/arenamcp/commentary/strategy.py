@@ -28,9 +28,35 @@ def strategic_observation(observation, event, *, private=False):
     def candidate(text, cards):
         if text in observation.recent_commentary or text in observation.recent_analysis:
             return None
-        ids = sorted({c.get("instance_id") for c in cards if type(c.get("instance_id")) is int})
+        if seat not in (1, 2) or any(
+            type(c.get("instance_id")) is not int or c["instance_id"] <= 0 for c in cards
+        ):
+            return None
+        ids = sorted({c["instance_id"] for c in cards})
+        if len(ids) != len(cards):
+            return None
         return (text, "cards:" + ",".join(map(str, ids))) if ids else None
 
+    # Exact printed conditions on two known permanents controlled by the same
+    # player. No assumption that life was gained or that a trigger resolved.
+    for payoff in own:
+        if (
+            "at the beginning of your end step, if you gained life this turn, each opponent loses 1 life."
+            not in rules(payoff).splitlines()
+        ):
+            continue
+        for enabler in own:
+            if enabler is payoff or not any(
+                re.fullmatch(r"whenever (?:a|another) creature you control enters, you gain 1 life\.", line)
+                for line in rules(enabler).splitlines()
+            ):
+                continue
+            found = candidate(
+                f"If {enabler['name']} gains life, {payoff['name']} could pressure the opponent at the end step without attacking.",
+                [enabler, payoff],
+            )
+            if found:
+                return found
     mobilizers = [c for c in own if re.search(r"\bmobilize\s+[1-9]", rules(c))]
     token_engines = [
         c

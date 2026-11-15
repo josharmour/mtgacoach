@@ -287,3 +287,11 @@ def test_nonstreamed_commentary_does_not_salvage_reasoning(monkeypatch):
     be, calls, _ = backend(monkeypatch, clock, [ValueError("stream unsupported"), response])
     assert be.complete("audit", "facts", 256, background=True, call_class="background.commentary") == ""
     assert len(calls) == 2
+
+
+def test_commentary_rejects_ambiguous_inline_reasoning(monkeypatch):
+    clock = FakeClock()
+    stream = FakeStream(clock, [(0.1, chunk('<think>proposed audit</think>{"checks":[]}', finish="stop"))])
+    be, calls, _ = backend(monkeypatch, clock, [stream])
+    assert be.complete("audit", "facts", 256, background=True, call_class="background.commentary") == ""
+    assert len(calls) == 1

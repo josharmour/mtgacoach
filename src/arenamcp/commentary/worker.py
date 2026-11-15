@@ -94,30 +94,31 @@ def main():
                     facade = HeadlessBooth(config, rpc, time.monotonic)
                     configuration = config
                 native, status = facade.generate(observation)
+                from .audited_facts import binding
                 from .delivery import LEVELS, delivery_level, event_excitement
                 from .timeline import (
                     event_lifetime,
-                    generated_position_scope,
-                    historical_scope,
                     position_fingerprint,
                 )
 
                 lines = []
                 for item in native:
                     tracked = facade.booth.tracked.get(item.uid, {})
-                    dependencies = tracked.get("deps", {})
-                    scope = facade.audit_scopes.get(item.text, "snapshot")
-                    historical = historical_scope(scope, dependencies, item.text)
-                    position = scope == "position" and "state:turn" not in dependencies
-                    position_scope = (
-                        "public"
-                        if position and not any(k.startswith("private:") for k in dependencies)
-                        else ""
+                    scope = facade.audit_scopes.get((item.role, item.text, tuple(tracked.get("refs", ()))))
+                    bound = (
+                        binding(scope, tracked, facade.event_sources, observation, item.text)
+                        if scope
+                        else None
                     )
-                    if position:
-                        position_scope = generated_position_scope(
-                            dependencies, tracked.get("facts", {}), position_scope
-                        )
+                    if bound is None:
+                        # No unbound tail or unanswered handoff can escape without its premises.
+                        for pending in native:
+                            facade.delivered(pending.uid, "superseded")
+                        lines.clear()
+                        status = {**status, "reason": "unknown_audit_dependencies"}
+                        break
+                    scope, position_scope = bound
+                    position, historical = scope == "position", scope == "historical"
                     cited = [
                         facade.event_sources[ref]
                         for ref in tracked.get("refs", ())
@@ -131,10 +132,6 @@ def main():
                         excitement = max(
                             (event_excitement(e) for e in cited), key=LEVELS.index, default="normal"
                         )
-                    evidence_time = min(
-                        (e.received_at or observation.arrived_at for e in cited),
-                        default=observation.arrived_at,
-                    )
                     lines.append(
                         Utterance(
                             item.uid,

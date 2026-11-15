@@ -1,0 +1,272 @@
+{
+  "match_id": "replay-195635",
+  "game_number": 1,
+  "local_seat_id": 2,
+  "turn": {
+    "turn_number": 11,
+    "active_player": 2,
+    "phase": "Main1",
+    "step": "None"
+  },
+  "players": [
+    {
+      "seat_id": 1,
+      "life_total": 18
+    },
+    {
+      "seat_id": 2,
+      "life_total": 20
+    }
+  ],
+  "zones": {
+    "battlefield": [
+      {
+        "instance_id": 297,
+        "grp_id": 75556,
+        "name": "Plains",
+        "type_line": "Basic Land — Plains",
+        "oracle_text": "({T}: Add {W}.)",
+        "controller_seat_id": 2,
+        "power": null,
+        "toughness": null,
+        "is_tapped": true,
+        "mana_cost": ""
+      },
+      {
+        "instance_id": 299,
+        "grp_id": 78637,
+        "name": "Shipwreck Marsh",
+        "type_line": "Land",
+        "oracle_text": "This land enters tapped unless you control two or more other lands.\n{oT}: Add {oU} or {oB}.",
+        "controller_seat_id": 1,
+        "power": null,
+        "toughness": null,
+        "is_tapped": true,
+        "mana_cost": ""
+      },
+      {
+        "instance_id": 301,
+        "grp_id": 75556,
+        "name": "Plains",
+        "type_line": "Basic Land — Plains",
+        "oracle_text": "({T}: Add {W}.)",
+        "controller_seat_id": 2,
+        "power": null,
+        "toughness": null,
+        "is_tapped": false,
+        "mana_cost": ""
+      },
+      {
+        "instance_id": 306,
+        "grp_id": 96835,
+        "name": "Watery Grave",
+        "type_line": "Land — Island Swamp",
+        "oracle_text": "As this land enters, you may pay 2 life. If you don't, it enters tapped.\n{oT}: Add {oU}.\n{oT}: Add {oB}.",
+        "controller_seat_id": 1,
+        "power": null,
+        "toughness": null,
+        "is_tapped": false,
+        "mana_cost": ""
+      },
+      {
+        "instance_id": 312,
+        "grp_id": 92189,
+        "name": "Nowhere to Run",
+        "type_line": "Enchantment",
+        "oracle_text": "Flash\nWhen this enchantment enters, target creature an opponent controls gets -3/-3 until end of turn.\nCreatures your opponents control can be the targets of spells and abilities as though they didn't have hexproof. Ward abilities of those creatures don't trigger.",
+        "controller_seat_id": 1,
+        "power": null,
+        "toughness": null,
+        "is_tapped": false,
+        "mana_cost": "{1}{B}"
+      },
+      {
+        "instance_id": 321,
+        "grp_id": 78637,
+        "name": "Shipwreck Marsh",
+        "type_line": "Land",
+        "oracle_text": "This land enters tapped unless you control two or more other lands.\n{oT}: Add {oU} or {oB}.",
+        "controller_seat_id": 1,
+        "power": null,
+        "toughness": null,
+        "is_tapped": false,
+        "mana_cost": ""
+      },
+      {
+        "instance_id": 322,
+        "grp_id": 106645,
+        "name": "Kobayashi Maru Scenario",
+        "type_line": "Enchantment",
+        "oracle_text": "At the beginning of your upkeep, choose one that hasn't been chosen — \n•<indent=4%><indent=4%><indent=4%><i>Hail</i> — Return up to one target creature an opponent controls with mana value 3 or less to its owner's hand. </indent></indent></indent>\n•<indent=4%><indent=4%><indent=4%><i>Sensors</i> — Draw two cards. </indent></indent></indent>\n•<indent=4%><indent=4%><indent=4%><i>Transport</i> — Create two 1/1 red Officer creature tokens. </indent></indent></indent>\n•<indent=4%><indent=4%><indent=4%><i>Abandon Ship</i> — You lose the game.</indent></indent></indent>",
+        "controller_seat_id": 1,
+        "power": null,
+        "toughness": null,
+        "is_tapped": false,
+        "mana_cost": "{1}{U}{U}"
+      },
+      {
+        "instance_id": 336,
+        "grp_id": 106524,
+        "name": "Karn, Argent Defender",
+        "type_line": "Legendary Artifact Creature — Golem",
+        "oracle_text": "Artifacts and creatures entering the battlefield don't cause abilities to trigger.",
+        "controller_seat_id": 1,
+        "power": 1,
+        "toughness": 3,
+        "is_tapped": false,
+        "mana_cost": "{2}"
+      },
+      {
+        "instance_id": 353,
+        "grp_id": 98000,
+        "name": "Oscorp Industries",
+        "type_line": "Land",
+        "oracle_text": "This land enters tapped.\nWhen this land enters from a graveyard, you lose 2 life.\n{oT}: Add {oU}, {oB}, or {oR}.\nMayhem",
+        "controller_seat_id": 1,
+        "power": null,
+        "toughness": null,
+        "is_tapped": true,
+        "mana_cost": ""
+      },
+      {
+        "instance_id": 355,
+        "grp_id": 75556,
+        "name": "Plains",
+        "type_line": "Basic Land — Plains",
+        "oracle_text": "({T}: Add {W}.)",
+        "controller_seat_id": 2,
+        "power": null,
+        "toughness": null,
+        "is_tapped": false,
+        "mana_cost": ""
+      },
+      {
+        "instance_id": 356,
+        "grp_id": 96608,
+        "name": "Seam Rip",
+        "type_line": "Enchantment",
+        "oracle_text": "When this enchantment enters, exile target nonland permanent an opponent controls with mana value 2 or less until this enchantment leaves the battlefield.",
+        "controller_seat_id": 2,
+        "power": null,
+        "toughness": null,
+        "is_tapped": false,
+        "mana_cost": "{W}"
+      }
+    ],
+    "stack": [
+      {
+        "instance_id": 358,
+        "grp_id": 143605,
+        "name": "Seam Rip ability",
+        "type_line": "Ability",
+        "oracle_text": "When CARDNAME enters, exile target nonland permanent an opponent controls with mana value 2 or less until CARDNAME leaves the battlefield.",
+        "controller_seat_id": 2,
+        "power": null,
+        "toughness": null,
+        "is_tapped": false,
+        "mana_cost": ""
+      }
+    ],
+    "graveyard": [
+      {
+        "instance_id": 317,
+        "grp_id": 97964,
+        "name": "Skyward Spider",
+        "type_line": "Creature — Spider Human Hero",
+        "oracle_text": "Ward {o2}\nThis creature has flying as long as it's modified.",
+        "controller_seat_id": 2,
+        "power": 2,
+        "toughness": 2,
+        "is_tapped": false,
+        "mana_cost": "{W/U}{W/U}"
+      },
+      {
+        "instance_id": 318,
+        "grp_id": 92089,
+        "name": "Shardmage's Rescue",
+        "type_line": "Enchantment — Aura",
+        "oracle_text": "Flash\nEnchant creature you control\nAs long as this Aura entered this turn, enchanted creature has hexproof.\nEnchanted creature gets +1/+1.",
+        "controller_seat_id": 2,
+        "power": null,
+        "toughness": null,
+        "is_tapped": false,
+        "mana_cost": "{W}"
+      },
+      {
+        "instance_id": 319,
+        "grp_id": 51307,
+        "name": "Ethereal Armor",
+        "type_line": "Enchantment — Aura",
+        "oracle_text": "Enchant creature\nEnchanted creature gets +1/+1 for each enchantment you control and has first strike.",
+        "controller_seat_id": 2,
+        "power": null,
+        "toughness": null,
+        "is_tapped": false,
+        "mana_cost": "{W}"
+      },
+      {
+        "instance_id": 351,
+        "grp_id": 97964,
+        "name": "Skyward Spider",
+        "type_line": "Creature — Spider Human Hero",
+        "oracle_text": "Ward {o2}\nThis creature has flying as long as it's modified.",
+        "controller_seat_id": 2,
+        "power": 2,
+        "toughness": 2,
+        "is_tapped": false,
+        "mana_cost": "{W/U}{W/U}"
+      },
+      {
+        "instance_id": 352,
+        "grp_id": 98436,
+        "name": "Requiting Hex",
+        "type_line": "Instant",
+        "oracle_text": "As an additional cost to cast this spell, you may blight 1.\nDestroy target creature with mana value 2 or less. If this spell's additional cost was paid, you gain 2 life.",
+        "controller_seat_id": 1,
+        "power": null,
+        "toughness": null,
+        "is_tapped": false,
+        "mana_cost": "{B}"
+      }
+    ],
+    "exile": [],
+    "command": []
+  },
+  "commentary_events": [
+    {
+      "id": 27,
+      "seq": 330,
+      "kind": "action_observed",
+      "payload": {
+        "instance_id": 356,
+        "name": "Seam Rip",
+        "grp_id": 96608
+      },
+      "seat": 2,
+      "game_number": 1,
+      "turn_number": 11,
+      "phase": "Phase_Main1",
+      "active_player": 2,
+      "snapshot_id": "223",
+      "match_id": "replay-195635"
+    },
+    {
+      "id": 28,
+      "seq": 335,
+      "kind": "spell_resolved",
+      "payload": {
+        "instance_id": 356,
+        "to_zone": "battlefield",
+        "name": "Seam Rip",
+        "grp_id": 96608
+      },
+      "seat": 2,
+      "game_number": 1,
+      "turn_number": 11,
+      "phase": "Phase_Main1",
+      "active_player": 2,
+      "snapshot_id": "225",
+      "match_id": "replay-195635"
+    }
+  ]
+}

@@ -144,12 +144,13 @@ class ObservationAdapter:
             deck = [v for v in snapshot.get("deck_cards", [])[:250] if type(v) is int]
             cards = [card for card in cards if local and card.get("owner_seat_id") in (None, local)]
             private_state = {"local_seat": local, "hand": cards, "deck": deck}
+            from .overview_quality import speakable_overview
+
             overview = snapshot.get("commentary_deck_overview")
             if (
                 isinstance(overview, dict)
                 and isinstance(overview.get("identity"), str)
-                and isinstance(overview.get("summary"), str)
-                and 0 < len(overview["summary"]) <= 500
+                and speakable_overview(overview.get("summary"))
             ):
                 private_state["deck_overview"] = {
                     "identity": overview["identity"],

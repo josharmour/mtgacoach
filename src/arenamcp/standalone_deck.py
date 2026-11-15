@@ -169,8 +169,12 @@ class _DeckAnalysisMixin:
                         # analysis. Say it once per deck, not every game.
                         logger.info("Deck playbook restored for the same deck; not announced again")
                     else:
+                        from arenamcp.commentary.overview_quality import speakable_overview
+
+                        brief = playbook.data.get("spoken_summary")
+                        if not speakable_overview(brief):
+                            return  # Valid strategy, but no complete and safe spoken overview.
                         self._announced_deck_identity = identity
-                        brief = playbook.data["spoken_summary"]
                         self.ui.log(f"\n[bold green]DECK STRATEGY:[/] {brief}\n")
                         self.speak_advice(brief, blocking=False)
                 else:

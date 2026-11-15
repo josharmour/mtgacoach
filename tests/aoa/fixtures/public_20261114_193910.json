@@ -1,0 +1,331 @@
+{
+  "match_id": "replay-193910",
+  "game_number": 1,
+  "local_seat_id": 1,
+  "turn": {
+    "turn_number": 7,
+    "active_player": 2,
+    "phase": "Phase_Ending",
+    "step": "Step_End"
+  },
+  "players": [
+    {
+      "seat_id": 1,
+      "life_total": 11
+    },
+    {
+      "seat_id": 2,
+      "life_total": 15
+    }
+  ],
+  "zones": {
+    "battlefield": [
+      {
+        "instance_id": 337,
+        "grp_id": 97998,
+        "name": "Multiversal Passage",
+        "type_line": "Land",
+        "oracle_text": "As this land enters, choose a basic land type. Then you may pay 2 life. If you don't, it enters tapped.\nThis land is the chosen type.",
+        "controller_seat_id": 2,
+        "power": null,
+        "toughness": null,
+        "is_tapped": true,
+        "mana_cost": ""
+      },
+      {
+        "instance_id": 334,
+        "grp_id": 91759,
+        "name": "Lunar Convocation",
+        "type_line": "Enchantment",
+        "oracle_text": "At the beginning of your end step, if you gained life this turn, each opponent loses 1 life.\nAt the beginning of your end step, if you gained and lost life this turn, create a 1/1 black Bat creature token with flying.\n{o1oB}, Pay 2 life: Draw a card.",
+        "controller_seat_id": 2,
+        "power": null,
+        "toughness": null,
+        "is_tapped": false,
+        "mana_cost": "{W}{B}"
+      },
+      {
+        "instance_id": 332,
+        "grp_id": 88930,
+        "name": "Case of the Uneaten Feast",
+        "type_line": "Enchantment — Case",
+        "oracle_text": "Whenever a creature you control enters, you gain 1 life.\nTo solve — You've gained 5 or more life this turn. <i>(If unsolved, solve at the beginning of your end step.)</i>\nSolved — Sacrifice this Case: Creature cards in your graveyard gain \"You may cast this card from your graveyard\" until end of turn.",
+        "controller_seat_id": 2,
+        "power": null,
+        "toughness": null,
+        "is_tapped": false,
+        "mana_cost": "{W}"
+      },
+      {
+        "instance_id": 322,
+        "grp_id": 92065,
+        "name": "Ethereal Armor",
+        "type_line": "Enchantment — Aura",
+        "oracle_text": "Enchant creature\nEnchanted creature gets +1/+1 for each enchantment you control and has first strike.",
+        "controller_seat_id": 1,
+        "power": null,
+        "toughness": null,
+        "is_tapped": false,
+        "mana_cost": "{W}"
+      },
+      {
+        "instance_id": 324,
+        "grp_id": 91549,
+        "name": "Feather of Flight",
+        "type_line": "Enchantment — Aura",
+        "oracle_text": "Flash\nEnchant creature\nWhen this Aura enters, draw a card.\nEnchanted creature gets +1/+0 and has flying.",
+        "controller_seat_id": 1,
+        "power": null,
+        "toughness": null,
+        "is_tapped": false,
+        "mana_cost": "{1}{W}"
+      },
+      {
+        "instance_id": 321,
+        "grp_id": 75556,
+        "name": "Plains",
+        "type_line": "Basic Land — Plains",
+        "oracle_text": "({T}: Add {W}.)",
+        "controller_seat_id": 1,
+        "power": null,
+        "toughness": null,
+        "is_tapped": true,
+        "mana_cost": ""
+      },
+      {
+        "instance_id": 313,
+        "grp_id": 91652,
+        "name": "Starscape Cleric",
+        "type_line": "Creature — Bat Cleric",
+        "oracle_text": "Offspring {o2oB}\nFlying\nThis creature can't block.\nWhenever you gain life, each opponent loses 1 life.",
+        "controller_seat_id": 2,
+        "power": 2,
+        "toughness": 1,
+        "is_tapped": true,
+        "mana_cost": "{1}{B}"
+      },
+      {
+        "instance_id": 303,
+        "grp_id": 102550,
+        "name": "Moseo, Vein's New Dean",
+        "type_line": "Legendary Creature — Bird Skeleton Warlock",
+        "oracle_text": "Flying\nWhen Moseo enters, create a 1/1 black and green Pest creature token with \"Whenever this token attacks, you gain 1 life.\"\n<i>Infusion</i> — At the beginning of your end step, if you gained life this turn, return up to one target creature card with mana value X or less from your graveyard to the battlefield, where X is the amount of life you gained this turn.",
+        "controller_seat_id": 2,
+        "power": 2,
+        "toughness": 1,
+        "is_tapped": false,
+        "mana_cost": "{2}{B}"
+      },
+      {
+        "instance_id": 302,
+        "grp_id": 96172,
+        "name": "Starting Town",
+        "type_line": "Land — Town",
+        "oracle_text": "This land enters tapped unless it's your first, second, or third turn of the game.\n{oT}: Add {oC}.\n{oT}, Pay 1 life: Add one mana of any color.",
+        "controller_seat_id": 2,
+        "power": null,
+        "toughness": null,
+        "is_tapped": true,
+        "mana_cost": ""
+      },
+      {
+        "instance_id": 296,
+        "grp_id": 97823,
+        "name": "Origin of Spider-Man",
+        "type_line": "Enchantment — Saga",
+        "oracle_text": "Create a 2/1 green Spider creature token with reach.\nPut a +1/+1 counter on target creature you control. It becomes a legendary Spider Hero in addition to its other types.\nTarget creature you control gains double strike until end of turn.",
+        "controller_seat_id": 1,
+        "power": null,
+        "toughness": null,
+        "is_tapped": false,
+        "mana_cost": "{1}{W}"
+      },
+      {
+        "instance_id": 295,
+        "grp_id": 75556,
+        "name": "Plains",
+        "type_line": "Basic Land — Plains",
+        "oracle_text": "({T}: Add {W}.)",
+        "controller_seat_id": 1,
+        "power": null,
+        "toughness": null,
+        "is_tapped": true,
+        "mana_cost": ""
+      },
+      {
+        "instance_id": 288,
+        "grp_id": 106230,
+        "name": "Enlightened Confidant",
+        "type_line": "Creature — Kor Cleric",
+        "oracle_text": "Lifelink\nAt the beginning of your end step, if you gained life this turn, surveil 1. If you put a card with mana value less than or equal to the amount of life you gained this turn into your graveyard this way, put that card into your hand.",
+        "controller_seat_id": 2,
+        "power": 2,
+        "toughness": 1,
+        "is_tapped": true,
+        "mana_cost": "{1}{W}"
+      },
+      {
+        "instance_id": 287,
+        "grp_id": 70501,
+        "name": "Plains",
+        "type_line": "Basic Land — Plains",
+        "oracle_text": "({T}: Add {W}.)",
+        "controller_seat_id": 2,
+        "power": null,
+        "toughness": null,
+        "is_tapped": true,
+        "mana_cost": ""
+      },
+      {
+        "instance_id": 284,
+        "grp_id": 92102,
+        "name": "Veteran Survivor",
+        "type_line": "Creature — Human Survivor",
+        "oracle_text": "<i>Survival</i> — At the beginning of your second main phase, if this creature is tapped, exile up to one target card from a graveyard.\nAs long as there are three or more cards exiled with this creature, it gets +3/+3 and has hexproof.",
+        "controller_seat_id": 1,
+        "power": 7,
+        "toughness": 5,
+        "is_tapped": true,
+        "mana_cost": "{W}"
+      },
+      {
+        "instance_id": 283,
+        "grp_id": 75556,
+        "name": "Plains",
+        "type_line": "Basic Land — Plains",
+        "oracle_text": "({T}: Add {W}.)",
+        "controller_seat_id": 1,
+        "power": null,
+        "toughness": null,
+        "is_tapped": true,
+        "mana_cost": ""
+      },
+      {
+        "instance_id": 280,
+        "grp_id": 93636,
+        "name": "Hinterland Sanctifier",
+        "type_line": "Creature — Rabbit Cleric",
+        "oracle_text": "Whenever another creature you control enters, you gain 1 life.",
+        "controller_seat_id": 2,
+        "power": 1,
+        "toughness": 2,
+        "is_tapped": false,
+        "mana_cost": "{W}"
+      },
+      {
+        "instance_id": 279,
+        "grp_id": 96172,
+        "name": "Starting Town",
+        "type_line": "Land — Town",
+        "oracle_text": "This land enters tapped unless it's your first, second, or third turn of the game.\n{oT}: Add {oC}.\n{oT}, Pay 1 life: Add one mana of any color.",
+        "controller_seat_id": 2,
+        "power": null,
+        "toughness": null,
+        "is_tapped": true,
+        "mana_cost": ""
+      },
+      {
+        "instance_id": 300,
+        "grp_id": 104847,
+        "name": "Spider",
+        "type_line": "Token Creature — Spider",
+        "oracle_text": "Reach",
+        "controller_seat_id": 1,
+        "power": 2,
+        "toughness": 1,
+        "is_tapped": true,
+        "mana_cost": ""
+      },
+      {
+        "instance_id": 309,
+        "grp_id": 102748,
+        "name": "Pest",
+        "type_line": "Token Creature — Pest",
+        "oracle_text": "Whenever this token attacks, you gain 1 life.",
+        "controller_seat_id": 2,
+        "power": 1,
+        "toughness": 1,
+        "is_tapped": false,
+        "mana_cost": ""
+      },
+      {
+        "instance_id": 342,
+        "grp_id": 91850,
+        "name": "Bat",
+        "type_line": "Token Creature — Bat",
+        "oracle_text": "Flying",
+        "controller_seat_id": 2,
+        "power": 1,
+        "toughness": 1,
+        "is_tapped": false,
+        "mana_cost": ""
+      }
+    ],
+    "stack": [
+      {
+        "instance_id": 341,
+        "grp_id": 208086,
+        "name": "Enlightened Confidant ability",
+        "type_line": "Ability",
+        "oracle_text": "At the beginning of your end step, if you gained life this turn, surveil 1. If you put a card with mana value less than or equal to the amount of life you gained this turn into your graveyard this way, put that card into your hand.",
+        "controller_seat_id": 2,
+        "power": null,
+        "toughness": null,
+        "is_tapped": false,
+        "mana_cost": ""
+      },
+      {
+        "instance_id": 338,
+        "grp_id": 204370,
+        "name": "Moseo, Vein's New Dean ability",
+        "type_line": "Ability",
+        "oracle_text": "<i>Infusion</i> — At the beginning of your end step, if you gained life this turn, return up to one target creature card with mana value X or less from your graveyard to the battlefield, where X is the amount of life you gained this turn.",
+        "controller_seat_id": 2,
+        "power": null,
+        "toughness": null,
+        "is_tapped": false,
+        "mana_cost": ""
+      }
+    ],
+    "graveyard": [],
+    "exile": [],
+    "command": []
+  },
+  "commentary_events": [
+    {
+      "id": 23,
+      "seq": 335,
+      "kind": "action_observed",
+      "payload": {
+        "instance_id": 334,
+        "name": "Lunar Convocation",
+        "grp_id": 91759
+      },
+      "seat": 2,
+      "game_number": 1,
+      "turn_number": 7,
+      "phase": "Phase_Main2",
+      "active_player": 2,
+      "snapshot_id": "206",
+      "match_id": "replay-193910"
+    },
+    {
+      "id": 24,
+      "seq": 338,
+      "kind": "spell_resolved",
+      "payload": {
+        "instance_id": 334,
+        "to_zone": "battlefield",
+        "name": "Lunar Convocation",
+        "grp_id": 91759
+      },
+      "seat": 2,
+      "game_number": 1,
+      "turn_number": 7,
+      "phase": "Phase_Main2",
+      "active_player": 2,
+      "snapshot_id": "209",
+      "match_id": "replay-193910"
+    }
+  ]
+}
