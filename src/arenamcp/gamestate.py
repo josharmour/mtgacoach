@@ -2210,6 +2210,8 @@ class GameState(_GameStateAnnotationsMixin):
 
     def commentary_library_counts(self, match_id, game_number, seat, state_id, *, allow_private, battlefield):
         """Copy current proven grp-id counts for local commentary only, never to a shared snapshot."""
+        from arenamcp.combat_keywords import printed_combat_keywords
+
         with self._state_lock:
             proof = self._draw_inventory
             if (
@@ -2241,9 +2243,55 @@ class GameState(_GameStateAnnotationsMixin):
                 obj.visibility != "Visibility_Public" or obj.face_down for obj in objects
             ):
                 return None
-            identities = {(obj.instance_id, obj.grp_id, obj.controller_seat_id) for obj in objects}
-            if identities != battlefield or self._current_result_locked():
+            if (
+                not isinstance(battlefield, dict)
+                or set(battlefield) != members
+                or self._current_result_locked()
+            ):
                 return None
+            if any(source in members and target in members for source, target in self._attachments.values()):
+                return None
+            for obj in objects:
+                row = battlefield[obj.instance_id]
+                if (row.get("grp_id"), row.get("controller_seat_id")) != (obj.grp_id, obj.controller_seat_id):
+                    return None
+                # A bridge row or serializer may omit zero-valued modifiers.
+                # Do not count against a weaker/tappable/unprotected version
+                # of the same id or rely on printed types after a type change.
+                if (
+                    obj.modified_types
+                    or obj.granted_abilities
+                    or obj.removed_abilities
+                    or obj.chosen_player_links
+                    or obj.is_phased_out
+                    or obj.copied_from_grp_id
+                    or obj.modified_name
+                    or obj.counters
+                    or row.get("damage", 0) != obj.damage
+                    or row.get("is_tapped", False) != obj.is_tapped
+                ):
+                    return None
+                for key in ("modified_power", "modified_toughness"):
+                    if row.get(key) != getattr(obj, key):
+                        return None
+                for key in ("power", "toughness"):
+                    value = getattr(obj, key)
+                    if value is not None and row.get(key) != value:
+                        return None
+                printed_keywords = printed_combat_keywords(row.get("oracle_text") or "")
+                current_keywords = set(row.get("keywords") or ())
+                raw_keywords = set(obj.keywords)
+                if current_keywords - (raw_keywords | printed_keywords) or raw_keywords - current_keywords:
+                    return None
+                if set(obj.ability_grp_ids) != set(row.get("ability_grp_ids") or ()):
+                    return None
+                printed_types = row["type_line"].split(" — ")[0].split()
+                if any(str(t).removeprefix("CardType_") not in printed_types for t in obj.card_types):
+                    return None
+                if {"Legendary", "SuperType_Legendary"}.intersection(
+                    obj.super_types or ()
+                ) and "Legendary" not in printed_types:
+                    return None
             return dict(proof.remaining)
 
     def _apply_deleted_instance_ids(self, message: dict) -> None:

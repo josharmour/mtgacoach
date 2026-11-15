@@ -444,7 +444,10 @@ def test_continuous_effect_rejects_candidate_except_with_proven_current_applicab
 def test_burn_only_when_shown_effective_toughness_is_within_printed_amount():
     s = board()
     s["zones"]["battlefield"][0]["modified_toughness"] = 4
-    assert project(s, opened())["answers"] == {"Plummet": 3}
+    g = opened()
+    assert project(s, g) is None
+    g.game_objects[800].modified_toughness = 4
+    assert project(s, g)["answers"] == {"Plummet": 3}
 
 
 def test_desktop_session_does_not_republish_private_count_as_shared_game_state(qapp):
@@ -634,3 +637,235 @@ def test_only_verified_transient_engine_phase_event_can_reference_zero(field, up
         assert project(s, g)["remaining"] == 53
     else:
         assert project(s, g) is None
+
+
+def meloku_board():
+    snapshot = board()
+    snapshot["zones"]["battlefield"][0].update(
+        name="Meloku the Clouded Mirror",
+        mana_cost="{4}{U}",
+        type_line="Legendary Creature — Moonfolk Wizard",
+        oracle_text="Flying\n{1}, Return a land you control to its owner's hand: Create a 1/1 blue Illusion creature token with flying.",
+        toughness=4,
+        is_tapped=False,
+    )
+    return snapshot
+
+
+def removal_library():
+    rows = {gid: dict(row) for gid, row in CARDS.items()}
+    rows[17].update(
+        name="Unsummon", mana_cost="{U}", oracle_text="Return target creature to its owner's hand."
+    )
+    rows[18].update(
+        name="Abrade",
+        mana_cost="{1}{R}",
+        oracle_text="Choose one —\n• Abrade deals 3 damage to target creature.\n• Destroy target artifact.",
+    )
+    rows[19].update(name="Shock", mana_cost="{R}", oracle_text="Shock deals 2 damage to any target.")
+    return rows
+
+
+def test_exact_remaining_count_for_meloku_with_proven_seen_and_real_printed_spells(monkeypatch):
+    from arenamcp import match_context
+    from arenamcp.pipe_adapter import PipeAdapter
+
+    catalog = removal_library()
+    snapshot = meloku_board()
+    g = opened()
+    pipe = PipeAdapter()
+    pipe._commentary = Mock()
+    pipe._emit = Mock()
+    pipe._coach = Mock()
+    pipe._coach._autopilot = None
+    pipe._coach._mcp._server.game_state = g
+    pipe._coach.settings = {"autoplay_speech": "commentary", "commentary_private_information": True}
+    monkeypatch.setattr(match_context, "prepared_card", catalog.get)
+    pipe.emit_game_state(snapshot)
+    fact = pipe._emit.call_args.args[0]["private_library_removal"]
+    assert (fact["remaining"], fact["direct_removal_total"], fact["answers"]) == (
+        53,
+        5,
+        {"Plummet": 3, "Unsummon": 2},
+    )
+    assert "5 cards among the 53 left" in private_removal_line(fact, snapshot)[1]
+    assert "private_library_removal" not in pipe._commentary.offer.call_args.args[0]
+    g.update_from_message(next_draw())
+    snapshot["_log_game_state_id"] = 3
+    pipe.emit_game_state(snapshot)
+    fact = pipe._emit.call_args.args[0]["private_library_removal"]
+    assert (fact["remaining"], fact["direct_removal_total"], fact["answers"]) == (
+        52,
+        4,
+        {"Plummet": 2, "Unsummon": 2},
+    )
+
+
+def test_exact_zero_requires_every_identity_and_printed_target_condition():
+    catalog = removal_library()
+    for gid in (15, 17, 18, 19):
+        catalog[gid] = dict(
+            card(gid, "Cast Down", "Instant", "Destroy target nonlegendary creature."), mana_cost="{1}{B}"
+        )
+    s = meloku_board()
+    game = opened()
+    fact = private_removal_fact(s, game, allow_private=True, card_lookup=catalog.get)
+    assert fact["direct_removal_total"] == 0 and fact["answers"] == {}
+    assert "no direct removal" in private_removal_line(fact, s)[1]
+    del catalog[19]
+    assert private_removal_fact(s, game, allow_private=True, card_lookup=catalog.get) is None
+    catalog[15] = CARDS[15]
+    partial = private_removal_fact(s, game, allow_private=True, card_lookup=catalog.get)
+    assert partial["answers"] == {"Plummet": 3} and "direct_removal_total" not in partial
+    assert private_removal_line({**partial, "direct_removal_total": 2}, s) is None
+
+
+def test_modal_artifact_mode_marked_damage_and_changed_print():
+    from arenamcp.commentary.private_outs import _answers_creature
+
+    c = removal_library()[18]
+    target = meloku_board()["zones"]["battlefield"][0]
+    assert _answers_creature(c, target) is False and _answers_creature(c, dict(target, damage=1)) is True
+    assert _answers_creature(c, dict(target, type_line="Artifact Creature — Golem", toughness=10)) is True
+    assert _answers_creature(c, dict(target, modified_toughness=6, damage=1)) is False
+    assert _answers_creature(c, dict(target, damage=False)) is None
+    assert _answers_creature(dict(c, oracle_text=c["oracle_text"] + " Only once each turn."), target) is None
+    assert (
+        _answers_creature(
+            card(15, "Go for the Throat", "Instant", "Destroy target nonartifact creature."),
+            dict(target, type_line="Artifact Creature — Golem"),
+        )
+        is False
+    )
+
+
+def test_only_highest_public_threat_and_no_target_evidence_overrides_restrictions():
+    from arenamcp.commentary.private_outs import _public_removal_threat
+
+    s = meloku_board()
+    target = s["zones"]["battlefield"][0]
+    small = {**board()["zones"]["battlefield"][0], "instance_id": 801, "power": 1, "toughness": 1}
+    s["zones"]["battlefield"].append(small)
+    assert _public_removal_threat(s) is target
+    small["modified_power"] = 12
+    assert _public_removal_threat(s) is small
+    s["zones"]["battlefield"][1] = dict(target, instance_id=801)
+    assert _public_removal_threat(s) is None
+    for change in (
+        {"granted_abilities": [8]},
+        {"oracle_text": target["oracle_text"] + "\nWard {2}"},
+        {"ability_grp_ids": [141939]},
+    ):
+        s["zones"]["battlefield"] = [{**target, **change}]
+        assert _public_removal_threat(s) is None
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("card_types", ["CardType_Creature", "CardType_Artifact"]),
+        ("modified_toughness", 0),
+        ("damage", 1),
+        ("granted_abilities", [808]),
+        ("is_tapped", True),
+    ],
+)
+def test_raw_public_revision_conflict_disqualifies_even_matching_ids(field, value):
+    g = opened()
+    setattr(g.game_objects[800], field, value)
+    assert project(board(), g) is None
+
+
+def test_targeted_enchantment_exile_and_side_effects_use_entire_print():
+    from arenamcp.commentary.private_outs import _answers_creature
+
+    target = meloku_board()["zones"]["battlefield"][0]
+    banish = dict(
+        card(
+            22,
+            "Banishing Light",
+            "Enchantment",
+            "When this enchantment enters, exile target nonland permanent an opponent controls until this enchantment leaves the battlefield.",
+        ),
+        mana_cost="{2}{W}",
+    )
+    assert _answers_creature(banish, target) is True
+    assert _answers_creature(banish, dict(target, type_line="Land Creature — Forest Dryad")) is False
+    assert (
+        _answers_creature(
+            dict(banish, oracle_text=banish["oracle_text"].replace("nonland", "noncreature")), target
+        )
+        is None
+    )
+    assert _answers_creature(dict(banish, related_faces=[{"name": "Other"}]), target) is None
+
+
+def test_aura_requires_its_own_distinct_legal_enchant_target():
+    from arenamcp.commentary.private_outs import _answers_creature
+
+    s = meloku_board()
+    threat = s["zones"]["battlefield"][0]
+    ossification = dict(
+        card(
+            22,
+            "Ossification",
+            "Enchantment — Aura",
+            "Enchant basic land you control\nWhen this Aura enters, exile target creature or planeswalker an opponent controls until this Aura leaves the battlefield.",
+        ),
+        mana_cost="{1}{W}",
+    )
+    assert _answers_creature(ossification, threat, local_creature=True) is None
+    assert _answers_creature(ossification, threat, local_basic=True) is True
+    sheltered = dict(
+        card(
+            23,
+            "Sheltered by Ghosts",
+            "Enchantment — Aura",
+            "Enchant creature you control\nWhen this Aura enters, exile target nonland permanent an opponent controls until this Aura leaves the battlefield.\nEnchanted creature gets +1/+0 and has lifelink and ward {o2}.",
+        ),
+        mana_cost="{1}{W}",
+    )
+    assert _answers_creature(sheltered, threat, local_basic=True) is None
+    assert _answers_creature(sheltered, threat, local_creature=True) is True
+
+
+def test_all_named_answers_in_local_fact_with_bounded_voice_line():
+    s = meloku_board()
+    answers = {f"{'A' * 82} {i}": 1 for i in range(10)}
+    fact = dict(
+        match_id="match",
+        game_number=1,
+        seat=1,
+        state_id=2,
+        threat_id=800,
+        threat="Meloku the Clouded Mirror",
+        remaining=30,
+        answers=answers,
+        direct_removal_total=10,
+    )
+    text = private_removal_line(fact, s)[1]
+    assert len(text) <= 600 and "10 cards among the 30 left" in text and "including" in text
+
+
+def test_mana_value_capped_exile_never_treats_unknown_as_zero():
+    from arenamcp.commentary.private_outs import _answers_creature
+
+    targeted = dict(
+        card(
+            22,
+            "Seam Rip",
+            "Enchantment",
+            "When this enchantment enters, exile target nonland permanent an opponent controls with mana value 2 or less until this enchantment leaves the battlefield.",
+        ),
+        mana_cost="{W}",
+    )
+    target = meloku_board()["zones"]["battlefield"][0]
+    assert _answers_creature(targeted, target) is False
+    assert _answers_creature(targeted, dict(target, mana_cost="{1}{U}")) is True
+    assert _answers_creature(targeted, dict(target, mana_cost="{1}{U}{U}")) is False
+    assert _answers_creature(targeted, dict(target, mana_cost="")) is None
+    assert _answers_creature(targeted, dict(target, mana_cost="{2/U}")) is None
+    assert (
+        _answers_creature(targeted, dict(target, type_line="Land Creature — Forest Dryad", mana_cost="{0}"))
+        is False
+    )

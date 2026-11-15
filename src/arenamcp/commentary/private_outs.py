@@ -1,8 +1,8 @@
 """Local, deterministic counts of named removal spells against a public creature.
 
-The proof deliberately covers one opposing threat, with known printed targeting
-conditions. An unsupported remaining card is not a known non-answer. We name
-specific copies, never say 'only X outs', predict a draw or claim castability.
+One public threat and a proven remaining local population are required. Exact
+single-card removal totals additionally require classification of every identity.
+An unsupported identity permits only positive named counts.
 """
 
 from __future__ import annotations
@@ -10,10 +10,13 @@ from __future__ import annotations
 import re
 from collections import Counter
 
-from arenamcp.ability_synthesizer import Damage, Destroy, Exile
+from arenamcp.ability_synthesizer import Damage
 from arenamcp.card_db import is_unknown_card_name
+from arenamcp.card_facts.removal import printed_removal_effects, supported_public_creature
 from arenamcp.card_facts.source_identity import legacy_lookup_hash
 from arenamcp.combat_keywords import has_combat_keyword
+from arenamcp.mana import mana_cost_to_cmc
+from arenamcp.ward import ward_of
 
 _BASIC = re.compile(
     r"(?:Snow )?Basic (?:Snow )?Land (?:—|-) (?:Forest|Mountain|Island|Plains|Swamp|Wastes)", re.I
@@ -37,6 +40,26 @@ _SAFE_KEYWORDS = frozenset(
 _BASIC_MANA = re.compile(r"\(?\{(?:o)?T\}: Add \{(?:o)?[WUBRGC]\}\.\)?", re.I)
 
 
+def _mana_land(card):
+    types = card["type_line"].split(" — ")[0].split()
+    if "Land" not in types or set(types) - {"Land", "Snow", "Basic", "Legendary"}:
+        return False
+    text = card["oracle_text"].replace("<i>", "").replace("</i>", "").strip()
+    if _BASIC.fullmatch(card["type_line"]):
+        return not text or bool(_BASIC_MANA.fullmatch(text))
+    lines = text.splitlines()
+    if lines and lines[0] in {
+        f"{card['name']} enters tapped.",
+        "This land enters tapped.",
+        "This land enters tapped unless you control two or fewer other lands.",
+    }:
+        lines = lines[1:]
+    return bool(lines) and all(
+        re.fullmatch(r"\{(?:o)?T\}: Add \{(?:o)?[WUBRGC]\}(?: or \{(?:o)?[WUBRGC]\})?\.", line)
+        for line in lines
+    )
+
+
 def _simple_text(card):
     # Native localized markup can accompany the Flying keyword's reminder.
     text = card["oracle_text"].replace("<i>", "").replace("</i>", "")
@@ -46,16 +69,11 @@ def _simple_text(card):
         text,
         flags=re.I,
     )
-    if _BASIC.fullmatch(card["type_line"]):
-        return not text.strip() or bool(_BASIC_MANA.fullmatch(text.strip()))
+    if _mana_land(card) or supported_public_creature(legacy_lookup_hash(card)):
+        return True
     if "Creature" not in card["type_line"].split(" — ")[0].split():
         return False
     return not text.strip() or all(w.strip().casefold() in _SAFE_KEYWORDS for w in re.split(r"[,\n]", text))
-
-
-_REMOVAL = re.compile(
-    r"(Destroy|Exile) target (creature(?: with flying| or planeswalker)?|nonland permanent|permanent)\."
-)
 
 
 def _named_source(card):
@@ -70,23 +88,61 @@ def _named_source(card):
     )
 
 
-def _removal_effect(card):
-    if not _named_source(card) or card.get("type_line") not in ("Instant", "Sorcery"):
+def _answers_creature(card, threat, *, local_creature=False, local_basic=False):
+    """True, False or unknown: can this card directly remove this public creature?"""
+    if not isinstance(card, dict) or not _named_source(card):
         return None
-    match = _REMOVAL.fullmatch(card["oracle_text"])
-    if match:
-        kind, target = match.groups()
-        return Destroy(target) if kind == "Destroy" else Exile(target)
-    damage = re.fullmatch(
-        rf"(?:{re.escape(card['name'])}|This spell) deals ([1-9][0-9]?) damage to (any target|target creature|target creature with flying)\.",
-        card["oracle_text"],
-    )
-    if damage:
-        return Damage(amount=int(damage[1]), target=damage[2])
-    return None
+    if _mana_land(card):
+        return False
+    if card["oracle_text"] and "Creature" in card["type_line"].split(" — ")[0].split() and _simple_text(card):
+        # These recognized creature spells have no direct removal of their own.
+        return False
+    effects = printed_removal_effects(card, local_creature=local_creature, local_basic=local_basic)
+    if not effects:
+        return None
+    types = threat["type_line"].split(" — ")[0].split()
+    results = []
+    for effect in effects:
+        if (
+            effect.target.endswith("with flying")
+            and not has_combat_keyword(threat, "flying")
+            or effect.target.startswith("nonland permanent")
+            and "Land" in types
+            or effect.target == "artifact"
+            and "Artifact" not in types
+            or effect.target == "nonartifact creature"
+            and "Artifact" in types
+            or effect.target == "nonlegendary creature"
+            and "Legendary" in types
+        ):
+            results.append(False)
+        elif effect.target.endswith(("with mana value 2 or less", "with mana value 3 or less")):
+            # Restrict this comparison to a complete, simple, single-face
+            # printed cost. Missing, nonstandard, or ambiguous costs abstain.
+            limit = 2 if effect.target.endswith("2 or less") else 3
+            cost = threat.get("mana_cost")
+            if isinstance(cost, str) and re.fullmatch(r"(?:\{(?:[0-9]+|[WUBRGC])\})+", cost):
+                results.append(mana_cost_to_cmc(cost) <= limit)
+            else:
+                results.append(None)
+        elif effect.target == "tapped creature":
+            tapped = threat.get("is_tapped")
+            results.append(tapped if type(tapped) is bool else None)
+        elif isinstance(effect, Damage):
+            toughness = threat.get("modified_toughness", threat.get("toughness"))
+            marked = threat.get("damage", 0)
+            if type(toughness) is int and type(marked) is int and 0 <= marked < toughness:
+                results.append(effect.amount >= toughness - marked)
+            else:
+                results.append(None)
+        else:
+            results.append(True)
+    if True in results:
+        return True
+    return None if None in results else False
 
 
-def _sole_opposing_creature(snapshot):
+def _public_removal_threat(snapshot):
     zones = snapshot.get("zones") or {}
     if (
         zones.get("stack")
@@ -104,6 +160,7 @@ def _sole_opposing_creature(snapshot):
     for card in board:
         if (
             not isinstance(card, dict)
+            or type(card.get("controller_seat_id")) is not int
             or card.get("controller_seat_id") not in (local, opponent)
             or card.get("visibility") not in (None, "Visibility_Public", "public")
             or card.get("face_down")
@@ -126,19 +183,14 @@ def _sole_opposing_creature(snapshot):
             )
         ):
             return None
-        if card.get("controller_seat_id") is None or (
-            not card.get("oracle_text")
-            and not _BASIC.fullmatch(card["type_line"])
-            and "Creature" not in card["type_line"].split(" — ")[0].split()
+        if ward_of(card) or any(
+            has_combat_keyword(card, key) for key in ("hexproof", "indestructible", "shroud")
         ):
             return None
-        if any(has_combat_keyword(card, key) for key in ("hexproof", "indestructible", "shroud")):
-            return None
-        if card["controller_seat_id"] == local or _BASIC.fullmatch(card["type_line"]):
+        if card["controller_seat_id"] == local or _mana_land(card):
             continue
         if (
-            card.get("controller_seat_id") != opponent
-            or "Creature" not in card["type_line"].split(" — ")[0].split()
+            "Creature" not in card["type_line"].split(" — ")[0].split()
             or type(card.get("instance_id")) is not int
             or card["instance_id"] <= 0
             or type(card.get("power")) is not int
@@ -147,7 +199,11 @@ def _sole_opposing_creature(snapshot):
         ):
             return None
         candidates.append(card)
-    return candidates[0] if len(candidates) == 1 else None
+    if len(candidates) <= 1:
+        return candidates[0] if candidates else None
+    from arenamcp.board_assessment import highest_public_creature_threat
+
+    return highest_public_creature_threat(board, candidates, local, opponent)
 
 
 def private_removal_fact(snapshot, game, *, allow_private, card_lookup):
@@ -160,14 +216,14 @@ def private_removal_fact(snapshot, game, *, allow_private, card_lookup):
         type(bridge) is not int or bridge != state_id
     ):
         return None
-    threat = _sole_opposing_creature(snapshot)
+    threat = _public_removal_threat(snapshot)
     if not threat:
         return None
     seat = snapshot["local_seat_id"]
     match = snapshot.get("match_id")
     number = snapshot.get("game_number")
     rows = snapshot["zones"]["battlefield"]
-    battlefield = {(c.get("instance_id"), c.get("grp_id"), c.get("controller_seat_id")) for c in rows}
+    battlefield = {c.get("instance_id"): c for c in rows}
     if len(battlefield) != len(rows):
         return None
     counts = game.commentary_library_counts(
@@ -176,19 +232,18 @@ def private_removal_fact(snapshot, game, *, allow_private, card_lookup):
     if not counts:
         return None
     qualified = Counter()
+    complete = True
+    ours = [c for c in rows if c["controller_seat_id"] == seat]
+    local_creature = any("Creature" in c["type_line"].split(" — ")[0].split() for c in ours)
+    local_basic = any(_BASIC.fullmatch(c["type_line"]) for c in ours)
     for gid, count in counts.items():
         card = card_lookup(gid)
-        if not isinstance(card, dict):
-            continue
-        effect = _removal_effect(card)
-        toughness = threat.get("modified_toughness", threat.get("toughness"))
-        if not effect or (effect.target.endswith("with flying") and not has_combat_keyword(threat, "flying")):
-            continue
-        if isinstance(effect, (Destroy, Exile)) or (
-            isinstance(effect, Damage) and type(toughness) is int and 0 < toughness <= effect.amount
-        ):
+        answers = _answers_creature(card, threat, local_creature=local_creature, local_basic=local_basic)
+        if answers is True:
             qualified[card["name"]] += count
-    if not qualified or len(qualified) > 3:
+        elif answers is None:
+            complete = False
+    if not qualified and not complete:
         return None
     return {
         "match_id": match,
@@ -199,6 +254,7 @@ def private_removal_fact(snapshot, game, *, allow_private, card_lookup):
         "threat": threat["name"],
         "remaining": sum(counts.values()),
         "answers": dict(sorted(qualified.items())),
+        **({"direct_removal_total": sum(qualified.values())} if complete else {}),
     }
 
 
@@ -236,7 +292,7 @@ def private_removal_line(fact, snapshot):
         or fact["seat"] != snapshot.get("local_seat_id")
     ):
         return None
-    threat = _sole_opposing_creature(snapshot)
+    threat = _public_removal_threat(snapshot)
     if (
         not threat
         or type(fact.get("threat_id")) is not int
@@ -245,12 +301,7 @@ def private_removal_line(fact, snapshot):
         return None
     answers = fact.get("answers")
     size = fact.get("remaining")
-    if (
-        type(size) is not int
-        or not 1 <= size <= 250
-        or not isinstance(answers, dict)
-        or not 1 <= len(answers) <= 3
-    ):
+    if type(size) is not int or not 1 <= size <= 250 or not isinstance(answers, dict) or len(answers) > size:
         return None
     if (
         any(
@@ -265,9 +316,26 @@ def private_removal_line(fact, snapshot):
         or sum(answers.values()) > size
     ):
         return None
-    copies = ", ".join(
-        f"{count} {'copy' if count == 1 else 'copies'} of {name}" for name, count in answers.items()
-    )
-    return threat[
-        "instance_id"
-    ], f"Against {threat['name']}, your {size}-card library includes {copies} as potential removal."
+    copies = [f"{count} {'copy' if count == 1 else 'copies'} of {name}" for name, count in answers.items()]
+    if "direct_removal_total" in fact:
+        total = fact["direct_removal_total"]
+        if type(total) is not int or total != sum(answers.values()):
+            return None
+        if not total:
+            text = f"Your {size}-card library has no direct removal left for {threat['name']}."
+            return threat["instance_id"], text
+        noun = "card" if total == 1 else "cards"
+        lead = f"Direct removal for {threat['name']}: {total} {noun} among the {size} left"
+        text = f"{lead}, {', '.join(copies)}."
+    elif answers:
+        lead = f"Against {threat['name']}, your {size}-card library includes"
+        text = f"{lead} {', '.join(copies)} as potential removal."
+    else:
+        return None
+    if len(text) > 600:
+        example = ", ".join(copies[:2])
+        if "direct_removal_total" in fact:
+            text = f"{lead}, including {example}."
+        else:
+            text = f"{lead} {example} among its potential removal cards."
+    return threat["instance_id"], text

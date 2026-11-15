@@ -2961,6 +2961,30 @@ def _threats(
     return threats if limit is None else threats[:limit]
 
 
+def highest_public_creature_threat(battlefield, candidates, local, opponent):
+    """Rank already-qualified public creature bodies with Coach's threat scorer.
+
+    No hand, deck, line-search, or model inputs. Missing effective stats and
+    tied scores have no unique highest threat.
+    """
+    ours = [c for c in battlefield if _controller(c) == local and _is_creature(c)]
+    bodies = []
+    for card in candidates:
+        power = card.get("modified_power", card.get("power"))
+        toughness = card.get("modified_toughness", card.get("toughness"))
+        if type(power) is not int or type(toughness) is not int or min(power, toughness) <= 0:
+            return None
+        body = _body({**card, "power": power, "toughness": toughness}, 0, {})
+        if body is None:
+            return None
+        bodies.append(body)
+    air = any(_reach_or_flying(c) for c in ours)
+    ranked = _threats(battlefield, opponent, bodies, air, len(ours), limit=2)
+    if not ranked or (len(ranked) == 2 and ranked[0].score == ranked[1].score):
+        return None
+    return next((c for c in candidates if c["instance_id"] == ranked[0].instance_id), None)
+
+
 def _budget_turns(
     our_turn: bool,
     turn: int,
