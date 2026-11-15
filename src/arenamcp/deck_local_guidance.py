@@ -155,10 +155,13 @@ def _topic_folder(directory, schema_version, system, scope, context):
     return Path(directory) / hashlib.sha256(job.encode()).hexdigest()
 
 
-def _read_rows(folder, digest, book, expected):
+def _read_rows(folder, digest, book, expected, *, diagnostic=False):
     path = folder / (digest + ".json")
     try:
         saved = json.loads(path.read_text(encoding="utf-8"))
+        metrics = saved.get("metrics", {})
+        if not isinstance(metrics, dict) or (metrics.get("thinking_mode") == "disabled") != diagnostic:
+            return {}, None
         if saved["input"] == folder.name and saved["model"] == digest:
             return _validate(saved["row"], book, expected), saved.get("metrics", {})
     except (OSError, ValueError, KeyError, TypeError):
@@ -191,6 +194,12 @@ def topic_coverage(book, context, scope, directory, digest):
 
 def deck_guidance(book, state, scope, directory, *, model=None, allowed=None, topic=None):
     book, context = _guidance_input(book, state, scope)
+    diagnostic = getattr(model, "diagnostic_without_thinking", False) is True
+    if diagnostic:
+        if scope == "interactions" or topic not in TOPICS[scope]:
+            raise ValueError("A diagnostic studies a single selected strategy topic")
+        directory = Path(directory) / "diagnostic_without_thinking"
+        context = {**context, "diagnostic": "single topic without thinking"}
     if scope == "interactions":
         from arenamcp.deck_local_interactions import study_interactions
 
@@ -216,12 +225,14 @@ def deck_guidance(book, state, scope, directory, *, model=None, allowed=None, to
         digests = sorted(available, key=available.get, reverse=True)
     best_rows, digest_for_best = {}, None
     for digest in digests:
-        rows, _ = _read_rows(legacy, digest, book, topics)
+        rows, _ = ({}, None) if diagnostic else _read_rows(legacy, digest, book, topics)
         if rows:
             return _detail(rows, book, scope, digest, topic), True
         reused = True
         for key in topics:
-            saved, _ = _read_rows(folders[key], digest, book, [key])
+            if diagnostic and key != topic:
+                continue
+            saved, _ = _read_rows(folders[key], digest, book, [key], diagnostic=diagnostic)
             rows.update(saved)
             if key in rows or model is None or (topic is not None and topic != key):
                 continue
@@ -241,10 +252,14 @@ def deck_guidance(book, state, scope, directory, *, model=None, allowed=None, to
             )
             if not allowed() or not _checked(book, book.catalog):
                 raise ValueError("The deck or current prints changed while studying this topic")
+            if diagnostic and model.last_metrics.get("thinking_mode") != "disabled":
+                raise ValueError("The diagnostic did not confirm its requested thinking mode")
             write_local_result(folders[key] / (digest + ".json"), single, model, time.monotonic() - start)
             reused = False
             rows.update(single)
         if rows:
+            if diagnostic:
+                return "Diagnostic · thinking disabled\n" + _detail(rows, book, scope, digest, topic), reused
             if len(rows) == len(topics):
                 _validate(rows, book, topics)
                 return _detail(rows, book, scope, digest, topic), reused

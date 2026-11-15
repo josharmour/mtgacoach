@@ -57,7 +57,7 @@ def installed_models():
 
 
 class LocalStudyModel:
-    def __init__(self, name):
+    def __init__(self, name, *, diagnostic_without_thinking=False):
         self.name = name
         self.digest = installed_models().get(name)
         if not self.digest:
@@ -83,6 +83,9 @@ class LocalStudyModel:
         self.thinks = "thinking" in (meta.get("capabilities") or [])
         if self.thinks and "low" in supported:
             self.thinks = "low"
+        self.diagnostic_without_thinking = diagnostic_without_thinking is True
+        if self.diagnostic_without_thinking and not (self.thinks and self.can_disable_thinking):
+            raise ValueError("This local model cannot explicitly disable thinking for a diagnostic")
         self.last_metrics = {}
 
     def complete(
@@ -113,7 +116,12 @@ class LocalStudyModel:
             if type(self.context_length) is not int or required > self.context_length:
                 raise ValueError("The installed model cannot verify room for the complete deck study")
             body["options"]["num_ctx"] = required
-        if verify_full_input and self.thinks and self.can_disable_thinking:
+        diagnostic = getattr(self, "diagnostic_without_thinking", False) is True
+        if diagnostic and not verify_full_input:
+            raise ValueError("A no-thinking diagnostic requires a full-source study topic")
+        if verify_full_input and not self.thinks:
+            raise ValueError("A full-deck study requires a thinking-capable installed model")
+        if diagnostic:
             # The local server defaults to its own reasoning level if this key
             # is omitted. Preserve the output allowance for the grounded JSON.
             body["think"] = False
@@ -125,6 +133,9 @@ class LocalStudyModel:
         until = started + max_seconds
         self.last_metrics = {
             "ended": "unknown",
+            "thinking_mode": "disabled"
+            if diagnostic
+            else ("enabled" if self.thinks is True else self.thinks or "unspecified"),
             "generated_tokens": None,
             "thinking_tokens": None,
             "cancelled": False,

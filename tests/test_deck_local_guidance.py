@@ -247,10 +247,10 @@ def test_letter_receipts_cover_every_print_and_stay_outside_the_output_grammar()
         assert acknowledged_answer(model, "study", context, "result", {"type": "object"}, lambda: True) == {}
 
 
-@pytest.mark.parametrize("can_disable", [False, True])
+@pytest.mark.parametrize(("can_disable", "diagnostic"), [(False, False), (True, False), (True, True)])
 @pytest.mark.parametrize("fault", [None, "capacity", "count"])
 def test_full_deck_transport_reserves_input_and_output_and_requires_provider_receipt(
-    monkeypatch, fault, can_disable
+    monkeypatch, fault, can_disable, diagnostic
 ):
     import io
 
@@ -259,6 +259,7 @@ def test_full_deck_transport_reserves_input_and_output_and_requires_provider_rec
     m = local.LocalStudyModel.__new__(local.LocalStudyModel)
     m.name, m.digest, m.thinks = "test", "a" * 64, "low"
     m.can_disable_thinking = can_disable
+    m.diagnostic_without_thinking = diagnostic
     m.context_length = 64 if fault == "capacity" else 8192
     m.template_bytes = 11
     monkeypatch.setattr(local, "installed_models", lambda: {m.name: m.digest})
@@ -284,7 +285,8 @@ def test_full_deck_transport_reserves_input_and_output_and_requires_provider_rec
             "ok": True
         }
         sent = json.loads(conn.request.call_args.args[2])
-        assert sent["think"] == (False if can_disable else "low")
+        assert sent["think"] == (False if diagnostic else "low")
+        assert m.last_metrics["thinking_mode"] == ("disabled" if diagnostic else "low")
         opts = sent["options"]
         assert opts["num_ctx"] >= len(b"rulesdeck") + 128 + 11 and opts["num_predict"] == 128
 
@@ -356,3 +358,47 @@ def test_prior_valid_complete_cache_remains_readable_with_no_model_request(deck,
         json.dumps({"input": folder.name, "model": m.digest, "row": rows})
     )
     assert "No local study" in deck_guidance(book, state, "sequencing", tmp_path)[0]
+
+
+def test_no_thinking_diagnostic_is_isolated_and_cannot_complete_a_normal_chapter(deck, tmp_path):
+    from shutil import copyfile
+
+    from arenamcp.deck_local_guidance import _guidance_input, topic_coverage, topic_files
+
+    state, book, _ = deck
+    model = writer()
+    model.diagnostic_without_thinking = True
+    model.last_metrics["thinking_mode"] = "disabled"
+    for scope, topic in (("sequencing", None), ("interactions", "discovery")):
+        with pytest.raises(ValueError, match="single selected"):
+            deck_guidance(book, state, scope, tmp_path, model=model, allowed=lambda: True, topic=topic)
+
+    def call():
+        return deck_guidance(
+            book, state, "sequencing", tmp_path, model=model, allowed=lambda: True, topic="sequencing"
+        )
+
+    detail, reused = call()
+    assert "Diagnostic · thinking disabled" in detail and "Partial study • 1 of 4" in detail and not reused
+    assert call()[1] and model.complete.call_count == 1
+    current, context = _guidance_input(book, state, "sequencing")
+    assert topic_coverage(current, context, "sequencing", tmp_path, model.digest) == ([], [])
+    assert "No local study" in deck_guidance(book, state, "sequencing", tmp_path)[0]
+    diag = next((tmp_path / "diagnostic_without_thinking").rglob("*.json"))
+    raw = json.loads(diag.read_text())
+    assert raw["metrics"]["thinking_mode"] == "disabled"
+    _, _, normal = topic_files(tmp_path, "sequencing", context)
+    destination = normal["sequencing"] / diag.name
+    destination.parent.mkdir()
+    copyfile(diag, destination)
+    assert not topic_coverage(current, context, "sequencing", tmp_path, model.digest)[0]
+    raw["input"] = destination.parent.name
+    destination.write_text(json.dumps(raw))
+    assert not topic_coverage(current, context, "sequencing", tmp_path, model.digest)[0]
+    model.diagnostic_without_thinking = False
+    model.last_metrics["thinking_mode"] = "low"
+    detail, reused = call()
+    assert "Diagnostic" not in detail and not reused
+    assert (
+        topic_coverage(current, context, "sequencing", tmp_path, model.digest)[1][0]["thinking_mode"] == "low"
+    )

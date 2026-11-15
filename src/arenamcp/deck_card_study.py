@@ -345,6 +345,16 @@ def write_local_result(path, row, model, duration):
         try:
             reported = getattr(model, "last_metrics", {})
             metrics = {"seconds": duration}
+            if isinstance(reported, dict) and reported.get("thinking_mode") in (
+                "enabled",
+                "disabled",
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "unspecified",
+            ):
+                metrics["thinking_mode"] = reported["thinking_mode"]
             for key in ("generated_tokens", "thinking_tokens"):
                 n = reported.get(key) if isinstance(reported, dict) else None
                 metrics[key] = n if type(n) is int and n >= 0 else None

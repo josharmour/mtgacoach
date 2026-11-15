@@ -186,9 +186,12 @@ def test_never_select_remote_uninstalled_or_ambiguous_model(monkeypatch):
     show["capabilities"].append("thinking")
     show["thinking"] = {"values": [False, "low", "medium", "xhigh"], "default": "medium"}
     model = LocalStudyModel("unit:local")
-    assert model.thinks == "low" and model.can_disable_thinking
+    assert model.thinks == "low" and model.can_disable_thinking and not model.diagnostic_without_thinking
+    assert LocalStudyModel("unit:local", diagnostic_without_thinking=True).diagnostic_without_thinking
     show["thinking"]["values"] = [0, "low"]
     assert not LocalStudyModel("unit:local").can_disable_thinking
+    with pytest.raises(ValueError, match="explicitly disable"):
+        LocalStudyModel("unit:local", diagnostic_without_thinking=True)
     show["remote_model"] = "remote:large"
     with pytest.raises(ValueError):
         LocalStudyModel("unit:local")
