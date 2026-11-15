@@ -175,16 +175,20 @@ class DeckCardStudyDialog(QDialog):
                 self.next_job.start(0)
             else:
                 self.stop_pass()
-            thinking = (
-                f"{report['thinking_tokens']} reported thinking tokens, {report['unreported_thinking']} unreported"
-                if report["unreported_thinking"]
-                else f"{report['thinking_tokens']} thinking tokens"
-            )
+            measures = []
+            for value, missing, label in (
+                (f"{report['seconds']:.1f}s", report["unreported_seconds"], "build time"),
+                (report["generated_tokens"], report["unreported_generated"], "generated tokens"),
+                (report["thinking_tokens"], report["unreported_thinking"], "thinking tokens"),
+            ):
+                measures.append(
+                    f"{value} reported {label} ({missing} unreported)" if missing else f"{value} {label}"
+                )
             self.progress.setText(
                 f"{report['cached']} local roles awaiting review, {report['admitted']} saved study roles "
-                f"across {report['nonlands']} nonland cards. {report['withheld']} withheld on print checks. "
-                f"{len(report['pending'])} still to study. Cached roles took {report['seconds']:.1f}s, "
-                f"{report['generated_tokens']} generated tokens, {thinking}."
+                f"across {report['nonlands']} known nonland cards. {report['unresolved']} deck prints have unresolved "
+                f"types. {report['withheld']} withheld on print checks. {len(report['pending'])} still to study. "
+                f"Cached roles used {', '.join(measures)}."
             )
         elif "cards" in result:
             self.cards.blockSignals(True)
@@ -193,6 +197,12 @@ class DeckCardStudyDialog(QDialog):
                 self.cards.addItem(entry["name"], entry["card"])
             self.cards.blockSignals(False)
             self.models.addItems(result["models"])
+            if result.get("unresolved"):
+                self.progress.setText(
+                    f"{self.cards.count()} known nonland cards. "
+                    f"{result['unresolved']} deck prints have unresolved types."
+                )
+                self.progress.show()
             if not self.models.count():
                 self.models.setPlaceholderText("No installed local models found")
             if self.cards.count():

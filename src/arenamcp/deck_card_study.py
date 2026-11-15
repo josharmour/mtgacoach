@@ -46,6 +46,10 @@ def card_menu(book):
     )
 
 
+def unresolved_card_count(book):
+    return sum(_land(card) is None for card in book.catalog.values())
+
+
 def _context(book, gid):
     if type(gid) is not int or gid not in book.catalog or _land(book.catalog[gid]) is not False:
         raise ValueError("Select a resolved nonland card from this deck")
@@ -164,6 +168,7 @@ def prepare_card_pass(book, directory, digest):
     jobs = []
     report = {
         "nonlands": len(menu),
+        "unresolved": unresolved_card_count(book),
         "pending": jobs,
         "withheld": 0,
         "cached": 0,
@@ -172,6 +177,8 @@ def prepare_card_pass(book, directory, digest):
         "generated_tokens": 0,
         "thinking_tokens": 0,
         "unreported_thinking": 0,
+        "unreported_generated": 0,
+        "unreported_seconds": 0,
         "model_digest": digest,
     }
     for card in menu:
@@ -192,13 +199,17 @@ def prepare_card_pass(book, directory, digest):
             jobs.append(gid)
             continue
         report["cached"] += 1
-        for key in ("seconds", "generated_tokens", "thinking_tokens"):
+        for key, missing in (
+            ("seconds", "unreported_seconds"),
+            ("generated_tokens", "unreported_generated"),
+            ("thinking_tokens", "unreported_thinking"),
+        ):
             n = metrics.get(key) if isinstance(metrics, dict) else None
             valid = type(n) is int or (type(n) is float and key == "seconds" and math.isfinite(n))
             if valid and n >= 0:
                 report[key] += n
-            elif key == "thinking_tokens":
-                report["unreported_thinking"] += 1
+            else:
+                report[missing] += 1
     return report
 
 

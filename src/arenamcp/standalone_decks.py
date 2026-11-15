@@ -332,7 +332,14 @@ class _DeckLibraryMixin:
     def deck_card_study(self, request):
         """Answer a local Decks window request; no study runs from gameplay or auto-preparation."""
         from arenamcp import logging_config
-        from arenamcp.deck_card_study import card_detail, card_menu, prepare_card_pass, read_card, study_card
+        from arenamcp.deck_card_study import (
+            card_detail,
+            card_menu,
+            prepare_card_pass,
+            read_card,
+            study_card,
+            unresolved_card_count,
+        )
         from arenamcp.local_study_model import LocalStudyModel, installed_models
 
         deck_id, identity, gid = (request.get(k) for k in ("deck_id", "identity", "card"))
@@ -350,7 +357,12 @@ class _DeckLibraryMixin:
                     models = list(installed_models())
                 except (OSError, ValueError, TypeError):
                     models = []
-                return {**reply, "cards": card_menu(book), "models": models}
+                return {
+                    **reply,
+                    "cards": card_menu(book),
+                    "models": models,
+                    "unresolved": unresolved_card_count(book),
+                }
             if request.get("operation") == "read":
                 return {**reply, "detail": read_card(book, gid, directory)}
             if request.get("operation") == "prepare":

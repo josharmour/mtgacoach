@@ -440,7 +440,7 @@ def test_full_nonland_pass_resumes_exact_model_caches_and_withholds_changed_prin
         qapp.processEvents()
     assert not dialog.running_pass and writer.complete.call_count == 2
     assert "2 local roles awaiting review" in dialog.progress.text()
-    assert "across 3 nonland cards" in dialog.progress.text()
+    assert "across 3 known nonland cards" in dialog.progress.text()
     assert "1 withheld" in dialog.progress.text()
     assert "22 generated tokens" in dialog.progress.text() and "2 unreported" in dialog.progress.text()
     dialog.pass_button.click()
@@ -493,3 +493,34 @@ def test_v2_print_equivalence_requires_all_ordered_native_face_ids_and_full_prin
         book.data["study"] = {"version": 1}
     assert not current_study_sources_match({1001: book.catalog[1001]})
     assert _checked(book, [1001]) is (fault is None)
+
+
+def test_pass_reports_unknown_card_types_and_unreported_provider_usage(qapp, sample, monkeypatch, tmp_path):
+    from arenamcp.deck_card_study import prepare_card_pass
+    from arenamcp.desktop.deck_card_study import DeckCardStudyDialog
+
+    _, book, _ = sample
+    writer = backend(book)
+    writer.last_metrics = {}
+    study_card(book, 1001, writer, tmp_path, allowed=lambda: True)
+    book.catalog[3003] = {"name": "Unresolved local fixture", "type_line": "", "oracle_text": ""}
+    report = prepare_card_pass(book, tmp_path, writer.digest)
+    assert (report["nonlands"], report["unresolved"], report["cached"], report["pending"]) == (1, 1, 1, [])
+    assert report["unreported_generated"] == report["unreported_thinking"] == 1
+
+    class Session(FakeSession):
+        deckCardStudyChanged = Signal(dict)
+
+        def request_deck_card_study(self, request):
+            assert request["operation"] == "list"
+            self.deckCardStudyChanged.emit({**request, "cards": [], "unresolved": 2, "models": []})
+
+    session = Session()
+    dialog = DeckCardStudyDialog(session, {"deck_id": "d", "identity": "synthetic"})
+    dialog.show()
+    assert (
+        "0 known nonland cards" in dialog.progress.text()
+        and "2 deck prints have unresolved types" in dialog.progress.text()
+    )
+    assert dialog.progress.isVisible() and not dialog.pass_button.isEnabled()
+    dialog.close()
