@@ -156,8 +156,8 @@ def test_replay_fallback_explains_pressure_without_declaring_a_trigger():
 
 
 def test_karn_and_unattributed_objects_do_not_supply_an_unconditional_lifegain_engine():
-    from arenamcp.commentary.strategy import strategic_observation
     from arenamcp.commentary.context import compact_context
+    from arenamcp.commentary.strategy import strategic_observation
 
     a = report("193910")
     event = next(e for e in a.events if e.kind == "action_observed")

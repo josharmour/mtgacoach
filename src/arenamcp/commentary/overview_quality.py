@@ -8,7 +8,6 @@ saved playbook. Latin-script card names and ordinary typography remain intact.
 import re
 import unicodedata
 
-
 PLACEHOLDER = re.compile(
     r"^\W*$|^\(.*\)\.?$|\b(omitted|placeholder|see above|to be (?:written|added)|n/?a|tbd|lorem ipsum)\b",
     re.I,
