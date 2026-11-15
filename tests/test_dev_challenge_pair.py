@@ -278,3 +278,170 @@ def test_model_or_adapter_text_does_not_reach_public_feedback(setup):
     pipe.log = Mock()
     pipe._check_dev_challenge_pair()
     pipe.log.assert_called_once_with("The pairing check was unavailable.")
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        None,
+        "other_local_id",
+        "other_peer_id",
+        "alias",
+        "different_role",
+        "contradictory_name",
+        "empty_roster",
+        "one_way",
+        "duplicate",
+        "invalid_token",
+        "short_key",
+        "same_account",
+        "progress_incomplete",
+        "disabled",
+        "corrupt_file",
+        "duplicate_key",
+    ],
+)
+def test_observed_native_pair_remains_pinned_in_normal_lookup(setup, tmp_path, monkeypatch, fault):
+    from arenamcp.dev_challenge_identity import EnrolledPair, IdentityUnavailable, enrollment
+
+    p, f, r = setup
+    key = b"x" * 32
+    sign = EnrolledPair(key, "", "").token
+    local = sign(p.local, "a")
+    peer = sign(p.peer, "b")
+    other = sign("A different account", "c")
+
+    def receipt(own, peers):
+        return {
+            "own": own,
+            "friends": peers,
+            "social_connected": True,
+            "social_enabled": True,
+            "num_friends": len(peers),
+            "get_count": len(peers),
+        }
+
+    issuer = receipt(peer, [local])
+    acceptor = receipt(local, [peer, other])
+    if fault == "one_way":
+        issuer = receipt(peer, [other])
+    elif fault == "duplicate":
+        issuer = receipt(peer, [local, local])
+    elif fault == "progress_incomplete":
+        issuer["get_count"] += 1
+    elif fault == "disabled":
+        acceptor["social_enabled"] = False
+    elif fault == "invalid_token":
+        acceptor["friends"][0] = "!"
+    elif fault == "same_account":
+        acceptor = issuer
+    elif fault == "short_key":
+        key = key[:9]
+    if fault in {
+        "one_way",
+        "duplicate",
+        "progress_incomplete",
+        "disabled",
+        "invalid_token",
+        "same_account",
+        "short_key",
+    }:
+        with pytest.raises(IdentityUnavailable):
+            enrollment(key, issuer, acceptor)
+        return
+    path = tmp_path / "profile.json"
+    raw = enrollment(key, issuer, acceptor)
+    assert other not in str(raw) and p.local not in str(raw) and p.peer not in str(raw)
+    import json
+
+    if fault == "corrupt_file":
+        raw["issuer"] = raw["acceptor"]
+    path.write_text(json.dumps(raw))
+    if fault == "duplicate_key":
+        path.write_text(path.read_text().replace('"version": 1,', '"version": 9, "version": 1,'))
+    monkeypatch.setenv("MTGACOACH_DEV_DC_PAIR_PROFILE", str(path))
+    monkeypatch.delenv("MTGACOACH_DEV_DC_LOCAL_FULL_NAME")
+    monkeypatch.delenv("MTGACOACH_DEV_DC_OPPONENT_FULL_NAME")
+    if fault == "contradictory_name":
+        monkeypatch.setenv("MTGACOACH_DEV_DC_LOCAL_FULL_NAME", p.local)
+        monkeypatch.setenv("MTGACOACH_DEV_DC_OPPONENT_FULL_NAME", "Wrong peer")
+    if fault == "different_role":
+        monkeypatch.setenv("MTGACOACH_DEV_DC_ROLE", "issuer")
+    if fault in {"corrupt_file", "duplicate_key"}:
+        with pytest.raises(gate.PairUnavailable):
+            gate.configured_pair()
+        return
+    confirmed = gate.configured_pair()
+    actor = "z" if fault == "other_local_id" else "a"
+    if fault == "other_peer_id":
+        f["$items"][0]["PlayerId"] = "five"
+    if fault == "alias":
+        f = seq([*f["$items"], {"FullName": "Alias", "PlayerId": "b"}])
+    if fault == "empty_roster":
+        f = seq([])
+    if fault is None:
+        assert gate.classify(confirmed, p.local, actor, f, None, seq([r]), True) is gate.PairStatus.INVITED
+    else:
+        with pytest.raises(gate.PairUnavailable):
+            gate.classify(confirmed, p.local, actor, f, None, seq([r]), True)
+
+
+def test_enrollment_cli_is_private_exclusive_and_leaves_older_profile_intact(
+    setup, tmp_path, monkeypatch, capsys
+):
+    import json
+    import os
+
+    from arenamcp import dev_challenge_identity as identity
+
+    p, _, _ = setup
+    key = b"y" * 32
+    sig = identity.EnrolledPair(key, "", "").token
+    one, two, third = sig(p.local, "a"), sig(p.peer, "b"), sig("Other", "c")
+    keyfile = tmp_path / "key"
+    keyfile.write_bytes(key)
+    paths = []
+    for n, (own, friends) in enumerate([(one, [two, third]), (two, [one])]):
+        f = tmp_path / f"{n}.json"
+        f.write_text(
+            json.dumps(
+                dict(
+                    own=own,
+                    friends=friends,
+                    num_friends=len(friends),
+                    get_count=len(friends),
+                    social_connected=True,
+                    social_enabled=True,
+                )
+            )
+        )
+        paths.append(f)
+    out = tmp_path / "output.json"
+    argv = [
+        "--key-file",
+        str(keyfile),
+        "--issuer-receipt",
+        str(paths[0]),
+        "--acceptor-receipt",
+        str(paths[1]),
+        "--output",
+        str(out),
+    ]
+    identity.main(argv)
+    previous = out.read_bytes()
+    assert third not in previous.decode() and set(json.loads(previous)) == {
+        "version",
+        "key",
+        "issuer",
+        "acceptor",
+    }
+    if os.name == "posix":
+        assert out.stat().st_mode & 0o077 == 0
+    with pytest.raises(SystemExit):
+        identity.main(argv)
+    assert out.read_bytes() == previous
+    monkeypatch.setattr(gate, "source_enabled", lambda: False)
+    with pytest.raises(SystemExit):
+        identity.main(argv)
+    stdout, stderr = capsys.readouterr()
+    assert all(x not in stdout + stderr for x in (one, two, third, p.local, p.peer, str(keyfile), str(out)))

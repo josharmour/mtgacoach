@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
+from arenamcp.dev_challenge_identity import EnrolledPair, IdentityUnavailable, load_enrollment
 from arenamcp.mac_bridge_adapter import AdapterError, H, _Ops, enum_name, field, guid, handle, items
 
 
@@ -25,6 +26,7 @@ class PairStatus(StrEnum):
     CONFIG_ROLE = "Configure the issuer or acceptor role on this machine."
     CONFIG_NAMES = "Configure two distinct, exact Arena full names on this machine."
     DISABLED = "Direct-challenge checks require an enabled developer source checkout."
+    CONFIG_PINS = "The selected local native pairing profile could not be verified."
     MULTIPLE = "Arena reported ambiguous current challenges or invitations."
     STATUS = "The challenge or invitation is no longer in setup."
     ACTIVE_ROLE = "The active lobby differs from the configured participant pair or role."
@@ -64,6 +66,7 @@ class Pair:
     local: str
     peer: str
     deck: str
+    pins: EnrolledPair | None = None
 
 
 def configured_pair():
@@ -73,9 +76,16 @@ def configured_pair():
         os.environ.get("MTGACOACH_DEV_DC_" + k, "")
         for k in ("ROLE", "LOCAL_FULL_NAME", "OPPONENT_FULL_NAME", "DECK_ID")
     )
+    profile = os.environ.get("MTGACOACH_DEV_DC_PAIR_PROFILE")
+    pins = None
+    if profile:
+        try:
+            pins = load_enrollment(profile)
+        except (OSError, IdentityUnavailable):
+            raise PairUnavailable(PairStatus.CONFIG_PINS) from None
     if role not in ("issuer", "acceptor"):
         raise PairUnavailable(PairStatus.CONFIG_ROLE)
-    if (
+    if (not pins or local or peer) and (
         any(not v or len(v) > 100 or v.strip() != v or not v.isprintable() for v in (local, peer))
         or local == peer
     ):
@@ -86,7 +96,7 @@ def configured_pair():
         identity = None
     if not identity or not identity.int or str(identity) != deck:
         raise PairUnavailable(PairStatus.CONFIG_DECK)
-    return Pair(role, local, peer, deck)
+    return Pair(role, local, peer, deck, pins)
 
 
 def _all_items(node):
@@ -179,6 +189,18 @@ def _people(row):
 
 
 def classify(pair, name, local_id, friends, active, incoming, deck_found):
+    if pair.pins:
+        if not pair.pins.matches(pair.role, name, local_id) or (pair.local and pair.local != name):
+            raise PairUnavailable(PairStatus.WRONG_ACCOUNT)
+        peer_role = "acceptor" if pair.role == "issuer" else "issuer"
+        names = [
+            field(row, "FullName")
+            for row in _all_items(friends)
+            if pair.pins.matches(peer_role, field(row, "FullName"), field(row, "PlayerId"))
+        ]
+        if len(names) != 1 or (pair.peer and pair.peer != names[0]):
+            raise PairUnavailable(PairStatus.FRIEND)
+        pair = Pair(pair.role, name, names[0], pair.deck, pair.pins)
     if name != pair.local or not isinstance(local_id, str) or not local_id:
         raise PairUnavailable(PairStatus.WRONG_ACCOUNT)
     friend_rows = _all_items(friends)
@@ -282,10 +304,14 @@ def check(adapter, timeout):
         or values[friend_count["ref"]] != len(_all_items(values[friends["ref"]]))
     ):
         raise PairUnavailable(PairStatus.SOCIAL)
+    current_name, persona = values[current["ref"]], values[owner_id["ref"]]
     if (
-        values[current["ref"]] != pair.local
-        or not isinstance(values[owner_id["ref"]], str)
-        or not values[owner_id["ref"]]
+        not isinstance(current_name, str)
+        or not current_name
+        or not isinstance(persona, str)
+        or not persona
+        or (pair.local and current_name != pair.local)
+        or (pair.pins and not pair.pins.matches(pair.role, current_name, persona))
     ):
         raise PairUnavailable(PairStatus.WRONG_ACCOUNT)
     if values[friend_count["ref"]] == 0:
