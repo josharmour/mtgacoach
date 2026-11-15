@@ -122,6 +122,20 @@ def load_enrollment(path):
     return EnrolledPair(key, issuer, acceptor)
 
 
+def write_private_new(path, data):
+    """Publish a complete owner-local receipt, without replacing another writer."""
+    with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as stream:
+        temporary = Path(stream.name)
+        try:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+            stream.close()
+            os.link(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+
 def main(argv=None):
     from arenamcp.dev_challenge_pair import source_enabled
 
@@ -144,16 +158,7 @@ def main(argv=None):
         encoded = json.dumps(profile, separators=(",", ":")).encode("ascii")
         # Exclusive creation keeps an existing role binding or differently
         # provisioned key intact. Only the selected pair enters this file.
-        with tempfile.NamedTemporaryFile(dir=args.output.parent, delete=False) as stream:
-            temporary = Path(stream.name)
-            try:
-                stream.write(encoded)
-                stream.flush()
-                os.fsync(stream.fileno())
-                stream.close()
-                os.link(temporary, args.output)
-            finally:
-                temporary.unlink(missing_ok=True)
+        write_private_new(args.output, encoded)
     except (OSError, IdentityUnavailable):
         parser.exit(2, "Could not enroll this pair from its local evidence. Use a new private output file.\n")
     print("Created the local developer pairing profile.")

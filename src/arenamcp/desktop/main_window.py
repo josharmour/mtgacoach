@@ -209,6 +209,20 @@ class MainWindow(QMainWindow):
             if source_enabled():
                 action = tools_menu.addAction("Check direct-challenge pairing…")
                 action.triggered.connect(lambda: self._session.send_command("dev_challenge_preflight"))
+                if os.environ.get("MTGACOACH_DEV_DC_PAIR_PROFILE") and os.environ.get(
+                    "MTGACOACH_DEV_DC_ROOM_TICKET"
+                ):
+                    role = os.environ.get("MTGACOACH_DEV_DC_ROLE")
+                    if role == "issuer":
+                        receipt = tools_menu.addAction("Record sent developer invitation")
+                        receipt.triggered.connect(
+                            lambda: self._session.send_command("dev_challenge_record_offer")
+                        )
+                    elif role == "acceptor":
+                        accept = tools_menu.addAction("Check incoming developer invitation")
+                        accept.triggered.connect(
+                            lambda: self._session.send_command("dev_challenge_verify_offer")
+                        )
         repair_act = tools_menu.addAction("Setup && Repair…")
         repair_act.triggered.connect(self._show_repair_view)
         perf_act = tools_menu.addAction("Match History…")

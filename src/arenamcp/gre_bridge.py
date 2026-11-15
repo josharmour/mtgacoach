@@ -643,7 +643,11 @@ class GREBridge:
             # A developer's private friend/role readiness probe is read-only.
             # Neither a malformed response nor an adapter error belongs in the
             # general bridge journal or a shareable recovery trace.
-            if action != "dev_challenge_preflight" and (action not in self._QUIET_COMMANDS or failed):
+            if action not in {
+                "dev_challenge_preflight",
+                "dev_challenge_record_offer",
+                "dev_challenge_verify_offer",
+            } and (action not in self._QUIET_COMMANDS or failed):
                 self._note_command(cmd, outcome, error, (time.monotonic() - started) * 1000.0)
 
     def _note_command(

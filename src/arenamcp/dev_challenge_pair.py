@@ -27,6 +27,11 @@ class PairStatus(StrEnum):
     CONFIG_NAMES = "Configure two distinct, exact Arena full names on this machine."
     DISABLED = "Direct-challenge checks require an enabled developer source checkout."
     CONFIG_PINS = "The selected local native pairing profile could not be verified."
+    CONFIG_TICKET = "Configure an enrolled pairing, challenge format and private room ticket on this machine."
+    TICKET_ROLE = "The selected action does not match this machine’s role and current invitation."
+    TICKET = "The issuer’s room ticket does not match this invitation and format."
+    RECORDED = "Recorded the issuer’s verified sent invitation in the configured private ticket."
+    VERIFIED = "The active Arena invitation tile matched the issuer’s room. Review and accept it in Arena."
     MULTIPLE = "Arena reported ambiguous current challenges or invitations."
     STATUS = "The challenge or invitation is no longer in setup."
     ACTIVE_ROLE = "The active lobby differs from the configured participant pair or role."
@@ -145,11 +150,13 @@ def _entries(node, key):
 
 
 def _valid_id(value):
-    try:
-        raw = guid(value)
-        return bool(uuid.UUID(raw).int)
-    except (ValueError, AdapterError):
-        return False
+    # Guid uses Int32, Int16, Int16 and eight bytes. Refuse malformed
+    # numeric fields before the shared formatter masks the signed values.
+    parts = [field(value, key) for key in "abcdefghijk"]
+    ranges = [(-(2**31), 2**31), (-(2**15), 2**15), (-(2**15), 2**15), *[(0, 256)] * 8]
+    return all(
+        type(n) is int and low <= n < high for n, (low, high) in zip(parts, ranges, strict=True)
+    ) and any(parts)
 
 
 _CHALLENGE_STATES = ("None", "Setup", "Starting", "WaitingForMatch", "InGame", "Removed")
@@ -201,7 +208,7 @@ def _people(row):
     ]
 
 
-def classify(pair, name, local_id, friends, active, incoming, deck_found):
+def _resolve_accounts(pair, name, local_id, friends):
     if pair.pins:
         if not pair.pins.matches(pair.role, name, local_id) or (pair.local and pair.local != name):
             raise PairUnavailable(PairStatus.WRONG_ACCOUNT)
@@ -226,9 +233,13 @@ def classify(pair, name, local_id, friends, active, incoming, deck_found):
         or sum(field(f, "PlayerId") == peers[0] for f in friend_rows) != 1
     ):
         raise PairUnavailable(PairStatus.FRIEND)
+    return pair, peers[0]
+
+
+def classify(pair, name, local_id, friends, active, incoming, deck_found):
+    pair, peer_id = _resolve_accounts(pair, name, local_id, friends)
     if not deck_found:
         raise PairUnavailable(PairStatus.DECK_NOT_FOUND)
-    peer_id = peers[0]
     invites = _all_items(incoming)
     if len(invites) > 1:
         raise PairUnavailable(PairStatus.MULTIPLE)
@@ -293,8 +304,16 @@ def classify(pair, name, local_id, friends, active, incoming, deck_found):
     return PairStatus.INVITED
 
 
-def check(adapter, timeout):
-    pair = configured_pair()
+@dataclass(repr=False)
+class Observation:
+    status: PairStatus
+    pair: Pair
+    local_id: str
+    peer_id: str
+    room: dict | None
+
+
+def observe(adapter, timeout, pair):
     ops = _Ops()
     home = ops.add("find", **{"class": "HomePageContentController"}, depth=0)
     ctrl = ops.get(home, "_pvpChallengeController")
@@ -367,4 +386,14 @@ def check(adapter, timeout):
         values_ids = adapter._run(ids, timeout)
         matches += sum(guid(values_ids[r["ref"]]) == pair.deck for r in identifiers)
     found = matches == 1
-    return classify(pair, *(values[x["ref"]] for x in (current, owner_id, friends, lobby, incoming)), found)
+    roster = values[friends["ref"]]
+    active = values[lobby["ref"]]
+    invitations = values[incoming["ref"]]
+    status = classify(pair, current_name, persona, roster, active, invitations, found)
+    bound, peer_id = _resolve_accounts(pair, current_name, persona, roster)
+    room = active if active is not None else next(iter(_all_items(invitations)), None)
+    return Observation(status, bound, persona, peer_id, room)
+
+
+def check(adapter, timeout):
+    return observe(adapter, timeout, configured_pair()).status

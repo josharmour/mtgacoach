@@ -103,7 +103,7 @@ PASSTHROUGH = {"ping", "reflect_batch"}
 BEPINEX_RUNTIME = "bepinex"
 BEPINEX_REFLECT_COMMANDS = frozenset(
     {"confirm_draft_pick", "create_deck", "dismiss_survey", "event_play", "finish_sealed_open",
-     "get_collection", "get_deck_editor", "get_decks", "dev_challenge_preflight", "get_draft_state", "get_event_page",
+     "get_collection", "get_deck_editor", "get_decks", "dev_challenge_preflight", "dev_challenge_record_offer", "dev_challenge_verify_offer", "get_draft_state", "get_event_page",
      "get_limited_pool", "get_match_end", "get_screen",
      "get_survey", "go_to_event", "leave_match", "preview_draft_pick", "set_limited_deck",
      "submit_draft_pick", "submit_limited_deck", "update_deck"}
@@ -933,15 +933,30 @@ class MacBridgeAdapter:
                 records.append(record)
         return records
 
-    def _cmd_dev_challenge_preflight(self, command, timeout):
-        from arenamcp.dev_challenge_pair import PairStatus, PairUnavailable, check
+    def _dev_pair_feedback(self, operation, timeout):
+        from arenamcp.dev_challenge_pair import PairStatus, PairUnavailable
 
         try:
-            return {"ok": True, "pair_status": check(self, timeout).name}
+            return {"ok": True, "pair_status": operation(self, timeout).name}
         except PairUnavailable as exc:
             return {"ok": False, "pair_status": exc.args[0].name}
         except (AdapterError, OSError, ValueError, TypeError, AttributeError, IndexError, KeyError):
             return {"ok": False, "pair_status": PairStatus.INCOMPLETE.name}
+
+    def _cmd_dev_challenge_preflight(self, command, timeout):
+        from arenamcp.dev_challenge_pair import check
+
+        return self._dev_pair_feedback(check, timeout)
+
+    def _cmd_dev_challenge_record_offer(self, command, timeout):
+        from arenamcp.dev_challenge_invitation import record_offer
+
+        return self._dev_pair_feedback(record_offer, timeout)
+
+    def _cmd_dev_challenge_verify_offer(self, command, timeout):
+        from arenamcp.dev_challenge_invitation import verify_offer
+
+        return self._dev_pair_feedback(verify_offer, timeout)
 
     def _cmd_get_decks(self, command: dict, timeout: float | None) -> dict:
         decks = []

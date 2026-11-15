@@ -619,11 +619,17 @@ class PipeAdapter:
             elif action == "cycle_mode":
                 # Legacy frontends only — local mode was removed (online-only).
                 self.log("Local mode was removed — the app is online-only.")
-            elif action == "dev_challenge_preflight":
+            elif action in {
+                "dev_challenge_preflight",
+                "dev_challenge_record_offer",
+                "dev_challenge_verify_offer",
+            }:
                 from arenamcp.dev_challenge_pair import source_enabled
 
                 if source_enabled():
-                    threading.Thread(target=self._check_dev_challenge_pair, daemon=True).start()
+                    threading.Thread(
+                        target=self._check_dev_challenge_pair, args=(action,), daemon=True
+                    ).start()
             elif action == "cycle_model":
                 self._cycle_model()
             elif action == "cycle_voice":
@@ -1038,7 +1044,7 @@ class PipeAdapter:
         except Exception:
             pass
 
-    def _check_dev_challenge_pair(self):
+    def _check_dev_challenge_pair(self, action="dev_challenge_preflight"):
         from arenamcp.dev_challenge_pair import PairStatus, PairUnavailable, configured_pair
 
         try:
@@ -1055,7 +1061,13 @@ class PipeAdapter:
             self.log("A connected native reflection bridge on this machine is needed for the pairing check.")
             return
         try:
-            result = bridge._send_command({"action": "dev_challenge_preflight"}, timeout=5.0)
+            if action not in {
+                "dev_challenge_preflight",
+                "dev_challenge_record_offer",
+                "dev_challenge_verify_offer",
+            }:
+                return
+            result = bridge._send_command({"action": action}, timeout=5.0)
         except Exception:
             self.log("The local bridge could not complete the pairing check.")
             return

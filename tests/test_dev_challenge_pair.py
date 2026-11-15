@@ -240,7 +240,8 @@ def test_active_recipient_can_see_same_accepted_invite_with_native_shared_player
 
 
 @pytest.mark.parametrize("enabled", [True, False])
-def test_dev_tools_menu_only_sends_generic_command(qapp, monkeypatch, enabled):
+@pytest.mark.parametrize("role", ["issuer", "acceptor", "unknown"])
+def test_dev_tools_menu_only_sends_generic_command(qapp, monkeypatch, enabled, role):
     from PySide6.QtGui import QAction
     from PySide6.QtWidgets import QMainWindow
 
@@ -248,6 +249,9 @@ def test_dev_tools_menu_only_sends_generic_command(qapp, monkeypatch, enabled):
     from arenamcp.desktop.release_updates import PENDING_ENV
 
     monkeypatch.setenv("MTGACOACH_DEV_DIRECT_CHALLENGE", "1")
+    monkeypatch.setenv("MTGACOACH_DEV_DC_PAIR_PROFILE", "/synthetic/profile")
+    monkeypatch.setenv("MTGACOACH_DEV_DC_ROOM_TICKET", "/synthetic/ticket")
+    monkeypatch.setenv("MTGACOACH_DEV_DC_ROLE", role)
     monkeypatch.delenv(PENDING_ENV, raising=False)
     monkeypatch.setattr(gate, "source_enabled", lambda: enabled)
     window = MainWindow.__new__(MainWindow)
@@ -263,6 +267,16 @@ def test_dev_tools_menu_only_sends_generic_command(qapp, monkeypatch, enabled):
     if enabled:
         matches[0].trigger()
         window._session.send_command.assert_called_once_with("dev_challenge_preflight")
+    actions = {a.text(): a for a in window.findChildren(QAction)}
+    for expected, label, cmd in (
+        ("issuer", "Record sent developer invitation", "dev_challenge_record_offer"),
+        ("acceptor", "Check incoming developer invitation", "dev_challenge_verify_offer"),
+    ):
+        assert (label in actions) == (enabled and role == expected)
+        if label in actions:
+            window._session.send_command.reset_mock()
+            actions[label].trigger()
+            window._session.send_command.assert_called_once_with(cmd)
     window.deleteLater()
 
 
