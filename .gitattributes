@@ -1,0 +1,4 @@
+# The runtime verifies the exact bytes of these reviewed resources.
+src/arenamcp/card_facts/limited_blb.json text eol=lf
+src/arenamcp/card_facts/limited_trk.json text eol=lf
+src/arenamcp/card_facts/reviewed_annotations.json text eol=lf
