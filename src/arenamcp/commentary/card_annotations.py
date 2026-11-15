@@ -28,6 +28,8 @@ class AnnotationEvent:
     controller: int
     visibility: str = "public"
     face_down: bool = False
+    match_id: str = ""
+    game_number: int = 0
 
 
 @dataclass(frozen=True)
@@ -37,6 +39,8 @@ class KnownCard:
     controller: int
     visibility: str = "public"
     face_down: bool = False
+    match_id: str = ""
+    game_number: int = 0
 
 
 def annotation_digest(record: dict) -> str:
@@ -72,7 +76,8 @@ def project_annotation_facts(
     if type(event) is not AnnotationEvent or type(local_seat) is not int or type(allow_private) is not bool:
         return {}
     if (
-        event.kind not in {"spell_cast", "permanent_entered"}
+        type(event.kind) is not str
+        or event.kind not in {"spell_cast", "permanent_entered"}
         or not isinstance(event.event_id, str)
         or not event.event_id
         or type(event.controller) is not int
@@ -89,6 +94,13 @@ def project_annotation_facts(
         or event.controller < 1
         or len(event.event_id) > 200
         or len(event.card) > 200
+    ):
+        return {}
+    if (
+        not isinstance(event.match_id, str)
+        or not event.match_id
+        or type(event.game_number) is not int
+        or event.game_number < 1
     ):
         return {}
     record = records.get(event.card)
@@ -136,10 +148,14 @@ def project_annotation_facts(
                 for piece in recipe["pieces"]
                 if piece["name"] == event.card
             }
-            if len(focal_ids) != 1:
+            if catalog["recipes"] and len(focal_ids) != 1:
                 return {}
+            # Empty exports have no focal identity to infer, and no links.
             rebuilt = project_relationships(
-                event.card, next(iter(focal_ids)), catalog["recipes"], catalog.get("source")
+                event.card,
+                next(iter(focal_ids)) if focal_ids else "empty-projection",
+                catalog["recipes"],
+                catalog.get("source"),
             )
             if annotation_digest(rebuilt) != annotation_digest(catalog):
                 return {}
@@ -149,9 +165,14 @@ def project_annotation_facts(
     for card in known_cards[:256]:
         if (
             type(card) is KnownCard
+            and card.match_id == event.match_id
+            and type(card.game_number) is int
+            and card.game_number == event.game_number
+            and type(card.zone) is str
             and card.zone in {"battlefield", "graveyard", "played"}
             and isinstance(card.name, str)
             and type(card.controller) is int
+            and card.controller > 0
             and _visible(card.visibility, card.controller, card.face_down, local_seat, allow_private)
         ):
             visible.setdefault(card.name, []).append(card)
@@ -169,6 +190,8 @@ def project_annotation_facts(
             "record_sha256": digest,
             "rules_hash": record["rules_hash"],
             "event_id": event.event_id,
+            "match_id": event.match_id,
+            "game_number": event.game_number,
             "event_kind": event.kind,
             "controller": event.controller,
             "card": event.card,

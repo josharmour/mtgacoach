@@ -13,6 +13,18 @@ from arenamcp.commentary.card_annotations import (
 )
 
 
+def event(*args, **kwargs):
+    kwargs.setdefault("match_id", "test-match")
+    kwargs.setdefault("game_number", 1)
+    return AnnotationEvent(*args, **kwargs)
+
+
+def known_card(*args, **kwargs):
+    kwargs.setdefault("match_id", "test-match")
+    kwargs.setdefault("game_number", 1)
+    return KnownCard(*args, **kwargs)
+
+
 def fixture():
     text = "Whenever you draw a card, you gain 2 life."
     printed = {
@@ -40,7 +52,7 @@ def fixture():
     return dict(
         local_seat=1,
         allow_private=False,
-        known_cards=(KnownCard("Partner", "battlefield", 1),),
+        known_cards=(known_card("Partner", "battlefield", 1),),
         records={"Threat": record},
         printed=printed,
         reviewed_digests={"Threat": annotation_digest(record)},
@@ -50,7 +62,7 @@ def fixture():
 def test_opposing_enter_projects_threat_and_possible_link_without_mutation():
     args = fixture()
     before = copy.deepcopy(args)
-    result = project_annotation_facts(AnnotationEvent("cast-1", "permanent_entered", "Threat", 2), **args)
+    result = project_annotation_facts(event("cast-1", "permanent_entered", "Threat", 2), **args)
     assert [f["kind"] for f in result.values()] == ["card_threat", "card_relationship"]
     assert all(
         f["event_id"] == "cast-1" and f["record_sha256"] == args["reviewed_digests"]["Threat"]
@@ -63,7 +75,7 @@ def test_opposing_enter_projects_threat_and_possible_link_without_mutation():
 
 @pytest.mark.parametrize("kind", ["action_submitted", "spell_resolved", "unknown"])
 def test_submission_is_not_cast(kind):
-    assert not project_annotation_facts(AnnotationEvent("e", kind, "Threat", 2), **fixture())
+    assert not project_annotation_facts(event("e", kind, "Threat", 2), **fixture())
 
 
 @pytest.mark.parametrize("change", ["missing", "unreviewed", "stale", "changed", "bad_quote"])
@@ -81,14 +93,14 @@ def test_missing_or_unreviewed_or_stale_record_yields_no_fact(change):
     else:
         record["threat"]["plan"][0]["evidence"][0]["quote"] = "invented"
         args["reviewed_digests"]["Threat"] = annotation_digest(record)
-    assert not project_annotation_facts(AnnotationEvent("e", "spell_cast", "Threat", 2), **args)
+    assert not project_annotation_facts(event("e", "spell_cast", "Threat", 2), **args)
 
 
 @pytest.mark.parametrize("zone", ["battlefield", "graveyard", "played"])
 def test_known_public_zones(zone):
     args = fixture()
-    args["known_cards"] = (KnownCard("Partner", zone, 2),)
-    result = project_annotation_facts(AnnotationEvent("e", "permanent_entered", "Threat", 1), **args)
+    args["known_cards"] = (known_card("Partner", zone, 2),)
+    result = project_annotation_facts(event("e", "permanent_entered", "Threat", 1), **args)
     assert len(result) == 1 and next(iter(result.values()))["kind"] == "card_relationship"
 
 
@@ -96,8 +108,8 @@ def test_known_public_zones(zone):
 def test_private_presence_only_local_opt_in(allow, controller, expected):
     args = fixture()
     args["allow_private"] = allow
-    args["known_cards"] = (KnownCard("Partner", "battlefield", controller, "private"),)
-    result = project_annotation_facts(AnnotationEvent("e", "permanent_entered", "Threat", 1), **args)
+    args["known_cards"] = (known_card("Partner", "battlefield", controller, "private"),)
+    result = project_annotation_facts(event("e", "permanent_entered", "Threat", 1), **args)
     assert len(result) == expected
     if result:
         assert next(iter(result.values()))["visibility"] == "private"
@@ -106,32 +118,32 @@ def test_private_presence_only_local_opt_in(allow, controller, expected):
 def test_hidden_identity_never_leaks_even_when_private_enabled():
     args = fixture()
     args["allow_private"] = True
-    event = AnnotationEvent("e", "spell_cast", "Threat", 2, face_down=True)
-    assert not project_annotation_facts(event, **args)
-    args["known_cards"] = (KnownCard("Partner", "battlefield", 1, face_down=True),)
-    assert not project_annotation_facts(AnnotationEvent("e", "permanent_entered", "Threat", 1), **args)
+    hidden_event = event("e", "spell_cast", "Threat", 2, face_down=True)
+    assert not project_annotation_facts(hidden_event, **args)
+    args["known_cards"] = (known_card("Partner", "battlefield", 1, face_down=True),)
+    assert not project_annotation_facts(event("e", "permanent_entered", "Threat", 1), **args)
 
 
 def test_hand_library_and_missing_partner_not_inferred():
     for zone in ("hand", "library", "exile"):
         args = fixture()
-        args["known_cards"] = (KnownCard("Partner", zone, 1),)
-        assert not project_annotation_facts(AnnotationEvent("e", "permanent_entered", "Threat", 1), **args)
+        args["known_cards"] = (known_card("Partner", zone, 1),)
+        assert not project_annotation_facts(event("e", "permanent_entered", "Threat", 1), **args)
 
 
 def test_public_partner_preferred_over_same_name_private():
     args = fixture()
     args["allow_private"] = True
     args["known_cards"] = (
-        KnownCard("Partner", "battlefield", 1, "private"),
-        KnownCard("Partner", "graveyard", 2),
+        known_card("Partner", "battlefield", 1, "private"),
+        known_card("Partner", "graveyard", 2),
     )
-    result = project_annotation_facts(AnnotationEvent("e", "permanent_entered", "Threat", 1), **args)
+    result = project_annotation_facts(event("e", "permanent_entered", "Threat", 1), **args)
     assert next(iter(result.values()))["visibility"] == "public"
 
 
 def test_cast_does_not_claim_partner_has_entered():
-    result = project_annotation_facts(AnnotationEvent("e", "spell_cast", "Threat", 2), **fixture())
+    result = project_annotation_facts(event("e", "spell_cast", "Threat", 2), **fixture())
     assert [fact["kind"] for fact in result.values()] == ["card_threat"]
 
 
@@ -174,9 +186,7 @@ def catalog_args():
 
 
 def test_catalogue_is_only_possibility_and_preserves_all_requirements():
-    result = project_annotation_facts(
-        AnnotationEvent("e", "permanent_entered", "Threat", 1), **catalog_args()
-    )
+    result = project_annotation_facts(event("e", "permanent_entered", "Threat", 1), **catalog_args())
     facts = [f for f in result.values() if f["kind"] == "catalogue_relationship"]
     assert len(facts) == 1
     fact = facts[0]
@@ -193,10 +203,47 @@ def test_catalogue_forged_link_rejected_even_with_new_review_digest():
     record = args["records"]["Threat"]
     record["relationships"]["catalog"]["recipe_links"][0]["text"] = "Combo is active."
     args["reviewed_digests"]["Threat"] = annotation_digest(record)
-    assert not project_annotation_facts(AnnotationEvent("e", "permanent_entered", "Threat", 1), **args)
+    assert not project_annotation_facts(event("e", "permanent_entered", "Threat", 1), **args)
 
 
 def test_changed_partner_source_is_stale_even_when_quote_still_present():
     args = fixture()
     args["printed"]["Partner"].oracle_text += " Only during your turn."
-    assert not project_annotation_facts(AnnotationEvent("e", "permanent_entered", "Threat", 1), **args)
+    assert not project_annotation_facts(event("e", "permanent_entered", "Threat", 1), **args)
+
+
+def test_partner_from_another_game_is_not_present():
+    args = fixture()
+    args["known_cards"] = (known_card("Partner", "battlefield", 1, game_number=2),)
+    assert not project_annotation_facts(event("e", "permanent_entered", "Threat", 1), **args)
+
+
+def test_missing_epoch_is_not_an_observed_context():
+    assert not project_annotation_facts(event("e", "spell_cast", "Threat", 2, match_id=""), **fixture())
+
+
+@pytest.mark.parametrize("bad", [None, [], {}, True, 0])
+def test_malformed_event_kind_and_partner_zone_refused(bad):
+    assert not project_annotation_facts(event("e", bad, "Threat", 2), **fixture())
+    args = fixture()
+    args["known_cards"] = (known_card("Partner", bad, 1),)
+    assert not project_annotation_facts(event("e", "permanent_entered", "Threat", 1), **args)
+
+
+@pytest.mark.parametrize("seat", [0, -1, True])
+def test_invalid_partner_controller_refused(seat):
+    args = fixture()
+    args["known_cards"] = (known_card("Partner", "battlefield", seat),)
+    assert not project_annotation_facts(event("e", "permanent_entered", "Threat", 1), **args)
+
+
+def test_valid_empty_catalogue_preserves_model_facts():
+    from arenamcp.card_facts.spellbook import project_relationships
+
+    args = catalog_args()
+    record = args["records"]["Threat"]
+    source = record["relationships"]["catalog"]["source"]
+    record["relationships"]["catalog"] = project_relationships("Threat", "t", [], source)
+    args["reviewed_digests"]["Threat"] = annotation_digest(record)
+    result = project_annotation_facts(event("e", "permanent_entered", "Threat", 2), **args)
+    assert [f["kind"] for f in result.values()] == ["card_threat", "card_relationship"]
