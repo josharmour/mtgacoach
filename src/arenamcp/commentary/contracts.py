@@ -170,7 +170,16 @@ class Utterance:
         if self.anchor_id == self.utterance_id:
             raise ValueError("An utterance cannot depend on itself")
         if (
-            self.position_scope not in {"", "battlefield", "players", "stack", "public"}
+            self.position_scope
+            not in {
+                "",
+                "battlefield",
+                "players",
+                "stack",
+                "public",
+                "strategy:creature_presence",
+                "strategy:land_counts",
+            }
             and not re.fullmatch(r"cards:[0-9]+(?:,[0-9]+){0,15}", self.position_scope)
         ) or (self.position_scope and not self.position_id):
             raise ValueError("Invalid freshness scope")

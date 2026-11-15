@@ -122,7 +122,8 @@ def strategic_observation(observation, event, *, private=False):
         }
         if all(creatures.values()):
             found = position(
-                "Both sides have creatures committed; an attack could open a return attack, so the race depends on blocks as well as life totals."
+                "Both sides have creatures committed; an attack could open a return attack, so the race depends on blocks as well as life totals.",
+                "strategy:creature_presence",
             )
             if found:
                 return found
@@ -130,7 +131,8 @@ def strategic_observation(observation, event, *, private=False):
             other = next(v for v in seats if v != s)
             if creatures[s] and not creatures[other]:
                 found = position(
-                    f"{actor_name(observation.public_state, other)} {'have' if actor_name(observation.public_state, other) == 'You' else 'has'} no creatures in play; rebuilding blockers could change the race against {actor_name(observation.public_state, s)}."
+                    f"{actor_name(observation.public_state, other)} {'have' if actor_name(observation.public_state, other) == 'You' else 'has'} no creatures in play; rebuilding blockers could change the race against {actor_name(observation.public_state, s)}.",
+                    "strategy:creature_presence",
                 )
                 if found:
                     return found
@@ -143,7 +145,8 @@ def strategic_observation(observation, event, *, private=False):
         leader = max(seats, key=lands.get)
         if lands[leader] >= min(lands.values()) + 2:
             found = position(
-                f"{actor_name(observation.public_state, leader)} {'have' if actor_name(observation.public_state, leader) == 'You' else 'has'} more lands in play; that could support developing threats while keeping interaction available."
+                f"{actor_name(observation.public_state, leader)} {'have' if actor_name(observation.public_state, leader) == 'You' else 'has'} more lands in play; that could support developing threats while keeping interaction available.",
+                "strategy:land_counts",
             )
             if found:
                 return found

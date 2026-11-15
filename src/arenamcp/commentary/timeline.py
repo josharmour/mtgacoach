@@ -22,6 +22,36 @@ def position_fingerprint(observation, scope=""):
             for zone, cards in public.get("zones", {}).items()
         }
         private = {"hand": [c for c in private.get("hand", []) if c.get("instance_id") in ids]}
+    elif scope in {"strategy:creature_presence", "strategy:land_counts"}:
+        # These scopes are only issued for the bounded deterministic claims in
+        # strategy.py. Do not use them for arbitrary model-authored analysis.
+        # Life, stack, tap/counter and private-hand updates cannot falsify those
+        # claims, but unknown identities, control/type changes and lost boards can.
+        from arenamcp.player_names import actor_name
+
+        board = observation.public_state.get("zones", {}).get("battlefield", [])
+        players = observation.public_state.get("players", [])
+        kind = "creature" if scope.endswith("creature_presence") else "land"
+        public = {
+            "known": all(not c.get("face_down") and c.get("type_line") for c in board),
+            "players": [
+                (
+                    p.get("seat_id"),
+                    actor_name(observation.public_state, p.get("seat_id")),
+                    sum(
+                        c.get("controller_seat_id") == p.get("seat_id")
+                        and bool(c.get("name"))
+                        and not c.get("face_down")
+                        and kind in c.get("type_line", "").lower()
+                        for c in board
+                    ),
+                )
+                for p in players
+            ],
+        }
+        if kind == "creature":
+            public["players"] = [(seat, name, bool(count)) for seat, name, count in public["players"]]
+        private = {}
     elif scope == "public":
         # Audit excludes turn-dependent claims for this scope. A phase/turn
         # transition alone does not erase an unchanged public engine.
