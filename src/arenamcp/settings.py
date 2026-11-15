@@ -93,6 +93,7 @@ DEFAULTS = {
     "commentary_output_owner": "coach",
     "commentary_python": "",
     "commentary_aoa_source": "",
+    "commentary_public_voice": "kokoro",
     "commentary_kokoro_analyst": "am_onyx",
     "commentary_chatterbox_analyst": "mira",
     "chatterbox_speed": 1.0,

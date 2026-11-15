@@ -11,6 +11,7 @@ from dataclasses import replace
 from PySide6.QtCore import QObject, QTimer, Signal
 
 from arenamcp.chatterbox_remote import HOSTED_BASE
+from arenamcp.commentary import qwen_public
 from arenamcp.commentary.config import CommentaryConfig, normalize_persona, speech_rate
 from arenamcp.commentary.contracts import TERMINAL_STATES, Epoch, SpeechCategory, Utterance
 from arenamcp.commentary.delivery import delivery_level
@@ -58,9 +59,21 @@ class CommentaryController(QObject):
         self.timer.timeout.connect(self.arbiter.tick)
         self.timer.start()
         self._catalog(settings)
+        if self.config.enabled and qwen_public.selected(settings) and not self.arbiter.muted:
+            self.tts.warm_public_voice()
 
     def configure(self, config):
         updated = CommentaryConfig.from_wire(config)
+        settings = get_settings()
+        if (
+            updated.enabled
+            and not updated.private_information
+            and not settings.get("muted", False)
+            and qwen_public.selected(settings)
+        ):
+            self.tts.warm_public_voice()
+        elif not self.preview_settings and hasattr(self.tts, "release_public_voice"):
+            self.tts.release_public_voice()
         if updated == self.config:
             return  # The engine echoes settings; an acknowledgment is not Stop.
         self.config = updated
@@ -133,7 +146,13 @@ class CommentaryController(QObject):
                 and item.provider == "kokoro"
             )
         if item.utterance_id in self.preview_settings:
-            return True
+            return item.provider != qwen_public.PROVIDER or qwen_public.selected(
+                self.preview_settings[item.utterance_id]
+            )
+        if item.provider == qwen_public.PROVIDER and (
+            self.config.private_information or not qwen_public.selected(get_settings())
+        ):
+            return False
         if item.category != SpeechCategory.COMMENTARY:
             return (
                 item.category in {SpeechCategory.ESSENTIAL, SpeechCategory.ADVICE}
@@ -141,17 +160,26 @@ class CommentaryController(QObject):
             )
         return bool(self.config.enabled and self.observation and valid_for(item, self.observation))
 
-    def proposal(self, payload):
+    def proposal(self, payload, *, public_only=False):
         try:
             item = Utterance.from_wire(payload)
             if item.category != SpeechCategory.COMMENTARY or item.utterance_id.startswith("private-outs:"):
                 raise ValueError()
         except (ValueError, TypeError, KeyError):
             return
+        if item.utterance_id in self.arbiter._states:
+            return
         settings = get_settings()
         provider = str(settings.get("tts_provider") or "kokoro")
         try:
-            pair = voice_pair(settings, self._catalog(settings))
+            if not self.config.private_information and qwen_public.selected(settings):
+                if public_only is not True:
+                    self.commentary_ids.add(item.utterance_id)
+                    self._status(item.utterance_id, "superseded")
+                    return
+                provider, pair = qwen_public.PROVIDER, qwen_public.PAIR
+            else:
+                pair = voice_pair(settings, self._catalog(settings))
             voice = pair[1 if item.role == "color_analyst" else 0]
         except VoicePairUnavailable as error:
             self.commentary_ids.add(item.utterance_id)
@@ -164,8 +192,6 @@ class CommentaryController(QObject):
             voice=voice,
             speed=speech_rate(settings),
         )
-        if item.utterance_id in self.arbiter._states:
-            return
         self.commentary_ids.add(item.utterance_id)
         if not self.arbiter.submit(item):
             self._status(item.utterance_id, "failed")
@@ -285,6 +311,8 @@ class CommentaryController(QObject):
         except VoicePairUnavailable as error:
             self.statusChanged.emit({"state": "voice", "message": str(error)})
             return
+        if duo and qwen_public.selected(options):
+            provider, voices = qwen_public.PROVIDER, qwen_public.PAIR
         preview_lines = {
             "hype": (
                 "The attack is on! Can this board keep up the pressure?",
@@ -347,6 +375,7 @@ class CommentaryController(QObject):
         self.tts.request_speech(
             **({"private": True} if private_outs else {}),
             **overrides,
+            **({"role": item.role} if item.provider == qwen_public.PROVIDER else {}),
             **self._delivery(item),
             text=speech_text,
             voice_id=item.voice,
@@ -400,7 +429,11 @@ class CommentaryController(QObject):
         if state in TERMINAL_STATES:
             self.timings.pop(uid, None)
             self.voice_names.pop(uid, None)
-            self.preview_settings.pop(uid, None)
+            preview = self.preview_settings.pop(uid, None)
+            if preview and qwen_public.selected(preview) and not self.preview_settings:
+                settings = get_settings()
+                if not qwen_public.selected(settings) or settings.get("muted", False):
+                    self.tts.release_public_voice()
             self.engine_ids.discard(uid)
             self.commentary_ids.discard(uid)
 

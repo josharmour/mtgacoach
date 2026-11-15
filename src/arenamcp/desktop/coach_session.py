@@ -633,6 +633,8 @@ class CoachSession(QObject):
                     "tts_provider",
                     "autoplay_speech",
                     "commentary_persona",
+                    "commentary_public_voice",
+                    "commentary_private_information",
                     "commentary_kokoro_pair",
                     "commentary_chatterbox_pair",
                     "voice",
@@ -1040,7 +1042,7 @@ class CoachSession(QObject):
             self._speech.speech(event, muted=self._muted)
 
         elif ev_type == "commentary_proposal":
-            self._speech.proposal(event.get("utterance") or {})
+            self._speech.proposal(event.get("utterance") or {}, public_only=event.get("public_only") is True)
         elif ev_type == "commentary_clear":
             self._speech.arbiter.disable_commentary()
         elif ev_type == "commentary_config":

@@ -23,6 +23,12 @@ The managed app includes the native Arena bridge. With Arena closed, Coach stage
 
 Coach leaves an already-running Arena session open. If Arena was started without the bridge, finish your match, close Arena, and reopen it through Coach to enable autoplay. A bridge update likewise takes effect on a new Arena launch; restarting Coach alone cannot replace a bridge loaded into a running game. Manual coaching can still use the game log.
 
+#### Optional expressive public announcers
+
+On an Apple Silicon Mac with Metal, **Speech & voices → Kokoro → Announcers narrate the game → Public announcers** offers **Qwen3 · Ryan & Serena** when its local pack passes the capability check. Ryan calls the play and Serena analyzes it. Their roles and the moment guide their delivery. **Target pace** guides speaking speed. **Preview** auditions both voices before saving. Checking **Discuss my hand and deck** uses your selected Kokoro pair. The first local utterance can take several seconds while Metal initializes; subsequent lines reuse the loaded model.
+
+To provision the optional pack yourself, install a native Python 3.12 environment at `~/.arenamcp/voices/qwen3` with `mlx-audio==0.6.5`, `mlx==0.32.4`, `mlx-metal==0.32.4` and `transformers==5.23.0`. Install the complete `mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-8bit` snapshot at revision `41d3337e8b7f2843a75841595fc14e4b9a7a4b96` in the standard `~/.cache/huggingface/hub` cache. Allow roughly 3.1 GB for the weights plus the Python environment. Reopen the speech dialog after provisioning. Coach probes and renders with networking disabled.
+
 ### Linux x64 / Proton
 
 Make the AppImage executable and open it. In **Tools → Setup & Repair**, check Arena’s location, logging, the bundled BepInEx loader, and the bridge plugin. Close Arena before installing or replacing bridge files.

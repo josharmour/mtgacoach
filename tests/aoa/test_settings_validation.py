@@ -16,6 +16,7 @@ class Settings(dict):
 
 @pytest.fixture
 def dialog(qapp, monkeypatch):
+    monkeypatch.setattr(ui.qwen_public, "command", lambda: None)
     values = {
         key: ""
         for key in (
@@ -221,3 +222,30 @@ def test_kokoro_custom_role_voices_preview_save_and_reopen(dialog):
     assert reopened.analyst.findData("bm_fable") == -1
     assert voice_pair(reopened._values()) == ("bm_fable", reopened.analyst.currentData())
     reopened.close()
+
+
+def test_optional_public_pair_preview_save_and_private_switch(dialog):
+    from arenamcp.commentary import qwen_public
+
+    widget, settings, session = dialog
+    widget._local_ready(True)
+    widget.mode.setCurrentIndex(widget.mode.findData("commentary"))
+    widget.public_voice.setCurrentIndex(widget.public_voice.findData(qwen_public.PROVIDER))
+    before = settings.copy()
+    widget._preview()
+    options = session.preview_voice.call_args.args[0]
+    assert qwen_public.selected(options) and widget.speed_label.text() == "Target pace"
+    assert settings == before and widget.voice.isHidden() and widget.analyst.isHidden()
+    widget._apply()
+    assert qwen_public.selected(settings)
+    widget.private.setChecked(True)
+    widget._preview()
+    assert not widget.public_voice.isEnabled() and not widget.analyst.isHidden()
+    assert not qwen_public.selected(session.preview_voice.call_args.args[0])
+    widget._apply()
+    assert settings["commentary_public_voice"] == qwen_public.PROVIDER
+    assert not qwen_public.selected(settings)
+    widget.private.setChecked(False)
+    assert widget._expressive()
+    widget.mode.setCurrentIndex(widget.mode.findData("actions"))
+    assert widget.public_voice.isHidden() and not qwen_public.selected(widget._values())

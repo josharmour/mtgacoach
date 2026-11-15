@@ -12,6 +12,8 @@ from typing import Any
 
 from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, QTimer, Signal
 
+from arenamcp.commentary import qwen_public
+
 from .audio import AudioPlayback
 from .runtime import find_python_executable, get_app_root, get_runtime_root, is_packaged_runtime
 
@@ -42,6 +44,12 @@ class TtsManager(QObject):
         from .pcm_stream import PcmStreamPlayer
 
         self._pcm = PcmStreamPlayer(self)
+        from .qwen_public_stream import PublicVoiceStream
+
+        self._public_voice = PublicVoiceStream(self)
+        self._public_voice.chunk.connect(self._on_stream_chunk)
+        self._public_voice.done.connect(self._on_stream_done)
+        self._public_voice.failed.connect(self._public_voice_failed)
         self._pcm_generation = -1
         self._streamChunk.connect(self._on_stream_chunk)
         self._streamDone.connect(self._on_stream_done)
@@ -162,6 +170,7 @@ class TtsManager(QObject):
         settings_override=None,
         excitement="normal",
         energy=0.5,
+        role=None,
         private=False,
     ) -> None:
         if private and (provider != "kokoro" or category != "commentary" or not self.private_render_ready):
@@ -173,11 +182,36 @@ class TtsManager(QObject):
                 self.speechStatus.emit(speech_id, "failed")
             return
 
+        from arenamcp.settings import get_settings
+
+        settings = settings_override if settings_override is not None else get_settings()
+        selected = provider or str(settings.get("tts_provider") or "kokoro")
+        if selected == qwen_public.PROVIDER:
+            preview = (
+                settings_override is not None
+                and category == "workflow"
+                and (speech_id or "").startswith("preview:")
+            )
+            if (
+                provider != selected
+                or not callable(valid)
+                or not qwen_public.selected(settings)
+                or not (preview or category == "commentary")
+                or (not preview and not qwen_public.selected(get_settings()))
+                or role not in {"play_by_play", "color_analyst"}
+                or voice_id != qwen_public.PAIR[role == "color_analyst"]
+                or private
+            ):
+                if speech_id:
+                    self.speechStatus.emit(speech_id, "failed")
+                return
+
         self._speech_valid = valid or (lambda: True)
         if not self._speech_valid():
             if speech_id:
                 self.speechStatus.emit(speech_id, "superseded")
             return
+        self._public_voice.cancel()
         if self._remote_cancel is not None:
             self._remote_cancel.set()
         self._pending_request = None
@@ -186,10 +220,22 @@ class TtsManager(QObject):
         self._last_speed = float(speed)
         self._last_text_generation = self._generation
 
-        from arenamcp.settings import get_settings
-
-        settings = settings_override if settings_override is not None else get_settings()
-        selected = provider or str(settings.get("tts_provider") or "kokoro")
+        if selected == qwen_public.PROVIDER:
+            self._selected_provider = selected
+            self._resolve_tracked("superseded")
+            self._generation += 1
+            self._last_text = ""
+            self._last_text_generation = -1
+            self._remote_generation = self._generation  # Ignore unrelated Kokoro worker events.
+            self._stop_playback()
+            self._stop_say()
+            self._track(speech_id)
+            self._public_voice.speak(
+                self._generation,
+                {"text": text, "role": role, "excitement": excitement, "speed": speed},
+                self._speech_valid,
+            )
+            return
         if selected == "kokoro":
             from arenamcp.commentary.delivery import kokoro_delivery
 
@@ -329,6 +375,7 @@ class TtsManager(QObject):
         self._playback_watch.stop()
 
     def stop_speech(self) -> None:
+        self._public_voice.cancel()
         if self._remote_cancel is not None:
             self._remote_cancel.set()
         self._resolve_tracked("stopped")
@@ -406,6 +453,7 @@ class TtsManager(QObject):
                 proc.terminate()
 
     def shutdown(self) -> None:
+        self._public_voice.shutdown()
         if self._remote_cancel is not None:
             self._remote_cancel.set()
         self._resolve_tracked("stopped")
@@ -556,12 +604,28 @@ class TtsManager(QObject):
 
         threading.Thread(target=worker, daemon=True, name="chatterbox-stream").start()
 
+    def warm_public_voice(self):
+        self._public_voice.warm()
+
+    def release_public_voice(self):
+        self._public_voice.close()
+
+    def _public_voice_failed(self, generation):
+        if self._closing or generation != self._generation:
+            return
+        self._pcm.stop()
+        self.error_line.emit(
+            "Local expressive voices unavailable. Check the installed Mac voice pack in Speech & voices."
+        )
+        self._complete(generation, "failed" if self._speech_valid() else "superseded")
+
     def _on_stream_chunk(self, generation, data):
         if self._closing or generation != self._generation:
             return
         if not self._speech_valid():
             if self._remote_cancel is not None:
                 self._remote_cancel.set()
+            self._public_voice.cancel()
             self._pcm.stop()
             self._generation += 1
             self._complete(generation, "superseded")
@@ -584,7 +648,8 @@ class TtsManager(QObject):
             self._remote_cancel.set()
         self._generation += 1
         self._complete(self._pcm_generation, "failed")
-        self.error_line.emit("Chatterbox audio output is unavailable.")
+        self._public_voice.cancel()
+        self.error_line.emit("Streaming audio output is unavailable.")
 
     def _request_remote_speech(
         self,

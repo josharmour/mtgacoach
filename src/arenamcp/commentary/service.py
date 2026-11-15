@@ -315,9 +315,19 @@ class CommentaryService:
                 self.proposals[item.utterance_id] = item
                 self.grounded_ids.add(item.utterance_id)
         for item in lines:
-            self.emit({"type": "commentary_proposal", "utterance": item.to_wire()})
+            self._emit_proposal(item, observation, config)
         self.status("grounded", reason=reason)
         return {eid for item in lines for eid in item.evidence_ids}
+
+    def _emit_proposal(self, item, observation, config):
+        # Scope comes from the engine's actual projection. A late worker result
+        # must not become public merely because a desktop checkbox changed.
+        public_only = (
+            not config.private_information
+            and not observation.private_state
+            and all(event.visibility == "public" for event in observation.events)
+        )
+        self.emit({"type": "commentary_proposal", "utterance": item.to_wire(), "public_only": public_only})
 
     def _fallback(self, observation, config, reason):
         consumed = self._grounded(observation, config, reason)
@@ -492,7 +502,7 @@ class CommentaryService:
                         with self._lock:
                             self.inflight[item.utterance_id] = item.expires_at + 30
                             self.proposals[item.utterance_id] = item
-                        self.emit({"type": "commentary_proposal", "utterance": item.to_wire()})
+                        self._emit_proposal(item, observation, config)
                         usable = True
                     if prefix_valid:
                         consumed = {eid for item in utterances for eid in item.evidence_ids}
