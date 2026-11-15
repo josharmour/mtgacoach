@@ -56,7 +56,7 @@ def request_size(system, context):
     )
 
 
-def compact_context(system, context):
+def compact_context(system, context, *, reply_system=None):
     limit = 5900 - len(json.dumps(generation_format(), separators=(",", ":")).encode())
     result = {
         key: context[key] for key in ("booth", "allowed_roles", "style", "focus", "airtime") if key in context
@@ -201,12 +201,30 @@ def compact_context(system, context):
     annotations.sort(key=lambda k: facts[k].get("kind") != "card_relationship")
     # Reviewed links are the strongest evidence for an entry. Reserve room
     # for one while allowing the focal rules and established engines to fit.
-    order = (
-        ranked[:2]
-        + [k for k in annotations if facts[k]["kind"] == "card_relationship"]
-        + order[len(ranked[:2]) :]
+    # Bring one public deck hypothesis to the analyst when this play involves
+    # its evidence. An unrelated action does not reopen the same talking point.
+    reads = {}
+    for k, fact in facts.items():
+        if not k.startswith("state:opponent_read:"):
+            continue
+        seen_ids = {sighting["grp_id"] for sighting in fact["evidence"]}
+        references = [
+            event_key
+            for event_key in ranked[:2]
+            if facts[event_key].get("seat") == fact["opponent_seat"]
+            and facts[event_key].get("kind") in event_kinds
+            and (facts[event_key].get("data") or {}).get("grp_id") in seen_ids
+        ]
+        if references:
+            reads[k] = references
+            break
+    preamble = system
+    if reply_system and result.get("partner_call"):
+        preamble = reply_system
+    handoff = (
+        result.get("editorial_question", {}).get("check_these_refs", ()) if result.get("partner_call") else ()
     )
-    order += [k for k in annotations if facts[k]["kind"] != "card_relationship"]
+    order = ranked[:2] + annotations + list(reads) + list(handoff) + order[len(ranked[:2]) :]
     order += related
     order += focal
     others = [k for k in permanents if k not in focal]
@@ -235,10 +253,13 @@ def compact_context(system, context):
         result["facts"][key] = facts[key]
         if key in new:
             result["new_events"].append(key)
-        if request_size(system, result) > limit:
+        if request_size(preamble, result) > limit:
             result["facts"].pop(key)
             if key in result["new_events"]:
                 result["new_events"].remove(key)
+    for key, references in reads.items():
+        if not any(ref in result["new_events"] for ref in references):
+            result["facts"].pop(key, None)
     angle = result.get("editorial_question")
     if angle and (
         not set(angle["check_these_refs"]).issubset(result["facts"])
@@ -246,12 +267,14 @@ def compact_context(system, context):
         or ranked[0] not in result["new_events"]
     ):
         result["editorial_question"]["check_these_refs"] = []
-        result.pop("partner_call", None)
+        if result.pop("partner_call", None) and preamble != system:
+            # Without the handoff, generation uses the longer two-speaker prompt.
+            return compact_context(system, context)
     for key in ("heard", "earlier_points", "in_flight"):
         result.setdefault(key, [])
         for item in reversed(context.get(key, ())[-2:]):
             result[key].insert(0, item)
-            if request_size(system, result) > limit:
+            if request_size(preamble, result) > limit:
                 result[key].pop(0)
     return result
 

@@ -162,6 +162,15 @@ def binding(scope, tracked, sources, observation, text):
         ):
             snapshot = True
             continue
+        if (
+            key.startswith("state:opponent_read:")
+            and key in deps
+            and fact.get("source") == "reviewed_public_card_facts"
+            and fact.get("kind") == "opponent_plan_inference"
+            and fact.get("visibility") == "public"
+        ):
+            snapshot = True
+            continue
         if key in {"state:turn", "state:game_read", "private:deck_plan"} and key in deps:
             snapshot = True
             continue

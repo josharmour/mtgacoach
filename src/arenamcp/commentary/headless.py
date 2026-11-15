@@ -64,6 +64,8 @@ class HeadlessBooth:
         from arenaonair.llm_booth import GenerativeBooth, JsonClient, ModelError
         from arenaonair.story import StoryModel
 
+        from arenamcp.opponent_read import OpponentRead
+
         self.now, self.rpc, self.settings = now, rpc, config
         self.queue = ProposalQueue()
         self.permanents = {}
@@ -73,6 +75,7 @@ class HeadlessBooth:
         self.length_drops = []
         self.audit_scopes = {}
         self.event_sources = {}
+        self.opponent_read = OpponentRead()
         self.played_prints = {}
         self.annotation_epoch = None
         self.already_called = ()
@@ -190,7 +193,7 @@ class HeadlessBooth:
                 add_damage_arithmetic(context["facts"])
                 context["already_called"] = list(owner.already_called)
                 context["recent_analysis"] = list(owner.recent_analysis)
-                selected = compact_context(SYSTEM, context)
+                selected = compact_context(SYSTEM, context, reply_system=REPLY)
                 self.analysis_memory = selected["recent_analysis"]
                 lead = selected.get("partner_call")
                 if lead:
@@ -229,6 +232,7 @@ class HeadlessBooth:
                 facts = super()._state_facts(snap)
                 facts.update(owner.permanents)
                 facts.update(owner.annotation_facts)
+                facts.update(owner.opponent_facts)
                 board = facts.get("state:board", {})
                 # Keep both battlefields affordable even when graveyards and
                 # repeated identity metadata would crowd them out of the prompt.
@@ -389,6 +393,18 @@ class HeadlessBooth:
                 break
         from .card_annotations import KnownCard, observed_annotations, public_event_print
 
+        # The prompt cites the public print and the zone in which it was
+        # observed. The reader retains the full printed-source hashes locally.
+        self.opponent_facts = {
+            key: {
+                **fact,
+                "evidence": [
+                    {field: sighting[field] for field in ("name", "grp_id", "observed_zone")}
+                    for sighting in fact["evidence"]
+                ],
+            }
+            for key, fact in self.opponent_read.observation_facts(observation).items()
+        }
         self.annotation_facts = {}
         relationship_events = set()
         annotated_events = set()
