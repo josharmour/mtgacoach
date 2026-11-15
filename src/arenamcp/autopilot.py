@@ -5932,7 +5932,7 @@ class AutopilotEngine(
 
         labels = [(decision.find(oid).label if decision.find(oid) else oid) for oid in option_ids]
         bridge = self._progress_bridge(game_state, poll=fresh_poll)
-        if submit_option(bridge, decision, option_ids):
+        if submit_option(bridge, decision, option_ids, sole_pass_request=sole_pass):
             # A nested post-cast decision can finish without returning to the
             # outer coaching loop. Count actual submitted decisions as progress,
             # not polling/model tokens, so a genuinely stuck call still warns.
@@ -6051,6 +6051,11 @@ class AutopilotEngine(
                 self._state = AutopilotState.IDLE
             return True
         if self._abort_event.is_set():
+            return True
+        if sole_pass is not None:
+            # The native proof expired or submission was uncertain. Let the next
+            # cycle read the current window instead of retrying via the legacy path.
+            self._state = AutopilotState.IDLE
             return True
         if decision.request_type in {"SelectN", "Group"}:
             # #341: triggered-ability SelectN advanced to scry between the

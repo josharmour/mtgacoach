@@ -349,7 +349,10 @@ def test_real_planner_and_fresh_bridge_preserve_a_forced_priority_pass(gains_hid
     record = engine._planner._memory().this_turn(state)[-1]
     assert record.chosen == ["pass"] and "only Pass" in record.reasoning
     assert record.option_labels == {"pass": "Pass"}
-    assert engine._gre_bridge.submit_pass.call_count == (0 if gains_hidden_mana else 1)
+    if gains_hidden_mana:
+        engine._gre_bridge.submit_pass.assert_not_called()
+    else:
+        engine._gre_bridge.submit_pass.assert_called_once_with(expected_request_id=(204, 91))
 
 
 @pytest.mark.parametrize(
@@ -398,3 +401,19 @@ def test_filtered_pass_still_asks_and_remembers_normal_reasoning():
     assert model.efforts
     assert engine._planner.get_last_decision_trace().get("policy") != "native_sole_pass"
     engine._gre_bridge.submit_pass.assert_called_once()
+
+
+def test_rejected_native_pass_does_not_degrade_to_legacy_submission():
+    from tests.test_decision_layer_20261019 import _Model, _planner, _reply
+    from tests.test_planner_micro_wins_226 import _our_main
+
+    state = {**_our_main(), "_log_game_state_id": 204}
+    engine = _engine([state])
+    model = _Model(_reply("pass", "Hold."))
+    engine._planner = _planner(model)
+    engine._refresh_game_plan = MagicMock()
+    engine._gre_bridge.get_pending_actions.return_value = _bound_pass_poll()
+    engine._gre_bridge.submit_pass.return_value = False
+    assert engine._try_typed_decision_path(state, "decision_required") is True
+    engine._gre_bridge.submit_pass.assert_called_once_with(expected_request_id=(204, 91))
+    assert not model.efforts

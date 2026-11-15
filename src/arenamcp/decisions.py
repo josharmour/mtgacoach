@@ -643,7 +643,11 @@ def native_sole_pass_request(poll: dict[str, Any]) -> tuple[int, int] | None:
     ):
         return None
     game_id, message_id = poll.get("game_state_id"), poll.get("msg_id")
-    if type(game_id) is not int or type(message_id) is not int or min(game_id, message_id) <= 0:
+    if (
+        type(game_id) is not int
+        or type(message_id) is not int
+        or not (1 <= game_id <= 0xFFFFFFFF and 1 <= message_id <= 0xFFFFFFFF)
+    ):
         return None
     actions = poll.get("actions")
     if not isinstance(actions, list) or len(actions) != 1 or not isinstance(actions[0], dict):
@@ -2858,6 +2862,8 @@ def submit_option(
     bridge: Any,
     decision: PendingDecision,
     option_ids: list[str],
+    *,
+    sole_pass_request: tuple[int, int] | None = None,
 ) -> bool:
     """Submit the chosen option(s) through the bridge by id.
 
@@ -2940,6 +2946,14 @@ def submit_option(
 
     first = chosen[0]
     if first == "pass":
+        if sole_pass_request is not None:
+            if (
+                sole_pass_request != decision.request_id
+                or option_ids != ["pass"]
+                or len(decision.options) != 1
+            ):
+                return False
+            return bool(bridge.submit_pass(expected_request_id=sole_pass_request))
         return bool(bridge.submit_pass())
     if first.startswith("mull:"):
         return bool(bridge.submit_mulligan(first == "mull:keep"))

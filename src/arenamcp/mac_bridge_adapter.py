@@ -384,8 +384,51 @@ class Snapshot:
         return handle(self.request)
 
 
+def _bare_native_pass(action: dict) -> bool:
+    """Check the source fields that serialize_action would omit for a bare Pass."""
+    for member in (
+        "GrpId",
+        "InstanceId",
+        "AbilityGrpId",
+        "SourceId",
+        "AlternativeGrpId",
+        "FacetId",
+        "UniqueAbilityId",
+    ):
+        value = field(action, member, None if member in ("GrpId", "InstanceId") else 0)
+        if type(value) is not int or value != 0:
+            return False
+    if (
+        field(action, "AssumeCanBePaidFor") is not False
+        or field(action, "ShouldStop", False) is not False
+        or field(action, "IsBatchable", False) is not False
+        or field(action, "AutoTapSolution") is not None
+    ):
+        return False
+    missing = object()
+    highlight = field(action, "Highlight", missing)
+    if highlight is not missing and (highlight != {"e": "None", "v": 0} or type(highlight["v"]) is not int):
+        return False
+    for member, element in (("ManaCost", "ManaRequirement"), ("Targets", "TargetSelection")):
+        values = field(action, member, missing)
+        if values is missing:
+            continue
+        if (
+            not isinstance(values, dict)
+            or set(values) != {"$c", "$h", "$n", "$items"}
+            or values["$c"] != f"Google.Protobuf.Collections.RepeatedField<{MESSAGING}{element}>"
+            or type(values["$h"]) is not int
+            or values["$h"] <= 0
+            or type(values["$n"]) is not int
+            or values["$n"] != 0
+            or values["$items"] != []
+        ):
+            return False
+    return True
+
+
 def _verified_sole_pass(snapshot: Snapshot) -> bool:
-    """Require the uncoerced controls, request identity and entire native Actions list."""
+    """Check native ActionsAvailableRequest.Actions and the action used by SubmitPass."""
     req, controls = snapshot.request, snapshot.getters
     if (
         not isinstance(req, dict)
@@ -396,41 +439,52 @@ def _verified_sole_pass(snapshot: Snapshot) -> bool:
     ):
         return False
     original = snapshot.original_message
-    if (
-        not isinstance(original, dict)
-        or original.get("$c") != "Wotc.Mtgo.Gre.External.Messaging.GREToClientMessage"
-    ):
+    if not isinstance(original, dict) or original.get("$c") != MESSAGING + "GREToClientMessage":
         return False
     for member in ("GameStateId", "MsgId"):
         value = field(original, member)
-        if type(value) is not int or value <= 0:
+        if type(value) is not int or not 1 <= value <= 0xFFFFFFFF:
             return False
     actions = field(req, "Actions")
-    if not isinstance(actions, dict) or type(actions.get("$n")) is not int or actions["$n"] != 1:
+    if (
+        not isinstance(actions, dict)
+        or actions.get("$c") != "System.Collections.Generic.List<" + MESSAGING + "Action>"
+        or type(actions.get("$n")) is not int
+        or actions["$n"] != 1
+        or set(actions) != {"$c", "$h", "$n", "$items"}
+    ):
         return False
     entries = items(actions)
-    if (
-        len(entries) != 1
-        or not isinstance(entries[0], dict)
-        or entries[0].get("$c") != "Wotc.Mtgo.Gre.External.Messaging.Action"
-    ):
+    if len(entries) != 1 or not isinstance(entries[0], dict) or entries[0].get("$c") != MESSAGING + "Action":
         return False
     action = entries[0]
     for node in (req, original, actions, action):
         if (
-            not isinstance(node.get("$c"), str)
-            or not node["$c"]
-            or type(node.get("$h")) is not int
+            type(node.get("$h")) is not int
             or node["$h"] <= 0
-            or any(k in node for k in ("$more", "$ref", "$bad_ptr", "$none", "$unity"))
+            or set(k for k in node if k.startswith("$")) - {"$c", "$h", "$n", "$items"}
         ):
             return False
-    for value, name in ((controls.get("Type"), "ActionsAvailable"), (field(action, "ActionType"), "Pass")):
-        if not isinstance(value, dict) or value.get("e") != name or type(value.get("v")) is not int:
+    # SubmitPass uses the cached private action. The probe encodes a repeated
+    # reference in the same dump as its exact class and managed handle.
+    pass_ref = req.get("_passAction")
+    if (
+        not isinstance(pass_ref, dict)
+        or set(pass_ref) != {"$c", "$h", "$ref"}
+        or pass_ref["$c"] != action["$c"]
+        or type(pass_ref["$h"]) is not int
+        or pass_ref["$h"] != action["$h"]
+        or pass_ref["$ref"] is not True
+    ):
+        return False
+    for value, name, number in (
+        (controls.get("Type"), "ActionsAvailable", 1),
+        (field(action, "ActionType"), "Pass", 5),
+    ):
+        # Native enum_value encodes exactly a symbolic name and numeric value.
+        if not isinstance(value, dict) or value != {"e": name, "v": number} or type(value["v"]) is not int:
             return False
-    return field(action, "AssumeCanBePaidFor") is False and all(
-        type(value) is int and value == 0 for value in (field(action, "GrpId"), field(action, "InstanceId"))
-    )
+    return _bare_native_pass(action)
 
 
 class MacBridgeAdapter:
@@ -2674,9 +2728,42 @@ class MacBridgeAdapter:
 
     def _cmd_submit_pass(self, command: dict, timeout: float | None) -> dict:
         snapshot = self._require(timeout, "ActionsAvailableRequest")
-        if not snapshot.getters.get("CanPass"):
-            raise AdapterError("Cannot pass on current interaction")
-        self._submit(snapshot, lambda ops, request: ops.call(request, "SubmitPass"), timeout)
+        if "expected_game_state_id" not in command and "expected_msg_id" not in command:
+            if not snapshot.getters.get("CanPass"):
+                raise AdapterError("Cannot pass on current interaction")
+            self._submit(snapshot, lambda ops, request: ops.call(request, "SubmitPass"), timeout)
+            return {"ok": True, "submitted_type": "Pass"}
+        gsid, msg = command.get("expected_game_state_id"), command.get("expected_msg_id")
+        if (
+            self._runtime != "il2cpp-macos"
+            or type(gsid) is not int
+            or type(msg) is not int
+            or (gsid, msg) != (snapshot.game_state_id, snapshot.msg_id)
+            or not _verified_sole_pass(snapshot)
+        ):
+            raise AdapterError("The native sole pass is no longer current")
+
+        def submit(ops, request):
+            # Validate and submit on Unity's main thread in the same batch.
+            ops.expect_member(request, "Type", 1)
+            ops.expect_member(request, "CanPass", True)
+            ops.expect_member(request, "CanCancel", False)
+            ops.expect_member(request, "AllowUndo", False)
+            original = ops.get(request, "OriginalMessage")
+            ops.expect_member(original, "GameStateId", gsid)
+            ops.expect_member(original, "MsgId", msg)
+            actions = ops.get(request, "Actions")
+            ops.expect_member(actions, "Count", 1)
+            active = ops.call(actions, "get_Item", I(0))
+            for option in (active, ops.get(request, "_passAction")):
+                ops.expect_class(option, "Action")
+                ops.expect_member(option, "ActionType", 5)
+                ops.expect_member(option, "GrpId", 0)
+                ops.expect_member(option, "InstanceId", 0)
+                ops.expect_member(option, "AssumeCanBePaidFor", False)
+            ops.call(request, "SubmitPass")
+
+        self._submit(snapshot, submit, timeout)
         return {"ok": True, "submitted_type": "Pass"}
 
     def _cmd_submit_mulligan(self, command: dict, timeout: float | None) -> dict:

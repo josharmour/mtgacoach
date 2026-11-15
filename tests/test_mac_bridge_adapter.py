@@ -1507,13 +1507,28 @@ def test_repeatable_casting_modes_reach_arena_in_one_submission():
         "string_enum",
         "float_message",
         "source_error",
+        "wrong_action_enum",
+        "wrong_request_enum",
+        "enum_sentinel",
+        "bool_request_enum",
+        "wide_message_id",
+        "wide_game_state_id",
+        "wrong_list_class",
+        "wrong_list_element",
+        "no_cached_pass",
+        "different_cached_pass",
+        "bad_cached_reference",
+        "bad_targets",
+        "lost_costs",
+        "bad_optional_id",
+        "bad_highlight",
+        "wrong_cost_element",
     ],
 )
 def test_sole_pass_evidence_requires_complete_native_reflection(damage):
     from arenamcp.decisions import native_sole_pass_request
 
-    raw = action(11, "Pass", 0, 0, assumeCanBePaidFor_=False)
-    request = actions_request(raw)
+    raw, request = _native_single_pass()
     getters = {"Type": enum("ActionsAvailable", 1), "CanPass": True, "CanCancel": False, "AllowUndo": False}
     game = FakeGame(request, getters)
     if damage == "missing_getter":
@@ -1544,7 +1559,140 @@ def test_sole_pass_evidence_requires_complete_native_reflection(damage):
         game.msg = 7.0
     elif damage == "source_error":
         request["Actions"]["$bad_ptr"] = True
+    elif damage == "wrong_action_enum":
+        raw["actionType_"]["v"] = 1
+    elif damage == "wrong_request_enum":
+        getters["Type"]["v"] = 0
+    elif damage == "enum_sentinel":
+        raw["actionType_"]["$bad_ptr"] = True
+    elif damage == "bool_request_enum":
+        getters["Type"]["v"] = True
+    elif damage == "wide_message_id":
+        game.msg = 2**32 + 7
+    elif damage == "wide_game_state_id":
+        game.gsid = 2**32 + 40
+    elif damage == "wrong_list_class":
+        request["Actions"]["$c"] = "Bogus"
+    elif damage == "wrong_list_element":
+        request["Actions"]["$c"] = "System.Collections.Generic.List<System.Object>"
+    elif damage == "no_cached_pass":
+        request["_passAction"] = None
+    elif damage == "different_cached_pass":
+        request["_passAction"]["$h"] = 12
+    elif damage == "bad_targets":
+        raw["targets_"] = {"$bad_ptr": True}
+    elif damage == "lost_costs":
+        raw["manaCost_"]["$n"] = 2
+    elif damage == "bad_optional_id":
+        raw["abilityGrpId_"] = {"$bad_ptr": True}
+    elif damage == "bad_highlight":
+        raw["highlight_"] = {"e": "LegalTarget", "v": 0}
+    elif damage == "wrong_cost_element":
+        raw["manaCost_"]["$c"] = "SomethingElse"
+    elif damage == "bad_cached_reference":
+        request["_passAction"]["$more"] = True
     response = adapter_for(game).handle({"action": "get_pending_actions"})
     assert response["ok"]
     assert native_sole_pass_request(response) == ((40, 7) if damage is None else None)
     assert response.get("native_sole_pass_verified") is (True if damage is None else None)
+
+
+def _native_single_pass():
+    raw = action(11, "Pass", 0, 0, assumeCanBePaidFor_=False)
+    raw["actionType_"] = enum("Pass", 5)
+    for member, element, pointer in (
+        ("targets_", "TargetSelection", 21),
+        ("manaCost_", "ManaRequirement", 22),
+    ):
+        raw[member] = {
+            "$c": f"Google.Protobuf.Collections.RepeatedField<{MSG}{element}>",
+            "$h": pointer,
+            "$n": 0,
+            "$items": [],
+        }
+    request = actions_request(raw)
+    request["Actions"]["$c"] = f"System.Collections.Generic.List<{MSG}Action>"
+    request["_passAction"] = {"$c": MSG + "Action", "$h": raw["$h"], "$ref": True}
+    return raw, request
+
+
+@pytest.mark.parametrize(
+    "changed", [None, "request_id", "raw_menu", "undo_on_submit", "extra_action_on_submit"]
+)
+def test_verified_pass_rechecks_the_exact_request_in_the_submit_frame(changed):
+    raw, request = _native_single_pass()
+    getters = {"Type": enum("ActionsAvailable", 1), "CanPass": True, "CanCancel": False, "AllowUndo": False}
+    game = FakeGame(request, getters)
+    adapter = adapter_for(game)
+    offered = adapter.handle({"action": "get_pending_actions"})
+    assert offered["native_sole_pass_verified"] is True
+    if changed == "request_id":
+        game.msg += 1
+    elif changed == "raw_menu":
+        request["Actions"]["$n"] += 1
+        request["Actions"]["$items"].append(action(17, "Cast", 123, 45))
+    # Model a changed scalar in the same native request after the final
+    # snapshot, at the atomic reflect batch. The real probe's expect stops
+    # before any following invocation when its member does not match.
+    send = game.send
+    commits = []
+
+    def reflect(command, timeout=None):
+        if any(op["op"] == "expect_pending" for op in command["ops"]):
+            for op in command["ops"]:
+                if (
+                    op["op"] == "expect"
+                    and op.get("member") == "Count"
+                    and changed == "extra_action_on_submit"
+                ):
+                    assert op["equals"] == 1
+                    return {"ok": False, "error": "identity mismatch"}
+                if op["op"] == "expect" and op.get("member") == "AllowUndo" and changed == "undo_on_submit":
+                    assert op["equals"] is False
+                    return {"ok": False, "error": "identity mismatch"}
+                if op.get("method") == "SubmitPass":
+                    commits.append(True)
+        return send(command, timeout)
+
+    adapter._send = reflect
+    transport = GREBridge.__new__(GREBridge)
+    wire = []
+
+    def local_only(command):
+        wire.append(command)
+        return adapter.handle(command)
+
+    transport._send_safe = local_only
+    assert transport.submit_pass(expected_request_id=(40, 7)) is (changed is None)
+    assert wire == [{"action": "submit_pass", "expected_game_state_id": 40, "expected_msg_id": 7}]
+    assert commits == ([True] if changed is None else [])
+    if changed is None:
+        (batch,) = game.submits()
+        assert batch[1] == {"op": "expect_pending", "target": {"h": request["$h"]}}
+        assert batch[-1]["method"] == "SubmitPass"
+        checks = [(op["member"], op["equals"]) for op in batch if op["op"] == "expect" and "member" in op]
+        for check in (
+            ("Type", 1),
+            ("CanPass", True),
+            ("CanCancel", False),
+            ("AllowUndo", False),
+            ("GameStateId", 40),
+            ("MsgId", 7),
+            ("Count", 1),
+        ):
+            assert check in checks
+        assert checks.count(("ActionType", 5)) == 2
+
+
+def test_bound_pass_never_falls_through_to_an_older_raw_plugin():
+    from unittest.mock import Mock
+
+    from arenamcp.gre_bridge import GREBridgeError
+
+    bridge = GREBridge()
+    bridge._mac_adapter = None
+    bridge._send_command_raw = Mock(return_value={"ok": True})
+    with pytest.raises(GREBridgeError, match="cannot verify"):
+        bridge._send_command({"action": "submit_pass", "expected_game_state_id": 40, "expected_msg_id": 7})
+    bridge._send_command_raw.assert_not_called()
+    assert bridge._send_command({"action": "submit_pass"}) == {"ok": True}

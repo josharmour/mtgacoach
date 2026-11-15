@@ -632,6 +632,10 @@ class GREBridge:
                 adapter = self._mac_adapter
             if adapter is not None and adapter.handles(cmd):
                 outcome = adapter.handle(cmd, timeout)
+            elif action == "submit_pass" and ("expected_game_state_id" in cmd or "expected_msg_id" in cmd):
+                # A legacy pipe ignores extra fields on submit_pass. A strict
+                # native result must never degrade to an unguarded submission.
+                raise GREBridgeError("The current bridge cannot verify a sole priority pass")
             else:
                 outcome = self._send_command_raw(cmd, timeout, expected_generation=generation)
             return outcome
@@ -1111,13 +1115,18 @@ class GREBridge:
 
         return self.submit_action_by_index(best_idx, auto_pass=auto_pass, expected=actions[best_idx])
 
-    def submit_pass(self) -> bool:
+    def submit_pass(self, *, expected_request_id: tuple[int, int] | None = None) -> bool:
         """Submit a pass action.
 
         Returns True if pass was submitted.
         """
         try:
-            resp = self._send_safe({"action": "submit_pass"})
+            command = {"action": "submit_pass"}
+            if expected_request_id is not None:
+                command.update(
+                    expected_game_state_id=expected_request_id[0], expected_msg_id=expected_request_id[1]
+                )
+            resp = self._send_safe(command)
             if resp.get("ok"):
                 logger.info("GRE bridge submitted pass")
                 return True
