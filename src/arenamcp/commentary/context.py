@@ -396,3 +396,29 @@ def cast_entry_conflict(text, evidence):
             re.I,
         )
     )
+
+
+def omits_on_hit_counter_cost(text, evidence):
+    """Withhold damage-to-player removal shorthand for a counter-paid reflexive trigger.
+
+    This veto covers the observed shorthand. The semantic audit still checks
+    controller, timing, payment and target restrictions for the whole exchange.
+    """
+    if not re.search(r"\b(?:on (?:a )?hit|when (?:it|she|he) (?:hits|connects)|on contact)\b", text, re.I):
+        return False
+    if not re.search(
+        r"\b(?:strip(?:s|ped)?|destroy(?:s|ed)?|remov(?:e[sd]?|al)|kill(?:s|ed)?|blows? up)\b", text, re.I
+    ):
+        return False
+    if re.search(r"\b(?:remove|removes|removing|spend|spends|spending) (?:a|one) counter\b", text, re.I):
+        return False
+    return any(
+        re.search(
+            r"deals combat damage to a player, you may remove a counter from [^.]+\. "
+            r"(?:When|If) you do, destroy target ",
+            item.get("rules") or "",
+            re.I,
+        )
+        for key, item in evidence.items()
+        if key.startswith("card:")
+    )

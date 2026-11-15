@@ -237,3 +237,24 @@ def test_cast_partner_reply_passes_full_native_group_audit(mode):
             assert len(lines) == 1 and lines[0].role == "color_analyst"
         else:
             assert len(lines) == 2 and lines[0].text == lead and lines[1].anchor_uid == lines[0].uid
+
+
+def test_optional_cost_in_heard_nov14_combat_exchange():
+    """Public rules and paraphrased analyst line from the 20:40 trade."""
+    from arenamcp.commentary.context import omits_on_hit_counter_cost
+
+    rules = (
+        "Whenever Leatherhead deals combat damage to a player, you may remove a counter from her. "
+        "When you do, destroy target artifact or enchantment that player controls."
+    )
+    cited = {"card:123": {"rules": rules}}
+    assert omits_on_hit_counter_cost(
+        "Losing the threat that stripped artifacts or enchantments on hit hurts.", cited
+    )
+    assert not omits_on_hit_counter_cost("Losing that trampler makes it easier to block.", cited)
+    assert not omits_on_hit_counter_cost(
+        "On hit its controller could spend a counter to destroy that player's artifact.", cited
+    )
+    assert not omits_on_hit_counter_cost(
+        "That destroys artifacts on hit.", {"card:123": {"rules": "Trample"}}
+    )
