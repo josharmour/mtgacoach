@@ -22,6 +22,7 @@ from arenamcp.backends.proxy import first_token_budget
 from arenamcp.big_board import big_board_declaration, compress_menu, declaration_effort, group_menu
 from arenamcp.cast_notes import (
     combat_cast_note,
+    creature_payment_note,
     graveyard_flashback_note,
     loot_mode_note,
     trick_timing_note,
@@ -39,6 +40,7 @@ from arenamcp.decision_memory import (
     lethal_reach,
 )
 from arenamcp.decisions import expand_target_selection
+from arenamcp.mana import SPELL_CAST_TYPES
 from arenamcp.mana_potential import mana_reach_note
 from arenamcp.match_context import (
     prepare_match_context,
@@ -10116,8 +10118,8 @@ class ActionPlanner(_ActionLegalityMixin):
         land_drop = decision.request_type == "ActionsAvailable" and untapped_land_drop(
             game_state, decision.options
         )
-        battlefield_ids = {
-            _as_int(card.get("instance_id")) for card in game_state.get("battlefield", []) or []
+        battlefield_by_id = {
+            _as_int(card.get("instance_id")): card for card in game_state.get("battlefield", []) or []
         }
         ward_mana = None
         if decision.request_type == "SelectTargets":
@@ -10143,6 +10145,9 @@ class ActionPlanner(_ActionLegalityMixin):
                 note += "  [YOUR COMMANDER — command zone]"
             if "weight" in o.meta:
                 note += f"  [contribution: {o.meta['weight']}]"
+            action_kind = (o.meta.get("actionType") or "").removeprefix("ActionType_")
+            if o.payable is not False and (action_kind in SPELL_CAST_TYPES or action_kind == "Activate"):
+                note += creature_payment_note(o.meta.get("autoTapActions"), battlefield_by_id, local_seat)
             if o.meta.get("actionType") == "ActionType_Play":
                 note += channel_land_note(find_source(game_state, o.meta) or {})
             if o.meta.get("actionType") == "ActionType_Cast":
@@ -10204,7 +10209,7 @@ class ActionPlanner(_ActionLegalityMixin):
                 }
                 # 2026-10-19 08:08:10: two "Virulent Emissary" targets, one tapped
                 # from attacking; the strike "clearing the ground blocker" hit it.
-                if _as_int(o.option_id[4:]) in battlefield_ids and is_creature_now(card):
+                if _as_int(o.option_id[4:]) in battlefield_by_id and is_creature_now(card):
                     from arenamcp.play_safety import creature_state_facts
 
                     facts.update(creature_state_facts(card, mine=ctrl is not None and ctrl == local_seat))
@@ -10219,7 +10224,7 @@ class ActionPlanner(_ActionLegalityMixin):
                         if type(remaining) is int:
                             facts["additional_damage_after_pending"] = max(0, remaining - pending_damage)
                 # #130 (2026-10-19, match 3e545401): Ajani Resolute at loyalty 1 was a bare name.
-                if _as_int(o.option_id[4:]) in battlefield_ids and (
+                if _as_int(o.option_id[4:]) in battlefield_by_id and (
                     "planeswalker" in str(card.get("type_line") or "").lower()
                     or "CardType_Planeswalker" in (card.get("card_types") or [])
                 ):
@@ -10229,7 +10234,7 @@ class ActionPlanner(_ActionLegalityMixin):
                 arena_mark = _ARENA_TARGET_MARKS.get(target_hints.get(_as_int(o.option_id[4:]), ""))
                 if arena_mark:
                     facts["arena_marks"] = arena_mark
-                ward = ward_of(card) if _as_int(o.option_id[4:]) in battlefield_ids else None
+                ward = ward_of(card) if _as_int(o.option_id[4:]) in battlefield_by_id else None
                 if ward is not None and ctrl not in (None, local_seat) and ward_mana is not None:
                     warded_targets = True
                     facts["ward"] = ward.label

@@ -50,6 +50,36 @@ def _our_turn(state: dict) -> bool | None:
     return active == local
 
 
+def creature_payment_note(payments, battlefield, local_seat) -> str:
+    """Name local creatures in Arena's proposed mana sources for this specific action."""
+    from arenamcp.combat_keywords import is_creature_now
+
+    if not local_seat or not payments:
+        return ""
+    names = []
+    seen = set()
+    for payment in payments:
+        if not isinstance(payment, dict):
+            continue
+        iid = payment.get("instanceId")
+        if type(iid) is not int or iid in seen:
+            continue
+        seen.add(iid)
+        card = battlefield.get(iid)
+        if not card or card.get("controller_seat_id") != local_seat or not is_creature_now(card):
+            continue
+        name = card.get("name") or "creature"
+        power = card.get("modified_power", card.get("power"))
+        toughness = card.get("modified_toughness", card.get("toughness"))
+        names.append(f"{name} ({power}/{toughness})" if power is not None and toughness is not None else name)
+    if not names:
+        return ""
+    summary = ", ".join(names[:3])
+    if len(names) > 3:
+        summary += f" and {len(names) - 3} more creatures"
+    return f"  [Arena proposes using {summary} for mana. Check combat availability after payment.]"
+
+
 def combat_cast_note(state: dict, card: dict | None) -> str:
     """'[enters after blockers were declared: cannot block this combat]' for a creature cast now, else ''."""
     if not isinstance(state, dict) or not card:

@@ -1067,6 +1067,10 @@ def _build_actions_available(
             )
         else:
             label = atype.replace("ActionType_", "") or f"Action {i}"
+        payments = action.get("autoTapActions")
+        solution = action.get("autoTapSolution")
+        if payments is None and isinstance(solution, dict):
+            payments = solution.get("autoTapActions")
         options.append(
             DecisionOption(
                 option_id=f"idx:{i}",
@@ -1078,7 +1082,7 @@ def _build_actions_available(
                     "instanceId": int(action.get("instanceId") or 0),
                     "abilityGrpId": int(action.get("abilityGrpId") or 0),
                     "manaCost": action.get("manaCost"),
-                    "autoTapActions": action.get("autoTapActions") or [],
+                    "autoTapActions": payments if isinstance(payments, list) else [],
                     "hasAutoTap": has_autotap_solution(action),
                     **({"ability_text": ability_text} if ability_text else {}),
                     **({"targets": action["targets"]} if action.get("targets") else {}),

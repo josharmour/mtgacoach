@@ -222,3 +222,72 @@ def test_snapcaster_with_unpayable_graveyard_target_warns_and_refutes_claim():
     assert any(kind == "wasted_flashback" for kind, _text in concerns)
     picked, _why = board_math_option_pick(decision, board_2_mana)
     assert picked == ["pass"]
+
+
+def test_payment_note_uses_actual_offered_creatures_and_current_types():
+    from arenamcp.cast_notes import creature_payment_note
+
+    animated = {
+        "name": "Forest",
+        "type_line": "Basic Land — Forest",
+        "card_types": ["CardType_Creature", "CardType_Land"],
+        "power": 0,
+        "toughness": 0,
+        "modified_power": 15,
+        "modified_toughness": 15,
+        "controller_seat_id": 1,
+    }
+    board = {
+        10: animated,
+        11: dict(animated, card_types=["CardType_Land"]),
+        12: dict(animated, controller_seat_id=2),
+        13: dict(animated, name="Mana elf", modified_power=1, modified_toughness=1),
+    }
+    plan = [{"instanceId": i} for i in (10, 11, 12, 10, 13)]
+    note = creature_payment_note(plan, board, 1)
+    assert note.count("Forest (15/15)") == 1 and "Mana elf (1/1)" in note
+    assert creature_payment_note(plan[1:3], board, 1) == ""
+    assert creature_payment_note([], board, 1) == ""
+
+
+def test_nested_and_flat_payments_reach_the_normal_decision_prompt():
+    from arenamcp.action_planner import ActionPlanner
+    from arenamcp.decisions import build_pending_decision
+
+    class Backend:
+        def complete(self, system, user, **kwargs):
+            self.prompt = user
+            return '{"option_ids":["pass"],"reasoning":"Keep combat options open."}'
+
+    nested = {"autoTapActions": [{"instanceId": 42}]}
+    action = {
+        "actionType": "ActionType_CastAdventure",
+        "grpId": 99,
+        "instanceId": 21,
+        "autoTapSolution": nested,
+    }
+    decision = build_pending_decision(
+        {
+            "has_pending": True,
+            "request_type": "ActionsAvailable",
+            "can_pass": True,
+            "actions": [action, {**action, "autoTapActions": []}, {"actionType": "ActionType_Pass"}],
+        },
+        resolve_name=lambda _: "Adventure",
+    )
+    backend = Backend()
+    board = state(active=1, local=1)
+    board["battlefield"] = [
+        {
+            "instance_id": 42,
+            "name": "Wall of Roots",
+            "power": 0,
+            "toughness": 5,
+            "controller_seat_id": 1,
+            "card_types": ["CardType_Creature"],
+        }
+    ]
+    ActionPlanner(backend, timeout=1)._llm_decision_options(decision, board)
+    lines = [line for line in backend.prompt.splitlines() if line.startswith("- idx:")]
+    assert "Arena proposes using Wall of Roots (0/5) for mana" in lines[0]
+    assert "taps Wall" not in lines[0] and "for mana" not in lines[1]
