@@ -407,15 +407,18 @@ def omits_on_hit_counter_cost(text, evidence):
     if not re.search(r"\b(?:on (?:a )?hit|when (?:it|she|he) (?:hits|connects)|on contact)\b", text, re.I):
         return False
     if not re.search(
-        r"\b(?:strip(?:s|ped)?|destroy(?:s|ed)?|remov(?:e[sd]?|al)|kill(?:s|ed)?|blows? up)\b", text, re.I
+        r"\b(?:strip(?:s|ped)?|destroy(?:s|ed)?|remov(?:es?|ed)|kill(?:s|ed)?|blows? up)"
+        r"\s+(?:an? |the |their |that |opposing )*(?:artifacts?|enchantments?)\b",
+        text,
+        re.I,
     ):
         return False
-    if re.search(r"\b(?:remove|removes|removing|spend|spends|spending) (?:a|one) counter\b", text, re.I):
-        return False
+    # Never infer payment from words elsewhere in the sentence. A longer
+    # explicitly conditional explanation can omit this ambiguous shorthand.
     return any(
         re.search(
             r"deals combat damage to a player, you may remove a counter from [^.]+\. "
-            r"(?:When|If) you do, destroy target ",
+            r"(?:When|If) you do, destroy target artifact or enchantment that player controls",
             item.get("rules") or "",
             re.I,
         )

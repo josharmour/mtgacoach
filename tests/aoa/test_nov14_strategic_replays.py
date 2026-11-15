@@ -239,22 +239,54 @@ def test_cast_partner_reply_passes_full_native_group_audit(mode):
             assert len(lines) == 2 and lines[0].text == lead and lines[1].anchor_uid == lines[0].uid
 
 
-def test_optional_cost_in_heard_nov14_combat_exchange():
-    """Public rules and paraphrased analyst line from the 20:40 trade."""
+COST_RULE = (
+    "Whenever Leatherhead deals combat damage to a player, you may remove a counter from her. "
+    "When you do, destroy target artifact or enchantment that player controls."
+)
+
+
+@pytest.mark.parametrize(
+    "text, withheld",
+    [
+        ("Losing the threat that stripped artifacts or enchantments on hit hurts.", True),
+        ("She cannot remove a counter but still destroys artifacts on hit.", True),
+        ("She removed a counter and destroyed the artifact on hit.", True),
+        ("After hitting a player, spending a counter could destroy that player's artifact.", False),
+        ("It can remove a counter on hit.", False),
+    ],
+)
+def test_paid_combat_trigger_in_heard_nov14_trade(text, withheld):
     from arenamcp.commentary.context import omits_on_hit_counter_cost
 
-    rules = (
-        "Whenever Leatherhead deals combat damage to a player, you may remove a counter from her. "
-        "When you do, destroy target artifact or enchantment that player controls."
-    )
-    cited = {"card:123": {"rules": rules}}
-    assert omits_on_hit_counter_cost(
-        "Losing the threat that stripped artifacts or enchantments on hit hurts.", cited
-    )
-    assert not omits_on_hit_counter_cost("Losing that trampler makes it easier to block.", cited)
-    assert not omits_on_hit_counter_cost(
-        "On hit its controller could spend a counter to destroy that player's artifact.", cited
-    )
-    assert not omits_on_hit_counter_cost(
-        "That destroys artifacts on hit.", {"card:123": {"rules": "Trample"}}
-    )
+    assert omits_on_hit_counter_cost(text, {"card:123": {"rules": COST_RULE}}) is withheld
+    assert not omits_on_hit_counter_cost(text, {"card:123": {"rules": "Trample"}})
+
+
+@pytest.mark.usefixtures("source")
+@pytest.mark.parametrize(
+    "line,allowed",
+    [
+        ("Losing the threat that stripped artifacts or enchantments on hit hurts.", False),
+        ("Spending a counter after hitting a player could destroy that player's artifact.", True),
+    ],
+)
+def test_counter_payment_through_native_audit(line, allowed):
+    from test_headless_booth import observation, response
+
+    o = observation()
+    o.public_state["zones"]["stack"][0].update(name="Leatherhead, Swamp Stalker", oracle_text=COST_RULE)
+    o.events[0].payload["name"] = "Leatherhead, Swamp Stalker"
+    calls = []
+
+    def rpc(system, ctx, audit):
+        calls.append(audit)
+        result = response(ctx, audit)
+        if not audit:
+            result["turns"][0]["text"] = "Leatherhead goes onto the stack."
+            result["turns"][1].update(text=line, refs=[*ctx["new_events"], "card:1"])
+        return result
+
+    booth = HeadlessBooth(CommentaryConfig(mode="commentary", generative=True), rpc, time.monotonic)
+    lines, _ = booth.generate(o)
+    assert calls == [False, True]
+    assert (line in [item.text for item in lines]) is allowed
