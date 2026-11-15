@@ -77,13 +77,13 @@ def test_the_losing_attack_guard_keeps_the_attack_a_lethal_sneak_follows(monkeyp
     assert set(losing_attackers(lyra_board(), [368], strategy_text=STRATEGY)) == {368}
     calls = []
 
-    def lethal_hold(state, *, declare_step=False):
-        calls.append(declare_step)
+    def lethal_hold(state, *, declare_step=False, force_declaration=False):
+        calls.append((declare_step, force_declaration))
         return object()
 
     monkeypatch.setattr(sneak, "sneak_main_hold", lethal_hold)
     assert losing_attackers(lyra_board(), [368], strategy_text=STRATEGY) == {}
-    assert calls == [True]
+    assert calls == [(True, True)]
 
 
 def test_interrupted_search_keeps_unchecked_defenses_and_proven_sneak_lethal_separate(monkeypatch):

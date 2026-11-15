@@ -50,6 +50,10 @@ _PER_CREATURE = re.compile(
 )
 # Arena's prompt 8580 for the Sneak cost: "Return an unblocked attacking creature you control to
 # its owner's hand."
+_PLAIN_TAP_MANA = re.compile(
+    r"\{T\}: Add (?:(?:\{[WUBRGC]\})+(?:(?:, |,? or )(?:\{[WUBRGC]\})+)*|one mana of any color)\.?",
+    re.I,
+)
 RETURN_PROMPT = re.compile(r"\breturn an unblocked attacking creature\b", re.IGNORECASE)
 SNEAK_PROMPT_ID = 8580
 
@@ -94,7 +98,7 @@ def braced(cost: str) -> str:
     symbols = _symbols(cost)
     generic = sum(int(s) for s in symbols if s.isdigit())
     rest = "".join(f"{{{s}}}" for s in symbols if not s.isdigit())
-    return (f"{{{generic}}}" if generic else "") + rest
+    return (f"{{{generic}}}" if generic else "") + rest or ("{0}" if symbols == ["0"] else "")
 
 
 def sneak_cost(card: dict | None) -> str:
@@ -141,7 +145,19 @@ class SneakCast:
         return _mana_value(self.hard_cost) if self.hard_cost else None
 
 
-def sneak_casts(state: dict | None) -> list[SneakCast]:
+def _known_commander_casts(state: dict, card: dict, expected: int | None) -> bool:
+    """The group count and any retained card count agree on a nonnegative integer."""
+    counts = state.get("commander_casts") or {}
+    if not isinstance(counts, dict) or expected is None:
+        return False
+    values = [card["commander_casts"]] if "commander_casts" in card else []
+    for group in (card.get("grp_id"), card.get("base_grp_id")):
+        if group is not None:
+            values.extend(counts[k] for k in (group, str(group)) if k in counts)
+    return bool(values) and all(type(v) is int and v == expected for v in values)
+
+
+def sneak_casts(state: dict | None, *, known_tax_only: bool = False) -> list[SneakCast]:
     """Our Sneak cards: in hand, and our commanders in the command zone (tax included)."""
     if not isinstance(state, dict):
         return []
@@ -159,6 +175,8 @@ def sneak_casts(state: dict | None) -> list[SneakCast]:
     except Exception:
         commanders = []
     for commander in commanders:
+        if known_tax_only and not _known_commander_casts(state, commander.card, commander.casts):
+            continue
         printed = sneak_cost(commander.card)
         if printed and _is_creature(commander.card):
             casts = commander.casts or 0
@@ -174,6 +192,82 @@ def sneak_casts(state: dict | None) -> list[SneakCast]:
                 )
             )
     return found
+
+
+def payable_sneak_casts(state: dict | None) -> list[SneakCast]:
+    """Sneak payments we can preserve through an all-out attack into the blockers step.
+
+    Leave creature sources available for combat. Current floating mana expires between
+    steps, and a land still in hand cannot be played in the declare-attackers step.
+    """
+    from arenamcp.attack_tax import taxes
+    from arenamcp.board_model import cast_bans, spell_banned
+    from arenamcp.cast_zones import zone_blockers
+    from arenamcp.combat_keywords import is_creature_now
+    from arenamcp.combat_recovery import _cost, _payable, _text, mana_options
+
+    casts = sneak_casts(state, known_tax_only=True)
+    if not casts or not state:
+        return []
+    local, _ = _seats(state)
+    if local is None or taxes(state):
+        return []  # an attack tax can consume the mana reserved for Sneak
+    board = state.get("battlefield") or []
+    permanents = [c for c in board if isinstance(c, dict) and not c.get("is_phased_out")]
+    if any(
+        re.search(
+            r"\bcosts? .+? more to cast\b|\bcast spells? only|can.t cast spells? during|"
+            r"activated abilities .+?can.t be activated|cast (?:no |more than |only )|when(?:ever)? [^\n]*taps? [^\n]*for mana",
+            _oracle(c),
+            re.I,
+        )
+        for c in permanents
+    ):
+        return []  # unsupported casting taxes/timing restrictions
+    bans = frozenset().union(*(cast_bans(c, ours=_controller(c) == local) for c in permanents))
+    own = [c for c in permanents if _controller(c) == local]
+    offered_attackers = (state.get("decision_context") or {}).get("legal_attacker_ids") or ()
+    sources = []
+    seen = set()
+    for card in own:
+        iid = _int(card.get("instance_id"))
+        if not iid or iid in seen:
+            continue
+        seen.add(iid)
+        if (
+            card.get("is_tapped") is not False
+            or is_creature_now(card)
+            or iid in offered_attackers
+            or card.get("is_attacking")
+            or card.get("face_down")
+            or card.get("removed_abilities")
+        ):
+            continue
+        # One unrestricted tap output per source. A separate rule can restrict
+        # spending or trigger on tapping (City of Brass); the source cannot
+        # witness this payment unless its complete rules fit the simple form.
+        lines = [line.strip().strip("()") for line in _text(card).splitlines() if line.strip()]
+        if not lines or not all(_PLAIN_TAP_MANA.fullmatch(line) for line in lines):
+            continue
+        if options := mana_options(card, own):
+            sources.append(options)
+    result = []
+    for cast in casts:
+        if cast.zone == "hand" and _controller(cast.card) not in (None, local):
+            continue
+        text = _oracle(cast.card)
+        price = re.search(r"^Sneak[ \t]+((?:\{[^}]+\})+)[ \t]*(?:\([^\n]*\))?[ \t]*$", text, re.I | re.M)
+        if (
+            not price
+            or re.search(r"additional cost to cast|can(?:'|’)t cast this spell", text, re.I)
+            or spell_banned(cast.card, bans)
+            or zone_blockers(permanents, local, cast.zone)
+        ):
+            continue
+        cost = _cost({"mana_cost": price[1]}, cast.tax // 2)
+        if cost is not None and (cost[0] == 0 or _payable(sources, cost)):
+            result.append(cast)
+    return result
 
 
 def per_creature_bonus(card: dict | None) -> tuple[int, int, bool] | None:
@@ -439,15 +533,81 @@ def sneak_attack(attackers: list[dict], blockers: list[dict], life: int, sneak_p
     return net, net - weakest + sneak_power
 
 
+def _declared_sneak_floor(state, opponent, attackers, blockers) -> int | None:
+    """Minimum player damage from *other* attackers after an unblocked one is returned."""
+    from arenamcp.combat_keywords import has_combat_keyword
+    from arenamcp.combat_solver import _resolve_attacker
+    from arenamcp.concede import _MULTI_BLOCK
+
+    context = state.get("decision_context") or {}
+    legal = context.get("legal_attacker_ids")
+    ids = {a["instance_id"] for a in attackers}
+    if (
+        not isinstance(legal, list)
+        or len(legal) != len(ids)
+        or any(type(i) is not int or i <= 0 for i in legal)
+        or set(legal) != ids
+    ):
+        return None
+    if "raw_attackers" in context:
+        raw = context["raw_attackers"]
+        if not isinstance(raw, list) or len(raw) != len(ids):
+            return None
+        if any(not isinstance(row, dict) or type(row.get("attackerInstanceId")) is not int for row in raw):
+            return None
+        if {row["attackerInstanceId"] for row in raw} != ids:
+            return None
+        for row in raw:
+            recipients = row.get("legalDamageRecipients")
+            if not isinstance(recipients, list) or not any(
+                isinstance(r, dict)
+                and r.get("type") in (None, "DamageRecType_Player")
+                and type(r.get("playerSystemSeatId")) is int
+                and r["playerSystemSeatId"] == opponent
+                and all(
+                    k not in r or type(r[k]) is int and r[k] == 0
+                    for k in ("planeswalkerInstanceId", "battleInstanceId")
+                )
+                for r in recipients
+            ):
+                return None
+    for card in state.get("battlefield") or []:
+        text = _oracle(card).lower()
+        if _MULTI_BLOCK.search(text) or re.search(
+            r"prevent .+?damage|(?:dies|enters|leaves|return)[^\n]*(?:gain[^\n]*life|gets? [+-]\d|create[^\n]*creature[^\n]*blocking)|"
+            r"(?:other |attacking )?creatures (?:you control |they control )?get [+-]\d[^\n]*[+-]\d(?![^\n]*until end of turn)",
+            text,
+        ):
+            return None
+    # Treat every untapped blocker as capable of eating a whole attacker, even a
+    # trampler or flyer. Only an excess creature is guaranteed to stay unblocked.
+    open_count = len(attackers) - len(blockers)
+    if open_count <= 0:
+        return None
+    hits = sorted(_resolve_attacker(a, []).damage_through for a in attackers)
+    # Worst case: they block our highest-damage attackers; we return the smallest
+    # remaining hit, including both hits of a double striker. Grant their lifelink
+    # blockers full damage even if they wouldn't survive long enough to deal it.
+    lifegain = sum(
+        _resolve_attacker(b, []).life_gained for b in blockers if has_combat_keyword(b, "lifelink")
+    )
+    return sum(hits[1:open_count]) - lifegain
+
+
 def sneak_main_hold(
-    state: dict | None, *, declare_step: bool = False, lethal_only: bool = True
+    state: dict | None,
+    *,
+    declare_step: bool = False,
+    lethal_only: bool = True,
+    force_declaration: bool = False,
 ) -> SneakHold | None:
     """Before our attack: the Sneak line (attack with every able creature, Sneak after blocks)
     when it is lethal on the current board, else None; with ``lethal_only`` False also when it
     beats casting the card normally by at least half their life at the same or a lower cost
     (``beats_hard_cast``, ledger #179: the main-1 hold). Main phase 1 of our turn only, or also
     our declare-attackers step with ``declare_step`` (the attack that the Sneak follows), and never
-    when the attack is lethal without it."""
+    when the attack is lethal without it. An actual declaration additionally requires current
+    payment, the offered attackers and a damage floor after returning an unblocked attacker."""
     if not isinstance(state, dict):
         return None
     turn = state.get("turn") or {}
@@ -458,7 +618,7 @@ def sneak_main_hold(
     combat_steps = ("", "begincombat") + (("declareattack", "declareattackers") if declare_step else ())
     if not (phase in ("main1", "beginning") or (phase == "combat" and step in combat_steps)):
         return None
-    casts = sneak_casts(state)
+    casts = payable_sneak_casts(state) if force_declaration else sneak_casts(state)
     if not casts:
         return None
     life = _life(state, opponent)
@@ -476,11 +636,27 @@ def sneak_main_hold(
     if not attackers:
         return None
     blockers = [b for b in model.theirs if not b["_tapped"]]
+    floor = None
+    if force_declaration:
+        floor = _declared_sneak_floor(state, opponent, attackers, blockers)
+        if floor is None:
+            return None
     creatures = len(model.ours)
     best: SneakHold | None = None
     for cast in casts:
         power = entry_power(cast.card, creatures)
         without, with_sneak = sneak_attack(attackers, blockers, life, power)
+        if floor is not None:
+            from arenamcp.combat_keywords import has_combat_keyword
+            from arenamcp.combat_solver import _resolve_attacker
+
+            if per_creature_bonus(cast.card) and any(
+                has_combat_keyword(b, "first strike") or has_combat_keyword(b, "double strike")
+                for b in blockers
+            ):
+                continue  # first-strike deaths can shrink the Sneak before it deals damage
+            entry_hit = _resolve_attacker({**cast.card, "power": power}, []).damage_through
+            with_sneak = min(with_sneak, floor + entry_hit)
         if with_sneak <= without:
             continue
         hold = SneakHold(cast, without, power, with_sneak, life, cast.mana_value)

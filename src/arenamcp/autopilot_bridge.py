@@ -864,7 +864,7 @@ class _BridgeSubmitMixin:
             try:
                 from arenamcp.sneak import sneak_main_hold
 
-                sneak = sneak_main_hold(game_state, declare_step=True)
+                sneak = sneak_main_hold(game_state, declare_step=True, force_declaration=True)
             except Exception:
                 sneak = None
             if sneak is None:

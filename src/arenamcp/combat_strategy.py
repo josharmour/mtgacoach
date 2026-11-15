@@ -1396,7 +1396,7 @@ def _sneak_lethal(state: dict) -> bool:
     try:
         from arenamcp.sneak import sneak_main_hold
 
-        return sneak_main_hold(state, declare_step=True) is not None
+        return sneak_main_hold(state, declare_step=True, force_declaration=True) is not None
     except Exception:
         return False
 
