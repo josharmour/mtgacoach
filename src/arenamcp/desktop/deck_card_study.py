@@ -41,6 +41,10 @@ class DeckCardStudyDialog(QDialog):
         ):
             self.view.addItem(label, key)
         layout.addWidget(self.view)
+        self.topic = QComboBox()
+        self.topic.setAccessibleName("Topic to study")
+        self.topic.hide()
+        layout.addWidget(self.topic)
         self.card_label = QLabel("Card")
         layout.addWidget(self.card_label)
         self.cards = QComboBox()
@@ -66,8 +70,8 @@ class DeckCardStudyDialog(QDialog):
         )
         self.pass_button.clicked.connect(self.toggle_pass)
         layout.addWidget(self.pass_button)
-        self.cancel_button = QPushButton("Stop interaction study")
-        self.cancel_button.clicked.connect(self.cancel_interactions)
+        self.cancel_button = QPushButton("Stop study")
+        self.cancel_button.clicked.connect(self.cancel_study)
         self.cancel_button.hide()
         layout.addWidget(self.cancel_button)
         self.progress = QLabel()
@@ -75,6 +79,7 @@ class DeckCardStudyDialog(QDialog):
         self.progress.hide()
         layout.addWidget(self.progress)
         self.view.currentIndexChanged.connect(self.change_topic)
+        self.topic.currentIndexChanged.connect(self.read)
         self.cards.currentIndexChanged.connect(self.read)
         self.build.clicked.connect(self.generate)
         session.deckCardStudyChanged.connect(self.received)
@@ -91,13 +96,25 @@ class DeckCardStudyDialog(QDialog):
                 "card": self.cards.currentData(),
                 "model": self.models.currentText(),
                 "scope": self.view.currentData(),
+                "topic": self.topic.currentData(),
                 "token": self.token,
                 "expected_digest": self.pass_digest if self.running_pass else None,
             }
         )
 
     def change_topic(self):
-        cards = self.view.currentData() == "cards"
+        from arenamcp.deck_local_guidance import TOPICS
+
+        selected = self.view.currentData()
+        cards = selected == "cards"
+        self.topic.blockSignals(True)
+        self.topic.clear()
+        self.topic.setVisible(selected in ("sequencing", "switches"))
+        if selected in ("sequencing", "switches"):
+            self.topic.addItem("All four topics", None)
+            for key, label in TOPICS[selected].items():
+                self.topic.addItem(label, key)
+        self.topic.blockSignals(False)
         self.cards.setVisible(cards)
         self.card_label.setVisible(cards)
         self.pass_button.setVisible(cards)
@@ -112,18 +129,22 @@ class DeckCardStudyDialog(QDialog):
         self.read()
 
     def read(self):
+        if self.view.currentData() in ("sequencing", "switches"):
+            self.build.setText(
+                "Study remaining topics" if self.topic.currentData() is None else "Study this topic"
+            )
         if self.view.currentData() != "cards" or self.cards.currentData() is not None:
             self.detail.setPlainText("Reading saved card study…")
             self.request("read")
 
-    def cancel_interactions(self):
-        if self.operation != "build" or self.view.currentData() != "interactions":
+    def cancel_study(self):
+        if self.operation != "build" or self.view.currentData() == "cards":
             return
         self.cancel_button.setEnabled(False)
         self.session.request_deck_card_study(
             {
                 "operation": "cancel",
-                "scope": "interactions",
+                "scope": self.view.currentData(),
                 "token": self.token,
                 "deck_id": self.deck_id,
                 "identity": self.identity,
@@ -132,12 +153,13 @@ class DeckCardStudyDialog(QDialog):
         )
 
     def generate(self):
-        if self.view.currentData() == "interactions":
+        if self.view.currentData() != "cards":
             self.cancel_button.setEnabled(True)
             self.cancel_button.show()
         self.build.setEnabled(False)
         self.pass_button.setEnabled(self.running_pass)
         self.view.setEnabled(False)
+        self.topic.setEnabled(False)
         self.detail.setPlainText("Studying on your device…")
         self.request("build")
 
@@ -167,13 +189,14 @@ class DeckCardStudyDialog(QDialog):
         self.controls()
 
     def closeEvent(self, event):
-        self.cancel_interactions()
+        self.cancel_study()
         self.stop_pass()
         self.token = ""
         super().closeEvent(event)
 
     def controls(self):
         available = bool(self.models.count() and (self.view.currentData() != "cards" or self.cards.count()))
+        self.topic.setEnabled(not self.running_pass and self.operation not in ("build", "prepare"))
         self.view.setEnabled(not self.running_pass and self.operation not in ("build", "prepare"))
         self.build.setEnabled(
             available and not self.running_pass and self.operation not in ("build", "prepare")

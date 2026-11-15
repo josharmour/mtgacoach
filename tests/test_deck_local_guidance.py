@@ -87,20 +87,27 @@ def test_two_explicit_deck_studies_render_and_reuse_without_model_calls(qapp, de
     dialog.show()
     for n, scope in enumerate(("sequencing", "switches")):
         dialog.view.setCurrentIndex(dialog.view.findData(scope))
-        assert model.complete.call_count == n and "No local study" in dialog.detail.toPlainText()
+        assert model.complete.call_count == 4 * n and "No local study" in dialog.detail.toPlainText()
+        if n == 0:
+            dialog.topic.setCurrentIndex(dialog.topic.findData("mulligan"))
+            dialog.build.click()
+            assert model.complete.call_count == 1 and "Partial study • 1 of 4" in dialog.detail.toPlainText()
+            args = model.complete.call_args
+            assert json.loads(args.args[1])["topics"] == ["mulligan"] and args.kwargs["max_tokens"] == 2048
+            dialog.topic.setCurrentIndex(0)
         assert not dialog.pass_button.isVisible()
         dialog.build.click()
         detail = dialog.detail.toPlainText()
-        assert model.complete.call_count == n + 1 and "awaiting review" in detail
+        assert model.complete.call_count == 4 * (n + 1) and "awaiting review" in detail
         assert all(title in detail for title in TOPICS[scope].values())
         assert book.catalog[1001]["oracle_text"] in detail and "HIDDEN-CANARY" not in detail
         dialog.build.click()
-        assert model.complete.call_count == n + 1
-    assert len(list((tmp_path / "cache" / "local_deck_guidance").rglob("*.json"))) == 2
+        assert model.complete.call_count == 4 * (n + 1)
+    assert len(list((tmp_path / "cache" / "local_deck_guidance").rglob("*.json"))) == 8
     assert "study" not in book.data
     owner._study_outside_match = lambda: False
     dialog.build.click()
-    assert "match" in dialog.detail.toPlainText() and model.complete.call_count == 2
+    assert "match" in dialog.detail.toPlainText() and model.complete.call_count == 8
     dialog.view.setCurrentIndex(dialog.view.findData("sequencing"))
     assert "Opening hand" in dialog.detail.toPlainText()
     native[1002].oracle_text = "Changed printed land rules."
@@ -135,7 +142,7 @@ def test_guidance_rejects_incomplete_and_misbound_jobs(deck, tmp_path, fault):
         if fault == "stale_name":
             row["outcome"] = "unrecognized"
         elif fault == "missing_topic":
-            rows.pop("recovery")
+            rows.pop("mana")
         elif fault == "unknown_card":
             row["evidence"][0]["card"] = 7777
         elif fault == "missing_piece_evidence":
@@ -153,7 +160,7 @@ def test_guidance_rejects_incomplete_and_misbound_jobs(deck, tmp_path, fault):
     if fault == "wrong_commander":
         state["commander_grp_ids"] = []
     with pytest.raises(ValueError):
-        deck_guidance(book, state, "sequencing", tmp_path, model=model, allowed=allowed)
+        deck_guidance(book, state, "sequencing", tmp_path, model=model, allowed=allowed, topic="mana")
     assert not list(tmp_path.rglob("*.json"))
     if fault in ("changed_counts", "wrong_commander"):
         model.complete.assert_not_called()
@@ -239,3 +246,72 @@ def test_full_deck_transport_reserves_input_and_output_and_requires_provider_rec
         }
         opts = json.loads(conn.request.call_args.args[2])["options"]
         assert opts["num_ctx"] >= len(b"rulesdeck") + 128 + 11 and opts["num_predict"] == 128
+
+
+def test_partial_chapters_never_assemble_mixed_weights_and_resume_only_missing_topics(deck, tmp_path):
+    state, book, _ = deck
+    a, b = writer(), writer()
+    b.digest = "b" * 64
+    for model, scope in ((a, "mulligan"), (b, "mana")):
+        detail, _ = deck_guidance(
+            book, state, "sequencing", tmp_path, model=model, allowed=lambda: True, topic=scope
+        )
+        assert "Partial study • 1 of 4" in detail
+    assert "Partial study • 1 of 4" in deck_guidance(book, state, "sequencing", tmp_path)[0]
+    chosen = deck_guidance(book, state, "sequencing", tmp_path, topic="mulligan")[0]
+    assert a.digest[:12] in chosen and "Opening hand and mulligan • not yet studied" not in chosen
+    normal = a.complete.side_effect
+
+    def broken(system, prompt, **kwargs):
+        if json.loads(prompt)["topics"] == ["mana"]:
+            raise ValueError("simulated truncation")
+        return normal(system, prompt, **kwargs)
+
+    a.complete.side_effect = broken
+    with pytest.raises(ValueError, match="simulated truncation"):
+        deck_guidance(book, state, "sequencing", tmp_path, model=a, allowed=lambda: True)
+    detail, _ = deck_guidance(book, state, "sequencing", tmp_path)
+    assert "Partial study • 2 of 4" in detail and "Land and colour plan • not yet studied" in detail
+    made = a.complete.call_count
+    a.complete.side_effect = normal
+    detail, reused = deck_guidance(book, state, "sequencing", tmp_path, model=a, allowed=lambda: True)
+    assert not reused and "All four topics" in detail and a.complete.call_count == made + 2
+    assert all(c.kwargs["max_tokens"] == 2048 for c in a.complete.call_args_list)
+    assert "All four topics" in deck_guidance(book, state, "sequencing", tmp_path)[0]
+    assert (
+        "Partial study • 1 of 4"
+        in deck_guidance(book, state, "sequencing", tmp_path, model=b, allowed=lambda: True, topic="mana")[0]
+    )
+
+
+def test_prior_valid_complete_cache_remains_readable_with_no_model_request(deck, tmp_path):
+    import hashlib
+
+    from tests.test_deck_study import evidence
+
+    from arenamcp.deck_local_guidance import _SYSTEM, _guidance_input
+
+    state, book, _ = deck
+    current, context = _guidance_input(book, state, "sequencing")
+    digest_input = json.dumps([1, _SYSTEM, "sequencing", context], sort_keys=True, allow_nan=False)
+    folder = tmp_path / hashlib.sha256(digest_input.encode()).hexdigest()
+    folder.mkdir()
+    m = writer()
+    entry = {
+        "advice": "Preserve the printed ability.",
+        "conditions": conditions(1001),
+        "evidence": [evidence(1001, current.catalog)],
+    }
+    rows = {key: deepcopy(entry) for key in TOPICS["sequencing"]}
+    (folder / (m.digest + ".json")).write_text(
+        json.dumps({"input": folder.name, "model": m.digest, "row": rows})
+    )
+    detail, reused = deck_guidance(
+        book, state, "sequencing", tmp_path, model=m, allowed=lambda: True, topic="recovery"
+    )
+    assert reused and "All four topics" in detail and not m.complete.called
+    rows.pop("mana")
+    (folder / (m.digest + ".json")).write_text(
+        json.dumps({"input": folder.name, "model": m.digest, "row": rows})
+    )
+    assert "No local study" in deck_guidance(book, state, "sequencing", tmp_path)[0]

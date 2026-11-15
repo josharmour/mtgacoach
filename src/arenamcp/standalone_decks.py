@@ -370,7 +370,9 @@ class _DeckLibraryMixin:
                 }
             if request.get("operation") == "read":
                 if scope in TOPICS:
-                    detail, _ = deck_guidance(book, record.game_state(), scope, plans)
+                    detail, _ = deck_guidance(
+                        book, record.game_state(), scope, plans, topic=request.get("topic")
+                    )
                     return {**reply, "detail": detail}
                 return {**reply, "detail": read_card(book, gid, directory)}
             if request.get("operation") == "prepare" and scope == "cards":
@@ -403,7 +405,13 @@ class _DeckLibraryMixin:
                 if scope in TOPICS:
                     model = LocalStudyModel(request.get("model"))
                     detail, reused = deck_guidance(
-                        book, record.game_state(), scope, plans, model=model, allowed=allowed
+                        book,
+                        record.game_state(),
+                        scope,
+                        plans,
+                        model=model,
+                        allowed=allowed,
+                        topic=request.get("topic"),
                     )
                     return {**reply, "detail": detail, "reused": reused}
                 if any(r["card"] == gid for r in (book.data.get("study") or {}).get("cards", [])):
@@ -421,7 +429,7 @@ class _DeckLibraryMixin:
                 lock.release()
         except (OSError, ValueError, TypeError, KeyError) as error:
             if cancelled is not None and cancelled():
-                return {**reply, "error": "Interaction study stopped. Completed passes were saved."}
+                return {**reply, "error": "Study stopped. Completed passes were saved."}
             return {**reply, "error": str(error)}
 
     def analyze_deck_async(self, deck_id: str, *, refresh: bool = False) -> None:

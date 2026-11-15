@@ -1171,7 +1171,10 @@ class PipeAdapter:
 
     def _start_deck_card_study(self, cmd: dict[str, Any]) -> None:
         stop = None
-        if cmd.get("scope") == "interactions" and cmd.get("operation") in ("build", "cancel"):
+        if cmd.get("scope") in ("interactions", "sequencing", "switches") and cmd.get("operation") in (
+            "build",
+            "cancel",
+        ):
             key = (cmd.get("deck_id"), cmd.get("identity"), cmd.get("token"))
             if any(not isinstance(v, str) or not v for v in key):
                 return

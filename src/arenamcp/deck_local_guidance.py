@@ -104,8 +104,8 @@ def _guidance_input(book, state, scope):
     }
 
 
-def _validate(rows, book, scope):
-    _object(rows, TOPICS[scope])
+def _validate(rows, book, expected):
+    _object(rows, expected)
     walkers = walkers_in(book.catalog.values())
     for row in rows.values():
         _object(row, {"advice", "conditions", "evidence"})
@@ -119,9 +119,17 @@ def _validate(rows, book, scope):
     return rows
 
 
-def _detail(rows, book, scope, digest):
-    lines = ["Local model advice · awaiting review", f"Local model weights • {digest[:12]}"]
-    for key, title in TOPICS[scope].items():
+def _detail(rows, book, scope, digest, focus=None):
+    from_title = (
+        "All four topics" if set(rows) == set(TOPICS[scope]) else f"Partial study • {len(rows)} of 4 topics"
+    )
+    lines = [from_title, "Local model advice · awaiting review", f"Local model weights • {digest[:12]}"]
+    ordered = list(TOPICS[scope]) if focus is None else [focus, *(k for k in TOPICS[scope] if k != focus)]
+    for key in ordered:
+        title = TOPICS[scope][key]
+        if key not in rows:
+            lines.extend(["", f"{title} • not yet studied"])
+            continue
         row = rows[key]
         lines.extend(
             [
@@ -135,57 +143,99 @@ def _detail(rows, book, scope, digest):
     return "\n".join(lines)
 
 
-def deck_guidance(book, state, scope, directory, *, model=None, allowed=None):
+_TOPIC_SYSTEM = (
+    _SYSTEM
+    + "\nStudy only the single named topic in this request. Answer in one short actionable paragraph with the minimum sufficient pieces and printed references."
+)
+
+
+def _topic_folder(directory, schema_version, system, scope, context):
+    job = json.dumps([schema_version, system, scope, context], sort_keys=True, allow_nan=False)
+    return Path(directory) / hashlib.sha256(job.encode()).hexdigest()
+
+
+def _read_rows(folder, digest, book, expected):
+    path = folder / (digest + ".json")
+    try:
+        saved = json.loads(path.read_text(encoding="utf-8"))
+        if saved["input"] == folder.name and saved["model"] == digest:
+            return _validate(saved["row"], book, expected)
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    return {}
+
+
+def deck_guidance(book, state, scope, directory, *, model=None, allowed=None, topic=None):
     book, context = _guidance_input(book, state, scope)
     if scope == "interactions":
         from arenamcp.deck_local_interactions import study_interactions
 
         return study_interactions(book, context, directory, model=model, allowed=allowed)
-    job = json.dumps([1, _SYSTEM, scope, context], sort_keys=True, allow_nan=False)
-    folder = Path(directory) / hashlib.sha256(job.encode()).hexdigest()
-    if model is None:
-        files = sorted(folder.glob("*.json"), key=lambda p: p.stat().st_mtime_ns, reverse=True)
-    else:
+    topics = TOPICS[scope]
+    if topic is not None and topic not in topics:
+        raise ValueError("Unknown topic in this deck study")
+    # Existing complete sets must pass the original four-row validator.
+    legacy = _topic_folder(directory, 1, _SYSTEM, scope, context)
+    jobs = {key: {**context, "topics": [key]} for key in topics}
+    folders = {key: _topic_folder(directory, 2, _TOPIC_SYSTEM, scope, job) for key, job in jobs.items()}
+    if model is not None:
         if (
             not allowed()
             or not isinstance(model.digest, str)
             or not re.fullmatch(r"(?:sha256:)?[a-f0-9]{64}", model.digest)
         ):
-            raise ValueError("The local model or deck is unavailable")
-        files = [folder / (model.digest.removeprefix("sha256:") + ".json")]
-    for path in files:
-        try:
-            if not re.fullmatch(r"[a-f0-9]{64}", path.stem):
+            raise ValueError("The deck or selected model is unavailable")
+        digests = [model.digest.removeprefix("sha256:")]
+    else:
+        available = {}
+        for folder in (legacy, *folders.values()):
+            for p in folder.glob("*.json"):
+                if re.fullmatch("[a-f0-9]{64}", p.stem):
+                    available[p.stem] = max(available.get(p.stem, 0), p.stat().st_mtime_ns)
+        digests = sorted(available, key=available.get, reverse=True)
+    best_rows, digest_for_best = {}, None
+    for digest in digests:
+        rows = _read_rows(legacy, digest, book, topics)
+        if rows:
+            return _detail(rows, book, scope, digest, topic), True
+        reused = True
+        for key in topics:
+            rows.update(_read_rows(folders[key], digest, book, [key]))
+            if key in rows or model is None or (topic is not None and topic != key):
                 continue
-            saved = json.loads(path.read_text(encoding="utf-8"))
-            if saved["input"] != folder.name or saved["model"] != path.stem:
-                continue
-            return _detail(_validate(saved["row"], book, scope), book, scope, path.stem), True
-        except (OSError, ValueError, KeyError, TypeError):
-            continue
-    if model is None:
-        return "No local study for these topics yet.", False
+            if not allowed() or not _checked(book, book.catalog):
+                raise ValueError("The deck or current prints changed before studying this topic")
+            start = time.monotonic()
+            job = jobs[key]
+            advice, evidence = advice_fields(job["prints"])
+            row_shape = schema_object({**advice["properties"], "evidence": evidence})
+            generated = acknowledged_answer(
+                model, _TOPIC_SYSTEM, job, "topics", schema_object({key: row_shape}), allowed, max_tokens=2048
+            )
+            _object(generated, {key})
+            entry = generated[key]
+            single = _validate(
+                {key: {**entry, "evidence": printed_evidence(entry, job["prints"])}}, book, [key]
+            )
+            if not allowed() or not _checked(book, book.catalog):
+                raise ValueError("The deck or current prints changed while studying this topic")
+            write_local_result(folders[key] / (digest + ".json"), single, model, time.monotonic() - start)
+            reused = False
+            rows.update(single)
+        if rows:
+            if len(rows) == len(topics):
+                _validate(rows, book, topics)
+                return _detail(rows, book, scope, digest, topic), reused
+            if model is not None:
+                return _detail(rows, book, scope, digest, topic), reused
+            if (topic in rows, len(rows)) > (topic in best_rows, len(best_rows)):
+                best_rows, digest_for_best = rows, digest
+    if best_rows:
+        return _detail(best_rows, book, scope, digest_for_best, topic), True
+    return "No local study for these topics yet.", False
 
-    advice, evidence = advice_fields(context["prints"])
-    row_shape = schema_object({**advice["properties"], "evidence": evidence})
-    start = time.monotonic()
-    rows = acknowledged_answer(
-        model, _SYSTEM, context, "topics", schema_object({name: row_shape for name in TOPICS[scope]}), allowed
-    )
-    _object(rows, TOPICS[scope])
-    rows = _validate(
-        {topic: {**row, "evidence": printed_evidence(row, context["prints"])} for topic, row in rows.items()},
-        book,
-        scope,
-    )
-    if not allowed() or not _checked(book, book.catalog):
-        raise ValueError("The deck or current prints changed during the study")
-    path = files[0]
-    write_local_result(path, rows, model, time.monotonic() - start)
-    return _detail(rows, book, scope, path.stem), False
 
-
-def acknowledged_answer(model, system, context, key, result_schema, allowed):
+def acknowledged_answer(model, system, context, key, result_schema, allowed, *, max_tokens=4096):
     # Receipts are absent from the response grammar. A silently truncated
     # prefix/suffix cannot satisfy this request by copying schema constants.
     prints = list(context["prints"].values())
@@ -213,6 +263,7 @@ def acknowledged_answer(model, system, context, key, result_schema, allowed):
         response_format=shape,
         allowed=allowed,
         verify_full_input=True,
+        max_tokens=max_tokens,
     )
     _object(answer, {key, "read_receipt"})
     echoed = answer["read_receipt"]
