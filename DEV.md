@@ -67,13 +67,12 @@ The UI runs the coaching engine as a subprocess over a JSON pipe. Desktop model 
 
 ## Verify and ship changes
 
-Run a focused regression test while working, then check formatting and the test suite before merging.
+Choose focused tests and group changes according to the [testing and release rules](AGENTS.md#testing-review-and-release-batches). Replace the example test below with the cases for your change.
 
 ```sh
 uv run --no-sync python -m pytest tests/test_desktop_runtime.py -q
 uv run --no-sync ruff check src tests
 uv run --no-sync ruff format --check src tests
-uv run --no-sync python -m pytest tests -q
 ```
 
-GitHub runs lint, hosted trial checks, and pytest. The combat timing regressions run in their own process. For customer builds, follow the [managed release workflow](RELEASE.md). A successful test run qualifies a commit for packaging; the published feed identifies the build users can install.
+GitHub runs the full suite, lint and hosted trial checks for a master release. To run the full suite locally for an identified integration risk, use `uv run --no-sync python -m pytest tests -q`. CI runs the combat timing regressions in their own process. For customer builds, follow the [managed release workflow](RELEASE.md). A successful test run qualifies a commit for packaging; the published feed identifies the build users can install.

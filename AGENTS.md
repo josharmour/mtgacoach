@@ -54,10 +54,14 @@ python -m arenamcp.standalone --backend online
   ```
 - Deploy: copy `bin/Debug/net472/MtgaCoachBridge.dll` to MTGA's `BepInEx/plugins/`.
 
-## Testing Quirks
-- `conftest.py` redirects `ARENAMCP_LOG_FILE` to `/tmp/arenamcp-pytest.log` so test noise doesn't pollute `~/.arenamcp/standalone.log`.
-- Run the focused regression for the feature, then use the lint and test commands in [DEV.md](DEV.md).
-- GitHub runs lint, hosted trial checks, and pytest. Successful master tests qualify a build for managed packaging.
+## Testing, review and release batches
+
+- For each behavior change, run the reported case through its normal entry point, a control that should make the opposite decision, and existing tests for callers of the changed function. Search by function and caller names when selecting tests. Preserve privacy, legality and timing checks relevant to the change.
+- Group related fixes into one player-facing batch. Use one independent reviewer for the batch, covering each meaningful change. Revisit the affected finding when an edit changes previously reviewed behavior. Run the integrated focused tests and lint once the batch is ready.
+- For an authorized customer release, push the verified batch to `master` once. GitHub runs the full suite, isolated combat timing tests, lint and hosted trial checks on that commit. Run the full suite locally when a specific integration risk or an explicit request warrants it. Diagnose any failure before changing the release candidate.
+- Keep the release commit at the tip until the master feed publishes it. Verify the commit and version in the Windows x64, Mac arm64 and Linux x64 manifests before reporting customer availability. See [RELEASE.md](RELEASE.md).
+- For a larger backlog, finish one player-facing batch, report what shipped and what remains, and stop before starting another batch. The owner can explicitly set a different checkpoint.
+- `conftest.py` redirects `ARENAMCP_LOG_FILE` to `/tmp/arenamcp-pytest.log` to keep test output out of the live Coach log.
 
 ## Packaging
 - `hatchling` builds the `arenamcp` Python package. The GUI entrypoint is `mtgacoach-desktop`.
