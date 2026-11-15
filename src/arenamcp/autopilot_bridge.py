@@ -13,6 +13,7 @@ from arenamcp.autopilot_targets import (
     _match_target_in_battlefield,
     _normalize_planner_card_name,
 )
+from arenamcp.combat_receipt import bind_combat_confirmation, bind_combat_state, record_native_combat
 from arenamcp.mana import mana_cost_to_cmc
 from arenamcp.sideboarding import is_sideboarding
 
@@ -402,7 +403,10 @@ class _BridgeSubmitMixin:
                                 guard_hold=True,
                             )
                         )
-                    if bridge.submit_attackers([]):
+                    with record_native_combat() as recording:
+                        bind_combat_state(game_state, game_state.get("_bridge_trigger"))
+                        confirmed = bridge.submit_attackers([])
+                    if confirmed:
                         self._log_execution_path(
                             ExecutionPath.GRE_AWARE,
                             "click_button(done): empty attacker declaration via GRE bridge",
@@ -419,12 +423,15 @@ class _BridgeSubmitMixin:
                                 model_choice=action.model_choice,
                             ),
                         )
-                        self._record_combat_decision("DeclareAttackers", action, result)
+                        self._record_combat_decision("DeclareAttackers", action, result, recording=recording)
                         return result
                     self._gre_bridge_failed_methods.add(method)
                     return None
                 if "DeclareBlocker" in request_type:
-                    if bridge.submit_blockers([]):
+                    with record_native_combat() as recording:
+                        bind_combat_state(game_state, game_state.get("_bridge_trigger"))
+                        confirmed = bridge.submit_blockers([])
+                    if confirmed:
                         self._log_execution_path(
                             ExecutionPath.GRE_AWARE,
                             "click_button(done): empty blocker declaration via GRE bridge",
@@ -441,7 +448,7 @@ class _BridgeSubmitMixin:
                                 model_choice=action.model_choice,
                             ),
                         )
-                        self._record_combat_decision("DeclareBlockers", action, result)
+                        self._record_combat_decision("DeclareBlockers", action, result, recording=recording)
                         return result
                     self._gre_bridge_failed_methods.add(method)
                     return None
@@ -1348,9 +1355,10 @@ class _BridgeSubmitMixin:
 
     def _try_bridge_declare_attackers(self, action: GameAction) -> ClickResult | None:
         """Submit attackers via the bridge and record the declaration for bug reports."""
-        result = self._try_bridge_declare_attackers_inner(action)
+        with record_native_combat() as recording:
+            result = self._try_bridge_declare_attackers_inner(action)
         if result is not None and result.success:
-            self._record_combat_decision("DeclareAttackers", action, result)
+            self._record_combat_decision("DeclareAttackers", action, result, recording=recording)
         return result
 
     def _try_bridge_declare_attackers_inner(self, action: GameAction) -> ClickResult | None:
@@ -1375,6 +1383,7 @@ class _BridgeSubmitMixin:
             return None
 
         game_state = self._get_game_state()
+        bind_combat_state(game_state, pending)
         # #210 (match cd673437): an unpayable attack tax (Archangel of Tithes,
         # Ghostly Prison) was cancelled this turn and Arena re-offered
         # DeclareAttackers with our selections still held. Re-declaring them
@@ -1517,6 +1526,7 @@ class _BridgeSubmitMixin:
         if needs_finalize:
             # Bind native confirmation to the acknowledged request and exact
             # selection, so a newer request cannot receive an empty "Done".
+            bind_combat_confirmation(request_key)
             resp2 = (
                 bridge.submit_attackers_raw(
                     attacker_entries, expected_request_id=request_key, finalize_only=True
@@ -1628,12 +1638,17 @@ class _BridgeSubmitMixin:
     def _try_gre_bridge_blockers(self, action: GameAction) -> ClickResult | None:
         """Submit blockers via the bridge and record the declaration for bug reports."""
         # Unbound call: tests drive these handlers on plain fake objects.
-        result = _BridgeSubmitMixin._try_gre_bridge_blockers_inner(self, action)
+        with record_native_combat() as recording:
+            result = _BridgeSubmitMixin._try_gre_bridge_blockers_inner(self, action)
         if result is not None and result.success:
-            _BridgeSubmitMixin._record_combat_decision(self, "DeclareBlockers", action, result)
+            _BridgeSubmitMixin._record_combat_decision(
+                self, "DeclareBlockers", action, result, recording=recording
+            )
         return result
 
-    def _record_combat_decision(self, kind: str, action: GameAction, result: ClickResult) -> None:
+    def _record_combat_decision(
+        self, kind: str, action: GameAction, result: ClickResult, *, recording=None
+    ) -> None:
         """The declaration, its reasoning, the legal choices and the plan's origin, into the match packet."""
         try:
             from arenamcp.match_packets import get_current_packet
@@ -1641,7 +1656,12 @@ class _BridgeSubmitMixin:
             packet = get_current_packet()
             if packet is None:
                 return
-            game_state = self._get_game_state() or {}
+            receipt = (
+                recording.receipt
+                if recording and recording.packet is packet and isinstance(recording.state, dict)
+                else None
+            )
+            game_state = (recording.state if receipt else self._get_game_state()) or {}
             submitted = getattr(result, "submitted_action", None) or action
             if kind == "DeclareAttackers":
                 names = list(getattr(submitted, "attacker_names", None) or [])
@@ -1681,6 +1701,7 @@ class _BridgeSubmitMixin:
                 kind,
                 chosen=chosen,
                 options=options,
+                receipt=receipt,
                 explanation=trace["reasoning"],
                 trace={k: v for k, v in trace.items() if v},
                 game_state=game_state,
@@ -1722,6 +1743,11 @@ class _BridgeSubmitMixin:
         # logged "[No Blocks]" while its confirm committed all seven.
         shown = selected_blocks(bridge_blockers)
         if not getattr(action, "blocker_assignments", None) and not shown:
+            try:
+                bind_combat_state(self._get_game_state(), pending)
+            except Exception:
+                # The optional packet snapshot must never prevent Done.
+                pass
             logger.info("GRE bridge blockers: submitting empty blockers (no blockers to assign)")
             if bridge.submit_blockers([]):
                 self._log_execution_path(
@@ -1732,6 +1758,7 @@ class _BridgeSubmitMixin:
             return None
 
         game_state = self._get_game_state() or {}
+        bind_combat_state(game_state, pending)
         from arenamcp.combat_identity import blocker_id_assignments
 
         planned_labels = dict(getattr(action, "blocker_assignments", None) or {})
@@ -1891,6 +1918,7 @@ class _BridgeSubmitMixin:
                 return None
         else:
             try:
+                bind_combat_confirmation((request.get("game_state_id"), request.get("msg_id")))
                 finalized = bridge.submit_blockers([])
             except Exception as e:
                 logger.debug(f"Bridge declare_blockers finalize failed: {e}")

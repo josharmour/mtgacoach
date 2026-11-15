@@ -31,6 +31,9 @@ def _choice(entry: dict) -> str:
     action = entry.get("executed_action")
     if isinstance(action, dict):
         return " ".join(str(action.get(k) or "") for k in ("action_type", "card_name")).strip()[:160]
+    display = entry.get("display_receipt") or {}
+    if isinstance(display, dict) and isinstance(display.get("chosen"), list):
+        return ", ".join(str(label) for label in display["chosen"])[:160]
     pending = entry.get("pending_decision") or {}
     if not isinstance(pending, dict):
         return ""

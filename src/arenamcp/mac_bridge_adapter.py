@@ -370,6 +370,7 @@ class Snapshot:
         self.request: dict | None = request if isinstance(request, dict) and "$none" not in request else None
         self.reason = request.get("$none", "") if isinstance(request, dict) else ""
         original = results[1] if len(results) > 1 else None
+        self.original_request_key = field(original, "GameStateId"), field(original, "MsgId")
         self.game_state_id = num(field(original, "GameStateId")) if isinstance(original, dict) else None
         self.msg_id = num(field(original, "MsgId")) if isinstance(original, dict) else None
         self.getters = dict(zip(SNAPSHOT_GETTERS, results[2:], strict=False))
@@ -2803,10 +2804,13 @@ class MacBridgeAdapter:
 
     def _cmd_submit_blockers(self, command: dict, timeout: float | None) -> dict:
         """Declare assignments first; finalize only after the caller checks acceptance."""
+        from arenamcp.combat_receipt import observe_native_combat
+
         snapshot = self._require(timeout, "DeclareBlockersRequest")
         assignments = command.get("assignments") or []
         if not assignments:
             self._submit(snapshot, lambda ops, request: ops.call(request, "SubmitBlockers"), timeout)
+            observe_native_combat(snapshot)
             return {"ok": True, "submitted_type": "DeclareBlockers"}
         by_id = {num(field(b, "BlockerInstanceId")): b for b in items(field(snapshot.request, "AllBlockers"))}
         selected = []
@@ -2844,9 +2848,12 @@ class MacBridgeAdapter:
             ops.on_submit(request, declaration)
 
         self._submit(snapshot, build, timeout)
+        observe_native_combat(snapshot, selected)
         return {"ok": True, "submitted_type": "DeclareBlockers", "needs_finalize": True}
 
     def _cmd_submit_attackers(self, command: dict, timeout: float | None) -> dict:
+        from arenamcp.combat_receipt import discard_native_combat, observe_native_combat
+
         snapshot = self._require(timeout, "DeclareAttackerRequest")
         for name, actual in (
             ("expected_game_state_id", snapshot.game_state_id),
@@ -2887,6 +2894,7 @@ class MacBridgeAdapter:
                 f"Requested attackers are not in this combat window: {sorted(wanted - legal_ids)}"
             )
         if command.get("withdraw"):
+            discard_native_combat()
             return self._withdraw_attack_declaration(snapshot, available, timeout)
         matched = []
         targets = {
@@ -2938,6 +2946,7 @@ class MacBridgeAdapter:
             if snapshot.getters.get("CanSubmit") is False:
                 raise AdapterError("Attack declaration cannot be confirmed; finish choosing legal recipients")
             self._submit(snapshot, lambda ops, request: ops.call(request, "SubmitAttackers"), timeout)
+            observe_native_combat(snapshot)
             return {"ok": True, "submitted_type": "DeclareAttackersSubmit"}
 
         def build(ops: _Ops, request: dict) -> None:
@@ -2946,6 +2955,7 @@ class MacBridgeAdapter:
             ops.call(request, "UpdateAttacker", LIST([H(handle(a)) for a, _ in matched]))
 
         self._submit(snapshot, build, timeout)
+        observe_native_combat(snapshot, matched)
         return {
             "ok": True,
             "submitted_type": "DeclareAttackersUpdate",

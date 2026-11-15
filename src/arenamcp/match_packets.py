@@ -196,6 +196,7 @@ class MatchPacket:
         *,
         chosen: list[str],
         options: list[str],
+        receipt=None,
         explanation: str = "",
         trace: dict[str, Any] | None = None,
         game_state: dict[str, Any] | None = None,
@@ -216,6 +217,25 @@ class MatchPacket:
             "fingerprint": f"{kind}:{time.time():.3f}",
             "timestamp": time.time(),
         }
+        if receipt is not None and receipt.kind == kind:
+            # Assignment edges are the native offers. The GRE still validates
+            # the declaration as a whole (menace, must-attack, costs, etc.).
+            entry["display_receipt"] = {"chosen": list(chosen), "options": list(options)}
+            entry["pending_decision"].update(
+                request_id=list(receipt.offered_request),
+                option_family="combat_assignment_v1",
+                options=[
+                    {
+                        "option_id": receipt.option_id(edge),
+                        "actor_instance_id": edge[0],
+                        "recipient_type": edge[1],
+                        "recipient_id": edge[2],
+                    }
+                    for edge in receipt.options
+                ],
+            )
+            entry["chosen_options"] = [receipt.option_id(edge) for edge in receipt.chosen]
+            entry["submitted_request_id"] = list(receipt.submitted_request)
         if trace:
             entry["trace"] = trace
         if explanation:
@@ -235,18 +255,23 @@ class MatchPacket:
             pending = entry.get("pending_decision") or {}
             options = pending.get("options") or []
             chosen = set(entry.get("chosen_options") or [])
+            display = entry.get("display_receipt") or {}
             out.append(
                 {
                     "at": datetime.fromtimestamp(entry.get("timestamp", 0)).isoformat(timespec="seconds"),
                     "turn": entry.get("turn"),
                     "request_type": pending.get("request_type"),
                     "source": pending.get("source_label"),
-                    "chosen": [o.get("label") for o in options if o.get("option_id") in chosen]
+                    "chosen": display.get("chosen")
+                    or [o.get("label") for o in options if o.get("option_id") in chosen]
                     or list(chosen),
-                    "options": [
-                        f"{o.get('label')}{' [unpayable]' if o.get('payable') is False else ''}"
-                        for o in options[:16]
-                    ],
+                    "options": display.get(
+                        "options",
+                        [
+                            f"{o.get('label')}{' [unpayable]' if o.get('payable') is False else ''}"
+                            for o in options[:16]
+                        ],
+                    )[:16],
                     "explanation": entry.get("explanation", ""),
                     "trace": entry.get("trace"),
                     "outcome": entry.get("outcome"),

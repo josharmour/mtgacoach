@@ -3297,6 +3297,13 @@ class BridgeDecisionPoller:
             "decision_context": resp.get("decision_context") if has_pending else None,
         }
 
+        if has_pending and request_class in ("DeclareAttackerRequest", "DeclareBlockersRequest"):
+            # The Done-button path keeps this trigger until it submits. Preserve
+            # its original identity so the recorder can refuse a newer window.
+            for name in ("game_state_id", "msg_id"):
+                if type(resp.get(name)) is int:
+                    result[name] = resp[name]
+
         if trigger_name == "decision_required":
             label = _get_bridge_request_label(request_type, request_class)
             logger.info(f"Bridge detected decision: {label} (type={request_type}, actions={len(actions)})")
