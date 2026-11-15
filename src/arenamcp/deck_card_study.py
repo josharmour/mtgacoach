@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import math
 import os
 import re
 import tempfile
@@ -147,6 +148,55 @@ def _cached(path, book, context):
     if raw["input"] != path.parent.name or raw["model"] != path.stem:
         raise ValueError("The local study does not match this input")
     return _validated_row(raw["row"], book, context), raw.get("metrics", {})
+
+
+def prepare_card_pass(book, directory, digest):
+    """Find remaining source-verifiable jobs for the selected weights without generating any advice."""
+    if not isinstance(digest, str) or not re.fullmatch(r"(?:sha256:)?[a-f0-9]{64}", digest):
+        raise ValueError("Missing local model identity")
+    menu = card_menu(book)
+    admitted = {row["card"] for row in (book.data.get("study") or {}).get("cards", [])}
+    if admitted and not _checked(book, book.catalog):
+        raise ValueError("The saved study no longer matches its native prints")
+    jobs = []
+    report = {
+        "nonlands": len(menu),
+        "pending": jobs,
+        "withheld": 0,
+        "cached": 0,
+        "admitted": len(admitted),
+        "seconds": 0.0,
+        "generated_tokens": 0,
+        "thinking_tokens": 0,
+        "unreported_thinking": 0,
+        "model_digest": digest,
+    }
+    for card in menu:
+        gid = card["card"]
+        if gid in admitted:
+            continue
+        try:
+            context = _context(book, gid)
+            if not _checked(book, (int(i) for i in context["prints"])):
+                raise ValueError("Changed print")
+        except (ValueError, KeyError, TypeError):
+            report["withheld"] += 1
+            continue
+        path = _directory(directory, context) / (digest.removeprefix("sha256:") + ".json")
+        try:
+            _row, metrics = _cached(path, book, context)
+        except (ValueError, KeyError, OSError, TypeError):
+            jobs.append(gid)
+            continue
+        report["cached"] += 1
+        for key in ("seconds", "generated_tokens", "thinking_tokens"):
+            n = metrics.get(key) if isinstance(metrics, dict) else None
+            valid = type(n) is int or (type(n) is float and key == "seconds" and math.isfinite(n))
+            if valid and n >= 0:
+                report[key] += n
+            elif key == "thinking_tokens":
+                report["unreported_thinking"] += 1
+    return report
 
 
 def read_card(book, gid, directory, *, model_digest=None):

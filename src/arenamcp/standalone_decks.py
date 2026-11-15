@@ -332,7 +332,7 @@ class _DeckLibraryMixin:
     def deck_card_study(self, request):
         """Answer a local Decks window request; no study runs from gameplay or auto-preparation."""
         from arenamcp import logging_config
-        from arenamcp.deck_card_study import card_detail, card_menu, read_card, study_card
+        from arenamcp.deck_card_study import card_detail, card_menu, prepare_card_pass, read_card, study_card
         from arenamcp.local_study_model import LocalStudyModel, installed_models
 
         deck_id, identity, gid = (request.get(k) for k in ("deck_id", "identity", "card"))
@@ -353,6 +353,13 @@ class _DeckLibraryMixin:
                 return {**reply, "cards": card_menu(book), "models": models}
             if request.get("operation") == "read":
                 return {**reply, "detail": read_card(book, gid, directory)}
+            if request.get("operation") == "prepare":
+                if not self._study_outside_match():
+                    raise ValueError("Card studies can run after the match has finished")
+                model = LocalStudyModel(request.get("model"))
+                if request.get("expected_digest") is not None and request["expected_digest"] != model.digest:
+                    raise ValueError("The selected model weights changed during this deck pass")
+                return {**reply, "card_pass": prepare_card_pass(book, directory, model.digest)}
             if request.get("operation") != "build":
                 raise ValueError("Unknown card study action")
             # Do not reserve the live strategic lane for an outside-match job.
@@ -371,6 +378,8 @@ class _DeckLibraryMixin:
                 if any(r["card"] == gid for r in (book.data.get("study") or {}).get("cards", [])):
                     return {**reply, "detail": card_detail(book, gid), "reused": True}
                 model = LocalStudyModel(request.get("model"))
+                if request.get("expected_digest") is not None and request["expected_digest"] != model.digest:
+                    raise ValueError("The selected model weights changed during this deck pass")
                 _row, reused = study_card(book, gid, model, directory, allowed=allowed)
                 return {
                     **reply,

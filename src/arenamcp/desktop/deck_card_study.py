@@ -2,7 +2,7 @@
 
 import uuid
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -23,6 +23,13 @@ class DeckCardStudyDialog(QDialog):
         self.session = session
         self.deck_id, self.identity = deck["deck_id"], deck["identity"]
         self.token = ""
+        self.operation = ""
+        self.running_pass = False
+        self.remaining = []
+        self.pass_digest = None
+        self.next_job = QTimer(self)
+        self.next_job.setSingleShot(True)
+        self.next_job.timeout.connect(self.advance_pass)
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel("Card"))
         self.cards = QComboBox()
@@ -41,6 +48,17 @@ class DeckCardStudyDialog(QDialog):
         self.build.setEnabled(False)
         models.addWidget(self.build)
         layout.addLayout(models)
+        self.pass_button = QPushButton("Study remaining cards")
+        self.pass_button.setEnabled(False)
+        self.pass_button.setToolTip(
+            "Study each missing, source-verified nonland card with the selected on-device model."
+        )
+        self.pass_button.clicked.connect(self.toggle_pass)
+        layout.addWidget(self.pass_button)
+        self.progress = QLabel()
+        self.progress.setWordWrap(True)
+        self.progress.hide()
+        layout.addWidget(self.progress)
         self.cards.currentIndexChanged.connect(self.read)
         self.build.clicked.connect(self.generate)
         session.deckCardStudyChanged.connect(self.received)
@@ -48,6 +66,7 @@ class DeckCardStudyDialog(QDialog):
 
     def request(self, operation):
         self.token = uuid.uuid4().hex
+        self.operation = operation
         self.session.request_deck_card_study(
             {
                 "operation": operation,
@@ -56,6 +75,7 @@ class DeckCardStudyDialog(QDialog):
                 "card": self.cards.currentData(),
                 "model": self.models.currentText(),
                 "token": self.token,
+                "expected_digest": self.pass_digest if self.running_pass else None,
             }
         )
 
@@ -66,8 +86,66 @@ class DeckCardStudyDialog(QDialog):
 
     def generate(self):
         self.build.setEnabled(False)
+        self.pass_button.setEnabled(self.running_pass)
         self.detail.setPlainText("Studying this card on your device…")
         self.request("build")
+
+    def toggle_pass(self):
+        if self.running_pass:
+            self.stop_pass()
+            self.progress.setText("Paused. A card already in progress can finish.")
+            return
+        self.running_pass = True
+        self.remaining = []
+        self.models.setEnabled(False)
+        self.cards.setEnabled(False)
+        self.build.setEnabled(False)
+        self.pass_button.setText("Pause card pass")
+        self.progress.setText("Checking current prints and saved studies…")
+        self.progress.show()
+        self.request("prepare")
+
+    def stop_pass(self):
+        self.running_pass = False
+        self.pass_digest = None
+        self.next_job.stop()
+        self.remaining.clear()
+        self.pass_button.setText("Study remaining cards")
+        self.models.setEnabled(True)
+        self.cards.setEnabled(True)
+        self.controls()
+
+    def closeEvent(self, event):
+        self.stop_pass()
+        self.token = ""
+        super().closeEvent(event)
+
+    def controls(self):
+        available = bool(self.models.count() and self.cards.count())
+        self.build.setEnabled(
+            available and not self.running_pass and self.operation not in ("build", "prepare")
+        )
+        self.pass_button.setEnabled(self.running_pass or self.build.isEnabled())
+
+    def advance_pass(self):
+        if not self.running_pass:
+            return
+        if not self.remaining:
+            self.request("prepare")
+            return
+        gid = self.remaining.pop(0)
+        i = self.cards.findData(gid)
+        if i < 0:
+            self.stop_pass()
+            self.progress.setText("Deck card list changed. Reopen the study.")
+            return
+        self.cards.blockSignals(True)
+        self.cards.setCurrentIndex(i)
+        self.cards.blockSignals(False)
+        self.progress.setText(
+            f"Studying {self.cards.currentText()} • {len(self.remaining)} remaining after this card."
+        )
+        self.generate()
 
     def received(self, result):
         if (
@@ -77,7 +155,38 @@ class DeckCardStudyDialog(QDialog):
             or result.get("card") != self.cards.currentData()
         ):
             return
-        if "cards" in result:
+        operation, self.operation = self.operation, ""
+        if self.running_pass and "error" in result:
+            self.stop_pass()
+            self.progress.setText("Pass stopped. Completed card studies are saved on this device.")
+        if "card_pass" in result:
+            if not self.running_pass:
+                self.controls()
+                return
+            report = result["card_pass"]
+            if self.pass_digest is not None:
+                # Recheck all current inputs once after the frozen worklist.
+                # A changing deck or missing cache must not create a retry loop.
+                self.stop_pass()
+            else:
+                self.pass_digest = report["model_digest"]
+                self.remaining = list(report["pending"])
+            if self.running_pass and self.remaining:
+                self.next_job.start(0)
+            else:
+                self.stop_pass()
+            thinking = (
+                f"{report['thinking_tokens']} reported thinking tokens, {report['unreported_thinking']} unreported"
+                if report["unreported_thinking"]
+                else f"{report['thinking_tokens']} thinking tokens"
+            )
+            self.progress.setText(
+                f"{report['cached']} local roles awaiting review, {report['admitted']} saved study roles "
+                f"across {report['nonlands']} nonland cards. {report['withheld']} withheld on print checks. "
+                f"{len(report['pending'])} still to study. Cached roles took {report['seconds']:.1f}s, "
+                f"{report['generated_tokens']} generated tokens, {thinking}."
+            )
+        elif "cards" in result:
             self.cards.blockSignals(True)
             self.cards.clear()
             for entry in result["cards"]:
@@ -92,4 +201,6 @@ class DeckCardStudyDialog(QDialog):
                 self.detail.setPlainText("This deck has no resolved nonland prints.")
         else:
             self.detail.setPlainText(result.get("detail") or result.get("error") or "Card study unavailable.")
-        self.build.setEnabled(bool(self.models.count() and self.cards.count()))
+        if self.running_pass and operation == "build" and "error" not in result:
+            self.next_job.start(0)
+        self.controls()

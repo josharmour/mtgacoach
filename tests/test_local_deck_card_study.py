@@ -386,3 +386,78 @@ def test_general_cache_read_ignores_unverifiable_model_identity(sample, tmp_path
     file.rename(file.with_name("not-local-weights.json"))
     file.with_name("not-local-weights.json").write_text(json.dumps(data))
     assert "awaiting review" not in read_card(book, 1001, tmp_path)
+
+
+def test_full_nonland_pass_resumes_exact_model_caches_and_withholds_changed_prints(
+    qapp, sample, tmp_path, monkeypatch
+):
+    from arenamcp import logging_config
+    from arenamcp.desktop.deck_card_study import DeckCardStudyDialog
+
+    state, book, _ = sample
+    for gid in (2001, 2002):
+        book.catalog[gid] = {**book.catalog[1001], "name": f"Fixture local piece {gid}"}
+    native = native_catalog(monkeypatch, book.catalog)
+    native[2002].oracle_text = "Changed native synthetic effect"
+    owner = _DeckLibraryMixin()
+    owner._deck_library = {
+        "d": SimpleNamespace(complete=True, identity=lambda: book.identity, game_state=lambda: state)
+    }
+    owner._coach = SimpleNamespace(_cached_playbook=lambda *_: book)
+    owner._study_outside_match = lambda: True
+    writer = backend(book)
+    writer.last_metrics = {"generated_tokens": 11}
+
+    def complete(system, prompt, **kwargs):
+        gid = json.loads(prompt)["card"]
+        return {**card_rule(gid, book.catalog), "evidence": [{"card": gid, "rule": 1}]}
+
+    writer.complete.side_effect = complete
+    monkeypatch.setattr("arenamcp.local_study_model.LocalStudyModel", lambda name: writer)
+    monkeypatch.setattr("arenamcp.local_study_model.installed_models", lambda: {"fixture": writer.digest})
+    monkeypatch.setattr(logging_config, "LOG_DIR", tmp_path)
+
+    class Session(FakeSession):
+        deckCardStudyChanged = Signal(dict)
+
+        def request_deck_card_study(self, request):
+            self.deckCardStudyChanged.emit(owner.deck_card_study(request))
+
+    session = Session()
+    dialog = DeckCardStudyDialog(session, {"deck_id": "d", "identity": book.identity})
+    dialog.show()
+    assert not writer.complete.called
+    dialog.pass_button.click()
+    assert dialog.running_pass and len(dialog.remaining) == 2
+    dialog.next_job.stop()
+    dialog.advance_pass()
+    assert writer.complete.call_count == 1
+    dialog.pass_button.click()
+    assert not dialog.running_pass and not dialog.next_job.isActive()
+    dialog.pass_button.click()
+    assert len(dialog.remaining) == 1
+    for _ in range(5):
+        qapp.processEvents()
+    assert not dialog.running_pass and writer.complete.call_count == 2
+    assert "2 local roles awaiting review" in dialog.progress.text()
+    assert "across 3 nonland cards" in dialog.progress.text()
+    assert "1 withheld" in dialog.progress.text()
+    assert "22 generated tokens" in dialog.progress.text() and "2 unreported" in dialog.progress.text()
+    dialog.pass_button.click()
+    assert writer.complete.call_count == 2 and not dialog.running_pass
+    # Re-open after changing the plan. The output must not come from the prior deck context.
+    book.data["primary_plan"] = "Different synthetic strategy"
+    dialog.pass_button.click()
+    assert len(dialog.remaining) == 2
+    owner._study_outside_match = lambda: False
+    qapp.processEvents()
+    assert (
+        not dialog.running_pass and "match" in dialog.detail.toPlainText() and writer.complete.call_count == 2
+    )
+    owner._study_outside_match = lambda: True
+    dialog.pass_button.click()
+    writer.digest = "c" * 64
+    qapp.processEvents()
+    assert not dialog.running_pass and "weights changed" in dialog.detail.toPlainText()
+    assert writer.complete.call_count == 2
+    dialog.close()
