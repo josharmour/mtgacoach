@@ -2407,8 +2407,6 @@ def _unmodelled_effect_reasons(card: dict | None, result: Any = None) -> str:
                 return "its modes"
         if _is_permanent(card) and not modes and _trigger_unmodelled(card, name):
             return "its triggered ability"
-        if role == "ramp" and not _plain_rock_text_output(card):
-            return "its unsupported mana ability"
         if not _is_creature(card):
             if re.search(r"\benchant (?:creature|permanent)\b", _text(card)):
                 return "its effect"  # an aura: Pacifism is removal, not a combat trick
@@ -2436,54 +2434,6 @@ def mode_label(kind: str, gain: int, bullet: str, name: str = "") -> str:
         bullet = re.sub(re.escape(name), "", bullet, flags=re.IGNORECASE)
     words = bullet.rstrip(".").split()
     return " ".join(words[:6]).lower() + ("…" if len(words) > 6 else "")
-
-
-def _plain_rock_text_output(card: dict) -> frozenset[str]:
-    """Exact one-mana tap-only outputs; unknown extra clauses refuse.
-
-    A single independent loot activation is known not to modify the mana
-    ability. Everything else, including enters-tapped and static restrictions,
-    stays unmodelled rather than relying on a blacklist of prohibitions.
-    """
-    text = str(card.get("oracle_text") or "").lower()
-    outputs: set[str] = set()
-    for line in text.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        match = re.fullmatch(r"\{o?t\}:\s*add (one mana of any colou?r|\{o?([wubrgc])\})\.", line)
-        if match:
-            outputs.update(match.group(2).upper() if match.group(2) else "WUBRG")
-        elif not re.fullmatch(r"\{o?[0-9]+\},\s*\{o?t\},\s*discard a card:\s*draw a card\.", line):
-            return frozenset()
-    return frozenset(outputs)
-
-
-def _plain_rock_output(card: dict) -> frozenset[str]:
-    if _unmodelled_effect_reasons(card):
-        return frozenset()
-    return _plain_rock_text_output(card)
-
-
-def _artifact_activation_suppression_present(model: BoardModel) -> bool:
-    """Recognize only the exact global prohibition, then abstain projection.
-
-    This is not a continuous-effect/layer engine. Removal, suppression of the
-    source, and timing changes are unresolved rather than guessed through.
-    """
-    cards = list(model.battlefield)
-    relevant = cards + [spell.card for spell in model.spells]
-    if not any(re.search(r"\bartifact\b", str(card.get("type_line") or ""), re.I) for card in relevant):
-        return False
-    for card in cards:
-        text = " ".join(str(card.get("oracle_text") or "").replace("’", "'").lower().split())
-        if text == "activated abilities of artifacts can't be activated.":
-            return True
-    return False
-
-
-def _plain_rock_supported(card: dict) -> bool:
-    return bool(_plain_rock_output(card))
 
 
 def _modelled(var: Variant) -> bool:
@@ -2580,8 +2530,6 @@ class Moves:
 
         if reasons := model_reasons(model):
             raise UnsupportedContinuation("; ".join(reasons))
-        if _artifact_activation_suppression_present(model):
-            raise UnsupportedContinuation("artifact activation suppression is not projected")
         self._sacrifice_enabled = relevant(model.battlefield)
         self.sacrifice_choices = {}
         self.choice_caveats = set()
@@ -3129,7 +3077,7 @@ class Moves:
             reach=etb_reach,
             bounce=bounce,
             gain=int(match.group(1)) if match else 0,
-            rock=spell.role == "ramp" and _plain_rock_supported(card),
+            rock=spell.role == "ramp",
             loss=life_loss(etb),
             face=each,
             sweep=0 if oracle_modes else _sweep(_cast_text(etb)),
@@ -3230,7 +3178,6 @@ class Moves:
                             consumes=count,
                             consume_spec=(color, restrictions),
                             imprint_rock=semantics["imprint_rock"],
-                            rock=semantics["rock"],
                         )
                     if plain.imprint_rock:
                         extras.append(dataclasses.replace(plain, consumes=0, rock=False, imprint_rock=False))
@@ -3741,7 +3688,7 @@ class Moves:
             value = 0.5
         elif var.body is not None:
             value = _spell_value(hs.spell, survival=self.survival, theirs=list(theirs))
-        elif var.rock and (var.imprint_rock or _plain_rock_supported(hs.spell.card)):
+        elif var.rock:
             value = 1.5
         elif var.reach is None and not var.gain and not var.tokens and not var.life_tokens:
             value = 1.0
@@ -4934,7 +4881,7 @@ class Moves:
                 # An imprint-bound rock (Chrome Mox) produces only the colours of the
                 # card its cast actually exiled (#A1 review round 5); a payment that
                 # gave no colours (declined/unmatched imprint) adds no mana at all.
-                produces = frozenset(paid_colors) if var.imprint_rock else _plain_rock_output(hs.spell.card)
+                produces = frozenset(paid_colors) if var.imprint_rock else frozenset("WUBRGC")
                 if produces:
                     mid.rocks.append(SimpleNamespace(produces=produces, name=hs.name))
             mid.ours = self.rescale(mid.ours)  # "+1/+0 for each other creature you control" (#157)

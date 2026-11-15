@@ -58,32 +58,23 @@ def _printed(oracle):
 def protection_qualities(card):
     raw = _raw(card)
     printed = _printed(str(raw.get("oracle_text") or ""))
-    # Allocate a mutable union only when a grant contributes a quality. The
-    # common empty/printed-only result is already an immutable cached set.
-    found = None
+    # Future forecasts retain printed protection. Current-only grants have no
+    # established duration beyond this turn; don't turn Brave into a shield
+    # against the opponent's later attack (#273).
+    found = set(printed)
     if not card.get("_protection_future"):
-        for obj in (raw,) if raw is card else (raw, card):
-            for ability in obj.get("ability_grp_ids") or ():
+        for obj in (raw, card):
+            for ability in obj.get("ability_grp_ids") or []:
                 if ability in COLOR_PROTECTION_ABILITIES:
-                    if found is None:
-                        found = set(printed)
                     found.add(COLOR_PROTECTION_ABILITIES[ability])
-            for field in ("keywords", "granted_abilities"):
-                for value in obj.get(field) or ():
-                    addition = _printed(str(value))
-                    if addition:
-                        if found is None:
-                            found = set(printed)
-                        found.update(addition)
-    removed = raw.get("removed_abilities")
-    if not removed:
-        return printed if found is None else frozenset(found)
-    if found is None:
-        found = set(printed)
+            for keyword in obj.get("keywords") or []:
+                found.update(_printed(str(keyword)))
+            for granted in obj.get("granted_abilities") or []:
+                found.update(_printed(str(granted)))
+    removed = [str(v).lower() for v in raw.get("removed_abilities") or []]
+    if any(v in ("all abilities", "protection") for v in removed):
+        return frozenset()
     for value in removed:
-        value = str(value).lower()
-        if value in ("all abilities", "protection"):
-            return frozenset()
         found.difference_update(_printed(value))
     return frozenset(found)
 

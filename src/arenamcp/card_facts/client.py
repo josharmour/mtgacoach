@@ -37,7 +37,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from arenamcp.card_facts.source_identity import legacy_lookup_hash
+from arenamcp.card_facts.hashing import rules_hash
 
 logger = logging.getLogger(__name__)
 
@@ -78,14 +78,20 @@ def _field(card: Any, key: str) -> str:
 
 
 def hash_for_card(card: Any) -> str | None:
-    """Return the legacy hash only for supported complete single-face input.
+    """Return the F1 rules_hash for *card*, or None when it has no usable name.
 
-    Known legacy native presentation retains its exact raw-text lookup hash;
-    unsupported/malformed or linked-face representations return None.
     Fields are passed through exactly as supplied: the hash is only stable if
     the client and the server compiler read the same card text.
     """
-    return legacy_lookup_hash(card)
+    name = _field(card, "name")
+    if not name or name.startswith("Unknown("):
+        return None
+    return rules_hash(
+        name,
+        _field(card, "mana_cost"),
+        _field(card, "type_line"),
+        _field(card, "oracle_text"),
+    )
 
 
 def _default_resolver(grp_id: int) -> dict[str, Any] | None:

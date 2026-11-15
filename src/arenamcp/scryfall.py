@@ -4,7 +4,7 @@ import json
 import logging
 import os
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from json import JSONDecodeError
 from pathlib import Path
 from typing import Any
@@ -48,7 +48,6 @@ class ScryfallCard:
     rarity: str = ""  # "common", "uncommon", "rare", "mythic"
     power: str = ""  # Creature power (string because of "*" values)
     toughness: str = ""
-    card_faces: list[dict] = field(default_factory=list)
 
 
 class ScryfallCache:
@@ -249,7 +248,6 @@ class ScryfallCache:
                 mana_cost = faces[0].get("mana_cost", "")
 
         return ScryfallCard(
-            card_faces=[dict(face) for face in faces],
             name=card.get("name", ""),
             oracle_text=oracle_text,
             type_line=card.get("type_line", ""),
