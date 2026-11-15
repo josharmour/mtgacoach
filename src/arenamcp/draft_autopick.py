@@ -706,6 +706,7 @@ def rank_pack(
     plan_lane: str = "",
     signals: dict[str, float] | None = None,
     picks_per_pass: int = 1,
+    limited_roles: dict | None = None,
 ) -> list[PickScore]:
     """Best pick first; never returns cards outside the pack.
 
@@ -817,6 +818,10 @@ def rank_pack(
             for g in pool
             if primer and primer.card(g) is not None and not is_ordinary_basic(primer.card(g).name)
         ]
+    from arenamcp.card_facts.limited_roles import partner_reason, role_note
+
+    limited_roles = limited_roles or {}
+    reviewed_pool = {g: limited_roles[g]["name"] for g in pool if g in limited_roles}
     scores: dict[int, PickScore] = {}
     for grp_id in pack:
         if grp_id in scores:
@@ -1009,6 +1014,14 @@ def rank_pack(
                     if paired:
                         parts["notes"] += 0.2 * paired
                         reasons.append(f"synergy: {note.get('why', '')[:80]}")
+            reviewed = limited_roles.get(grp_id)
+            if reviewed:
+                link = partner_reason(reviewed, reviewed_pool, lane.colors)
+                if link and not opening and in_deck and not rarely:
+                    parts["notes"] += 0.25
+                    reasons.insert(1, link)
+                elif note := role_note(reviewed):
+                    reasons.insert(1, note)
             parts["notes"] = min(parts["notes"], 0.6)
             # Opening picks have no deck hypothesis or need bonuses. After
             # that window, keep the existing pool-size ramp for sparse pools.

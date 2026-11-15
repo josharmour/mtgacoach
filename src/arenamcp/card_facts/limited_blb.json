@@ -1,0 +1,145 @@
+{
+  "set_code": "blb",
+  "guide": "https://magic.wizards.com/en/news/feature/bloomburrow-prerelease-guide",
+  "native_source_sha256": "2f8e623292382e0a1c6f954f2fcd52aeab0ffe8859d4a856219d6155ba1590ae",
+  "mechanics": [
+    "Forage"
+  ],
+  "archetypes": {
+    "BG": "Forage"
+  },
+  "prints": {
+    "91625": {
+      "name": "Daggerfang Duo",
+      "type_line": "Creature — Rat Squirrel",
+      "mana_cost": "{2}{B}",
+      "rules_sha256": "d2083157d35b0dfa7b90bffaa3ced1e536c13d45d0c30327cb8b00a826b95277",
+      "roles": [
+        "enabler"
+      ],
+      "removal": "unknown",
+      "archetypes": [
+        {
+          "colors": "BG",
+          "theme": "Forage",
+          "role": "enabler",
+          "partners": [
+            91702,
+            91733,
+            91737
+          ]
+        }
+      ]
+    },
+    "91698": {
+      "name": "Bakersbane Duo",
+      "type_line": "Creature — Squirrel Raccoon",
+      "mana_cost": "{1}{G}",
+      "rules_sha256": "b97bb46ccc8c923fc6df8596ccbd89b26befad50f6a7760fcf22a7b08cdb1630",
+      "roles": [
+        "enabler"
+      ],
+      "removal": "unknown",
+      "archetypes": [
+        {
+          "colors": "BG",
+          "theme": "Forage",
+          "role": "enabler",
+          "partners": [
+            91702,
+            91733,
+            91737
+          ]
+        }
+      ]
+    },
+    "91703": {
+      "name": "Cache Grab",
+      "type_line": "Instant",
+      "mana_cost": "{1}{G}",
+      "rules_sha256": "e947674b44e5141ac6001406dbc1c69d2422e8cee51fa4f8bbf88b44ae10bf69",
+      "roles": [
+        "enabler"
+      ],
+      "removal": "unknown",
+      "archetypes": [
+        {
+          "colors": "BG",
+          "theme": "Forage",
+          "role": "enabler",
+          "partners": [
+            91702,
+            91733,
+            91737
+          ]
+        }
+      ]
+    },
+    "91702": {
+      "name": "Bushy Bodyguard",
+      "type_line": "Creature — Squirrel Warrior",
+      "mana_cost": "{1}{G}",
+      "rules_sha256": "fa4f7ebc641cda8ffc49046da049b30733c853a29f20ea6d222ec1499a6e3da6",
+      "roles": [
+        "payoff"
+      ],
+      "removal": "unknown",
+      "archetypes": [
+        {
+          "colors": "BG",
+          "theme": "Forage",
+          "role": "payoff",
+          "partners": [
+            91625,
+            91698,
+            91703
+          ]
+        }
+      ]
+    },
+    "91733": {
+      "name": "Thornvault Forager",
+      "type_line": "Creature — Squirrel Ranger",
+      "mana_cost": "{1}{G}",
+      "rules_sha256": "1001b318cb52bd8dbe88c4ed7c8828108977c0482612332847791a72638bfe89",
+      "roles": [
+        "payoff"
+      ],
+      "removal": "unknown",
+      "archetypes": [
+        {
+          "colors": "BG",
+          "theme": "Forage",
+          "role": "payoff",
+          "partners": [
+            91625,
+            91698,
+            91703
+          ]
+        }
+      ]
+    },
+    "91737": {
+      "name": "Treetop Sentries",
+      "type_line": "Creature — Squirrel Archer",
+      "mana_cost": "{3}{G}",
+      "rules_sha256": "1e4b38fe11befd2d643f80d6493de857fc4f1b9af7bcc63da3f785dbf0f6f78e",
+      "roles": [
+        "payoff"
+      ],
+      "removal": "unknown",
+      "archetypes": [
+        {
+          "colors": "BG",
+          "theme": "Forage",
+          "role": "payoff",
+          "partners": [
+            91625,
+            91698,
+            91703
+          ]
+        }
+      ]
+    }
+  }
+}

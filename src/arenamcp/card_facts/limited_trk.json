@@ -1,0 +1,543 @@
+{
+  "set_code": "trk",
+  "guide": "https://magic.wizards.com/en/news/feature/star-trek-prerelease-guide",
+  "native_source_sha256": "2f8e623292382e0a1c6f954f2fcd52aeab0ffe8859d4a856219d6155ba1590ae",
+  "mechanics": [
+    "Station",
+    "Dilemmas",
+    "Strange new worlds",
+    "Beam me up",
+    "Landfall"
+  ],
+  "archetypes": {
+    "WU": "Stationing Spacecraft",
+    "UB": "Modal spells",
+    "BR": "Sacrificing Klingons",
+    "RG": "Landfall",
+    "WG": "Counters on creatures",
+    "WB": "Artifact creatures",
+    "UR": "Noncreature spells",
+    "BG": "Cards entering and leaving the graveyard",
+    "WR": "Attacking with eight total power",
+    "UG": "Different land names"
+  },
+  "prints": {
+    "106579": {
+      "name": "Andromedan Automatons",
+      "mana_cost": "{2}{W}",
+      "type_line": "Artifact Creature — Android",
+      "rules_sha256": "a96803f4e96a3e0c0debf276f8e69483194a4dbc488f3208231dc423dbe7a405",
+      "roles": [
+        "enabler"
+      ],
+      "removal": "none",
+      "archetypes": [],
+      "note": "Finds extra copies of itself when it enters."
+    },
+    "106586": {
+      "name": "Command Subadjunct",
+      "mana_cost": "{W}",
+      "type_line": "Artifact Creature — Borg",
+      "rules_sha256": "27bebc162600527cdc2818e87356ae35cc67261203e7ef232daa87c426f6bee5",
+      "roles": [
+        "payoff"
+      ],
+      "removal": "none",
+      "archetypes": [],
+      "note": "Gives your artifact creatures vigilance."
+    },
+    "106620": {
+      "name": "U.S.S. Enterprise-A, Free Spirit",
+      "mana_cost": "{3}{W}{W}",
+      "type_line": "Legendary Artifact — Spacecraft",
+      "rules_sha256": "488d71c98f8a5c8a8877ef9b9501ae5647b8872f5bbda20eec77fa65bfd40360",
+      "roles": [
+        "payoff"
+      ],
+      "removal": "unknown",
+      "archetypes": [
+        {
+          "colors": "WU",
+          "theme": "Stationing Spacecraft",
+          "role": "payoff",
+          "partners": [
+            106816
+          ]
+        }
+      ]
+    },
+    "106622": {
+      "name": "Vexing Drone",
+      "mana_cost": "{1}{W}",
+      "type_line": "Artifact Creature — Borg",
+      "rules_sha256": "d5255b9a744ae8a32f300268eda9efb940d67a812e9607edd94cf37e7a436a7b",
+      "roles": [
+        "enabler"
+      ],
+      "removal": "unknown",
+      "archetypes": [
+        {
+          "colors": "WB",
+          "theme": "Artifact creatures",
+          "role": "enabler",
+          "partners": [
+            106822
+          ]
+        }
+      ]
+    },
+    "106628": {
+      "name": "Consider the Prime Directive",
+      "mana_cost": "{2}{U}",
+      "type_line": "Instant",
+      "rules_sha256": "64213ecf8a5650f36784b106e510d07f6322576a1d71e9eec1f0b4bf644896ca",
+      "roles": [
+        "enabler"
+      ],
+      "removal": "unknown",
+      "archetypes": [
+        {
+          "colors": "UB",
+          "theme": "Modal spells",
+          "role": "enabler",
+          "partners": [
+            106829
+          ]
+        }
+      ]
+    },
+    "106637": {
+      "name": "Guidance Failure",
+      "mana_cost": "{3}{U}",
+      "type_line": "Instant",
+      "rules_sha256": "905aa91a27fab268d227ba52e8771dd1ddc542713e3df8c61014438584deba91",
+      "roles": [],
+      "removal": "conditional",
+      "archetypes": [],
+      "note": "Moves a creature or Spacecraft to its owner’s library; its owner chooses top or bottom.",
+      "interaction": "tempo"
+    },
+    "106643": {
+      "name": "Interstellar Effigy",
+      "mana_cost": "{4}{U}",
+      "type_line": "Artifact Creature — Construct",
+      "rules_sha256": "ec098eb9e74359796ccdd075012a2510e836dab134c3a3ef4b25e131d7b72bef",
+      "roles": [],
+      "removal": "conditional",
+      "archetypes": [],
+      "note": "Returns an opposing creature to hand when it enters.",
+      "interaction": "tempo"
+    },
+    "106662": {
+      "name": "Test of Priorities",
+      "mana_cost": "{1}{U}",
+      "type_line": "Instant",
+      "rules_sha256": "dcc13f1c5f5d7b0a8755b8705db48ced63254104b1d2adc48d4c03cf24a60431",
+      "roles": [
+        "enabler"
+      ],
+      "removal": "unknown",
+      "archetypes": [
+        {
+          "colors": "UR",
+          "theme": "Noncreature spells",
+          "role": "enabler",
+          "partners": [
+            106815
+          ]
+        }
+      ]
+    },
+    "106669": {
+      "name": "Assault Drone",
+      "mana_cost": "{3}{B}",
+      "type_line": "Artifact Creature — Borg",
+      "rules_sha256": "29445ed68423397ddb137789fdd6f8bee65b7dedcb18e219fbd4da4754c480f8",
+      "roles": [
+        "payoff"
+      ],
+      "removal": "none",
+      "archetypes": [],
+      "note": "Gives your artifact creatures +1/+0."
+    },
+    "106672": {
+      "name": "Battle-Scarred Survivalist",
+      "mana_cost": "{1}{B}",
+      "type_line": "Creature — Klingon Scout",
+      "rules_sha256": "f4c08b8929c6ddd6b790fec3a4d596d0e35600848fcfa416b82250c5cb67c299",
+      "roles": [
+        "payoff"
+      ],
+      "removal": "none",
+      "archetypes": [],
+      "note": "Grows when another creature dies, once each turn."
+    },
+    "106700": {
+      "name": "Pattern Buffer Preservation",
+      "mana_cost": "{1}{B}",
+      "type_line": "Sorcery",
+      "rules_sha256": "f29cca7486f69b2e787df55da7f4db80321265072e15f9bbcfba3d3309a0f6ca",
+      "roles": [
+        "enabler"
+      ],
+      "removal": "unknown",
+      "archetypes": [
+        {
+          "colors": "BG",
+          "theme": "Cards entering and leaving the graveyard",
+          "role": "enabler",
+          "partners": [
+            106832
+          ]
+        }
+      ]
+    },
+    "106713": {
+      "name": "Vengeance Mission",
+      "mana_cost": "{2}{B}",
+      "type_line": "Enchantment",
+      "rules_sha256": "222b0cd0e185f0413590ef0e7e43e7433e9024526696819536c8a2195c30127f",
+      "roles": [
+        "payoff"
+      ],
+      "removal": "unknown",
+      "archetypes": [
+        {
+          "colors": "BR",
+          "theme": "Sacrificing Klingons",
+          "role": "payoff",
+          "partners": [
+            106824
+          ]
+        }
+      ]
+    },
+    "106714": {
+      "name": "Academy Instructor",
+      "mana_cost": "{2}{R}",
+      "type_line": "Creature — Bolian Officer",
+      "rules_sha256": "306cb1ecae4d98b57c57e5a81121a0b3130f99ee92973ceade16c9009ebff0da",
+      "roles": [
+        "enabler"
+      ],
+      "removal": "unknown",
+      "archetypes": [
+        {
+          "colors": "WR",
+          "theme": "Attacking with eight total power",
+          "role": "enabler",
+          "partners": [
+            106833
+          ]
+        }
+      ]
+    },
+    "106726": {
+      "name": "Erica Ortegas, Plucky Pilot",
+      "mana_cost": "{3}{R}",
+      "type_line": "Legendary Creature — Human Pilot",
+      "rules_sha256": "9b27b4504a900d720ffe4d68d6273a83d69d57541c059dbea1e65051caee976c",
+      "roles": [
+        "enabler"
+      ],
+      "removal": "none",
+      "archetypes": [],
+      "note": "Can put an extra land into play when tapped, then returns a land at the next end step."
+    },
+    "106728": {
+      "name": "Genesis Effect",
+      "mana_cost": "{4}{R}",
+      "type_line": "Instant",
+      "rules_sha256": "4791df09a1a6543dc8cb5a8b69cac55fc5896e7856d62f84b6ed3d976a505ddd",
+      "roles": [],
+      "removal": "conditional",
+      "archetypes": [],
+      "note": "Deals six damage to a creature and requires targeting a land of your own to destroy.",
+      "interaction": "removal"
+    },
+    "106777": {
+      "name": "Genesis Device",
+      "mana_cost": "{2}{G}",
+      "type_line": "Legendary Artifact",
+      "rules_sha256": "4acf6ad6a2834834bbb20bc040eb8734556401ef583aa286c0bb97f7432421f4",
+      "roles": [
+        "enabler"
+      ],
+      "removal": "none",
+      "archetypes": [],
+      "note": "Finds a basic or Planet and can later exchange lands."
+    },
+    "106786": {
+      "name": "Neelix, Moral Support",
+      "mana_cost": "{1}{G}",
+      "type_line": "Legendary Creature — Talaxian Advisor",
+      "rules_sha256": "6d50126f3f56c0e38b059cf6528b6b5bec4be544ba523403b82ef6993f614229",
+      "roles": [
+        "payoff"
+      ],
+      "removal": "none",
+      "archetypes": [],
+      "note": "Makes Food when it enters and grows when you gain life."
+    },
+    "106793": {
+      "name": "Support Mission",
+      "mana_cost": "{2}{G}",
+      "type_line": "Enchantment",
+      "rules_sha256": "c3742c5001385497b59b39936585d69d099b29f5d5dd8043c0db0d9e49406a49",
+      "roles": [
+        "enabler"
+      ],
+      "removal": "unknown",
+      "archetypes": [
+        {
+          "colors": "WG",
+          "theme": "Counters on creatures",
+          "role": "enabler",
+          "partners": [
+            106827
+          ]
+        }
+      ]
+    },
+    "106806": {
+      "name": "Cleveland Booker, Empath",
+      "mana_cost": "{2}{R/G}{R/G}",
+      "type_line": "Legendary Creature — Kwejian Rogue",
+      "rules_sha256": "cb415277a6e50fd9e4e30777c6f98ffb3ca9e171842a3350454c66724d72919e",
+      "roles": [
+        "payoff"
+      ],
+      "removal": "unknown",
+      "archetypes": [
+        {
+          "colors": "RG",
+          "theme": "Landfall",
+          "role": "payoff",
+          "partners": [
+            106880
+          ]
+        }
+      ]
+    },
+    "106815": {
+      "name": "Gray and Adira, Forever Joined",
+      "mana_cost": "{2}{U/R}{U/R}",
+      "type_line": "Legendary Creature — Trill Human Officer",
+      "rules_sha256": "707a0eeafe9d30cb9092b4a486ef64fb8c4e31b734266977e89f548b3aab6399",
+      "roles": [
+        "payoff"
+      ],
+      "removal": "unknown",
+      "archetypes": [
+        {
+          "colors": "UR",
+          "theme": "Noncreature spells",
+          "role": "payoff",
+          "partners": [
+            106662
+          ]
+        }
+      ]
+    },
+    "106816": {
+      "name": "Hemmer, Fixing What Is Broken",
+      "mana_cost": "{W}{U}",
+      "type_line": "Legendary Creature — Aenar Artificer",
+      "rules_sha256": "6e3d2dc3725d9291d44b70760f536c9b2c4b5d7a02831a0da6b86c1c0949c395",
+      "roles": [
+        "enabler"
+      ],
+      "removal": "unknown",
+      "archetypes": [
+        {
+          "colors": "WU",
+          "theme": "Stationing Spacecraft",
+          "role": "enabler",
+          "partners": [
+            106620
+          ]
+        }
+      ]
+    },
+    "106822": {
+      "name": "Locutus, the One Who Speaks",
+      "mana_cost": "{W}{B}",
+      "type_line": "Legendary Artifact Creature — Borg",
+      "rules_sha256": "2845ebd9a2dce5624dfb6b1e4107025b952b726926d7af738323ec4145f353de",
+      "roles": [
+        "payoff"
+      ],
+      "removal": "unknown",
+      "archetypes": [
+        {
+          "colors": "WB",
+          "theme": "Artifact creatures",
+          "role": "payoff",
+          "partners": [
+            106622
+          ]
+        }
+      ]
+    },
+    "106824": {
+      "name": "L'Rell, Fierce Visionary",
+      "mana_cost": "{1}{B}{R}",
+      "type_line": "Legendary Creature — Klingon Warrior",
+      "rules_sha256": "af8d242fa6880f358717fcea63cec571fe76f09ef3034d07a2a040d8f905c704",
+      "roles": [
+        "enabler"
+      ],
+      "removal": "unknown",
+      "archetypes": [
+        {
+          "colors": "BR",
+          "theme": "Sacrificing Klingons",
+          "role": "enabler",
+          "partners": [
+            106713
+          ]
+        }
+      ]
+    },
+    "106827": {
+      "name": "Phlox, Unorthodox Doctor",
+      "mana_cost": "{2}{G}{W}",
+      "type_line": "Legendary Creature — Denobulan Doctor",
+      "rules_sha256": "5c19ca7bb0c43701207c71d6a5fc6683353fbad2d1bf790653aada61c6a28760",
+      "roles": [
+        "payoff"
+      ],
+      "removal": "unknown",
+      "archetypes": [
+        {
+          "colors": "WG",
+          "theme": "Counters on creatures",
+          "role": "payoff",
+          "partners": [
+            106793
+          ]
+        }
+      ]
+    },
+    "106829": {
+      "name": "Seven of Nine",
+      "mana_cost": "{2}{U}{B}",
+      "type_line": "Legendary Artifact Creature — Human Scientist",
+      "rules_sha256": "1529eca8a2f0c0a09f20b2c22663bd8ccf1e2f2f0422a1bed80337b70fd67beb",
+      "roles": [
+        "payoff"
+      ],
+      "removal": "unknown",
+      "archetypes": [
+        {
+          "colors": "UB",
+          "theme": "Modal spells",
+          "role": "payoff",
+          "partners": [
+            106628
+          ]
+        }
+      ]
+    },
+    "106831": {
+      "name": "The Traveler",
+      "mana_cost": "{G}{U}",
+      "type_line": "Legendary Creature — Scout",
+      "rules_sha256": "454e1d89ae2de2c7d3b1547c5d9bf2eefc2715536e1478adf5e0c28ce4ce17d0",
+      "roles": [
+        "payoff"
+      ],
+      "removal": "unknown",
+      "archetypes": [
+        {
+          "colors": "UG",
+          "theme": "Different land names",
+          "role": "payoff",
+          "partners": [
+            106858
+          ]
+        }
+      ]
+    },
+    "106832": {
+      "name": "Vash, Freelance Archaeologist",
+      "mana_cost": "{1}{B}{G}",
+      "type_line": "Legendary Creature — Human Rogue Scientist",
+      "rules_sha256": "67b5d9504b3f384b27b857b67f9752155174ee43c23c109f4407a8f40f0581b9",
+      "roles": [
+        "payoff"
+      ],
+      "removal": "unknown",
+      "archetypes": [
+        {
+          "colors": "BG",
+          "theme": "Cards entering and leaving the graveyard",
+          "role": "payoff",
+          "partners": [
+            106700
+          ]
+        }
+      ]
+    },
+    "106833": {
+      "name": "Worf, Honor-Bound Warrior",
+      "mana_cost": "{R/W}{R/W}",
+      "type_line": "Legendary Creature — Klingon Warrior Officer",
+      "rules_sha256": "0eeee5ea6e3576ffd55f2925dd73ce2ec5ce954f00f8dbe403b3d98abd505775",
+      "roles": [
+        "payoff"
+      ],
+      "removal": "unknown",
+      "archetypes": [
+        {
+          "colors": "WR",
+          "theme": "Attacking with eight total power",
+          "role": "payoff",
+          "partners": [
+            106714
+          ]
+        }
+      ]
+    },
+    "106858": {
+      "name": "Earth, Sector 001",
+      "mana_cost": "",
+      "type_line": "Land — Planet",
+      "rules_sha256": "84b27787ae3c58c965075b1f0242c6aae520d0f8e558996d01e1ea0380dc25d5",
+      "roles": [
+        "enabler"
+      ],
+      "removal": "unknown",
+      "archetypes": [
+        {
+          "colors": "UG",
+          "theme": "Different land names",
+          "role": "enabler",
+          "partners": [
+            106831
+          ]
+        }
+      ]
+    },
+    "106880": {
+      "name": "Unexplored Territory",
+      "mana_cost": "",
+      "type_line": "Land",
+      "rules_sha256": "8fe144acadbde2917211c433fac539a2da9310cf25bba04f564862e902469ff2",
+      "roles": [
+        "enabler"
+      ],
+      "removal": "unknown",
+      "archetypes": [
+        {
+          "colors": "RG",
+          "theme": "Landfall",
+          "role": "enabler",
+          "partners": [
+            106806
+          ]
+        }
+      ]
+    }
+  }
+}

@@ -197,7 +197,7 @@ def validate_deck(payload: dict, pool: list[dict], *, source: str) -> dict[str, 
     spoken += f" Use {total - lands} spells and {lands} lands: {', '.join(land_parts)}. That's 40 cards."
     detailed = spoken + "\nPlan: " + plan.strip()
     detailed += "\nKeep:\n" + "\n".join(f"{entry['count']} {entry['name']}" for entry in main)
-    return {
+    result = {
         "main_deck": main,
         "basic_lands": dict(basics),
         "cuts": cuts,
@@ -209,6 +209,50 @@ def validate_deck(payload: dict, pool: list[dict], *, source: str) -> dict[str, 
         "detailed_text": detailed,
         "reasoning_source": source,
         "basis": "drafted_pool",
+    }
+
+    if any(card.get("limited_role") for card in pool):
+        checks = _limited_checks(pool, kept)
+        result["limited_checks"] = checks
+        sentences = [
+            f"{checks['early_bodies']} early creatures or token producers (pool target {checks['early_target']}).",
+            f"{checks['removal']} removal spells (pool target {checks['removal_target']}).",
+        ]
+        sentences.extend(checks["payoffs"])
+        result["detailed_text"] += "\n" + " ".join(sentences)
+    return result
+
+
+def _limited_checks(pool, kept):
+    from arenamcp.card_facts.limited_roles import partner_reason
+
+    cards = {card["grp_id"]: card for card in pool}
+    chosen = [cards[gid] for gid, count in kept.items() for _ in range(count)]
+    main, splash = _color_roles([c for c in chosen if "land" not in c.get("type_line", "").lower()])
+    colors = main + splash
+    available = [card for card in pool if _castable(card, colors)]
+
+    names = {card["grp_id"]: card["name"] for card in chosen if card.get("limited_role")}
+    notes = []
+    for gid in names:
+        card = cards[gid]
+        role = card["limited_role"]
+        for ar in role["archetypes"]:
+            if ar["role"] != "payoff" or not set(ar["colors"]).issubset(colors):
+                continue
+            if reason := partner_reason(role, names, ar["colors"]):
+                notes.append(f"{card['name']} is a {reason}.")
+            else:
+                notes.append(
+                    f"{card['name']} rewards {ar['theme'].lower()}; its named example enabler is absent."
+                )
+    return {
+        "colors": "".join(colors),
+        "early_bodies": sum(_early_body(card, colors) for card in chosen),
+        "early_target": min(6, sum(_early_body(card, colors) for card in available)),
+        "removal": sum(_role_removal(card) for card in chosen),
+        "removal_target": min(3, sum(_role_removal(card) for card in available)),
+        "payoffs": notes,
     }
 
 
@@ -551,7 +595,12 @@ def _build_for_colors(
     chosen: list[dict] = list(preset)
     # Ramp earns its slot when the pool has a big threat to ramp into.
     ramp_targets = any(_top_end(card, colors) for card in candidates + chosen)
+    reviewed = any(c.get("limited_role") for c in candidates + chosen)
+    named, need_removal = {}, False
     while candidates and len(chosen) < 23:
+        if reviewed:
+            named = {c["grp_id"]: c["name"] for c in chosen if c.get("limited_role")}
+            need_removal = sum(_role_removal(c) for c in chosen) < 3
         bodies = sum(rules_profile(card)["unconditional_body"] for card in chosen)
         early = sum(
             rules_profile(card)["unconditional_body"] and normalize_card(card).cmc <= 3 for card in chosen
@@ -571,6 +620,8 @@ def _build_for_colors(
             ramp=ramp,
             slots=slots,
             top_end=top_end,
+            need_removal=need_removal,
+            named=named,
         ):
             profile = rules_profile(card)
             supported = _top_end(card, colors) and top_end < slots
@@ -579,6 +630,13 @@ def _build_for_colors(
             if profile["unconditional_body"]:
                 value += 5 if bodies < 14 else 0
                 value += 4 if early < 6 and cost <= 3 else 0
+            if reviewed:
+                from arenamcp.card_facts.limited_roles import partner_reason
+
+                if need_removal and _role_removal(card):
+                    value += 3
+                if partner_reason(card.get("limited_role"), named, colors):
+                    value += 2
             if supported:
                 value += RAMPED_TOP_END_POINTS
             elif cost >= 5 and expensive >= 4:
@@ -598,7 +656,73 @@ def _build_for_colors(
         picked = max(candidates, key=fit)
         candidates.remove(picked)
         chosen.append(picked)
+    if reviewed:
+        _fill_role_slots(chosen, candidates, colors, preset)
     return chosen
+
+
+def _role_removal(card):
+    """Count actual creature answers, excluding blink, graveyard cards and utility lands."""
+    from arenamcp.draft_autopick import is_removal
+
+    if "land" in card.get("type_line", "").lower():
+        return False
+    reviewed = card.get("limited_role") or {}
+    if reviewed.get("interaction"):
+        return reviewed["interaction"] == "removal"
+    if reviewed.get("removal") == "none":
+        return False
+    text = _rules_text(card)
+    for clause in re.split(r"[.\n]", text):
+        if re.search(r"target [^.;]*?card (?:from|in) (?:a |your |an opponent.s )?graveyard", clause):
+            continue
+        if "exile" in clause and re.search(r"return (?:it|that card|them).*battlefield", text):
+            continue
+        if is_removal(SimpleNamespace(oracle=clause)):
+            return True
+    return False
+
+
+def _early_body(card, colors):
+    return (
+        bool(card.get("mana_cost"))
+        and _effective_cmc(card, colors) <= 3
+        and rules_profile(card)["unconditional_body"]
+    )
+
+
+def _fill_role_slots(chosen, remaining, colors, preset):
+    """Meet attainable curve and removal targets using on-color sideboard spells."""
+    roles = {
+        card["grp_id"]: (int(_early_body(card, colors)), int(_role_removal(card)))
+        for card in chosen + remaining
+    }
+    early = sum(roles[c["grp_id"]][0] for c in chosen)
+    removal = sum(roles[c["grp_id"]][1] for c in chosen)
+
+    def deficit(early, removal):
+        return max(0, 6 - early) + max(0, 3 - removal)
+
+    while remaining and deficit(early, removal):
+        swaps = []
+        for add in remaining:
+            ae, ar = roles[add["grp_id"]]
+            if not (ae or ar):
+                continue
+            for drop in chosen:
+                if drop in preset or (_gih(drop) or 0) >= BOMB_GIH:
+                    continue
+                de, dr = roles[drop["grp_id"]]
+                ne, nr = early + ae - de, removal + ar - dr
+                improvement = deficit(early, removal) - deficit(ne, nr)
+                if improvement > 0:
+                    swaps.append((improvement, _card_value(add) - _card_value(drop), add, drop, ne, nr))
+        if not swaps:
+            break
+        _, _, add, drop, early, removal = max(swaps, key=lambda item: item[:2])
+        chosen[chosen.index(drop)] = add
+        remaining.remove(add)
+        remaining.append(drop)
 
 
 def deck_quality(
@@ -635,7 +759,8 @@ def deck_quality(
     ]
     gihs = [g for g in (_gih(card) for card in chosen) if g is not None]
     creatures = sum(rules_profile(card)["unconditional_body"] for card in chosen)
-    removal = sum(_builder_removal(card) for card in chosen)
+    has_roles = any(c.get("limited_role") for c in chosen)
+    removal = sum((_role_removal if has_roles else _builder_removal)(card) for card in chosen)
     cheap = sum(normalize_card(card).cmc <= 2 for card in chosen)
     expensive = sum(_effective_cmc(card, colors) >= 6 for card in chosen) - len(supported)
     bombs = [card["name"] for card in chosen if (_gih(card) or 0) >= BOMB_GIH]
@@ -943,6 +1068,8 @@ def _builder_removal(card: dict) -> bool:
 
 def _interaction_kind(card: dict) -> str | None:
     """Removal deals with a permanent for good; tempo (bounce, tap, counters) buys time."""
+    if reviewed := (card.get("limited_role") or {}).get("interaction"):
+        return reviewed
     text = html.unescape(re.sub(r"<[^>]*>", "", card.get("oracle_text", ""))).lower()
     from arenamcp.draft_autopick import is_removal
 
@@ -1041,6 +1168,8 @@ def deck_choice_summary(build: dict, pool: list[dict]) -> str:
     profile = _deck_profile(build, pool)
     if profile is None:
         return "Deck submitted. I couldn't verify enough card details to explain its strategy."
+    if checks := build.get("limited_checks"):
+        profile["removal"] = checks["removal"]
     featured = "led by " + " and ".join(profile["leaders"]) if profile["leaders"] else ""
     interaction = _count(profile["removal"], "removal spell")
     if profile["tempo"]:
@@ -1069,7 +1198,9 @@ def deck_choice_summary(build: dict, pool: list[dict]) -> str:
         else "with no clear gap in creatures, curve, or interaction"
     )
     lead = "Its plan: " if plan == model_plan else "Its plan is to "
-    return f"{first} {lead}{plan}, {risk}."
+    summary = f"{first} {lead}{plan}, {risk}."
+    notes = (build.get("limited_checks") or {}).get("payoffs") or []
+    return summary + (" " + notes[0] if notes else "")
 
 
 def _count(number: int, noun: str) -> str:

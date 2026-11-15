@@ -403,6 +403,7 @@ def _card_details(card: dict[str, Any]) -> dict[str, Any]:
         "toughness": card.get("toughness", ""),
         "related_faces": card.get("related_faces") or [],
         "rules_roles": rules_profile(card),
+        **({"limited_role": card["limited_role"]} if card.get("limited_role") else {}),
     }
 
 
@@ -544,6 +545,12 @@ class DraftAdvisor:
                     raise ValueError("Deck response has no JSON object")
                 payload, _end = json.JSONDecoder().raw_decode(response[start:])
                 result = validate_deck(payload, pool, source="card_rules")
+                checked = result.get("limited_checks") or {}
+                baseline = fallback.get("limited_checks") or {}
+                if checked and baseline and checked["colors"] == baseline["colors"]:
+                    for count, target in (("early_bodies", "early_target"), ("removal", "removal_target")):
+                        if checked[count] < min(baseline[count], checked[target]):
+                            return fallback
                 return {**fallback, **result}
             except concurrent.futures.TimeoutError as exc:
                 error = exc

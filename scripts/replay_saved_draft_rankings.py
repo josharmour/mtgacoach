@@ -44,7 +44,11 @@ def replay_draft(draft: dict, database, primer: SetPrimer | None) -> dict:
         actual_ids = {g: g for g in pack}
         if cube:
             ranking = DraftEventDriver._unrated_ranking(
-                SimpleNamespace(_db=database), pack, pool, row["pack"], row["pick"]
+                SimpleNamespace(_db=database, run=SimpleNamespace(set_code="")),
+                pack,
+                pool,
+                row["pack"],
+                row["pick"],
             )
         else:
             # A primer snapshot and actual pool reproduce this component,

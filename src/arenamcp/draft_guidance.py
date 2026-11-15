@@ -132,6 +132,7 @@ class CardData:
     alsa: float | None = None  # average last seen at
     iwd_pct: float | None = None  # improvement-when-drawn, pct points
     games: int = 0  # GIH sample size
+    limited_role: dict | None = field(default=None, compare=False, hash=False)
 
     @property
     def is_creature(self) -> bool:
@@ -393,6 +394,7 @@ def normalize_card(source: Any, stats: Any = None) -> CardData:
         alsa=alsa,
         iwd_pct=iwd,
         games=int(games or 0),
+        limited_role=_get(source, "limited_role", None),
     )
 
 
@@ -820,6 +822,9 @@ def evaluate_pack(
     by_wr = sorted(pack, key=lambda c: c.gih_wr_pct or 0.0, reverse=True)
     pack_rank = {c.grp_id: i for i, c in enumerate(by_wr)}
 
+    from arenamcp.card_facts.limited_roles import partner_reason, role_note
+
+    reviewed_pool = {card.grp_id: card.name for card in pool if card.limited_role}
     results: list[PickGuidance] = []
     for card in pack:
         reasons: list[str] = []
@@ -877,6 +882,15 @@ def evaluate_pack(
         )
         if wheel_reason:
             reasons.append(wheel_reason)
+
+        if card.limited_role:
+            # A verified link is a small tie-breaker once an actual pair has formed.
+            linked = partner_reason(card.limited_role, reviewed_pool, lane_pair) if len(pool) >= 4 else ""
+            if linked and on_lane:
+                bonus += 1
+                reasons.insert(0, linked)
+            elif note := role_note(card.limited_role):
+                reasons.insert(1, note)
 
         score = (base + bonus) * lane_mult * cast_mult * comp_mult * wheel_mult
         score = max(0.0, min(100.0, score))

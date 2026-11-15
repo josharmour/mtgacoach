@@ -317,6 +317,17 @@ class DraftEventDriver:
         card = primer.by_name().get(self._card_name(grp_id).lower())
         return card.grp_id if card is not None else grp_id
 
+    def _limited_pick_context(self, pack, primer):
+        # Canonical aliases for a different printing have no reviewed record.
+        from arenamcp.card_facts.limited_roles import SUPPORTED_SETS, bound_roles
+
+        if str(self.run.set_code).lower() not in SUPPORTED_SETS or self._db is None:
+            return {}
+        actual = set(pack + self._drafted_pool())
+        aliases = {self._canonical(gid, primer) for gid in actual if self._canonical(gid, primer) != gid}
+        roles = bound_roles(self.run.set_code, actual - aliases, self._db.get_card)
+        return {"limited_roles": roles} if roles else {}
+
     def _unrated_ranking(
         self, pack: list[int], pool: list[int], pack_number: int, pick_number: int
     ) -> list[PickScore]:
@@ -327,19 +338,23 @@ class DraftEventDriver:
         overlay's unrated guidance instead, without borrowing printing-set
         ratings. These estimates are a fallback, not a veto on model picks.
         """
+        from arenamcp.card_facts.limited_roles import with_role
         from arenamcp.draft_guidance import FormatContext, _base_score, evaluate_pack, normalize_card
 
         def card(grp_id: int):
             known = self._db.get_card(grp_id) if self._db is not None else None
             return normalize_card(
-                {
-                    "grp_id": grp_id,
-                    "name": getattr(known, "name", "") or f"Card {grp_id}",
-                    "mana_cost": getattr(known, "mana_cost", ""),
-                    "type_line": getattr(known, "type_line", ""),
-                    "oracle_text": getattr(known, "oracle_text", ""),
-                    "rarity": getattr(known, "rarity", ""),
-                }
+                with_role(
+                    {
+                        "grp_id": grp_id,
+                        "name": getattr(known, "name", "") or f"Card {grp_id}",
+                        "mana_cost": getattr(known, "mana_cost", ""),
+                        "type_line": getattr(known, "type_line", ""),
+                        "oracle_text": getattr(known, "oracle_text", ""),
+                        "rarity": getattr(known, "rarity", ""),
+                    },
+                    self.run.set_code,
+                )
             )
 
         pack_cards = [card(g) for g in pack]
@@ -482,6 +497,7 @@ class DraftEventDriver:
             names={canonical[g]: self._card_name(g) for g in pack},
             mana_costs=self._mana_costs(pack + self._drafted_pool(), primer),
             players=self._pod_size(),
+            **self._limited_pick_context(pack, primer),
             plan_lane=run.plan_lane,
             signals=self._table_signals(pack, primer, pack_number or 1, pick_number or 1),
         )
@@ -727,6 +743,7 @@ class DraftEventDriver:
                 names={canon[g]: self._card_name(g) for g in pack},
                 mana_costs=mana,
                 plan_lane=self.run.plan_lane,
+                **self._limited_pick_context(pack, primer),
                 signals=color_signals(self.run.signals, pack_number),
             )
             if primer is None:
@@ -890,6 +907,7 @@ class DraftEventDriver:
                 mana_costs=self._mana_costs(pack + self._drafted_pool(), primer),
                 plan_lane=self.run.plan_lane,
                 signals=details["color_signals"],
+                **self._limited_pick_context(pack, primer),
             )
             # The model sees the same wheel plan the ranking would follow.
             ranking = wheel_adjust(
