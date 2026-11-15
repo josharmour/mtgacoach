@@ -255,3 +255,62 @@ def test_worker_public_strategic_tail_survives_unrelated_private_draw(source):
         assert len(played) == 2 and played[-1].role == "color_analyst"
     finally:
         client.close()
+
+
+@pytest.mark.parametrize("overlong_role", ["play_by_play", "color_analyst"])
+def test_overlong_partner_does_not_discard_audited_valid_line(source, overlong_role):
+    calls = []
+    generated = []
+
+    def rpc(system, context, audit):
+        calls.append(audit)
+        if audit:
+            assert len(context["lines"]) == 1
+            assert context["lines"][0]["role"] != overlong_role
+            return response(context, True)
+        output = response(context, False)
+        for turn in output["turns"]:
+            if turn["role"] == overlong_role:
+                turn["text"] = "word " * (29 if overlong_role == "color_analyst" else 19)
+        generated.append(json.loads(json.dumps(output)))
+        return output
+
+    booth = HeadlessBooth(CommentaryConfig(mode="commentary", generative=True), rpc, time.monotonic)
+    lines, status = booth.generate(observation())
+    assert calls == [False, True]
+    assert len(lines) == 1
+    assert lines[0].role != overlong_role
+    assert status["length_dropped_roles"] == [overlong_role]
+    assert any(t["text"].startswith("word ") for t in generated[0]["turns"])
+
+
+def test_surviving_length_filtered_line_still_requires_audit(source):
+    calls = []
+
+    def rpc(system, context, audit):
+        calls.append(audit)
+        if audit:
+            return response(context, True, supported=False)
+        output = response(context, False)
+        output["turns"][0]["text"] = "word " * 19
+        return output
+
+    booth = HeadlessBooth(CommentaryConfig(mode="commentary", generative=True), rpc, time.monotonic)
+    lines, _ = booth.generate(observation())
+    assert not lines
+    assert calls == [False, True]
+
+
+def test_length_filter_preserves_native_boundaries_and_malformed_rejection(source):
+    from arenaonair.llm_booth import spoken_word_count
+
+    from arenamcp.commentary.context import isolate_overlength_lines
+
+    valid = {"turns": [{"role": "color_analyst", "text": "word " * 28, "refs": ["event:x"]}]}
+    assert isolate_overlength_lines(valid, spoken_word_count) == (valid, [])
+    invalid = {"turns": [{"role": "other", "text": "word " * 40, "refs": []}]}
+    assert isolate_overlength_lines(invalid, spoken_word_count) == (invalid, [])
+    invalid = {"turns": [{"role": "color_analyst", "text": None, "refs": []}]}
+    assert isolate_overlength_lines(invalid, spoken_word_count) == (invalid, [])
+    oversized = {"turns": [{"role": "color_analyst", "text": "a" * 321, "refs": ["event:x"]}]}
+    assert isolate_overlength_lines(oversized, spoken_word_count) == ({"turns": []}, ["color_analyst"])

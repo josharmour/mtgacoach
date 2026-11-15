@@ -184,3 +184,37 @@ def add_damage_arithmetic(facts):
                 ],
             },
         }
+
+
+def isolate_overlength_lines(output, word_count):
+    """Drop only overlong lines, never shorten claims or bypass the native audit.
+
+    A valid partner can still be checked in full by the existing structure,
+    reference, factual, freshness and semantic validators. Malformed structures
+    remain untouched so native rejection is unchanged. No repair/model call.
+    The passed counter is the native validator's exact spoken-word counter.
+    """
+    if (
+        type(output) is not dict
+        or set(output) != {"turns"}
+        or type(output["turns"]) is not list
+        or len(output["turns"]) > 2
+        or any(
+            type(turn) is not dict
+            or set(turn) != {"role", "text", "refs"}
+            or type(turn["role"]) is not str
+            or turn["role"] not in {"play_by_play", "color_analyst"}
+            or type(turn["text"]) is not str
+            or type(turn["refs"]) is not list
+            for turn in output["turns"]
+        )
+    ):
+        return output, []
+    kept, dropped = [], []
+    for turn in output["turns"]:
+        maximum = 28 if turn["role"] == "color_analyst" else 18
+        if len(turn["text"]) > 320 or word_count(turn["text"]) > maximum:
+            dropped.append(turn["role"])
+        else:
+            kept.append(turn)
+    return {"turns": kept}, dropped
