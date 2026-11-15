@@ -9927,10 +9927,13 @@ class ActionPlanner(_ActionLegalityMixin):
         line_tags: dict[str, str] = {}
         # A search/tutor offers library cards: their rules are quoted for this
         # call, and the remaining inventory is listed with them.
+        offered_prints, all_bound = _option_prints(decision)
         game_state = prepare_match_context(
             game_state,
-            reveal=_option_grp_ids(decision),
+            reveal=offered_prints,
             library=True if decision.request_type in ("Search", "SearchFromGroups") else None,
+            compact_decision=True,
+            source_ids_complete=all_bound,
         )
         # #224: the call-to-call STABLE strategy text (deck strategy, playbook
         # decision rules) leads the message, right after the deck reference, so
@@ -11470,16 +11473,21 @@ def _legal_payable(game_state: dict[str, Any], legal_actions: list[str]) -> dict
     return verdicts
 
 
-def _option_grp_ids(decision: Any) -> list[int]:
-    """The card grp ids a decision's options name (bridge ``grpId`` metadata)."""
+def _option_prints(decision: Any) -> tuple[list[int], bool]:
+    """Keep all offered prints; only known non-card buttons can omit one."""
     out: list[int] = []
+    all_bound = True
     for option in getattr(decision, "options", ()) or ():
         meta = getattr(option, "meta", None) or {}
+        bound = option.option_id in {"pass", "cancel", "done"}
         for key in ("grpId", "grp_id", "card_grp_id"):
             value = meta.get(key)
-            if isinstance(value, int) and value > 0 and value not in out:
-                out.append(value)
-    return out
+            if type(value) is int and value > 4:
+                bound = True
+                if value not in out:
+                    out.append(value)
+        all_bound = all_bound and bound
+    return out, all_bound
 
 
 def _local_seat(state: dict[str, Any]) -> Any:

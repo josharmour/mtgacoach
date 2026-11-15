@@ -1,4 +1,4 @@
-"""Preparatory E3 rendering, default off and not wired into live prompts.
+"""Conservative rendering of printed facts in decision prompts.
 
 Only verified printed keyword-only creature bodies are supported. All options,
 permanents, modal/effect-bearing or ambiguous cards retain caller text exactly.
@@ -31,7 +31,7 @@ _KEYWORDS = frozenset(
 
 
 def source_text(card):
-    """Explicit source template for future integration; not a prompt migration."""
+    """Exact single-face source template accepted by the keyword renderer."""
     return (
         f"Name: {card['name']}\nMana cost: {card['mana_cost']}\n"
         f"Type: {card['type_line']}\nPower/toughness: {card['power']}/{card['toughness']}\n"
@@ -130,3 +130,29 @@ def render(card, record, full_text, *, enabled=False, role="unknown"):
         return compact if len(compact) < len(full_text) else full_text
     except (AttributeError, KeyError, TypeError, ValueError):
         return full_text
+
+
+def compact_history_rules(catalog):
+    """Quote a verified keyword body by print ID after the same request's deck list."""
+    from arenamcp.card_facts.client import facts_for, hash_for_card
+    from arenamcp.card_facts.schema import card_facts_from_dict
+
+    try:
+        records = facts_for(catalog.values(), memory_only=True)
+    except (AttributeError, OSError, TypeError, ValueError):
+        return {}
+    if not records:
+        return {}
+    compact = {}
+    for gid, card in catalog.items():
+        raw = records.get(hash_for_card(card))
+        if not raw or not card.get("oracle_text") or card.get("linked_face_ids") or card.get("linked_faces"):
+            continue
+        try:
+            source = source_text(card)
+            record = card_facts_from_dict(raw)
+            if render(card, record, source, enabled=True, role="stable_deck") != source:
+                compact[gid] = " ".join(card["oracle_text"].split())
+        except (AttributeError, KeyError, TypeError, ValueError):
+            continue
+    return compact

@@ -340,11 +340,13 @@ def _mana_value(value: Any) -> str:
     return str(int(value)) if isinstance(value, float) and value.is_integer() else str(value)
 
 
-def _card_line(info: dict, count: int, grp_id: int, *, listed: bool = False) -> str:
+def _card_line(
+    info: dict, count: int, grp_id: int, *, listed: bool = False, verified_keywords: str = ""
+) -> str:
     """A card's rules line. ``listed``: the deck list above already gives its count, cost, type and stats."""
     name = info.get("name") or f"Unknown({grp_id})"
     if listed:
-        fields = [f"{name} [grp:{grp_id}]"]
+        fields = [f"[grp:{grp_id}]" if verified_keywords else f"{name} [grp:{grp_id}]"]
     else:
         fields = [
             f"{count}x {name} [grp:{grp_id}]",
@@ -356,7 +358,9 @@ def _card_line(info: dict, count: int, grp_id: int, *, listed: bool = False) -> 
     if not listed and info.get("power") not in (None, "") and info.get("toughness") not in (None, ""):
         fields.append(f"printed {info['power']}/{info['toughness']}")
     fields.append(
-        " ".join(oracle_lines(info.get("oracle_text"))) or "Rules text unavailable; do not invent abilities."
+        verified_keywords
+        or " ".join(oracle_lines(info.get("oracle_text")))
+        or "Rules text unavailable; do not invent abilities."
     )
     for face in info.get("related_faces") or []:
         if isinstance(face, dict) and face.get("oracle_text"):
@@ -374,6 +378,8 @@ def prepare_match_context(
     reveal: Iterable[int] = (),
     full_rules: bool = False,
     library: bool | None = None,
+    compact_decision: bool = False,
+    source_ids_complete: bool = False,
 ) -> dict:
     """Return a shallow snapshot with the deck reference, catalog and remaining inventory.
 
@@ -436,6 +442,7 @@ def prepare_match_context(
         reference.extend(_card_line(catalog[gid], count, gid) for gid, count in sorted(commanders.items()))
     full_rules = full_rules or _tutor_in_hand(state)
     candidate_gids: list[int] = []
+    offered = {g for g in reveal if type(g) is int and g in deck}
     if full_rules:
         quoted = sorted(deck)
     else:
@@ -444,9 +451,7 @@ def prepare_match_context(
         # quoted for this call only, appended after the cards already seen so
         # the stable reference and these per-window lines can be separated
         # without changing a single byte (E2 prefix-cache ordering).
-        candidate_gids = sorted(
-            gid for gid in {int(g) for g in reveal if isinstance(g, int)} if gid in deck and gid not in quoted
-        )
+        candidate_gids = sorted(gid for gid in offered if gid not in quoted)
         quoted += candidate_gids
     quoted = [gid for gid in quoted if gid not in commanders]
     if quoted:
@@ -462,7 +467,20 @@ def prepare_match_context(
             else "RULES (every card in the deck: a tutor in hand or a library inspection can reach any of them; "
             "cost, type and printed stats as listed above)"
         )
-        reference.extend(_card_line(catalog[gid], deck[gid], gid, listed=True) for gid in quoted)
+        short = {}
+        if compact_decision and source_ids_complete and not full_rules:
+            # An eligible past print is already named, with cost, type and
+            # stats, in the starting list. Every current zone and option keeps
+            # its ordinary rules row. Missing evidence keeps the original bytes.
+            inactive = set(quoted) - offered - set(_visible_grp_ids(state, catalog))
+            if inactive:
+                from arenamcp.card_facts.prompt_render import compact_history_rules
+
+                short = compact_history_rules({gid: catalog[gid] for gid in inactive})
+        reference.extend(
+            _card_line(catalog[gid], deck[gid], gid, listed=True, verified_keywords=short.get(gid, ""))
+            for gid in quoted
+        )
     result["deck_reference"] = "\n".join(reference)
     # E2: the same reference, split at the per-window candidate lines. The
     # candidates are appended last above, so the stable part is the reference
@@ -539,7 +557,23 @@ def prepare_match_context(
         lines.append(f"{count}x {catalog[gid].get('name') or f'Unknown({gid})'} [grp:{gid}]{odds}")
     if not total:
         lines.append("No original-deck cards remain in this estimate.")
-    result["library_summary"] = "\n".join(lines)
+    summary = "\n".join(lines)
+    if compact_decision and result["library_listed"] and total:
+        # The same request already lists every starting print and multiplicity.
+        # Express the identical estimate as changes from that list; retain the
+        # full row for offered prints and preserve the original odds precision.
+        delta = lines[:2] + ["Unlisted prints keep their starting-deck counts. Estimated remaining copies:"]
+        for gid, count in sorted(remaining.items()):
+            if count != deck[gid] or gid in offered:
+                name = catalog[gid].get("name") or f"Unknown({gid})"
+                delta.append(f"{count}x {name} [grp:{gid}]")
+        if not uncertain:
+            odds_by_count = sorted({count for count in remaining.values() if count})
+            delta.append("Per random draw: " + ", ".join(f"{n}x = {n / total:.1%}" for n in odds_by_count))
+        compact = "\n".join(delta)
+        if len(compact) < len(summary):
+            summary = compact
+    result["library_summary"] = summary
     return result
 
 
