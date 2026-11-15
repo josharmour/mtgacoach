@@ -276,7 +276,13 @@ class _DeckLibraryMixin:
             stages[record.deck_id] = stage
             self._deck_library_emit(
                 "emit_deck_analysis",
-                {"deck_id": record.deck_id, "name": record.name, "status": "building", "stage": stage},
+                {
+                    "deck_id": record.deck_id,
+                    "identity": record.identity(),
+                    "name": record.name,
+                    "status": "building",
+                    "stage": stage,
+                },
             )
 
         try:
@@ -286,6 +292,7 @@ class _DeckLibraryMixin:
             coach.save_deck_strategy(playbook)
             payload = {
                 "deck_id": record.deck_id,
+                "identity": record.identity(),
                 "name": record.name,
                 "status": "ready",
                 "archetype": playbook.data.get("archetype", ""),
@@ -296,7 +303,13 @@ class _DeckLibraryMixin:
             return payload
         except Exception as error:
             logger.warning("Deck strategy failed for %s: %s", record.name, error)
-            return {"deck_id": record.deck_id, "name": record.name, "status": "error", "error": str(error)}
+            return {
+                "deck_id": record.deck_id,
+                "identity": record.identity(),
+                "name": record.name,
+                "status": "error",
+                "error": str(error),
+            }
         finally:
             running.discard(record.deck_id)
             stages.pop(record.deck_id, None)
@@ -306,6 +319,64 @@ class _DeckLibraryMixin:
         if deck_id not in library:
             library, _note = self.collect_decks()
         return library.get(deck_id)
+
+    def _study_outside_match(self) -> bool:
+        from arenamcp import server
+
+        match_id = server.game_state.match_id
+        completed = server.get_completed_match_for_navigation()
+        return not match_id or (
+            completed.get("match_complete") is True and completed.get("match_id") == match_id
+        )
+
+    def deck_card_study(self, request):
+        """Answer a local Decks window request; no study runs from gameplay or auto-preparation."""
+        from arenamcp import logging_config
+        from arenamcp.deck_card_study import card_detail, card_menu, read_card, study_card
+        from arenamcp.local_study_model import LocalStudyModel, installed_models
+
+        deck_id, identity, gid = (request.get(k) for k in ("deck_id", "identity", "card"))
+        reply = {k: request.get(k) for k in ("token", "deck_id", "identity", "card")}
+        record = (getattr(self, "_deck_library", {}) or {}).get(deck_id)
+        if not record or not record.complete or not identity or identity != record.identity():
+            return {**reply, "error": "The selected deck has changed. Refresh the Decks list."}
+        book = self._coach._cached_playbook(identity, record.game_state())
+        if book is None or book.identity != identity:
+            return {**reply, "error": "Open a saved deck strategy before studying its cards."}
+        directory = logging_config.LOG_DIR / "cache" / "local_card_studies"
+        try:
+            if request.get("operation") == "list":
+                try:
+                    models = list(installed_models())
+                except (OSError, ValueError, TypeError):
+                    models = []
+                return {**reply, "cards": card_menu(book), "models": models}
+            if request.get("operation") == "read":
+                return {**reply, "detail": read_card(book, gid, directory)}
+            if request.get("operation") != "build":
+                raise ValueError("Unknown card study action")
+            # Do not reserve the live strategic lane for an outside-match job.
+            # One local study runs at a time and must still own the deck at save.
+            lock = self.__dict__.setdefault("_local_study_lock", threading.Lock())
+            if not lock.acquire(blocking=False):
+                raise ValueError("Another local card study is running")
+            try:
+
+                def allowed():
+                    current = (getattr(self, "_deck_library", {}) or {}).get(deck_id)
+                    return bool(current and current.identity() == identity and self._study_outside_match())
+
+                if not allowed():
+                    raise ValueError("Card studies can run after the match has finished")
+                if any(r["card"] == gid for r in (book.data.get("study") or {}).get("cards", [])):
+                    return {**reply, "detail": card_detail(book, gid), "reused": True}
+                model = LocalStudyModel(request.get("model"))
+                _row, reused = study_card(book, gid, model, directory, allowed=allowed)
+                return {**reply, "detail": read_card(book, gid, directory), "reused": reused}
+            finally:
+                lock.release()
+        except (OSError, ValueError, TypeError, KeyError) as error:
+            return {**reply, "error": str(error)}
 
     def analyze_deck_async(self, deck_id: str, *, refresh: bool = False) -> None:
         def work() -> None:

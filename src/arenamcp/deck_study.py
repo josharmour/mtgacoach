@@ -219,6 +219,27 @@ def _link(edge, catalog):
     return source, target, edge["role"]
 
 
+def validate_card_rule(row, catalog, prose):
+    _object(row, {"card", "role", "play", "hold", "avoid", "evidence"})
+    gid = _card(row["card"], catalog)
+    if _land(catalog[gid]) is not False:
+        raise ValueError("Card study requires a resolved nonland print")
+    _text(row["role"])
+    prose.append(row["role"])
+    relevant = {gid}
+    for key in ("play", "hold", "avoid"):
+        action = row[key]
+        _object(action, {"advice", "conditions"})
+        _text(action["advice"])
+        prose.append(action["advice"])
+        pieces = _conditions(action["conditions"], catalog)
+        if gid not in pieces:
+            raise ValueError("A per-card rule lacks its focal card")
+        relevant.update(pieces)
+    _evidence(row["evidence"], relevant, catalog)
+    return gid
+
+
 def validate_study(study, catalog):
     """Reject a partial typed study; legacy playbooks remain valid in their own format."""
     from arenamcp.loyalty_timing import additional_activation, conflicting_loyalty_sequence, walkers_in
@@ -236,24 +257,10 @@ def validate_study(study, catalog):
     covered, accounted = set(), set()
     prose = []
     for row in _list(study["cards"], "per-card rules"):
-        _object(row, {"card", "role", "play", "hold", "avoid", "evidence"})
-        gid = _card(row["card"], catalog)
-        if gid in covered or gid not in nonlands:
-            raise ValueError("Deck study role is duplicated or not a nonland")
+        gid = validate_card_rule(row, catalog, prose)
+        if gid in covered:
+            raise ValueError("Deck study contains a duplicate card rule")
         covered.add(gid)
-        _text(row["role"])
-        prose.append(row["role"])
-        relevant = {gid}
-        for key in ("play", "hold", "avoid"):
-            action = row[key]
-            _object(action, {"advice", "conditions"})
-            _text(action["advice"])
-            prose.append(action["advice"])
-            pieces = _conditions(action["conditions"], catalog)
-            if gid not in pieces:
-                raise ValueError("A per-card rule lacks its focal card")
-            relevant.update(pieces)
-        _evidence(row["evidence"], relevant, catalog)
     if nonlands != covered:
         raise ValueError(f"Deck study is missing {len(nonlands - covered)} nonland card rule(s)")
 

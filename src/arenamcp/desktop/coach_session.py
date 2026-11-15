@@ -107,6 +107,7 @@ class CoachSession(QObject):
     logEmitted = Signal(str, str)  # message, role
     adviceReceived = Signal(str, str)  # text, label
     deckListChanged = Signal(list, str)  # decks, note
+    deckCardStudyChanged = Signal(dict)
     deckAnalysisChanged = Signal(dict)
     limitedDeckPreviewChanged = Signal(dict)
     collectionChanged = Signal(dict)  # owned cards + wildcard balances (#204)
@@ -598,6 +599,9 @@ class CoachSession(QObject):
         # re-checks confirm=True before touching wildcards.
         self._process.send_payload({"cmd": "craft", "cards": cards})
 
+    def request_deck_card_study(self, request: dict) -> None:
+        self._process.send_payload({"cmd": "deck_card_study", **request})
+
     def analyze_deck(self, deck_id: str, *, refresh: bool = False) -> None:
         self._process.send_payload({"cmd": "analyze_deck", "deck_id": deck_id, "refresh": bool(refresh)})
 
@@ -1088,6 +1092,8 @@ class CoachSession(QObject):
             if isinstance(event.get("data"), dict):
                 self.limitedDeckPreviewChanged.emit(event["data"])
 
+        elif ev_type == "deck_card_study":
+            self.deckCardStudyChanged.emit({k: v for k, v in event.items() if k != "type"})
         elif ev_type == "deck_analysis":
             self.deckAnalysisChanged.emit({k: v for k, v in event.items() if k != "type"})
 

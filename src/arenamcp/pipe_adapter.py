@@ -720,6 +720,8 @@ class PipeAdapter:
                     args=("craft_async", cmd.get("cards") or []),
                     daemon=True,
                 ).start()
+            elif action == "deck_card_study":
+                threading.Thread(target=self._handle_deck_card_study, args=(cmd,), daemon=True).start()
             elif action == "analyze_deck":
                 self._handle_analyze_deck(cmd)
             elif action == "analyze_all_decks":
@@ -1165,6 +1167,14 @@ class PipeAdapter:
         except Exception as error:
             logger.warning("Deck bridge command %s failed: %s", method, error)
             self.emit_deck_op({"ok": False, "error": str(error)})
+
+    def _handle_deck_card_study(self, cmd: dict[str, Any]) -> None:
+        try:
+            result = self._coach.deck_card_study(cmd)
+        except Exception:
+            result = {k: cmd.get(k) for k in ("token", "deck_id", "identity", "card")}
+            result["error"] = "The local card study is unavailable."
+        self._emit({"type": "deck_card_study", **result})
 
     def _handle_list_decks(self) -> None:
         coach = self._coach

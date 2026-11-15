@@ -178,3 +178,37 @@ def test_cocoa_deck_buttons_keep_selection_across_refresh(qapp, monkeypatch):
     assert tab.selected_deck_id() == "b" and tab._deck_buttons["b"] is button
     tab.set_decks([deck for deck in decks() if deck["deck_id"] != "b"])
     assert tab.selected_deck_id() is None
+
+
+def test_native_checked_row_updates_selection_with_refresh_and_keyboard(qapp, monkeypatch):
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QApplication
+
+    monkeypatch.setattr(QApplication, "platformName", lambda: "cocoa")
+    tab = DecksTab(session=FakeSession())
+    rows = decks()
+    rows[0]["identity"] = "same-list"
+    tab.set_decks(rows)
+    first = tab._deck_buttons["a"]
+    clicks = []
+    first.clicked.connect(lambda: clicks.append(True))
+    first.setChecked(True)  # Cocoa accessibility can set AXValue without clicked.
+    assert not clicks and tab.selected_deck_id() == "a"
+    assert tab.edit_btn.isEnabled() and tab.rebuild_btn.isEnabled() and tab.card_study_btn.isEnabled()
+    assert "HOW IT POPS OFF" in tab._detail.text()
+    tab.set_decks(list(reversed(rows)))
+    assert tab.selected_deck_id() == "a" and first.isChecked()
+    incomplete = tab._deck_buttons[rows[-1]["deck_id"]]
+    QTest.keyClick(incomplete, Qt.Key_Space)
+    assert tab.selected_deck_id() == rows[-1]["deck_id"] and not first.isChecked()
+    assert (
+        not tab.edit_btn.isEnabled()
+        and not tab.strategy_btn.isEnabled()
+        and not tab.card_study_btn.isEnabled()
+    )
+    first.click()
+    assert first.isChecked() and not incomplete.isChecked() and tab.selected_deck_id() == "a"
+    tab.set_decks(rows[1:])
+    assert tab.selected_deck_id() is None and not tab.rebuild_btn.isEnabled()
+    tab.close()

@@ -15,6 +15,7 @@ from typing import Any
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QApplication,
+    QButtonGroup,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -172,6 +173,7 @@ class DecksTab(QWidget):
         self._collection: dict[int, int] = {}
         self._wildcards: dict[str, int] = {}
         self._editor: DeckEditorDialog | None = None
+        self._card_study = None
         self._build_ui()
         if session is not None:
             session.deckListChanged.connect(self.set_decks)
@@ -214,6 +216,8 @@ class DecksTab(QWidget):
         self._table = None
         if QApplication.platformName() == "cocoa":
             # Native buttons avoid Cocoa's synthesized accessible table cells.
+            self._deck_group = QButtonGroup(self)
+            self._deck_group.setExclusive(True)
             scroll = QScrollArea()
             scroll.setWidgetResizable(True)
             body = QWidget()
@@ -249,6 +253,8 @@ class DecksTab(QWidget):
             "Analyze and save a playbook for future matches with this exact list and commander"
         )
         self.strategy_btn.clicked.connect(lambda: self._analyze_selected(refresh=False))
+        self.card_study_btn = QPushButton("Card study")
+        self.card_study_btn.clicked.connect(self._open_card_study)
         self.rebuild_btn = QPushButton("Rebuild")
         self.rebuild_btn.setToolTip(
             "Analyze again and replace the saved strategy after the new analysis succeeds"
@@ -257,7 +263,14 @@ class DecksTab(QWidget):
         self.all_btn = QPushButton("Build all missing")
         self.all_btn.setToolTip("Build a strategy for every deck that has none, one at a time")
         self.all_btn.clicked.connect(self._analyze_all)
-        for button in (self.edit_btn, self.duplicate_btn, self.strategy_btn, self.rebuild_btn, self.all_btn):
+        for button in (
+            self.edit_btn,
+            self.duplicate_btn,
+            self.strategy_btn,
+            self.card_study_btn,
+            self.rebuild_btn,
+            self.all_btn,
+        ):
             button.setEnabled(False)
             actions.addWidget(button)
         actions.addStretch(1)
@@ -371,6 +384,10 @@ class DecksTab(QWidget):
     def set_decks(self, decks: list[dict[str, Any]], note: str = "") -> None:
         selected = self.selected_deck_id()
         self._decks = [dict(d) for d in decks if isinstance(d, dict)]
+        if self._card_study is not None:
+            current = self._deck_at(self._card_study.deck_id)
+            if not current or current[1].get("identity") != self._card_study.identity:
+                self._card_study.close()
         self._reports.clear()
         for deck in self._decks:
             self._names[deck["deck_id"]] = deck.get("name", "")
@@ -427,7 +444,10 @@ class DecksTab(QWidget):
             if button is None:
                 button = QPushButton()
                 button.setCheckable(True)
-                button.clicked.connect(lambda checked=False, deck_id=key: self._select_deck(deck_id))
+                self._deck_group.addButton(button)
+                button.setFocusPolicy(Qt.StrongFocus)
+                # Cocoa accessibility can set the checked value without a clicked event.
+                button.toggled.connect(lambda checked, deck_id=key: checked and self._select_deck(deck_id))
                 self._deck_buttons[key] = button
             if self._deck_rows.indexOf(button) != row:
                 self._deck_rows.removeWidget(button)
@@ -447,10 +467,9 @@ class DecksTab(QWidget):
             self._table.setItem(row, column, item)
 
     def _select_deck(self, deck_id: str) -> None:
-        self._selected_id = deck_id
-        for key, button in self._deck_buttons.items():
-            button.setChecked(key == deck_id)
-        self._on_selection_changed()
+        if self._deck_at(deck_id) is not None:
+            self._selected_id = deck_id
+            self._on_selection_changed()
 
     def _deck_at(self, deck_id: str) -> tuple[int, dict[str, Any]] | None:
         for row, deck in enumerate(self._decks):
@@ -462,13 +481,15 @@ class DecksTab(QWidget):
         deck_id = str(payload.get("deck_id") or "")
         found = self._deck_at(deck_id)
         status = {k: v for k, v in payload.items() if k not in ("deck_id", "name", "type")}
-        if payload.get("report"):
-            self._reports[deck_id] = payload["report"]
         if found is None:
             if payload.get("status") == "error":
                 self._summary.setText(f"Deck strategy failed: {payload.get('error', '')}")
             return
         row, deck = found
+        if deck.get("identity") and payload.get("identity") != deck["identity"]:
+            return
+        if payload.get("report"):
+            self._reports[deck_id] = payload["report"]
         deck["strategy"] = status
         self._set_row(row, deck)
         if self.selected_deck_id() == deck_id:
@@ -482,6 +503,7 @@ class DecksTab(QWidget):
             self.edit_btn.setEnabled(False)
             self.strategy_btn.setEnabled(False)
             self.rebuild_btn.setEnabled(False)
+            self.card_study_btn.setEnabled(False)
             return
         _row, deck = found
         strategy = deck.get("strategy") or {}
@@ -489,6 +511,7 @@ class DecksTab(QWidget):
         self.edit_btn.setEnabled(bool(deck.get("complete")))
         self.strategy_btn.setEnabled(bool(deck.get("complete")) and not building)
         self.rebuild_btn.setEnabled(strategy.get("status") == "ready")
+        self.card_study_btn.setEnabled(bool(deck.get("identity")) and strategy.get("status") == "ready")
         self._show_deck(deck)
 
     def _show_deck(self, deck: dict[str, Any]) -> None:
@@ -505,6 +528,18 @@ class DecksTab(QWidget):
             theme.span(deck.get("name", ""), None, size="title", weight=700), gap=4
         ) + theme.block(theme.span(label, tone) + (f"<br>{theme.span(detail, 'muted')}" if detail else ""))
         self._detail.setText(text)
+
+    def _open_card_study(self):
+        from .deck_card_study import DeckCardStudyDialog
+
+        found = self._deck_at(self.selected_deck_id())
+        if found and self._session is not None:
+            if self._card_study is not None:
+                self._card_study.close()
+            dialog = DeckCardStudyDialog(self._session, found[1], self.window())
+            self._card_study = dialog
+            dialog.finished.connect(lambda _: setattr(self, "_card_study", None))
+            dialog.show()
 
     def _analyze_selected(self, *, refresh: bool) -> None:
         deck_id = self.selected_deck_id()
