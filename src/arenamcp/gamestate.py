@@ -2197,7 +2197,11 @@ class GameState(_GameStateAnnotationsMixin):
 
         try:
             if message.get("type") == "GameStateType_Full":
-                self._draw_inventory = DrawInventory.start(message, self._connection_deck_metadata)
+                connection = self._connection_deck_metadata
+                self._draw_inventory = None
+                if connection and not connection.get("draw_opening_consumed"):
+                    self._draw_inventory = DrawInventory.start(message, connection)
+                    connection["draw_opening_consumed"] = True
             elif self._draw_inventory and not self._draw_inventory.advance(message):
                 self._draw_inventory = None
         except (ValueError, KeyError, TypeError, AttributeError):

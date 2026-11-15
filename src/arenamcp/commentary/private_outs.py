@@ -1,4 +1,4 @@
-"""Local, deterministic counts of named removal spells against a public flyer.
+"""Local, deterministic counts of named removal spells against a public creature.
 
 The proof deliberately covers one opposing threat, with known printed targeting
 conditions. An unsupported remaining card is not a known non-answer. We name
@@ -18,10 +18,41 @@ from arenamcp.combat_keywords import has_combat_keyword
 _BASIC = re.compile(
     r"(?:Snow )?Basic (?:Snow )?Land (?:—|-) (?:Forest|Mountain|Island|Plains|Swamp|Wastes)", re.I
 )
-_TARGET_DEFENSE = re.compile(
-    r"hexproof|shroud|protection|indestructible|ward\b|regenerate|can't be|cannot be|instead|counter target|phase[sd]? out|shield counter|can't cast|cannot cast",
-    re.I,
+_SAFE_KEYWORDS = frozenset(
+    {
+        "flying",
+        "first strike",
+        "double strike",
+        "deathtouch",
+        "haste",
+        "lifelink",
+        "menace",
+        "reach",
+        "trample",
+        "vigilance",
+        "defender",
+        "flash",
+    }
 )
+_BASIC_MANA = re.compile(r"\(?\{(?:o)?T\}: Add \{(?:o)?[WUBRGC]\}\.\)?", re.I)
+
+
+def _simple_text(card):
+    # Native localized markup can accompany the Flying keyword's reminder.
+    text = card["oracle_text"].replace("<i>", "").replace("</i>", "")
+    text = re.sub(
+        r" \(This creature can['’]t be blocked except by creatures with flying or reach\.\)",
+        "",
+        text,
+        flags=re.I,
+    )
+    if _BASIC.fullmatch(card["type_line"]):
+        return not text.strip() or bool(_BASIC_MANA.fullmatch(text.strip()))
+    if "Creature" not in card["type_line"].split(" — ")[0].split():
+        return False
+    return not text.strip() or all(w.strip().casefold() in _SAFE_KEYWORDS for w in re.split(r"[,\n]", text))
+
+
 _REMOVAL = re.compile(
     r"(Destroy|Exile) target (creature(?: with flying| or planeswalker)?|nonland permanent|permanent)\."
 )
@@ -55,7 +86,7 @@ def _removal_effect(card):
     return None
 
 
-def _sole_opposing_flyer(snapshot):
+def _sole_opposing_creature(snapshot):
     zones = snapshot.get("zones") or {}
     if (
         zones.get("stack")
@@ -77,6 +108,7 @@ def _sole_opposing_flyer(snapshot):
             or card.get("visibility") not in (None, "Visibility_Public", "public")
             or card.get("face_down")
             or not _named_source(card)
+            or not _simple_text(card)
         ):
             return None
         if any(
@@ -100,16 +132,13 @@ def _sole_opposing_flyer(snapshot):
             and "Creature" not in card["type_line"].split(" — ")[0].split()
         ):
             return None
-        if _TARGET_DEFENSE.search(card["oracle_text"].replace("’", "'")) or any(
-            has_combat_keyword(card, key) for key in ("hexproof", "indestructible", "shroud")
-        ):
+        if any(has_combat_keyword(card, key) for key in ("hexproof", "indestructible", "shroud")):
             return None
         if card["controller_seat_id"] == local or _BASIC.fullmatch(card["type_line"]):
             continue
         if (
             card.get("controller_seat_id") != opponent
             or "Creature" not in card["type_line"].split(" — ")[0].split()
-            or not has_combat_keyword(card, "flying")
             or type(card.get("instance_id")) is not int
             or card["instance_id"] <= 0
             or type(card.get("power")) is not int
@@ -131,7 +160,7 @@ def private_removal_fact(snapshot, game, *, allow_private, card_lookup):
         type(bridge) is not int or bridge != state_id
     ):
         return None
-    threat = _sole_opposing_flyer(snapshot)
+    threat = _sole_opposing_creature(snapshot)
     if not threat:
         return None
     seat = snapshot["local_seat_id"]
@@ -152,10 +181,11 @@ def private_removal_fact(snapshot, game, *, allow_private, card_lookup):
         if not isinstance(card, dict):
             continue
         effect = _removal_effect(card)
+        toughness = threat.get("modified_toughness", threat.get("toughness"))
+        if not effect or (effect.target.endswith("with flying") and not has_combat_keyword(threat, "flying")):
+            continue
         if isinstance(effect, (Destroy, Exile)) or (
-            isinstance(effect, Damage)
-            and type(threat.get("toughness")) is int
-            and 0 < threat["toughness"] <= effect.amount
+            isinstance(effect, Damage) and type(toughness) is int and 0 < toughness <= effect.amount
         ):
             qualified[card["name"]] += count
     if not qualified or len(qualified) > 3:
@@ -206,7 +236,7 @@ def private_removal_line(fact, snapshot):
         or fact["seat"] != snapshot.get("local_seat_id")
     ):
         return None
-    threat = _sole_opposing_flyer(snapshot)
+    threat = _sole_opposing_creature(snapshot)
     if (
         not threat
         or type(fact.get("threat_id")) is not int
@@ -240,4 +270,4 @@ def private_removal_line(fact, snapshot):
     )
     return threat[
         "instance_id"
-    ], f"Against {threat['name']}, your {size}-card library still has {copies} for creature removal."
+    ], f"Against {threat['name']}, your {size}-card library includes {copies} as potential removal."

@@ -155,7 +155,7 @@ def test_opening_then_renamed_draw_exact_private_named_answers():
     assert (f["remaining"], f["answers"]) == (53, {"Plummet": 3, "Strong Bolt": 3})
     assert private_removal_line(f, s) == (
         800,
-        "Against Sky Guard, your 53-card library still has 3 copies of Plummet, 3 copies of Strong Bolt for creature removal.",
+        "Against Sky Guard, your 53-card library includes 3 copies of Plummet, 3 copies of Strong Bolt as potential removal.",
     )
     assert "outs" not in private_removal_line(f, s)[1]
     g.update_from_message(next_draw())
@@ -320,6 +320,7 @@ def test_private_only_local_voice_no_history_cancel_on_revocation(qapp, monkeypa
 
     class Tts(QObject):
         speechStatus = Signal(str, str)
+        private_render_ready = True
 
     tts = Tts()
     tts.request_speech = Mock()
@@ -336,6 +337,8 @@ def test_private_only_local_voice_no_history_cancel_on_revocation(qapp, monkeypa
         c.observe(s, private_removal=f)
         call = tts.request_speech.call_args.kwargs
         assert call["provider"] == "kokoro"
+        assert call["private"] is True
+        assert c.arbiter.active.role == "play_by_play"
         assert call["valid"]()
         assert "Plummet" in call["text"]
         spoken.assert_not_called()
@@ -357,3 +360,232 @@ def test_private_only_local_voice_no_history_cancel_on_revocation(qapp, monkeypa
         assert tts.request_speech.call_count == 1
     finally:
         c.close()
+
+
+@pytest.mark.parametrize(
+    "change", ["identity-at-seed", "overlapping-zone-at-seed", "deleted-at-seed", "renamed-at-seed"]
+)
+def test_seed_refuses_contradictory_full_envelope(change):
+    m = full()
+    if change == "identity-at-seed":
+        m["gameObjects"] = [{"instanceId": IDS[-1], "grpId": 15, "zoneId": 32}]
+    elif change == "overlapping-zone-at-seed":
+        m["zones"].append({"zoneId": 27, "type": "ZoneType_Battlefield", "objectInstanceIds": [IDS[-1]]})
+    elif change == "deleted-at-seed":
+        m["diffDeletedInstanceIds"] = [IDS[-1]]
+    elif change == "renamed-at-seed":
+        m["annotations"] = [
+            {
+                "type": ["AnnotationType_ObjectIdChanged"],
+                "affectedIds": [IDS[-1]],
+                "details": [
+                    {"key": "orig_id", "valueInt32": [IDS[-1]]},
+                    {"key": "new_id", "valueInt32": [999]},
+                ],
+            }
+        ]
+    assert DrawInventory.start(m, connection()) is None
+
+
+def test_same_member_rewritten_without_overlay_abstains_until_new_game():
+    g = opened()
+    assert project(board(), g)
+    for gsid, gid in [(3, 15), (4, 17)]:
+        g.update_from_message(
+            {
+                "type": "GameStateType_Diff",
+                "gameStateId": gsid,
+                "prevGameStateId": gsid - 1,
+                "gameObjects": [
+                    {
+                        "instanceId": IDS[-1],
+                        "zoneId": 32,
+                        "grpId": gid,
+                        "ownerSeatId": 1,
+                        "visibility": "Visibility_Private",
+                        "viewers": [1],
+                    }
+                ],
+            }
+        )
+        s = board()
+        s["_log_game_state_id"] = gsid
+        assert not project(s, g)
+
+
+def test_public_gre_object_identity_required_even_when_overlay_omits_visibility():
+    g = opened()
+    s = board()
+    g.game_objects[800].visibility = "Visibility_Private"
+    assert not project(s, g)
+    g.game_objects[800].visibility = "Visibility_Public"
+    g.game_objects[800].grp_id = 251
+    assert not project(s, g)
+
+
+@pytest.mark.parametrize(
+    "oracle",
+    [
+        "Prevent all damage that would be dealt to creatures.",
+        "Creatures your opponents control get +0/+2.",
+        "Creatures you control get +1/+1.",
+    ],
+)
+def test_continuous_effect_rejects_candidate_except_with_proven_current_applicability(oracle):
+    s = board()
+    s["zones"]["battlefield"].append(
+        {**card(261, "Other", "Enchantment", oracle), "instance_id": 812, "controller_seat_id": 1}
+    )
+    g = Mock()
+    assert not project(s, g)
+    g.commentary_library_counts.assert_not_called()
+
+
+def test_burn_only_when_shown_effective_toughness_is_within_printed_amount():
+    s = board()
+    s["zones"]["battlefield"][0]["modified_toughness"] = 4
+    assert project(s, opened())["answers"] == {"Plummet": 3}
+
+
+def test_desktop_session_does_not_republish_private_count_as_shared_game_state(qapp):
+    from arenamcp.desktop.coach_session import CoachSession
+
+    s = board()
+    event = {"type": "game_state", "data": s, "private_library_removal": project(s, opened())}
+    session = Mock()
+    CoachSession._handle_process_event(session, event)
+    session._speech.observe.assert_called_once_with(s, private_removal=event["private_library_removal"])
+    session.gameStateChanged.emit.assert_called_once_with(s)
+    assert session._last_game_state is s
+    assert "private_library_removal" not in s
+
+
+def test_tts_manager_requires_capable_local_worker_and_skips_os_fallback(qapp, monkeypatch):
+    import json
+
+    from PySide6.QtCore import QProcess
+
+    from arenamcp.desktop.tts_manager import TtsManager
+
+    manager = TtsManager()
+    process = Mock()
+    process.state.return_value = QProcess.Running
+    manager._process = process
+    manager._speak_via_say = Mock()
+    manager._speak_fallback = Mock()
+    manager._request_remote_speech = Mock()
+    manager._request_chatterbox_speech = Mock()
+    valid = True
+    manager._handle_stdout_line('{"type":"ready"}')
+    assert not manager.private_render_ready
+    args = dict(
+        text="PRIVATE_SENTINEL",
+        voice_id="am_adam",
+        voice_name="Adam",
+        speed=1.0,
+        speech_id="private-test",
+        category="commentary",
+        provider="kokoro",
+        private=True,
+        valid=lambda: valid,
+    )
+    manager.request_speech(**args)
+    process.write.assert_not_called()
+    manager._handle_stdout_line('{"type":"ready","private_render":true}')
+    assert manager.private_render_ready
+    for provider in (None, "chatterbox", "remote"):
+        manager.request_speech(**{**args, "provider": provider})
+    process.write.assert_not_called()
+    manager._busy = True
+    manager.request_speech(**args)
+    valid = False
+    manager._busy = False
+    manager._dispatch_pending()
+    process.write.assert_not_called()
+    valid = True
+    manager.request_speech(**args)
+    request = json.loads(process.write.call_args.args[0])
+    assert request["private"] is True and request["text"] == "PRIVATE_SENTINEL"
+    assert manager._last_text == ""
+    manager._handle_stdout_line(
+        json.dumps(
+            {"type": "error", "generation": request["generation"], "message": "Private Kokoro render failed."}
+        )
+    )
+    manager._speak_via_say.assert_not_called()
+    manager._speak_fallback.assert_not_called()
+    manager._request_remote_speech.assert_not_called()
+    manager._request_chatterbox_speech.assert_not_called()
+    manager._process = None
+
+
+def test_private_worker_success_and_failure_do_not_echo_renderer_or_pass_text_as_argument(
+    monkeypatch, tmp_path, capfd, caplog
+):
+    import io
+    import json
+    import logging
+    import os
+    from pathlib import Path
+
+    from arenamcp.desktop import tts_worker
+    from arenamcp.tts import VoiceOutput
+
+    secret = "PRIVATE_SENTINEL"
+
+    def render(self, text):
+        if text != "Ready":
+            logging.getLogger("renderer").critical("Private text %s", text)
+            os.write(2, text.encode())
+            if text.endswith("fail"):
+                raise ValueError(text)
+        path = tmp_path / "render.wav"
+        path.touch()
+        return str(path), 1.0
+
+    monkeypatch.setattr(VoiceOutput, "render_to_wav_file", render)
+    monkeypatch.setattr(VoiceOutput, "warmup", lambda _: None)
+    monkeypatch.setattr(tts_worker, "_lower_priority", lambda: None)
+    monkeypatch.setattr(tts_worker, "_configure_logging", lambda: None)
+    events = []
+    monkeypatch.setattr(tts_worker, "_emit", events.append)
+    commands = [
+        dict(cmd="render", generation=i + 1, text=secret + suffix, private=True)
+        for i, suffix in enumerate(["success", "fail"])
+    ] + [dict(cmd="shutdown")]
+    monkeypatch.setattr(tts_worker.sys, "stdin", io.StringIO("\n".join(map(json.dumps, commands))))
+    assert tts_worker.main() == 0
+    assert [e["type"] for e in events] == ["ready", "rendered", "error"]
+    assert events[0]["private_render"] is True
+    assert "text" not in events[1] and "traceback" not in events[2]
+    assert secret not in repr(events) + str(capfd.readouterr()) + caplog.text
+    Path(events[1]["path"]).unlink()
+
+
+def test_ground_creature_only_counts_unrestricted_answers():
+    s = board()
+    s["zones"]["battlefield"][0].update(oracle_text="Vigilance", keywords=["vigilance"])
+    assert project(s, opened())["answers"] == {"Strong Bolt": 3}
+
+
+def test_unknown_annotation_or_persistent_replacement_of_library_member_stops_proof():
+    for alias in ("annotations", "persistentAnnotations"):
+        g = opened()
+        g.update_from_message(
+            {
+                "type": "GameStateType_Diff",
+                "gameStateId": 3,
+                "prevGameStateId": 2,
+                alias: [{"type": ["AnnotationType_NewTreatment"], "affectedIds": [IDS[-1]]}],
+            }
+        )
+        s = board()
+        s["_log_game_state_id"] = 3
+        assert project(s, g) is None
+
+
+def test_repeated_opening_envelope_cannot_rearm_a_failed_census():
+    g = opened()
+    g.update_from_message({"type": "GameStateType_Diff", "gameStateId": 5, "prevGameStateId": 4})
+    g.update_from_message(full())
+    assert g._draw_inventory is None

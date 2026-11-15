@@ -23,6 +23,70 @@ def _ids(values):
     return ids if len(ids) == len(values) else None
 
 
+def _undisturbed_members(message, zones, library_zone, members):
+    """Reject contradictory membership and any identities revealed/rewritten in-place.
+
+    We prove only the printed identities of departing draws. Once Arena starts
+    materializing or renaming an in-library member, that proof cannot justify
+    treating a later same-id, different-card update as an unchanged deck.
+    """
+    for zone in zones:
+        ids = zone.get("objectInstanceIds")
+        if ids is None or zone.get("zoneId") == library_zone:
+            continue
+        other = _ids(ids)
+        if other is None or members & other:
+            return False
+    objects = message.get("gameObjects", [])
+    if not isinstance(objects, list) or any(
+        not isinstance(o, dict)
+        or not _positive(o.get("instanceId"))
+        or o.get("instanceId") in members
+        or o.get("zoneId") == library_zone
+        for o in objects
+    ):
+        return False
+    deleted = message.get("diffDeletedInstanceIds", [])
+    if type(deleted) is not list or any(not _positive(i) or i in members for i in deleted):
+        return False
+    annotations = message.get("annotations", [])
+    persistent = message.get("persistentAnnotations", [])
+    if not isinstance(annotations, list) or not isinstance(persistent, list):
+        return False
+    for annotation in (*annotations, *persistent):
+        if not isinstance(annotation, dict):
+            return False
+        affected = _ids(annotation.get("affectedIds", []))
+        if affected is None or affected & members or annotation.get("affectorId") in members:
+            return False
+        if "AnnotationType_ObjectIdChanged" not in (annotation.get("type") or []):
+            continue
+        ids = _ids(annotation.get("affectedIds"))
+        if ids is None or ids & members:
+            return False
+        details = annotation.get("details", [])
+        mapped = {}
+        for detail in details:
+            if not isinstance(detail, dict):
+                return False
+            key = detail.get("key")
+            if key not in ("orig_id", "new_id"):
+                continue
+            values = detail.get("valueInt32")
+            if (
+                key in mapped
+                or type(values) is not list
+                or len(values) != 1
+                or not _positive(values[0])
+                or values[0] in members
+            ):
+                return False
+            mapped[key] = values[0]
+        if set(mapped) != {"orig_id", "new_id"} or mapped["orig_id"] == mapped["new_id"]:
+            return False
+    return True
+
+
 @dataclass
 class DrawInventory:
     match: str
@@ -76,6 +140,8 @@ class DrawInventory:
             or not _positive(hand_zone)
             or library_zone == hand_zone
         ):
+            return None
+        if not _undisturbed_members(message, rows, library_zone, members):
             return None
         return cls(match, seat, library_zone, hand_zone, 1, members, Counter(deck))
 
@@ -169,19 +235,7 @@ class DrawInventory:
         objects = message.get("gameObjects", [])
         if not isinstance(objects, list) or any(not isinstance(o, dict) for o in objects):
             return False
-        # A deleted member, an unexpected move or a changed printed identity in
-        # the library must never leave an old exact claim alive.
-        deleted = message.get("diffDeletedInstanceIds") or []
-        if not isinstance(deleted, list) or any(not _positive(i) or i in members for i in deleted):
-            return False
-        if any(
-            o.get("instanceId") in members
-            and (
-                o.get("zoneId", self.library_zone) != self.library_zone
-                or o.get("overlayGrpId", o.get("grpId")) != o.get("grpId")
-            )
-            for o in objects
-        ):
+        if not _undisturbed_members(message, zones, self.library_zone, members):
             return False
         removed = self.members - members
         if removed:

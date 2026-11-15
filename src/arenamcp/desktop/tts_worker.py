@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import os
 import sys
 import traceback
 from pathlib import Path
@@ -49,6 +50,27 @@ def _lower_priority() -> None:
         logger.debug("could not lower TTS worker priority", exc_info=True)
 
 
+@contextlib.contextmanager
+def _quiet_private_render():
+    """Keep Python and native renderer output out of stored worker diagnostics."""
+    # This is a serial, dedicated local worker. No protocol response is written
+    # until the native renderer returns and both output descriptors are restored.
+    with open(os.devnull, "wb") as sink, contextlib.ExitStack() as restore:
+        for fd in (1, 2):
+            saved = os.dup(fd)
+            restore.callback(os.close, saved)
+            restore.callback(os.dup2, saved, fd)
+            os.dup2(sink.fileno(), fd)
+        previous = logging.root.manager.disable
+        restore.callback(logging.disable, previous)
+        logging.disable(logging.CRITICAL)
+        try:
+            yield
+        finally:
+            sys.stdout.flush()
+            sys.stderr.flush()
+
+
 def main() -> int:
     _configure_logging()
     _lower_priority()
@@ -71,6 +93,7 @@ def main() -> int:
         _emit(
             {
                 "type": "ready",
+                "private_render": True,
                 "voice_id": voice_id,
                 "voice_name": voice_name,
                 "speed": float(getattr(voice, "speed", getattr(voice, "_speed", 1.0))),
@@ -109,13 +132,15 @@ def main() -> int:
         voice_id = str(payload.get("voice_id", "")).strip()
         speed = payload.get("speed")
 
+        private = payload.get("private") is True
         try:
             if voice_id:
                 voice.set_voice(voice_id)
             if speed is not None:
                 voice.set_speed(float(speed))
 
-            rendered = voice.render_to_wav_file(text)
+            with _quiet_private_render() if private else contextlib.nullcontext():
+                rendered = voice.render_to_wav_file(text)
             active_voice_id, active_voice_name = voice.current_voice
             if rendered is None:
                 _emit(
@@ -132,7 +157,7 @@ def main() -> int:
                 {
                     "type": "rendered",
                     "generation": generation,
-                    "text": text,
+                    **({} if private else {"text": text}),
                     "path": path,
                     "duration": round(duration, 3),
                     "voice_id": active_voice_id,
@@ -141,6 +166,9 @@ def main() -> int:
                 }
             )
         except Exception as exc:
+            if private:
+                _emit({"type": "error", "generation": generation, "message": "Private Kokoro render failed."})
+                continue
             logger.exception("render failed")
             _emit(
                 {

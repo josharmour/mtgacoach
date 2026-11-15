@@ -95,7 +95,7 @@ class CommentaryController(QObject):
                 # The full text stays on the desktop. It never enters the
                 # generated booth, heard-text history, transcript, or a remote voice.
                 settings = get_settings()
-                if settings.get("tts_provider", "kokoro") != "kokoro":
+                if settings.get("tts_provider", "kokoro") != "kokoro" or not self.tts.private_render_ready:
                     return
                 try:
                     pair = voice_pair(settings)
@@ -107,9 +107,9 @@ class CommentaryController(QObject):
                     SpeechCategory.COMMENTARY,
                     observation.epoch,
                     time.monotonic() + 8,
-                    role="color_analyst" if self.config.speakers == 2 else "play_by_play",
+                    role="play_by_play",
                     provider="kokoro",
-                    voice=pair[1 if self.config.speakers == 2 else 0],
+                    voice=pair[0],
                     speed=speech_rate(settings),
                 )
                 self.private_removal_uid = (item.utterance_id, self.private_removal)
@@ -340,6 +340,7 @@ class CommentaryController(QObject):
         if item.category == SpeechCategory.COMMENTARY and self.observation is not None:
             speech_text = pronounce_players(speech_text, self.observation.public_state.get("player_names"))
         self.tts.request_speech(
+            **({"private": True} if private_outs else {}),
             **overrides,
             **self._delivery(item),
             text=speech_text,

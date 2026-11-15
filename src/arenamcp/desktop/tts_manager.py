@@ -66,6 +66,7 @@ class TtsManager(QObject):
         # macOS falls back to the built-in `say` voice instead of silence —
         # the coach's speech must never silently disappear.
         self._worker_failed = False
+        self._private_render_supported = False
         self._say_process: subprocess.Popen | None = None
         self._last_text: str = ""
         self._last_speed: float = 1.0
@@ -93,12 +94,17 @@ class TtsManager(QObject):
     def is_running(self) -> bool:
         return self._process is not None and self._process.state() != QProcess.NotRunning
 
+    @property
+    def private_render_ready(self):
+        return self.is_running and self._ready and not self._worker_failed and self._private_render_supported
+
     def start(self) -> None:
         if self.is_running:
             return
 
         self._closing = False
         self._ready = False
+        self._private_render_supported = False
         self._busy = False
         self._stdout_buffer = ""
         self._stderr_buffer = ""
@@ -156,7 +162,12 @@ class TtsManager(QObject):
         settings_override=None,
         excitement="normal",
         energy=0.5,
+        private=False,
     ) -> None:
+        if private and (provider != "kokoro" or category != "commentary" or not self.private_render_ready):
+            if speech_id:
+                self.speechStatus.emit(speech_id, "failed")
+            return
         if self._closing or not text or not text.strip():
             if speech_id:
                 self.speechStatus.emit(speech_id, "failed")
@@ -171,7 +182,7 @@ class TtsManager(QObject):
             self._remote_cancel.set()
         self._pending_request = None
         self._remote_generation = None
-        self._last_text = text
+        self._last_text = "" if private else text
         self._last_speed = float(speed)
         self._last_text_generation = self._generation
 
@@ -183,7 +194,7 @@ class TtsManager(QObject):
             from arenamcp.commentary.delivery import kokoro_delivery
 
             text, speed = kokoro_delivery(text, speed, excitement)
-            self._last_text, self._last_speed = text, speed
+            self._last_text, self._last_speed = "" if private else text, speed
         self._selected_provider = selected
         if (
             selected == "kokoro"
@@ -229,6 +240,10 @@ class TtsManager(QObject):
             self._track(speech_id)
             return
 
+        if private and (self._worker_failed or not self.is_running):
+            if speech_id:
+                self.speechStatus.emit(speech_id, "failed")
+            return
         if self._worker_failed:
             self._resolve_tracked("superseded")
             self._generation += 1
@@ -258,6 +273,7 @@ class TtsManager(QObject):
         self._last_text_generation = self._generation
         self._pending_request = {
             "cmd": "render",
+            **({"private": True} if private else {}),
             "generation": self._generation,
             "text": text,
             "voice_id": voice_id,
@@ -430,6 +446,9 @@ class TtsManager(QObject):
 
         payload = self._pending_request
         self._pending_request = None
+        if payload.get("private") and (not self._speech_valid() or not self.private_render_ready):
+            self._complete(payload["generation"], "superseded")
+            return
         line = json.dumps(payload, ensure_ascii=False) + "\n"
         self._process.write(line.encode("utf-8", errors="replace"))
         self._busy = True
@@ -749,6 +768,7 @@ class TtsManager(QObject):
         event_type = str(payload.get("type", "")).strip().lower()
         if self._remote_generation == self._generation:
             if event_type == "ready":
+                self._private_render_supported = payload.get("private_render") is True
                 self._ready = True
                 return
             if event_type == "rendered":
@@ -761,6 +781,7 @@ class TtsManager(QObject):
                     self._worker_failed = True
                 return
         if event_type == "ready":
+            self._private_render_supported = payload.get("private_render") is True
             self._ready = True
             self._busy = False
             self._busy_timer.stop()
