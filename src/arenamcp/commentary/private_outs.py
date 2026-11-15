@@ -144,19 +144,34 @@ def _answers_creature(card, threat, *, local_creature=False, local_basic=False):
 
 def _verified_native_abilities(card):
     """Every native ability must resolve to a line of the already-qualified print."""
+    if card.get("native_abilities_incomplete"):
+        return False
     ids = card.get("ability_grp_ids")
     if ids is None or ids == []:
         return True
     if not isinstance(ids, (tuple, list)) or any(type(i) is not int or i <= 0 for i in ids):
         return False
     lines = {line.strip() for line in card["oracle_text"].splitlines()}
+    printed_types = card["type_line"].split(" — ")[0].split()
+    self_names = {card["name"]}
+    if "Legendary" in printed_types:
+        self_names.add(card["name"].partition(",")[0])
+    for kind in ("Creature", "Land"):
+        if kind in printed_types:
+            self_names.add("this " + kind.lower())
+            self_names.add("This " + kind.lower())
     try:
         lookup = get_card_database().get_ability_text
         for identity in ids:
             text = lookup(identity)
             if not isinstance(text, str) or not text.strip():
                 return False
-            if text.strip() not in lines and not (_mana_land(card) and _BASIC_MANA.fullmatch(text.strip())):
+            text = text.strip()
+            if text in lines or (_mana_land(card) and _BASIC_MANA.fullmatch(text)):
+                continue
+            if "CARDNAME" not in text or not any(
+                re.sub(r"\bCARDNAME\b", lambda _, name=name: name, text) in lines for name in self_names
+            ):
                 return False
     except (OSError, ValueError, LookupError, RuntimeError):
         return False

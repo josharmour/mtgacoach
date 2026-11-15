@@ -122,6 +122,7 @@ class GameObject:
     # entry per instance (GameObjectInfo.uniqueAbilities). A Skyward Spider
     # wearing Sheltered by Ghosts lists ward {2} (141939) twice (2026-10-19).
     ability_grp_ids: list[int] = field(default_factory=list)
+    native_abilities_incomplete: bool = False
     # Persistent LinkInfo choices, keyed by the choosing ability grpId. A
     # control change does not change the chosen player; a zone change does.
     chosen_player_links: dict[int, int] = field(default_factory=dict)
@@ -190,6 +191,8 @@ class GameObject:
             result["granted_abilities"] = self.granted_abilities
         if self.keywords:
             result["keywords"] = list(self.keywords)
+        if self.native_abilities_incomplete:
+            result["native_abilities_incomplete"] = True
         if self.ability_grp_ids:
             result["ability_grp_ids"] = list(self.ability_grp_ids)
         if self.chosen_player_links:

@@ -906,6 +906,7 @@ def test_private_outs_require_resolved_printed_abilities_even_without_arena_data
     monkeypatch, resolved, admitted
 ):
     from types import SimpleNamespace
+
     from arenamcp.commentary import private_outs
 
     s = meloku_board()
@@ -915,3 +916,47 @@ def test_private_outs_require_resolved_printed_abilities_even_without_arena_data
         private_outs, "get_card_database", lambda: SimpleNamespace(get_ability_text=lambda _: resolved)
     )
     assert (private_outs._public_removal_threat(s) is target) == admitted
+
+
+@pytest.mark.parametrize(
+    "printed,native,accepted",
+    [
+        ("When this creature dies, draw a card.", "When CARDNAME dies, draw a card.", True),
+        ("When Meloku dies, draw a card.", "When CARDNAME dies, draw a card.", True),
+        ("When Meloku dies, draw a card.", "When CARDNAME dies, draw two cards.", False),
+        ("When this land dies, draw a card.", "When CARDNAME dies, draw a card.", False),
+    ],
+)
+def test_native_self_reference_preserves_all_other_printed_text(monkeypatch, printed, native, accepted):
+    from types import SimpleNamespace
+
+    from arenamcp.commentary import private_outs
+
+    target = dict(
+        meloku_board()["zones"]["battlefield"][0],
+        name="Meloku, Test Print",
+        oracle_text=printed,
+        ability_grp_ids=[17],
+    )
+    monkeypatch.setattr(
+        private_outs, "get_card_database", lambda: SimpleNamespace(get_ability_text=lambda _: native)
+    )
+    assert private_outs._verified_native_abilities(target) == accepted
+
+
+@pytest.mark.parametrize("extra", [[987654], [None], [{"grpId": False}], [{"grpId": -1}], [True], ["bad"]])
+def test_private_count_withheld_on_divergent_or_malformed_gre_ability_lists(extra):
+    g = opened()
+
+    def update(**fields):
+        g._update_game_object(dict(instanceId=800, **fields))
+
+    update(uniqueAbilities=[{"id": 42, "grpId": 8}], abilities=[8, *extra])
+    obj = g.game_objects[800]
+    assert obj.native_abilities_incomplete and obj.ability_grp_ids == [8]
+    assert obj.to_dict()["native_abilities_incomplete"]
+    assert project(board(), g) is None
+    update(uniqueAbilities=[{"id": 42, "grpId": 8}])
+    assert g.game_objects[800].native_abilities_incomplete
+    update(uniqueAbilities=[{"id": 42, "grpId": 8}], abilities=[8])
+    assert not g.game_objects[800].native_abilities_incomplete

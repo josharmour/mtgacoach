@@ -1058,6 +1058,7 @@ class GameState(_GameStateAnnotationsMixin):
                             str(item) for item in obj_data.get("color_production", []) if item is not None
                         ],
                         keywords=[str(item) for item in obj_data.get("keywords", []) if item],
+                        native_abilities_incomplete=bool(obj_data.get("native_abilities_incomplete")),
                         ability_grp_ids=[
                             _coerce_int(item, 0)
                             for item in obj_data.get("ability_grp_ids", [])
@@ -2283,7 +2284,9 @@ class GameState(_GameStateAnnotationsMixin):
                 raw_keywords = set(obj.keywords)
                 if current_keywords - (raw_keywords | printed_keywords) or raw_keywords - current_keywords:
                     return None
-                if set(obj.ability_grp_ids) != set(row.get("ability_grp_ids") or ()):
+                if obj.native_abilities_incomplete or set(obj.ability_grp_ids) != set(
+                    row.get("ability_grp_ids") or ()
+                ):
                     return None
                 printed_types = row["type_line"].split(" — ")[0].split()
                 if any(str(t).removeprefix("CardType_") not in printed_types for t in obj.card_types):
@@ -2538,6 +2541,7 @@ class GameState(_GameStateAnnotationsMixin):
             object_kind = existing_obj.object_kind
             counters = existing_obj.counters.copy()
             keywords = list(existing_obj.keywords)
+            native_abilities_incomplete = existing_obj.native_abilities_incomplete
             ability_grp_ids = list(existing_obj.ability_grp_ids)
             damage = existing_obj.damage
             face_down = existing_obj.face_down
@@ -2566,6 +2570,7 @@ class GameState(_GameStateAnnotationsMixin):
             object_kind = GameObjectKind.UNKNOWN
             counters = {}
             keywords = []
+            native_abilities_incomplete = False
             ability_grp_ids = []
             damage = 0
             face_down = False
@@ -2722,10 +2727,14 @@ class GameState(_GameStateAnnotationsMixin):
         # (Medic's Kitesail's flying shows up as grpId 8 on the wearer).
         if "uniqueAbilities" in obj_data or "abilities" in obj_data:
             ability_ids = []
+            malformed = any(
+                key in obj_data and obj_data[key] is None for key in ("uniqueAbilities", "abilities")
+            )
             for entry in _ensure_list(obj_data.get("uniqueAbilities")) + _ensure_list(
                 obj_data.get("abilities")
             ):
                 raw_id = entry.get("grpId") if isinstance(entry, dict) else entry
+                malformed |= type(raw_id) is not int or raw_id <= 0
                 ability_ids.append(_coerce_int(raw_id, 0))
             keywords = ability_keywords(ability_ids)
             # One entry per ability instance: ward counts each (ward.py). The
@@ -2738,6 +2747,16 @@ class GameState(_GameStateAnnotationsMixin):
                 for entry in instances
                 if (grp := _coerce_int(entry.get("grpId") if isinstance(entry, dict) else entry, 0))
             ]
+
+            # Both lists can be supplied. Keep the existing per-instance list for
+            # ward multiplicity, but withhold exact private counts when it loses
+            # any advertised identity. A partial update cannot repair a conflict.
+            both = "uniqueAbilities" in obj_data and "abilities" in obj_data
+            native_abilities_incomplete = (
+                malformed
+                or not set(ability_ids).issubset(ability_grp_ids)
+                or (native_abilities_incomplete and not both)
+            )
 
         game_object = GameObject(
             instance_id=instance_id,
@@ -2763,6 +2782,7 @@ class GameState(_GameStateAnnotationsMixin):
             object_kind=object_kind,
             counters=counters,
             keywords=keywords,
+            native_abilities_incomplete=native_abilities_incomplete,
             ability_grp_ids=ability_grp_ids,
             chosen_player_links=dict(existing_obj.chosen_player_links)
             if existing_obj is not None and existing_obj.zone_id == zone_id
