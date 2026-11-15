@@ -370,7 +370,7 @@ class Snapshot:
         self.request: dict | None = request if isinstance(request, dict) and "$none" not in request else None
         self.reason = request.get("$none", "") if isinstance(request, dict) else ""
         original = results[1] if len(results) > 1 else None
-        self.original_request_key = field(original, "GameStateId"), field(original, "MsgId")
+        self.original_message = original
         self.game_state_id = num(field(original, "GameStateId")) if isinstance(original, dict) else None
         self.msg_id = num(field(original, "MsgId")) if isinstance(original, dict) else None
         self.getters = dict(zip(SNAPSHOT_GETTERS, results[2:], strict=False))

@@ -223,3 +223,99 @@ def test_empty_native_confirm_from_done_button_keeps_typed_offer(monkeypatch):
     row = packet.decisions[-1]
     assert len(row["pending_decision"]["options"]) == 2 and row["chosen_options"] == []
     assert packet.recent_decisions()[0]["chosen"] == ["No blocks"]
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "seat_3",
+        "seat_65535",
+        "seat_bool",
+        "recipient_id_alias",
+        "oneof_alias",
+        "attached_wrong_class",
+        "type_alias",
+        "actor_alias",
+        "recipient_handle",
+        "actor_handle",
+        "request_handle",
+        "list_handle",
+        "menu_alias",
+        "linked_original_handle",
+        "linked_original_key",
+        "original_handle",
+        "original_bool_id",
+        "original_key_alias",
+        "original_msg_alias",
+        "original_wrong_type",
+        "original_wrong_family",
+        "attached_ref_with_identity",
+    ],
+)
+def test_ambiguous_native_field_or_handle_preserves_execution_without_receipt(fault):
+    from copy import deepcopy
+
+    request = deepcopy(attack_request())
+    menu = request["QualifiedAttackers"]
+    actor = menu["$items"][0]
+    recipient = actor["legalDamageRecipients_"]["$items"][0]
+    faults = {
+        "seat_3": (recipient, "playerSystemSeatId_", 3),
+        "seat_65535": (recipient, "playerSystemSeatId_", 65535),
+        "seat_bool": (recipient, "playerSystemSeatId_", True),
+        "recipient_id_alias": (recipient, "m_PlayerSystemSeatId", 1),
+        "oneof_alias": (recipient, "m_Id", 12),
+        "attached_wrong_class": (
+            request,
+            "_originalMessage",
+            {"$h": 1, "$ref": True, "$c": "AnotherMessage"},
+        ),
+        "type_alias": (recipient, "m_Type", enum("Planeswalker", 2)),
+        "actor_alias": (actor, "m_AttackerInstanceId", 9911),
+        "recipient_handle": (recipient, "$h", True),
+        "actor_handle": (actor, "$h", False),
+        "request_handle": (request, "$h", 0),
+        "list_handle": (menu, "$h", -1),
+        "menu_alias": (request, "m_QualifiedAttackers", listing()),
+        "linked_original_handle": (request, "_originalMessage", {"$ref": True, "$h": 1992}),
+        "linked_original_key": (request, "_originalMessage", {"$h": 1, "gameStateId_": 53}),
+        "attached_ref_with_identity": (request, "_originalMessage", {"$ref": True, "$h": 1, "msgId_": 77}),
+    }
+    if fault in faults:
+        node, member, value = faults[fault]
+        node[member] = value
+    game = FakeGame(request, {"CanSubmit": True}, gsid=54, msg=101)
+
+    def send(command, timeout=None):
+        response = game.send(command, timeout)
+        if not response.get("ok"):
+            return response
+        for op, obj in zip(command["ops"], response["results"], strict=True):
+            if op.get("member") == "OriginalMessage":
+                originals = {
+                    "original_handle": ("$h", 2**32),
+                    "original_bool_id": ("gameStateId_", True),
+                    "original_key_alias": ("m_GameStateId", 171),
+                    "original_msg_alias": ("MsgId", 13),
+                    "original_wrong_type": ("$c", "UnrelatedMessage"),
+                    "original_wrong_family": ("type_", enum("SelectTargetsReq", 19)),
+                }
+                if fault in originals:
+                    member, value = originals[fault]
+                    obj[member] = value
+        return response
+
+    from arenamcp.mac_bridge_adapter import MacBridgeAdapter
+
+    with record_native_combat() as recording:
+        bind_combat_state({}, {"game_state_id": 54, "msg_id": 101})
+        result = MacBridgeAdapter(send).handle({"action": "submit_attackers", "attackers": []})
+    assert result["ok"] is True
+    assert not recording.receipt
+    assert game.submits()[-1][-1]["method"] == "SubmitAttackers"
+
+
+def test_conflicting_blocker_alias_withholds_the_numeric_receipt():
+    initial = block_request()
+    initial["AllBlockers"]["$items"][0]["m_BlockerInstanceId"] = 9999
+    assert execute(initial, block_request(True)) is None

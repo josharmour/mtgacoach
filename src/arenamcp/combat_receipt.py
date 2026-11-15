@@ -5,7 +5,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any
 
-from arenamcp.mac_bridge_adapter import Snapshot, attacker_nodes, enum_name, field, handle
+from arenamcp.mac_bridge_adapter import Snapshot, enum_name, short_class
 
 Edge = tuple[int, str, int]
 RequestKey = tuple[int, int]
@@ -20,9 +20,28 @@ def _number(value: Any) -> int:
     return value
 
 
-def _list(node: Any) -> list:
+def _member(node, name, default=None):
+    # The gameplay reader accepts the first matching C# backing-field alias.
+    # A recorded identity must have one unambiguous native source.
     if not isinstance(node, dict):
-        raise ValueError("missing collection")
+        raise ValueError("unreadable native object")
+    camel = name[:1].lower() + name[1:]
+    values = [node[key] for key in (name, camel + "_", "_" + camel, camel, "m_" + name) if key in node]
+    if len(values) > 1:
+        raise ValueError("ambiguous native member")
+    return values[0] if values else default
+
+
+def _handle(node, *, allow_ref=False):
+    if not isinstance(node, dict):
+        raise ValueError("missing native object")
+    if "$ref" in node and (not allow_ref or node["$ref"] is not True or set(node) - {"$h", "$c", "$ref"}):
+        raise ValueError("ambiguous native reference")
+    return _number(node.get("$h"))
+
+
+def _list(node: Any) -> list:
+    _handle(node)
     values, count = node.get("$items"), node.get("$n")
     if not isinstance(values, list) or type(count) is not int or count != len(values) or count > 64:
         raise ValueError("incomplete collection")
@@ -30,64 +49,83 @@ def _list(node: Any) -> list:
 
 
 def _recipient(node: dict) -> tuple[str, int]:
-    if not isinstance(node, dict):
-        raise ValueError("unresolved recipient")
+    _handle(node)
     types = {
         "player": "PlayerSystemSeatId",
         "planeswalker": "PlaneswalkerInstanceId",
         "battle": "BattleInstanceId",
     }
-    kind = enum_name(field(node, "Type")).lower()
+    kind = enum_name(_member(node, "Type")).lower()
     if kind not in types:
         raise ValueError("unsupported recipient")
     member = types[kind]
-    case = enum_name(field(node, "IdCase"))
+    case = enum_name(_member(node, "IdCase"))
     if case and case != member:
         raise ValueError("conflicting recipient")
     supplied = [
-        (key, field(node, key)) for key in (*types.values(), "TeamId") if field(node, key) not in (None, 0)
+        (key, _member(node, key))
+        for key in (*types.values(), "TeamId")
+        if _member(node, key) not in (None, 0)
     ]
     if len(supplied) > 1 or supplied and supplied[0][0] != member:
         raise ValueError("ambiguous recipient")
-    value = field(node, member)
-    if case == member and "id_" in node:
-        if value is not None and node["id_"] != value:
+    value = _member(node, member)
+    oneof = _member(node, "Id")
+    if oneof is not None:
+        if case != member or value is not None and _number(oneof) != _number(value):
             raise ValueError("conflicting recipient oneof value")
-        value = node["id_"]
-    return kind, _number(value)
+        value = oneof
+    identity = _number(value)
+    if kind == "player" and identity not in (1, 2):
+        raise ValueError("unknown player seat")
+    return kind, identity
 
 
 def _attack_menu(request):
-    expanded = {}
+    expanded, collections = {}, {}
     for member in ("QualifiedAttackers", "Attackers"):
-        for node in _list(field(request, member)):
-            identity = handle(node)
-            if identity is not None and field(node, "AttackerInstanceId") is not None:
-                if expanded.setdefault(identity, node) != node:
-                    raise ValueError("contradictory native attacker handle")
+        nodes = _list(_member(request, member))
+        collections[member] = []
+        for node in nodes:
+            identity = _handle(node, allow_ref=True)
+            collections[member].append(identity)
+            if node.get("$ref") is not True:
+                if identity in expanded:
+                    raise ValueError("duplicate expanded object handle")
+                expanded[identity] = node
     menu, selected, actors = [], [], set()
     recipients_by_handle = {}
-    for node in attacker_nodes(request, "QualifiedAttackers"):
-        actor = _number(field(node, "AttackerInstanceId"))
+    offered_handles = set()
+    for identity in collections["QualifiedAttackers"]:
+        node = expanded[identity]
+        actor = _number(_member(node, "AttackerInstanceId"))
         if actor in actors:
             raise ValueError("duplicate attacker")
         actors.add(actor)
-        for target in _list(field(node, "LegalDamageRecipients")):
+        for target in _list(_member(node, "LegalDamageRecipients")):
             recipient = _recipient(target)
             menu.append((actor, *recipient))
-            if handle(target) is not None:
-                if recipients_by_handle.setdefault((actor, handle(target)), recipient) != recipient:
-                    raise ValueError("shared recipient handle names different identities")
+            target_handle = _handle(target)
+            offered_handles.add((actor, target_handle))
+            if (
+                target_handle in expanded
+                or recipients_by_handle.setdefault(target_handle, recipient) != recipient
+            ):
+                raise ValueError("shared recipient handle names different identities")
     declared = set()
-    for node in attacker_nodes(request, "Attackers"):
-        actor = _number(field(node, "AttackerInstanceId"))
+    for identity in collections["Attackers"]:
+        node = expanded[identity]
+        actor = _number(_member(node, "AttackerInstanceId"))
         if actor not in actors or actor in declared:
             raise ValueError("unresolved declaration")
         declared.add(actor)
-        target = field(node, "SelectedDamageRecipient", _MISSING)
+        target = _member(node, "SelectedDamageRecipient", _MISSING)
         if target is not None:
             if isinstance(target, dict) and target.get("$ref") is True:
-                recipient = recipients_by_handle[actor, handle(target)]
+                target_handle = _handle(target, allow_ref=True)
+                if (actor, target_handle) not in offered_handles:
+                    raise ValueError("selection references another attacker's recipient")
+                recipient = recipients_by_handle[target_handle]
             else:
                 recipient = _recipient(target)
             selected.append((actor, *recipient))
@@ -96,13 +134,18 @@ def _attack_menu(request):
 
 def _block_menu(request):
     menu, selected, actors = [], [], set()
-    for node in _list(field(request, "AllBlockers")):
-        actor = _number(field(node, "BlockerInstanceId"))
+    handles = set()
+    for node in _list(_member(request, "AllBlockers")):
+        identity = _handle(node)
+        if identity in handles:
+            raise ValueError("duplicate blocker handle")
+        handles.add(identity)
+        actor = _number(_member(node, "BlockerInstanceId"))
         if actor in actors:
             raise ValueError("duplicate blocker")
         actors.add(actor)
         for dest, member in ((menu, "AttackerInstanceIds"), (selected, "SelectedAttackerInstanceIds")):
-            for target in _list(field(node, member)):
+            for target in _list(_member(node, member)):
                 dest.append((actor, "attacker", _number(target)))
     return actors, menu, selected
 
@@ -142,8 +185,30 @@ class _Recording:
         kind = "DeclareAttackers" if attack else "DeclareBlockers"
         if not attack and snapshot.request_class != "DeclareBlockersRequest":
             raise ValueError("wrong request")
+        original = snapshot.original_message
+        original_handle = _handle(original)
+        if original_handle == _handle(snapshot.request) or short_class(original) != "GREToClientMessage":
+            raise ValueError("invalid original GRE message")
+        attached = _member(snapshot.request, "OriginalMessage", _MISSING)
+        if attached is not _MISSING and (
+            _handle(attached, allow_ref=True) != original_handle
+            or "$c" in attached
+            and short_class(attached) != short_class(original)
+        ):
+            raise ValueError("different original GRE message")
+        original_type = _member(original, "Type", _MISSING)
+        if (
+            original_type is not _MISSING
+            and enum_name(original_type).removeprefix("GREMessageType_") != kind + "Req"
+        ):
+            raise ValueError("original GRE message belongs to a different request family")
+        key = tuple(_number(_member(original, name)) for name in ("GameStateId", "MsgId"))
+        if isinstance(attached, dict) and not attached.get("$ref"):
+            for name, value in zip(("GameStateId", "MsgId"), key, strict=True):
+                other = _member(attached, name, _MISSING)
+                if other is not _MISSING and _number(other) != value:
+                    raise ValueError("conflicting original GRE message identity")
         actors, options, selected = (_attack_menu if attack else _block_menu)(snapshot.request)
-        key = tuple(_number(value) for value in snapshot.original_request_key)
         if key != (self.confirm if update is None else self.start):
             raise ValueError("native snapshot diverged from the planned request")
         for edges in (options, selected):
@@ -153,12 +218,12 @@ class _Recording:
             if self.update is not None or selected or not update or not options:
                 raise ValueError("only a single complete update is witnessed")
             if attack:
-                submitted = [(field(n, "AttackerInstanceId"), *_recipient(r)) for n, r in update]
+                submitted = [(_member(n, "AttackerInstanceId"), *_recipient(r)) for n, r in update]
             else:
                 if any(not rows for _, rows in update):
                     raise ValueError("withdrawal is outside the supported declaration")
                 submitted = [
-                    (field(n, "BlockerInstanceId"), "attacker", a) for n, rows in update for a in rows
+                    (_member(n, "BlockerInstanceId"), "attacker", a) for n, rows in update for a in rows
                 ]
             if len(submitted) != len(set(submitted)) or not set(submitted) <= set(options):
                 raise ValueError("submission outside offered menu")
@@ -207,7 +272,7 @@ def bind_combat_state(state, pending):
     trigger = state.get("_bridge_trigger") if isinstance(state, dict) else None
     if isinstance(trigger, dict):
         if any(
-            name in trigger and trigger[name] != value
+            name in trigger and (type(trigger[name]) is not int or trigger[name] != value)
             for name, value in zip(("game_state_id", "msg_id"), key, strict=True)
         ):
             recording.invalid = True
@@ -218,7 +283,9 @@ def bind_combat_state(state, pending):
 def bind_combat_confirmation(key):
     recording = _active.get()
     if recording is not None:
-        recording.confirm = key
+        recording.confirm = (
+            key if isinstance(key, tuple) and all(type(value) is int for value in key) else None
+        )
 
 
 def discard_native_combat():
