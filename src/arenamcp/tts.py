@@ -10,6 +10,7 @@ NOTE: Model files must be downloaded manually (~300MB total):
 Place files in ~/.cache/kokoro/ or specify paths explicitly.
 """
 
+import copy
 import ctypes
 import io
 import logging
@@ -367,6 +368,15 @@ class KokoroTTS:
 
         return _trim_leading_quiet(samples, sample_rate), sample_rate
 
+    def for_delivery(self, voice: str, speed: float) -> "KokoroTTS":
+        """Share the loaded ONNX session while an earlier render keeps its own settings."""
+        delivery = copy.copy(self)
+        delivery._voice = voice
+        delivery._speed = speed
+        if voice != self._voice:
+            delivery._style = None
+        return delivery
+
     def _voice_style(self):
         """The voice with its STYLE_TOKENS row at every length (see STYLE_TOKENS)."""
         if self._style is None:
@@ -595,19 +605,9 @@ class VoiceOutput:
         Returns:
             Tuple of (voice_id, description) for the new voice.
         """
-        self._voice_index = (self._voice_index + step) % len(self.VOICES)
-        voice_id, description = self.VOICES[self._voice_index]
-        self._voice = voice_id
-
-        # Recreate TTS with new voice
-        if self._tts_engine is not None:
-            # Force re-init with new voice
-            self._tts_engine = None
-            self._ensure_tts()
-
-        # Persist setting
-        if self._settings is not None:
-            self._settings.set("voice", voice_id)
+        index = (self._voice_index + step) % len(self.VOICES)
+        voice_id, description = self.VOICES[index]
+        self.set_voice(voice_id)
         return (voice_id, description)
 
     # Speed presets for cycling
@@ -625,17 +625,7 @@ class VoiceOutput:
         except ValueError:
             idx = 0  # Reset to 1.0x if current speed isn't a preset
 
-        self._speed = self.SPEED_PRESETS[idx]
-
-        # Recreate TTS engine with new speed
-        if self._tts_engine is not None:
-            self._tts_engine = None
-            self._ensure_tts()
-
-        # Persist setting
-        if self._settings is not None:
-            self._settings.set("voice_speed", self._speed)
-        return self._speed
+        return self.set_speed(self.SPEED_PRESETS[idx])
 
     def set_speed(self, speed: float) -> float:
         """Set TTS speed directly.
@@ -657,9 +647,8 @@ class VoiceOutput:
         changed = new_speed != self._speed
         self._speed = new_speed
 
-        # Recreate TTS engine so the new speed takes effect
         if changed and self._tts_engine is not None:
-            self._tts_engine = None
+            self._tts_engine = self._tts_engine.for_delivery(self._voice, self._speed)
 
         if self._settings is not None:
             self._settings.set("voice_speed", self._speed)
@@ -692,10 +681,8 @@ class VoiceOutput:
         changed = voice_id != self._voice
         self._voice = voice_id
 
-        # Recreate TTS engine with new voice
         if changed and self._tts_engine is not None:
-            self._tts_engine = None
-            self._ensure_tts()
+            self._tts_engine = self._tts_engine.for_delivery(self._voice, self._speed)
 
         if self._settings is not None:
             self._settings.set("voice", voice_id)

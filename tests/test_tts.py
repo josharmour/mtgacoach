@@ -128,6 +128,32 @@ def test_direct_playback_uses_the_same_lead_in(voice, monkeypatch):
     assert np.all(samples[:lead] == 0) and np.all(samples[lead:] == 0.5)
 
 
+def test_delivery_changes_share_weights_and_isolate_each_active_speaker(monkeypatch):
+    monkeypatch.setattr("arenamcp.settings.get_settings", lambda: {})
+    voice = VoiceOutput(voice="am_adam", speed=1.0, render_only=True)
+    voice._ensure_tts()
+    original = voice._tts_engine
+    model = _kokoro_with_fake_model()
+    pack = model.get_voice_style("am_fenrir")
+    model.voices = {"am_adam": pack, "af_heart": pack + 100}
+    original._kokoro = model
+    original.synthesize(SHORT)
+    voice.set_voice("af_heart")
+    voice.set_speed(1.06)
+    partner = voice._tts_engine
+    partner.synthesize(SHORT)
+    original.synthesize(SHORT)  # A prior request can still finish on its own voice and speed.
+    assert original._kokoro is partner._kokoro is model
+    assert original._speed == 1.0 and partner._speed == 1.06
+    assert np.all(model.styles[0] == STYLE_TOKENS)
+    assert np.all(model.styles[1] == STYLE_TOKENS + 100)
+    assert np.array_equal(model.styles[2], model.styles[0])
+    voice.set_voice("am_adam")
+    voice.next_voice()
+    voice.cycle_speed()
+    assert voice._tts_engine._kokoro is model
+
+
 def test_muted_worker_renders_without_changing_saved_voice_or_speed(monkeypatch):
     import io
     import json
@@ -139,10 +165,7 @@ def test_muted_worker_renders_without_changing_saved_voice_or_speed(monkeypatch)
     fake = SimpleNamespace(get=lambda k, d=None: store.get(k, d), set=lambda k, v: store.__setitem__(k, v))
     monkeypatch.setattr("arenamcp.settings.get_settings", lambda: fake)
 
-    def warmup(self):
-        self._tts_engine = _FakeEngine()
-
-    monkeypatch.setattr(VoiceOutput, "warmup", warmup)
+    monkeypatch.setattr(KokoroTTS, "synthesize", _FakeEngine.synthesize)
     monkeypatch.setattr(tts_worker, "_lower_priority", lambda: None)
     monkeypatch.setattr(tts_worker, "_configure_logging", lambda: None)
     events = []
