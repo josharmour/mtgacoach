@@ -40,6 +40,13 @@ def _scalars(value: Mapping[str, Any], fields: tuple[str, ...]) -> dict[str, Any
     }
 
 
+def generated_or_changed_print(card):
+    return any(
+        card.get(key)
+        for key in ("token_creator_id", "is_copy", "copied_from_grp_id", "is_token", "generated")
+    ) or any(card.get(key) not in (None, 0, card.get("grp_id")) for key in ("original_grp_id", "base_grp_id"))
+
+
 def _public_card(card: Mapping[str, Any]) -> dict[str, Any]:
     result = _scalars(card, _CARD_FIELDS)
     hidden = bool(card.get("face_down") or card.get("isFacedown") or card.get("grp_id") == 3)
@@ -52,6 +59,9 @@ def _public_card(card: Mapping[str, Any]) -> dict[str, Any]:
         result.pop("toughness", None)
     else:
         result.update(_scalars(card, _IDENTITY_FIELDS))
+        result.update(_scalars(card, ("object_kind",)))
+        if generated_or_changed_print(card):
+            result["generated"] = True
         if isinstance(card.get("card_types"), list):
             result["card_types"] = [t for t in card["card_types"][:12] if isinstance(t, str)]
     return result

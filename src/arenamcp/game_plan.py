@@ -61,6 +61,7 @@ from arenamcp.loyalty_timing import (
     strip_conflicting_activation,
     walkers_in,
 )
+from arenamcp.opponent_read import OpponentRead
 from arenamcp.plan_ledger import PlanLedger
 
 logger = logging.getLogger(__name__)
@@ -4139,6 +4140,7 @@ class GamePlanManager:
         # board swing, fed to every reform. Decisions come from the planner
         # through set_turn_decisions_source.
         self._ledger = PlanLedger()
+        self._opponent_read = OpponentRead()
         self._turn_decisions_source: Callable[[int], list[str]] | None = None
         # Plan status for the sidebar and the log: what the last reform attempt
         # did ("ok", "yielded to a decision", "superseded", "no usable plan",
@@ -4416,6 +4418,7 @@ class GamePlanManager:
                 (
                     strategy_facts(state) if state else "",
                     f"  OPP INTERACTION: {verdict}" if verdict else "",
+                    self._opponent_read.plan_block(state),
                     loyalty_strategy_context(state) if state else "",
                 ),
             )
@@ -5251,6 +5254,9 @@ class GamePlanManager:
         removal = "\n".join(filter(None, (loyalty_strategy_context(game_state), strategy_facts(game_state))))
         if removal:
             user_parts.append(removal)
+        read = self._opponent_read.plan_block(game_state)
+        if read:
+            user_parts.append(read)
         user_parts.append(_plan_availability_block(game_state, self._plan))
         if assessment is not None:
             logger.info(
