@@ -7,8 +7,8 @@ class VoicePairUnavailable(ValueError):
     pass
 
 
-def pair_options(settings, catalog=None):
-    provider = settings.get("tts_provider", "kokoro")
+def pair_options(settings, catalog=None, *, provider=None):
+    provider = provider or settings.get("tts_provider", "kokoro")
     if provider == "kokoro":
         labels = dict(KOKORO_VOICES)
         lead = settings.get("voice", "am_adam")
@@ -43,12 +43,9 @@ def pair_options(settings, catalog=None):
     return [("", label, default)] + [("|".join(p), " + ".join(labels[v] for v in p), p) for p in choices]
 
 
-def voice_pair(settings, catalog=None):
-    key = (
-        "commentary_kokoro_pair"
-        if settings.get("tts_provider", "kokoro") == "kokoro"
-        else "commentary_chatterbox_pair"
-    )
+def voice_pair(settings, catalog=None, *, provider=None):
+    provider = provider or settings.get("tts_provider", "kokoro")
+    key = "commentary_kokoro_pair" if provider == "kokoro" else "commentary_chatterbox_pair"
     selected = settings.get(key) or ""
     if key == "commentary_kokoro_pair" and selected:
         labels = dict(KOKORO_VOICES)
@@ -56,7 +53,7 @@ def voice_pair(settings, catalog=None):
             pair = tuple(selected.split("|"))
             if len(pair) == 2 and pair[0] != pair[1] and all(v in labels for v in pair):
                 return pair
-    choices = pair_options(settings, catalog)
+    choices = pair_options(settings, catalog, provider=provider)
     for value, _label, pair in choices:
         if value == selected:
             return pair

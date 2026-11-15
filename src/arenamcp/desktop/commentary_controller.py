@@ -190,8 +190,8 @@ class CommentaryController(QObject):
             if not self.config.private_information and qwen_public.selected(settings):
                 provider, pair = qwen_public.PROVIDER, qwen_public.PAIR
             else:
-                voice_settings = settings if public_only is True else {**settings, "tts_provider": "kokoro"}
-                pair = voice_pair(voice_settings, self._catalog(voice_settings))
+                catalog = self._catalog(settings) if public_only is True else None
+                pair = voice_pair(settings, catalog, provider=provider)
             voice = pair[1 if item.role == "color_analyst" else 0]
         except VoicePairUnavailable as error:
             self.commentary_ids.add(item.utterance_id)

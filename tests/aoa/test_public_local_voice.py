@@ -271,6 +271,53 @@ def test_private_line_uses_the_private_local_audio_request(booth, monkeypatch):
     assert not payload["valid"]()
 
 
+@pytest.mark.parametrize("role,index", [("play_by_play", 0), ("color_analyst", 1)])
+@pytest.mark.parametrize("selected_pair", [None, "bm_fable|bf_emma"])
+def test_real_settings_route_private_proposals_to_local_voice(
+    booth, monkeypatch, tmp_path, role, index, selected_pair
+):
+    from arenamcp.settings import Settings
+
+    control, tts, _, _, sent = booth
+    monkeypatch.setattr("arenamcp.settings.SETTINGS_FILE", tmp_path / "prefs.json")
+    prefs = Settings()
+    for key, value in {
+        "autoplay_speech": "commentary",
+        "tts_provider": "chatterbox_remote",
+        "voice": "am_adam",
+        "commentary_private_information": True,
+        "commentary_kokoro_pair": selected_pair,
+    }.items():
+        prefs.set(key, value, save=False)
+    monkeypatch.setattr("arenamcp.desktop.commentary_controller.get_settings", lambda: prefs)
+    control.config = replace(control.config, private_information=True)
+    control._catalog = Mock(side_effect=AssertionError("Private mode must not consult a speech server"))
+    control.spoken = Mock()
+    request = Mock()
+    monkeypatch.setattr(tts, "request_speech", request)
+    item = replace(line(control, role=role), text="An invented owner-only fact.")
+    # Use the normal pipe event route, not a direct call to the settings helper.
+    session = SimpleNamespace(_pending_restart=None, _speech=control)
+    CoachSession._handle_process_event(
+        session,
+        {
+            "type": "commentary_proposal",
+            "utterance": item.to_wire(),
+            "public_only": False,
+        },
+    )
+    payload = request.call_args.kwargs
+    pair = selected_pair.split("|") if selected_pair else ("am_adam", "af_heart")
+    assert payload["voice_id"] == pair[index] and payload["provider"] == "kokoro"
+    assert payload["private"] and payload["valid"]()
+    tts.speechStatus.emit(item.utterance_id, "started")
+    tts.speechStatus.emit(item.utterance_id, "finished")
+    assert [s["state"] for s in sent][-2:] == ["started", "finished"]
+    control.spoken.assert_not_called()
+    control._catalog.assert_not_called()
+    assert prefs.get("tts_provider") == "chatterbox_remote"
+
+
 def test_revoking_hand_access_while_projecting_prevents_a_late_backend_call():
     import threading
 
