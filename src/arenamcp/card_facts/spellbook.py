@@ -2,7 +2,9 @@
 
 Input is the normalized ``combo_record`` payload from build_card_knowledge.py,
 not live inference or a two-card combo assertion. The caller supplies source
-metadata from the export. Provenance is recorded, not cryptographically verified.
+metadata from the export. Provenance and completeness are supplied assertions, not independently verified.
+Required fields follow the normalized adapter contract; this cannot detect a
+source that silently omitted an unknown requirement before normalization.
 """
 
 from __future__ import annotations
@@ -70,6 +72,17 @@ def validate_recipe(recipe: object) -> list[str]:
             zones = item.get("zoneLocations")
             if not isinstance(zones, list) or not zones or any(not _nonempty(z) for z in zones):
                 errors.append(f"recipe: {key} zones required")
+            # A normalized concrete piece must retain these requirements even
+            # when empty/false. Missing is not equivalent to unrestricted.
+            if key == "pieces" or "mustBeCommander" in item:
+                if type(item.get("mustBeCommander")) is not bool:
+                    errors.append(f"recipe: {key} commander requirement required")
+            if key == "pieces" or "battlefieldCardState" in item:
+                if not isinstance(item.get("battlefieldCardState"), str):
+                    errors.append(f"recipe: {key} battlefield state required")
+            for state in ("exileCardState", "libraryCardState", "graveyardCardState"):
+                if state in item and not isinstance(item[state], str):
+                    errors.append(f"recipe: {key} invalid {state}")
             identity_key = "oracle_id" if key == "pieces" else "scryfall_query"
             if not _nonempty(item.get(identity_key)):
                 errors.append(f"recipe: {key} identity required")
@@ -123,6 +136,7 @@ def project_relationships(card_name: str, oracle_id: str, recipes: list[dict], s
     result = {
         "version": 1,
         "origin": "spellbook",
+        "completeness": "source_asserted_unverified",
         "source": copy.deepcopy(source),
         "recipe_links": [],
         "recipes": [],

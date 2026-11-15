@@ -128,3 +128,27 @@ def test_conflicting_partner_identity_rejected():
     p = dict(r["pieces"][1], name="Different")
     r["pieces"].append(p)
     assert validate_recipe(r)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("mustBeCommander", "false"),
+        ("mustBeCommander", None),
+        ("battlefieldCardState", None),
+        ("exileCardState", False),
+        ("libraryCardState", []),
+        ("graveyardCardState", {}),
+    ],
+)
+def test_malformed_requirements_rejected(field, value):
+    r = recipe()
+    r["pieces"][0][field] = value
+    assert validate_recipe(r)
+
+
+@pytest.mark.parametrize("field", ["mustBeCommander", "battlefieldCardState"])
+def test_omitted_piece_requirements_not_assumed_unrestricted(field):
+    r = recipe()
+    del r["pieces"][0][field]
+    assert validate_recipe(r)
