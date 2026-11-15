@@ -630,7 +630,7 @@ class CompactCoachPanel(QWidget):
         self.auto_queue_btn.setObjectName("autoQueueButton")
         self.auto_queue_btn.setToolTip(
             "After each match, queue again with the most recently played queue and deck. "
-            "Continues until turned off; requires Autoplay to be on."
+            "Stops after three consecutive match losses. Requires Autoplay to be on."
         )
         self.auto_queue_btn.clicked.connect(self._toggle_auto_queue)
         self.after_match_popover = VoiceStylePopover(self, "After this match")
@@ -1168,6 +1168,9 @@ class CompactCoachPanel(QWidget):
 
     def _toggle_auto_queue(self) -> None:
         self._auto_queue_enabled = not self._auto_queue_enabled
+        if self._auto_queue_enabled:
+            # The engine may be offline when the user starts a fresh run.
+            self._settings.set("auto_queue_streak", {}, save=False)
         self._settings.set("auto_queue_enabled", self._auto_queue_enabled)
         self._auto_queue_detail = "Waiting for Autoplay and match status." if self._auto_queue_enabled else ""
         self._render_auto_queue_status()

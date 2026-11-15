@@ -267,6 +267,7 @@ def test_restart_reconciles_only_proven_completed_submission(monkeypatch, tmp_pa
         else {
             "match_id": "different" if completion == "other_match" else "ended",
             "completed_at": now - 1 if completion == "older" else now + 1,
+            "outcome": "win",
         }
     )
     scan = Mock(return_value=proof)
@@ -280,7 +281,10 @@ def test_restart_reconciles_only_proven_completed_submission(monkeypatch, tmp_pa
             return {"ok": False, "error": str(exc)}
 
     bridge.queue_recent_match.side_effect = submit
-    assert _AutoQueueMixin()._arm_auto_queue_after_restart(nav, state)
+    runtime = _AutoQueueMixin()
+    runtime.settings = Mock()
+    runtime._auto_queue_since = now - 10
+    assert runtime._arm_auto_queue_after_restart(nav, state)
     scan.assert_called_once_with(max_age_s=float("inf"))
     step(nav)
     assert bool(nav.paused_reason) == (completion != "later")

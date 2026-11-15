@@ -521,7 +521,11 @@ def _match_in_progress() -> bool:
 
 def get_completed_match_for_navigation() -> dict[str, Any]:
     """Latest authoritative match completion, distinct from a BO3 game ending."""
-    return dict(_completed_match_for_navigation)
+    record = dict(_completed_match_for_navigation)
+    final = getattr(game_state, "_loss_review_final_result", None)
+    if final and final[0] == record.get("match_id"):
+        record["outcome"] = final[1]
+    return record
 
 
 def get_last_queue_selection() -> dict[str, Any]:
@@ -633,6 +637,63 @@ def _match_completed_in_tail(tail: bytes, match_id: str) -> bool:
     return any(token in line and needle in line for line in tail.splitlines())
 
 
+def _logged_match_outcome(info: dict, local_id: str | None) -> str | None:
+    from arenamcp.loss_streak import resolve_match_result
+
+    players = (info.get("gameRoomConfig") or {}).get("reservedPlayers") or []
+    local = next((p for p in players if isinstance(p, dict) and local_id and p.get("userId") == local_id), {})
+    return resolve_match_result(
+        (info.get("finalMatchResult") or {}).get("resultList") or [],
+        local.get("systemSeatId"),
+        local.get("teamId"),
+    )
+
+
+def logged_queue_results(since: float, match_id: str | None = None) -> list[dict]:
+    """Arena's match-level results in order, independent of menu activity or deck identity."""
+    import mmap
+    from functools import cache
+
+    from arenamcp.log_utils import get_local_player_id
+
+    # Identity discovery can itself scan Player.log. Resolve once for this replay.
+    local_id = cache(get_local_player_id)
+    records = {}
+    path = _log_path()
+    marker = _MATCH_COMPLETED_TOKEN.encode()
+    for candidate in (path, path.with_name("Player-prev.log")):
+        try:
+            with candidate.open("rb") as file, mmap.mmap(file.fileno(), 0, access=mmap.ACCESS_READ) as log:
+                end = len(log)
+                while (hit := log.rfind(marker, 0, end)) >= 0:
+                    start = log.rfind(b"\n", 0, hit) + 1
+                    stop = log.find(b"\n", hit, end)
+                    line = log[start : stop if stop >= 0 else end]
+                    end = start
+                    try:
+                        payload = json.loads(line[line.index(b"{") :])
+                        stamp = int(payload["timestamp"]) / 1000
+                    except (ValueError, KeyError, TypeError):
+                        continue
+                    if stamp < since:
+                        return sorted(records.values(), key=lambda row: row["arena_completed_at"])
+                    info = (payload.get("matchGameRoomStateChangedEvent") or {}).get("gameRoomInfo") or {}
+                    config = info.get("gameRoomConfig") or {}
+                    mid = config.get("matchId") or (info.get("finalMatchResult") or {}).get("matchId")
+                    if not mid or (match_id and mid != match_id) or stamp == since:
+                        continue
+                    if mid in records and records[mid]["outcome"]:
+                        continue
+                    outcome = _logged_match_outcome(info, local_id())
+                    records[mid] = {"match_id": mid, "outcome": outcome, "arena_completed_at": stamp}
+                    if match_id and outcome:
+                        return [records[mid]]
+        except (OSError, ValueError):
+            # Empty or rotated log. Arena retains the previous process's log.
+            continue
+    return sorted(records.values(), key=lambda row: row["arena_completed_at"])
+
+
 def idle_completed_match_from_log(max_age_s: float = 1800.0) -> dict[str, Any] | None:
     """The last match Player.log shows completed, when Arena has done nothing since.
 
@@ -675,7 +736,11 @@ def idle_completed_match_from_log(max_age_s: float = 1800.0) -> dict[str, Any] |
                     return None
                 if not match_id:
                     return None
+                from arenamcp.log_utils import get_local_player_id
+
+                outcome = _logged_match_outcome(info, get_local_player_id())
                 completed = {
+                    **({"outcome": outcome} if outcome else {}),
                     "match_id": str(match_id),
                     "event_id": str(event_id or _match_event_from_log(str(match_id))),
                     "completed_at": completed_at,
@@ -959,6 +1024,10 @@ def _handle_match_created(payload: dict) -> None:
                 "completed_at": time.time(),
                 "match_complete": True,
             }
+        # Use Arena's time to distinguish a new quick match from old log replay.
+        stamp = payload.get("timestamp")
+        if str(stamp).isdigit() and len(str(stamp)) == 13:
+            _completed_match_for_navigation["arena_completed_at"] = int(stamp) / 1000
     if results:
         # Always resolved, even after the game-end result: finalMatchResult is
         # authoritative and corrects an inferred one (2026-10-19: a stale

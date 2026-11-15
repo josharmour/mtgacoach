@@ -26,7 +26,8 @@ class Runtime(_AutoQueueMixin):
 
 
 @pytest.fixture
-def navigator(monkeypatch):
+def navigator(monkeypatch, tmp_path):
+    monkeypatch.setattr(server, "_log_path", lambda: tmp_path / "Player.log")
     nav = Mock()
     nav.paused_reason = ""
     nav.process_tick.return_value = False
@@ -47,7 +48,7 @@ def test_only_a_match_observed_active_can_arm_queue(navigator, monkeypatch):
     nav.note_match_end.assert_not_called()
     # The next game is observed alive; its eventual completion can arm.
     runtime._poll_auto_queue({"match_id": "new", "turn": {"turn_number": 1}})
-    event.update(match_id="new", completed_at=time.time())
+    event.update(match_id="new", completed_at=time.time(), outcome="win")
     runtime._poll_auto_queue({"match_id": None})
     nav.note_match_end.assert_called_once_with(event, confirmed_match_end=True)
     runtime._poll_auto_queue({"match_id": None})
@@ -89,7 +90,7 @@ def test_explicit_toggle_preserves_trusted_completion_for_retry(monkeypatch):
     monkeypatch.setattr("arenamcp.idle_sleep.SleepInhibitor", Mock())
     monkeypatch.setattr(server, "_completed_match_for_navigation", {})
     runtime._poll_auto_queue({"match_id": "one", "turn": {"turn_number": 10}})
-    event = {"match_id": "one", "completed_at": time.time() - 0.05, "match_complete": True}
+    event = {"match_id": "one", "completed_at": time.time() - 0.05, "match_complete": True, "outcome": "win"}
     monkeypatch.setattr(server, "_completed_match_for_navigation", event)
     runtime._poll_auto_queue({"match_id": "one"})
     assert nav.active
@@ -143,3 +144,115 @@ def test_match_scope_completion_excludes_sideboarding_and_unresolved_results(
         }
     )
     assert bool(server.get_completed_match_for_navigation()) is completed
+
+
+@pytest.mark.parametrize("breaker", ["win", "draw"])
+def test_loss_stop_before_fourth_entry_and_fresh_explicit_run(navigator, monkeypatch, breaker):
+    nav, _ = navigator
+    run = Runtime()
+    persisted = {}
+    run.settings.get.side_effect = persisted.get
+    run.settings.set.side_effect = lambda key, value, **kw: persisted.update({key: value})
+    event = {}
+    monkeypatch.setattr(server, "_completed_match_for_navigation", event)
+    for n, outcome in enumerate(["loss", "loss", breaker, "loss", "loss", "loss"]):
+        mid = f"match-{n}"
+        run._poll_auto_queue({"match_id": mid, "turn": {"turn_number": 1}})
+        event.update(match_id=mid, completed_at=time.time(), match_complete=True, outcome=outcome)
+        if n == 5:
+            fresh = Runtime()
+            fresh.settings = run.settings
+            fresh._auto_queue_restart_pending = True
+            fresh._auto_queue_resume = {"ended_match_id": mid}
+            run = fresh
+            nav.reset_mock()
+        for _ in range(2):
+            run._poll_auto_queue({})
+        assert run._auto_queue_enabled is (n < 5)
+    nav.process_tick.assert_not_called()
+    nav.note_match_end.assert_not_called()
+    nav.restore_after_reload.assert_not_called()
+    assert persisted["auto_queue_enabled"] is False
+    run.ui.status.assert_any_call("AUTO_QUEUE", "OFF")
+    assert "3 consecutive match losses" in run.ui.status.call_args.args[1]
+    run.set_auto_queue(True)
+    assert persisted["auto_queue_enabled"] is True
+    assert persisted["auto_queue_streak"].get("losses", 0) == 0
+
+
+def test_quick_loss_and_deferred_final_outcome(navigator, monkeypatch):
+    nav, _ = navigator
+    run = Runtime()
+    event = {"match_id": "fast", "arena_completed_at": time.time(), "match_complete": True}
+    monkeypatch.setattr(server, "_completed_match_for_navigation", event)
+    run._poll_auto_queue({})
+    nav.process_tick.assert_not_called()
+    event["outcome"] = "loss"
+    run._poll_auto_queue({})
+    assert run._queue_streak()["losses"] == 1
+    event.update(match_id="old", arena_completed_at=run._auto_queue_since - 30)
+    run._poll_auto_queue({})
+    assert run._queue_streak()["losses"] == 1
+
+
+@pytest.mark.parametrize("from_checkpoint", [True, False])
+def test_restart_recovers_unobserved_third_loss_before_any_navigation(
+    navigator, monkeypatch, from_checkpoint, tmp_path
+):
+    import json
+
+    nav, _ = navigator
+    runtime = Runtime()
+    since = time.time() - 30
+    runtime._auto_queue_restart_pending = True
+    runtime.settings.get.return_value = {
+        "since": since,
+        "losses": 2,
+        "last": "previous",
+        "through": since + 2,
+    }
+    if from_checkpoint:
+        runtime._auto_queue_resume = {"ended_match_id": "previous", "saved_at": since + 3}
+    room = {
+        "stateType": "MatchGameRoomStateType_MatchCompleted",
+        "gameRoomConfig": {
+            "matchId": "third",
+            "reservedPlayers": [{"userId": "local", "systemSeatId": 2, "teamId": 2}],
+        },
+        "finalMatchResult": {
+            "resultList": [
+                {"scope": "MatchScope_Game", "winningTeamId": 2},
+                {"scope": "MatchScope_Match", "winningTeamId": 1},
+            ]
+        },
+    }
+    line = json.dumps(
+        {"timestamp": int((since + 10) * 1000), "matchGameRoomStateChangedEvent": {"gameRoomInfo": room}}
+    )
+    path = tmp_path / "Player.log"
+    # Even after long menu/game traffic or an Arena restart, the loss still counts.
+    source = path.with_name("Player-prev.log") if from_checkpoint else path
+    source.write_bytes(line.encode() + b"\n" + b"menu log\n" * (server._RESTART_SCAN_BYTES // 9 + 1))
+    monkeypatch.setattr(server, "_log_path", lambda: path)
+    monkeypatch.setattr("arenamcp.log_utils.get_local_player_id", lambda: "local")
+    runtime._poll_auto_queue({})
+    assert not runtime._auto_queue_enabled
+    nav.restore_after_reload.assert_not_called()
+    nav.note_match_end.assert_not_called()
+    nav.process_tick.assert_not_called()
+
+
+def test_pending_missing_result_retries_without_losing_identity(navigator, monkeypatch):
+    nav, _ = navigator
+    runtime = Runtime()
+    runtime._auto_queue_streak = {"since": time.time() - 300, "losses": 2, "pending": "third"}
+    lookup = Mock(side_effect=[[], [{"outcome": "loss", "arena_completed_at": time.time()}]])
+    monkeypatch.setattr(server, "logged_queue_results", lookup)
+    for _ in range(2):
+        runtime._poll_auto_queue({"match_id": "new", "turn": {"turn_number": 1}})
+        assert runtime._auto_queue_streak["pending"] == "third"
+    assert lookup.call_count == 1
+    runtime._queue_retry_at = 0
+    runtime._poll_auto_queue({})
+    assert not runtime._auto_queue_enabled
+    nav.process_tick.assert_not_called()

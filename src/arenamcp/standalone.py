@@ -63,7 +63,7 @@ from arenamcp.logging_config import LOG_DIR, LOG_FILE, configure_logging
 from arenamcp.mana import get_local_seat_id
 from arenamcp.plan_card import PlanCard
 from arenamcp.settings import get_settings
-from arenamcp.standalone_auto_queue import _AutoQueueMixin
+from arenamcp.standalone_auto_queue import AUTO_QUEUE_LOSS_LIMIT, LOSS_STOP_DETAIL, _AutoQueueMixin
 from arenamcp.standalone_auto_reload import _AutoReloadMixin
 from arenamcp.standalone_autopilot_capture import _AutopilotCaptureMixin
 from arenamcp.standalone_concede import _ConcedeMixin
@@ -1595,6 +1595,8 @@ class StandaloneCoach(
     def _emit_control_status_snapshot(self, actual_model: str | None) -> None:
         """Emit the current control-state snapshot for GUI frontends."""
         self.ui.status("AUTO_QUEUE", "ON" if getattr(self, "_auto_queue_enabled", False) else "OFF")
+        if not self._auto_queue_enabled and self._queue_streak().get("losses", 0) >= AUTO_QUEUE_LOSS_LIMIT:
+            self.ui.status("AUTO_QUEUE_DETAIL", LOSS_STOP_DETAIL)
         model_value = actual_model or self.model_name or "default"
         self.ui.status("MODEL", str(model_value))
         self.ui.status("STYLE", self.advice_style)

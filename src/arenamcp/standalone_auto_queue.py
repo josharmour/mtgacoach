@@ -10,13 +10,118 @@ logger = logging.getLogger(__name__)
 
 from arenamcp.standalone_auto_quest import AutoQuestMixin
 
+AUTO_QUEUE_LOSS_LIMIT = 3
+LOSS_STOP_DETAIL = (
+    f"Auto-queue stopped after {AUTO_QUEUE_LOSS_LIMIT} consecutive match losses. "
+    "Turn Auto-queue on to start a fresh run."
+)
+
 
 class _AutoQueueMixin(AutoQuestMixin):
+    def _queue_streak(self) -> dict:
+        streak = getattr(self, "_auto_queue_streak", None)
+        if streak is None:
+            saved = self.settings.get("auto_queue_streak")
+            streak = self._auto_queue_streak = dict(saved) if isinstance(saved, dict) else {}
+            self._queue_restore_streak = bool(streak.get("since"))
+        return streak
+
+    def _queue_loss_guard(self, state: dict, completed: dict) -> bool:
+        """Account for Arena's final match outcome before allowing any next entry."""
+        streak = self._queue_streak()
+        if streak.get("losses", 0) >= AUTO_QUEUE_LOSS_LIMIT:
+            return self._stop_queue_after_losses()
+        if getattr(self, "_queue_restore_streak", False):
+            from arenamcp.server import logged_queue_results
+
+            # A checkpoint may resume the navigator without ever consulting
+            # Recent Match. Reconcile newer Arena results before either path.
+            if getattr(self, "_queue_restore_results", None) is None:
+                self._queue_restore_results = logged_queue_results(
+                    max(streak["since"], streak.get("through", 0))
+                )
+            for row in self._queue_restore_results:
+                if row["match_id"] != streak.get("last") and row["arena_completed_at"] > streak.get(
+                    "through", 0
+                ):
+                    if not self._record_queue_outcome(
+                        streak, row["match_id"], row["outcome"], row["arena_completed_at"]
+                    ):
+                        return False
+            self._queue_restore_streak = False
+            self._queue_restore_results = None
+        pending = streak.get("pending")
+        current = state.get("match_id")
+        turn = state.get("turn") or state.get("turn_info") or {}
+        live = current and (turn.get("turn_number", 0) > 0 or state.get("pending_decision"))
+        if pending and pending != completed.get("match_id") and (not live or current != pending):
+            if not self._record_queue_outcome(streak, pending, None, 0):
+                return False
+            pending = None
+        mid = completed.get("match_id")
+        stamp = completed.get("arena_completed_at", 0)
+        since = streak.get("since", getattr(self, "_auto_queue_since", 0))
+        if (
+            mid
+            and mid != streak.get("last")
+            and (mid == pending or (stamp > since and stamp > streak.get("through", 0)))
+        ):
+            if not self._record_queue_outcome(streak, mid, completed.get("outcome"), stamp):
+                return False
+            pending = streak.get("pending")
+        if live and current not in (mid, pending, streak.get("last")):
+            streak.update(pending=current, since=since)
+            self.settings.set("auto_queue_streak", streak)
+        return True
+
+    def _record_queue_outcome(self, streak: dict, mid: str, outcome: str | None, stamp: float) -> bool:
+        if outcome not in ("win", "loss", "draw"):
+            # The watcher can receive MatchCompleted before the authoritative
+            # result or miss it during reload. Retry from disk without scanning every poll.
+            now = time.monotonic()
+            if getattr(self, "_queue_retry_mid", None) != mid or now >= self._queue_retry_at:
+                from arenamcp.server import logged_queue_results
+
+                self._queue_retry_mid, self._queue_retry_at = mid, now + 5
+                records = logged_queue_results(streak.get("since", self._auto_queue_since), mid)
+                if records:
+                    outcome = records[-1]["outcome"]
+                    stamp = records[-1]["arena_completed_at"]
+            if not outcome:
+                if streak.get("pending") != mid:
+                    streak["pending"] = mid
+                    self.settings.set("auto_queue_streak", streak)
+                self.ui.status("AUTO_QUEUE_DETAIL", "Waiting for Arena to confirm this match’s result.")
+                return False
+        streak.update(
+            losses=streak.get("losses", 0) + 1 if outcome == "loss" else 0,
+            last=mid,
+            through=max(stamp, streak.get("through", 0)),
+        )
+        streak.setdefault("since", self._auto_queue_since)
+        if streak.get("pending") == mid:
+            streak.pop("pending", None)
+        self.settings.set("auto_queue_streak", streak)
+        if streak["losses"] >= AUTO_QUEUE_LOSS_LIMIT:
+            return self._stop_queue_after_losses()
+        return True
+
+    def _stop_queue_after_losses(self) -> bool:
+        self.set_auto_queue(False)
+        self.ui.status("AUTO_QUEUE_DETAIL", LOSS_STOP_DETAIL)
+        logger.info(LOSS_STOP_DETAIL)
+        return False
+
     def set_auto_queue(self, enabled: bool) -> bool:
         if getattr(self, "_auto_quest", None):
             self._auto_quest = None
             self.ui.status("GRIND", "OFF")
         if bool(enabled) != bool(getattr(self, "_auto_queue_enabled", False)):
+            if enabled:
+                self._queue_restore_streak = False
+                self._queue_restore_results = None
+                self._auto_queue_streak = {"since": time.time()}
+                self.settings.set("auto_queue_streak", self._auto_queue_streak, save=False)
             try:
                 self._loss_store().new_session()
             except Exception:
@@ -146,21 +251,29 @@ class _AutoQueueMixin(AutoQuestMixin):
                 ", decision pending" if state.get("pending_decision") else "",
             )
             return False
-        if getattr(getattr(navigator, "_bridge", None), "client_runtime", "") == "il2cpp-macos":
-            from arenamcp.server import idle_completed_match_from_log
+        from arenamcp.server import idle_completed_match_from_log
 
+        native = getattr(getattr(navigator, "_bridge", None), "client_runtime", "") == "il2cpp-macos"
+        completed = (
+            idle_completed_match_from_log(max_age_s=float("inf"))
+            if native
+            else idle_completed_match_from_log()
+        )
+        if completed and not self._queue_loss_guard(
+            state, {**completed, "arena_completed_at": completed["completed_at"]}
+        ):
+            self._auto_queue_restart_pending = self._auto_queue_enabled
+            self._suspend_auto_queue()
+            return False
+        if native:
             # Recover completion evidence for the persistent duplicate guard.
             # Age is immaterial here: the guard compares it with the prior
             # submission, and the scan rejects any later queue/gameplay. The
             # live bridge still proves idle Home and selects the current deck.
-            completed = idle_completed_match_from_log(max_age_s=float("inf"))
             completed_at = 0.0
             if completed and (not current_id or current_id == completed["match_id"]):
                 completed_at = completed["completed_at"]
             return navigator.start_recent_match(state, completed_at=completed_at)
-        from arenamcp.server import idle_completed_match_from_log
-
-        completed = idle_completed_match_from_log()
         if not completed or (current_id and current_id != completed["match_id"]):
             logger.info(
                 "Auto queue after restart: Arena is not idle after a recent match (%s); waiting for a match end",
@@ -234,6 +347,12 @@ class _AutoQueueMixin(AutoQuestMixin):
             # Draft autoplay owns navigation between its event's matches.
             self._suspend_auto_queue()
             return False
+        from arenamcp.server import get_completed_match_for_navigation
+
+        completed = get_completed_match_for_navigation()
+        if not self._queue_loss_guard(state, completed):
+            self._suspend_auto_queue()
+            return False
         quest_before_prepare = getattr(self, "_auto_quest", None)
         if not self._prepare_auto_quest(state):
             self._suspend_auto_queue()
@@ -252,7 +371,7 @@ class _AutoQueueMixin(AutoQuestMixin):
         try:
             from arenamcp.auto_queue import AutoQueueNavigator
             from arenamcp.idle_sleep import SleepInhibitor
-            from arenamcp.server import get_completed_match_for_navigation, get_last_queue_selection
+            from arenamcp.server import get_last_queue_selection
 
             inhibitor = getattr(self, "_auto_queue_sleep_inhibitor", None)
             if inhibitor is None:
@@ -261,7 +380,6 @@ class _AutoQueueMixin(AutoQuestMixin):
             quest = getattr(self, "_auto_quest", None)
             idle_ready = bool(quest and quest.get("idle_ready") and not quest.get("idle_started"))
             if idle_ready:
-                completed = get_completed_match_for_navigation()
                 current_id = state.get("match_id")
                 if (
                     quest.get("observed")
@@ -313,7 +431,8 @@ class _AutoQueueMixin(AutoQuestMixin):
                 self._auto_queue_resume = None
                 if not (resume and self._resume_auto_queue_after_reload(navigator, resume, state)):
                     self._arm_auto_queue_after_restart(navigator, state)
-            completed = get_completed_match_for_navigation()
+                    if not self._auto_queue_enabled or self._auto_queue_restart_pending:
+                        return False
             match_id = completed.get("match_id")
             current_id = state.get("match_id")
             turn = state.get("turn") or state.get("turn_info") or {}
