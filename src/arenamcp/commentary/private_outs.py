@@ -12,7 +12,11 @@ from collections import Counter
 
 from arenamcp.ability_synthesizer import Damage
 from arenamcp.card_db import get_card_database, is_unknown_card_name
-from arenamcp.card_facts.removal import printed_removal_effects, supported_public_creature
+from arenamcp.card_facts.removal import (
+    printed_removal_effects,
+    reviewed_library_nonremoval,
+    supported_public_creature,
+)
 from arenamcp.card_facts.source_identity import legacy_lookup_hash
 from arenamcp.combat_keywords import has_combat_keyword
 from arenamcp.mana import mana_cost_to_cmc
@@ -52,6 +56,8 @@ def _mana_land(card):
         f"{card['name']} enters tapped.",
         "This land enters tapped.",
         "This land enters tapped unless you control two or fewer other lands.",
+        "This land enters tapped unless you control a basic land.",
+        "This land enters tapped unless you control two or more basic lands.",
     }:
         lines = lines[1:]
     return bool(lines) and all(
@@ -92,7 +98,7 @@ def _answers_creature(card, threat, *, local_creature=False, local_basic=False):
     """True, False or unknown: can this card directly remove this public creature?"""
     if not isinstance(card, dict) or not _named_source(card):
         return None
-    if _mana_land(card):
+    if _mana_land(card) or reviewed_library_nonremoval(card):
         return False
     if card["oracle_text"] and "Creature" in card["type_line"].split(" — ")[0].split() and _simple_text(card):
         # These recognized creature spells have no direct removal of their own.
@@ -375,4 +381,11 @@ def private_removal_line(fact, snapshot):
             text = f"{lead}, including {example}."
         else:
             text = f"{lead} {example} among its potential removal cards."
+    if "direct_removal_total" in fact:
+        # GRE membership proves a population, not a freshly randomized library.
+        # Preserve that distinction when speaking the uniform-draw calculation.
+        percent = f"{100 * total / size:.1f}".removesuffix(".0")
+        odds = f" On a random draw, that’s about {percent} percent."
+        if len(text) + len(odds) <= 600:
+            text += odds
     return threat["instance_id"], text

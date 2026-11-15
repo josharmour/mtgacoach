@@ -693,7 +693,8 @@ def test_exact_remaining_count_for_meloku_with_proven_seen_and_real_printed_spel
         5,
         {"Plummet": 3, "Unsummon": 2},
     )
-    assert "5 cards among the 53 left" in private_removal_line(fact, snapshot)[1]
+    line = private_removal_line(fact, snapshot)[1]
+    assert "5 cards among the 53 left" in line and "On a random draw, that’s about 9.4 percent" in line
     assert "private_library_removal" not in pipe._commentary.offer.call_args.args[0]
     g.update_from_message(next_draw())
     snapshot["_log_game_state_id"] = 3
@@ -722,6 +723,7 @@ def test_exact_zero_requires_every_identity_and_printed_target_condition():
     catalog[15] = CARDS[15]
     partial = private_removal_fact(s, game, allow_private=True, card_lookup=catalog.get)
     assert partial["answers"] == {"Plummet": 3} and "direct_removal_total" not in partial
+    assert "percent" not in private_removal_line(partial, s)[1]
     assert private_removal_line({**partial, "direct_removal_total": 2}, s) is None
 
 
@@ -972,3 +974,65 @@ def test_private_count_withheld_on_divergent_or_malformed_gre_ability_lists(extr
     update(uniqueAbilities=[{"id": 42, "grpId": 8}], abilities=[8])
     assert not g.game_objects[800].native_abilities_incomplete
     assert project(s, g) is not None
+
+
+@pytest.mark.parametrize(
+    ("name", "cost", "type_line", "rules", "answers"),
+    [
+        ("Helpful Hunter", "{1}{W}", "Creature — Cat", "When this creature enters, draw a card.", False),
+        (
+            "Ethereal Armor",
+            "{W}",
+            "Enchantment — Aura",
+            "Enchant creature\nEnchanted creature gets +1/+1 for each enchantment you control and has first strike.",
+            False,
+        ),
+        (
+            "Cooped Up",
+            "{1}{W}",
+            "Enchantment — Aura",
+            "Enchant creature\nEnchanted creature can't attack or block.\n{o2oW}: Exile enchanted creature.",
+            True,
+        ),
+        (
+            "Trapped in the Screen",
+            "{2}{W}",
+            "Enchantment",
+            "Ward {o2}\nWhen this enchantment enters, exile target artifact, creature, or enchantment an opponent "
+            "controls until this enchantment leaves the battlefield.",
+            True,
+        ),
+        ("Pearl Medallion", "{2}", "Artifact", "White spells you cast cost {o1} less to cast.", False),
+    ],
+)
+def test_local_census_print_review_is_whole_source_and_does_not_certify_a_board(
+    name, cost, type_line, rules, answers
+):
+    from arenamcp.commentary.private_outs import _answers_creature, _public_removal_threat
+
+    printed = dict(card(42, name, type_line, rules), mana_cost=cost)
+    snapshot = meloku_board()
+    target = snapshot["zones"]["battlefield"][0]
+    assert _answers_creature(printed, target) is answers
+    assert _answers_creature(dict(printed, oracle_text=rules + "\nDestroy target creature."), target) is None
+    assert _answers_creature(dict(printed, linked_face_ids=[999]), target) is None
+    snapshot["zones"]["battlefield"].append(dict(target, **printed, controller_seat_id=1, instance_id=555))
+    if name == "Helpful Hunter":
+        assert _public_removal_threat(snapshot) is target
+        snapshot["zones"]["battlefield"][-1]["granted_abilities"] = ["ward"]
+    assert _public_removal_threat(snapshot) is None
+
+
+def test_conditional_entry_land_must_have_only_mana_abilities():
+    from arenamcp.commentary.private_outs import _answers_creature
+
+    land = card(
+        42,
+        "Test Orchard",
+        "Land",
+        "This land enters tapped unless you control a basic land.\n{oT}: Add {oG} or {oW}.",
+    )
+    target = meloku_board()["zones"]["battlefield"][0]
+    assert _answers_creature(land, target) is False
+    land["oracle_text"] += "\n{oT}: Destroy target creature with flying."
+    assert _answers_creature(land, target) is None
