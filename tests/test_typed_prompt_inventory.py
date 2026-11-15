@@ -10,7 +10,7 @@ from tests.test_match_context import card_lookup, obj, state
 from arenamcp.action_planner import ActionPlanner
 from arenamcp.card_facts.schema import card_facts_to_dict
 from arenamcp.decisions import DecisionOption, PendingDecision
-from arenamcp.match_context import prepare_match_context, reset_seen_rules
+from arenamcp.match_context import prepare_match_context, reset_seen_rules, split_deck_reference
 
 
 @pytest.fixture(autouse=True)
@@ -38,11 +38,14 @@ def test_inventory_reconstructs_every_print_count_and_displayed_probability(cert
     assert "Unlisted prints keep their starting-deck counts" in new and len(new) < len(old)
     row = re.compile(r"^(\d+)x .*?\[grp:(\d+)\]", re.M)
     listed = {int(gid): int(n) for n, gid in row.findall(old)}
-    starts = {int(gid): int(n) for n, gid in row.findall(compact["deck_reference"])}
+    starts = {int(gid): int(n) for gid, n in re.findall(r"^(\d+) (\d+)x ", compact["deck_reference"], re.M)}
     starts.update({int(gid): int(n) for n, gid in row.findall(new)})
     assert {gid: n for gid, n in starts.items() if n} == listed
     assert "2x Shared name [grp:106]" in new and "0x Card 107 [grp:107]" in new
-    assert compact["deck_reference"] == original["deck_reference"]
+    assert (
+        split_deck_reference(compact["deck_reference"])[1]
+        == split_deck_reference(original["deck_reference"])[1]
+    )
     if certain:
         for n in set(listed.values()):
             assert f"{n}x = {n / sum(listed.values()):.1%}" in new
@@ -115,3 +118,58 @@ def test_only_verified_inactive_keyword_body_uses_the_indexed_fact(monkeypatch):
 
     monkeypatch.setattr("arenamcp.card_facts.client.facts_for", unavailable)
     assert current in prepare_match_context(cleared, **args)["deck_reference"]
+
+
+def test_grouped_table_recovers_every_original_print_field_and_stays_stable():
+    deck = [*range(300, 323), 301, 306]
+
+    def lookup(gid):
+        if gid == 320:
+            return {"name": "Missing Type", "mana_cost": "{2}"}
+        if gid == 321:
+            return {"name": "Solo Print", "type_line": "Kindred Enchantment", "mana_cost": "{1}{G}"}
+        return {
+            "name": "Shared Print Name" if gid % 2 else "Other Known Card",
+            "type_line": "Creature — Human Wizard" if gid % 2 else "Artifact Creature — Construct",
+            "mana_cost": "{X}{U}" if gid % 3 else "",
+            "power": "0" if gid % 4 else "*",
+            "toughness": "1+*",
+        }
+
+    def starting(state, compact):
+        return split_deck_reference(
+            prepare_match_context(state, card_lookup=lookup, compact_decision=compact)["deck_reference"]
+        )[0].splitlines()
+
+    s = state(deck, hand=[obj(300, 8)], match_id="first")
+    old, new = starting(s, False), starting(s, True)
+    plan_head, _ = split_deck_reference(
+        prepare_match_context(s, card_lookup=lookup, library=True, compact_starting_deck=True)[
+            "deck_reference"
+        ]
+    )
+    assert plan_head.splitlines() == new
+    assert sum(map(len, new)) < sum(map(len, old))
+    assert new == starting(state(list(reversed(deck)), battlefield=[obj(310, 11)], match_id="later"), True)
+    original = {int(gid): line for line in old for gid in re.findall(r"\[grp:(\d+)\]", line)}
+    restored = {}
+    active = ""
+    for line in new:
+        if line.startswith("Printed type: "):
+            active = line.removeprefix("Printed type: ")
+        match = re.match(r"^(\d+) (\d+)x ", line)
+        if not match:
+            continue
+        gid = int(match[1])
+        name = lookup(gid)["name"]
+        line = line.removeprefix(f"{gid} {match[2]}x {name}")
+        line = f"{match[2]}x {name} [grp:{gid}]" + line
+        if active:
+            info = lookup(gid)
+            assert active == info["type_line"]
+            stats = f"{info['power']}/{info['toughness']}"
+            without_stats = line.removesuffix(" " + stats)
+            restored[gid] = f"{without_stats} {active} {stats}"
+        else:
+            restored[gid] = line
+    assert restored == original

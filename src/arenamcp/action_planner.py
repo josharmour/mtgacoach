@@ -3740,7 +3740,7 @@ class ActionPlanner(_ActionLegalityMixin):
 
         Reuses the compact format from CoachEngine._format_game_context().
         """
-        game_state = prepare_match_context(game_state)
+        game_state = prepare_match_context(game_state, compact_starting_deck=True)
         # Import and use CoachEngine's formatter for consistency. The planner
         # variant drops heavy GRE JSON dumps and trims oracle text on
         # long-resident permanents — see _format_game_context(for_planner).
@@ -4422,7 +4422,7 @@ class ActionPlanner(_ActionLegalityMixin):
         if llm_circuit_open(self._backend):
             logger.info("plan_pay_or_decline skipped: model server unavailable (circuit open)")
             return None
-        game_state = prepare_match_context(game_state)
+        game_state = prepare_match_context(game_state, compact_starting_deck=True)
         user_message = with_deck_reference(
             "\n".join(
                 [

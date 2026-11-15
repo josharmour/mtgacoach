@@ -5239,7 +5239,7 @@ class GamePlanManager:
         from arenamcp.match_context import prepare_match_context, split_deck_reference
 
         # A plan spans turns: it lists the library's remaining cards (outs).
-        game_state = prepare_match_context(game_state, library=True)
+        game_state = prepare_match_context(game_state, library=True, compact_starting_deck=True)
         context = self._build_context(game_state)
         assessment = assess(game_state)
         # Stable text first, for the server's prefix cache: system prompt,

@@ -584,5 +584,7 @@ def test_plan_prompt_orders_head_seed_rules_board(_regenerated_lookup):
 
     # The reference was regenerated from this call's own zones: its head is
     # byte-identical to what prepare_match_context renders for this state.
-    prepared_head, _rules = split_deck_reference(prepare_match_context(deepcopy(state))["deck_reference"])
+    prepared_head, _rules = split_deck_reference(
+        prepare_match_context(deepcopy(state), compact_starting_deck=True)["deck_reference"]
+    )
     assert user_message.startswith(prepared_head.rstrip("\n"))

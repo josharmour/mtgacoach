@@ -199,17 +199,52 @@ def _zone(state: dict, name: str) -> list[dict]:
     return zones.get(name) or (zones.get("my_hand") if name == "hand" else []) or []
 
 
-def _compact_line(info: dict, count: int, grp_id: int) -> str:
+def _compact_line(
+    info: dict, count: int, grp_id: int, *, table: bool = False, include_type: bool = True
+) -> str:
     """One line per deck card without rules: count, name, cost, type, printed stats."""
     name = info.get("name") or f"Unknown({grp_id})"
     fields = [
-        f"{count}x {name} [grp:{grp_id}]",
+        f"{grp_id} {count}x {name}" if table else f"{count}x {name} [grp:{grp_id}]",
         str(info.get("mana_cost") or ""),
-        str(info.get("type_line") or ""),
+        str(info.get("type_line") or "") if include_type else "",
     ]
     if info.get("power") not in (None, "") and info.get("toughness") not in (None, ""):
         fields.append(f"{info['power']}/{info['toughness']}")
     return " ".join(" ".join(part.split()) for part in fields if part)
+
+
+def _starting_rows(deck, catalog, *, group_types):
+    """Use the same print fields, naming a repeated exact type once above its rows."""
+    full = {gid: _compact_line(catalog[gid], deck[gid], gid) for gid in sorted(deck)}
+    if not group_types:
+        return list(full.values())
+    groups = {}
+    for gid in full:
+        printed = " ".join(str(catalog[gid].get("type_line") or "").split())
+        if printed:
+            groups.setdefault(printed, []).append(gid)
+    grouped = []
+    grouped_ids = set()
+    for printed, gids in groups.items():
+        heading = f"Printed type: {printed}"
+        # Each member loses its copy of the type and one separating space.
+        if len(gids) * (len(printed) + 1) <= len(heading) + 1:
+            continue
+        grouped.append(heading)
+        for gid in gids:
+            grouped_ids.add(gid)
+            grouped.append(_compact_line(catalog[gid], deck[gid], gid, table=True, include_type=False))
+    table = ["Rows start with grp ID, then copies, name, mana cost, type and printed P/T if present."]
+    table.extend(
+        _compact_line(catalog[gid], deck[gid], gid, table=True) for gid in full if gid not in grouped_ids
+    )
+    table.extend(grouped)
+    return (
+        table
+        if sum(len(row) + 1 for row in table) < sum(len(row) + 1 for row in full.values())
+        else list(full.values())
+    )
 
 
 def _visible_grp_ids(state: dict, catalog: dict[int, dict]) -> list[int]:
@@ -379,6 +414,7 @@ def prepare_match_context(
     full_rules: bool = False,
     library: bool | None = None,
     compact_decision: bool = False,
+    compact_starting_deck: bool = False,
     source_ids_complete: bool = False,
 ) -> dict:
     """Return a shallow snapshot with the deck reference, catalog and remaining inventory.
@@ -436,7 +472,7 @@ def prepare_match_context(
         "DECK REFERENCE (starting composition: count, name, cost, type; current locations and modified stats are below)",
         "Printed facts, not evidence that a card is in hand or currently castable.",
     ]
-    reference.extend(_compact_line(catalog[gid], count, gid) for gid, count in sorted(deck.items()))
+    reference.extend(_starting_rows(deck, catalog, group_types=compact_decision or compact_starting_deck))
     if commanders:
         reference.append("COMMANDER REFERENCE (availability and command tax depend on live state)")
         reference.extend(_card_line(catalog[gid], count, gid) for gid, count in sorted(commanders.items()))
