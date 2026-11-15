@@ -503,3 +503,28 @@ def test_uncertain_offered_subset_still_withholds_a_forced_declaration(bad):
         ]
     assert not sneak.sneak_main_hold(state, declare_step=True, force_declaration=True)
     assert _declare(state) is None
+
+
+@pytest.mark.parametrize(
+    "extra,allowed",
+    [
+        ({"playerSystemSeatId": 2}, False),
+        ({"playerSystemSeatId": 3}, False),
+        ({"playerSystemSeatId": 2, "planeswalkerInstanceId": 123456}, False),
+        ({"playerSystemSeatId": 1, "teamId": 3}, False),
+        ({"type": "DamageRecType_Player", "planeswalkerInstanceId": 123456}, False),
+        ({}, False),
+        ({"type": "DamageRecType_Planeswalker", "planeswalkerInstanceId": 123456}, True),
+    ],
+)
+def test_legal_subset_requires_the_normal_bridge_to_resolve_opponent_uniquely(extra, allowed):
+    from tests.test_all_in_labels_20261020 import _declare_step_board_order_differs
+
+    state, legal = _declare_step_board_order_differs()
+    state["players"][0]["life_total"] = 60
+    state["decision_context"]["raw_attackers"] = [
+        {"attackerInstanceId": i, "legalDamageRecipients": [{"type": "Player", "playerSystemSeatId": 2}]}
+        for i in legal
+    ]
+    state["decision_context"]["raw_attackers"][0]["legalDamageRecipients"].append(extra)
+    assert bool(_declare(state)) == allowed

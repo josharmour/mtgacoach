@@ -533,11 +533,28 @@ def sneak_attack(attackers: list[dict], blockers: list[dict], life: int, sneak_p
     return net, net - weakest + sneak_power
 
 
+def _valid_damage_recipient(row: dict) -> bool:
+    """Require a single exact native identity and a matching typed or legacy recipient."""
+    if not isinstance(row, dict):
+        return False
+    kinds = {
+        "playerSystemSeatId": "Player",
+        "planeswalkerInstanceId": "Planeswalker",
+        "battleInstanceId": "Battle",
+        "teamId": "Team",
+    }
+    ids = [(kind, row[key]) for key, kind in kinds.items() if key in row]
+    if any(type(value) is not int or value < 0 for _, value in ids):
+        return False
+    active = [kind for kind, value in ids if value > 0]
+    return len(active) == 1 and row.get("type") in (None, active[0], "DamageRecType_" + active[0])
+
+
 def _declared_sneak_floor(state, opponent, attackers, blockers) -> int | None:
     """Minimum player damage from *other* attackers after an unblocked one is returned."""
     from arenamcp.combat_keywords import has_combat_keyword
     from arenamcp.combat_solver import _resolve_attacker
-    from arenamcp.combat_targets import all_out_declaration_allowed
+    from arenamcp.combat_targets import all_out_declaration_allowed, choose_recipient
     from arenamcp.concede import _MULTI_BLOCK
 
     context = state.get("decision_context") or {}
@@ -554,24 +571,20 @@ def _declared_sneak_floor(state, opponent, attackers, blockers) -> int | None:
             return None
         for row in raw:
             recipients = row.get("legalDamageRecipients")
-            if not isinstance(recipients, list) or not any(
-                isinstance(r, dict)
-                and r.get("type") in (None, "Player", "DamageRecType_Player")
-                and type(r.get("playerSystemSeatId")) is int
-                and r["playerSystemSeatId"] == opponent
-                and all(
-                    k not in r or type(r[k]) is int and r[k] == 0
-                    for k in ("planeswalkerInstanceId", "battleInstanceId")
-                )
-                for r in recipients
-            ):
+            if not isinstance(recipients, list) or not all(_valid_damage_recipient(r) for r in recipients):
+                return None
+            try:
+                chosen = choose_recipient("Opponent", recipients, state)
+            except ValueError:
+                return None  # the ordinary bridge rejects an ambiguous or missing target
+            if chosen.get("playerSystemSeatId") != opponent:
                 return None
     for card in state.get("battlefield") or []:
         if card.get("is_phased_out"):
             continue
         if "raw_attackers" not in context:
             kinds = _types(card)
-            if "battle" in kinds or ("planeswalker" in kinds and _controller(card) == opponent):
+            if "battle" in kinds or "planeswalker" in kinds:
                 return None  # the legacy IDs do not say which recipient this attacker can hit
         text = _oracle(card).lower()
         if _MULTI_BLOCK.search(text) or re.search(
