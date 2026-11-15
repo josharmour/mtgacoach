@@ -315,10 +315,7 @@ def _has_unpriced_payoff(card, state):
     text = _rules(card)
     if re.search(r"\b(?:when|whenever|at the beginning|win the game|loses the game)\b", text, re.I):
         return True
-    for _cost_text, effect in _activated_abilities(card):
-        if _damage_tradeoff(effect, state):
-            return True
-    return False
+    return any(_damage_tradeoff(effect, state) for _cost_text, effect in _activated_abilities(card))
 
 
 def _damage_tradeoff(effect, state):
