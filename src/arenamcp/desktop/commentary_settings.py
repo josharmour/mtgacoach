@@ -71,6 +71,8 @@ class CommentarySettingsDialog(QDialog):
         self.private = QCheckBox("Discuss my hand and deck")
         self.private.setChecked(self.config.private_information)
         self.voice = QComboBox()
+        self.analyst = QComboBox()
+        self.analyst_label = QLabel("Color analyst")
         self.voice_label = QLabel("Voice")
         self.style_label = QLabel("Style")
         self.style = combo(list(PERSONAS.items()), self.config.persona)
@@ -95,6 +97,7 @@ class CommentarySettingsDialog(QDialog):
             (self.style_label, self.style),
             ("", self.private),
             (self.voice_label, self.voice),
+            (self.analyst_label, self.analyst),
             ("Speed", self.speed),
         ):
             form.addRow(label, control)
@@ -112,11 +115,34 @@ class CommentarySettingsDialog(QDialog):
         self.catalog_signals.finished.connect(self._catalog_ready)
         self.provider.currentIndexChanged.connect(self._update_controls)
         self.voice.currentIndexChanged.connect(self._voice_changed)
+        self.analyst.currentIndexChanged.connect(self._analyst_changed)
         self.enabled.toggled.connect(self._update_status)
         self.mode.currentIndexChanged.connect(self._update_controls)
         self._update_controls()
 
+    def _kokoro_duo(self):
+        return self.mode.currentData() == "commentary" and self.provider.currentData() == "kokoro"
+
+    def _set_analysts(self, lead, preferred):
+        self.analyst.blockSignals(True)
+        self.analyst.clear()
+        for key, label in KOKORO_VOICES:
+            if key != lead:
+                self.analyst.addItem(label, key)
+        if self.analyst.findData(preferred) < 0:
+            preferred = "af_heart" if lead != "af_heart" else "am_adam"
+        self.analyst.setCurrentIndex(self.analyst.findData(preferred))
+        self.analyst.blockSignals(False)
+
+    def _analyst_changed(self):
+        if self._kokoro_duo():
+            self.pairs["kokoro"] = f"{self.voice.currentData()}|{self.analyst.currentData()}"
+
     def _voice_changed(self):
+        if self._kokoro_duo():
+            self._set_analysts(self.voice.currentData(), self.analyst.currentData())
+            self._analyst_changed()
+            return
         if self.mode.currentData() == "commentary":
             self.pairs[self.provider.currentData()] = str(self.voice.currentData() or "")
         elif self.provider.currentData() == "kokoro":
@@ -130,11 +156,28 @@ class CommentarySettingsDialog(QDialog):
         self.voice.clear()
         duo = self.mode.currentData() == "commentary"
         self.voice_label.setText("Voices" if duo else "Voice")
+        kokoro_duo = self._kokoro_duo()
+        self.analyst_label.setVisible(kokoro_duo)
+        self.analyst.setVisible(kokoro_duo)
         self.private.setVisible(duo)
         self.style.setVisible(duo)
         self.style_label.setVisible(duo)
         self.pair_error = ""
-        if duo:
+        if kokoro_duo:
+            self.voice_label.setText("Play-by-play")
+            prefs = {
+                "tts_provider": "kokoro",
+                "voice": self.kokoro_voice,
+                "commentary_kokoro_pair": self.pairs["kokoro"],
+            }
+            try:
+                lead, analyst = voice_pair(prefs)
+            except VoicePairUnavailable:
+                self.pairs["kokoro"] = ""
+                lead, analyst = voice_pair({"voice": self.kokoro_voice})
+            options, selected = KOKORO_VOICES, lead
+            self._set_analysts(lead, analyst)
+        elif duo:
             provider = "chatterbox_remote" if chatterbox else "kokoro"
             try:
                 pairs = pair_options({"tts_provider": provider, "voice": self.kokoro_voice}, self.catalog)
@@ -234,9 +277,8 @@ class CommentarySettingsDialog(QDialog):
             voice=str(self.voice.currentData()) if not chatterbox and not duo else self.kokoro_voice,
         )
         values["chatterbox_voice"] = values["chatterbox_voice_override"] or "server_default"
-        if duo and not self.pair_error:
-            key = "commentary_chatterbox_pair" if chatterbox else "commentary_kokoro_pair"
-            values[key] = str(self.voice.currentData() or "")
+        if duo and chatterbox and not self.pair_error:
+            values["commentary_chatterbox_pair"] = str(self.voice.currentData() or "")
         # A failed/pending catalog leaves a placeholder in the selector. Keep
         # the saved pair until real choices are available again.
         values["speech_speed"] = float(self.speed.currentData())

@@ -201,3 +201,23 @@ def test_own_hand_and_deck_preference_is_visible_and_persists(dialog):
     assert session.configure_commentary.call_args.args[0]["private_information"] is True
     widget.mode.setCurrentIndex(widget.mode.findData("actions"))
     assert widget.private.isHidden()
+
+
+def test_kokoro_custom_role_voices_preview_save_and_reopen(dialog):
+    from arenamcp.commentary.voices import voice_pair
+
+    widget, settings, session = dialog
+    widget.mode.setCurrentIndex(widget.mode.findData("commentary"))
+    assert widget.voice.count() == 28 and widget.analyst.count() == 27
+    widget.voice.setCurrentIndex(widget.voice.findData("bf_emma"))
+    widget.analyst.setCurrentIndex(widget.analyst.findData("bm_fable"))
+    widget._preview()
+    assert voice_pair(session.preview_voice.call_args.args[0]) == ("bf_emma", "bm_fable")
+    assert not settings.get("commentary_kokoro_pair")
+    widget._apply()
+    reopened = ui.CommentarySettingsDialog(settings, session)
+    assert (reopened.voice.currentData(), reopened.analyst.currentData()) == ("bf_emma", "bm_fable")
+    reopened.voice.setCurrentIndex(reopened.voice.findData("bm_fable"))
+    assert reopened.analyst.findData("bm_fable") == -1
+    assert voice_pair(reopened._values()) == ("bm_fable", reopened.analyst.currentData())
+    reopened.close()

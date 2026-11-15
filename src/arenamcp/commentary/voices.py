@@ -50,6 +50,12 @@ def voice_pair(settings, catalog=None):
         else "commentary_chatterbox_pair"
     )
     selected = settings.get(key) or ""
+    if key == "commentary_kokoro_pair" and selected:
+        labels = dict(KOKORO_VOICES)
+        if isinstance(selected, str):
+            pair = tuple(selected.split("|"))
+            if len(pair) == 2 and pair[0] != pair[1] and all(v in labels for v in pair):
+                return pair
     choices = pair_options(settings, catalog)
     for value, _label, pair in choices:
         if value == selected:
