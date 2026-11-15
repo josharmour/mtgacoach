@@ -414,6 +414,8 @@ def test_full_nonland_pass_resumes_exact_model_caches_and_withholds_changed_prin
     state, book, _ = sample
     for gid in (2001, 2002):
         book.catalog[gid] = {**book.catalog[1001], "name": f"Fixture local piece {gid}"}
+        state["deck_cards"].append(gid)
+    book.identity = deck_identity(state)
     native = native_catalog(monkeypatch, book.catalog)
     native[2002].oracle_text = "Changed native synthetic effect"
     owner = _DeckLibraryMixin()

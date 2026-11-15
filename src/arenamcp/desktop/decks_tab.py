@@ -511,7 +511,7 @@ class DecksTab(QWidget):
         self.edit_btn.setEnabled(bool(deck.get("complete")))
         self.strategy_btn.setEnabled(bool(deck.get("complete")) and not building)
         self.rebuild_btn.setEnabled(strategy.get("status") == "ready")
-        self.card_study_btn.setEnabled(bool(deck.get("identity")) and strategy.get("status") == "ready")
+        self.card_study_btn.setEnabled(bool(deck.get("identity") and deck.get("complete")))
         self._show_deck(deck)
 
     def _show_deck(self, deck: dict[str, Any]) -> None:

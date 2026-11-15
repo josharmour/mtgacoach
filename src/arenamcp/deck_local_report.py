@@ -15,6 +15,10 @@ def local_report(book, state, directory, digest):
         "Deck study coverage",
         f"Saved playbook • {saved['legacy_nonland_roles']} of {saved['nonland_cards']} known nonland prints have earlier role notes. {saved['unresolved_types']} printed types unresolved.",
     ]
+    if hasattr(book, "native_profile"):
+        lines[1] = (
+            f"Current Arena prints • No saved deck strategy. {saved['nonland_cards']} known nonland prints, {saved['unresolved_types']} printed types unresolved."
+        )
     if digest is None or digest == "":
         lines.append(
             "Choose local model weights to measure their saved card, interaction and strategy passes."

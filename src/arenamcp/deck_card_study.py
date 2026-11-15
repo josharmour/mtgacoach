@@ -37,7 +37,11 @@ _VERSION = 2
 def _checked(book, gids):
     return current_study_sources_match(
         {gid: book.catalog[gid] for gid in gids},
-        allow_legacy_face_projection="study" not in book.data and not getattr(book, "study_withheld", False),
+        allow_legacy_face_projection=(
+            not hasattr(book, "native_profile")
+            and "study" not in book.data
+            and not getattr(book, "study_withheld", False)
+        ),
     )
 
 
@@ -76,6 +80,7 @@ def _context(book, gid):
         **timing,
         "reviewed_links": links,
         "commanders": list(book.commanders),
+        **({"native_main_profile": book.native_profile} if hasattr(book, "native_profile") else {}),
         "plan": book.data.get("primary_plan", ""),
         "backup": book.data.get("backup_plan", ""),
         "playbook_role": book.data.get("card_roles", {}).get(str(gid), ""),
@@ -283,7 +288,7 @@ def _validated_row(row, book, context):
 
 def study_card(book, gid, model, directory, *, allowed):
     context = _context(book, gid)
-    ids = [int(i) for i in context["prints"]]
+    ids = book.catalog if hasattr(book, "native_profile") else [int(i) for i in context["prints"]]
     if (policy := context.get("commander_deployment")) and (
         policy["base_payment"] is None or policy["unsupported_cast_rules"]
     ):
@@ -380,6 +385,8 @@ def card_detail(book, gid, row=None, *, metrics=None, model_digest=None):
     admitted = next((r for r in study.get("cards", []) if r["card"] == gid), None)
     selected = admitted or row
     lines = [book.catalog[gid]["name"]]
+    if hasattr(book, "native_profile"):
+        lines.append("Current Arena prints · no saved deck strategy")
     if selected:
         lines += [
             "",

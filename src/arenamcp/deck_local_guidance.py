@@ -7,7 +7,7 @@ import secrets
 import string
 import time
 from collections import Counter
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from arenamcp.deck_card_study import (
@@ -55,20 +55,34 @@ the necessary pieces. Echo read_receipt as the beginning receipt, each print's r
 then the ending receipt. Return topic entries in topics. All conditions are hypothetical. Do not invent permissions, extra loyalty uses or exact odds."""
 
 
-def _guidance_input(book, state, scope):
-    if scope not in TOPICS:
-        raise ValueError("Unknown deck study topic")
+@dataclass
+class PrintedStudyDeck:
+    """A local study baseline. Never saved or installed as a Coach playbook."""
+
+    identity: str
+    catalog: dict
+    commanders: list[int]
+    native_profile: dict
+    data: dict = field(default_factory=dict)
+
+
+def study_piles(state, identity):
     main = state.get("deck_cards")
     commanders = state.get("commander_grp_ids", [])
     if (
         not isinstance(main, list)
         or not isinstance(commanders, list)
         or any(type(gid) is not int or gid <= 4 for gid in (*main, *commanders))
-        or set(main) | set(commanders) != set(book.catalog)
-        or sorted(commanders) != sorted(book.commanders)
-        or deck_identity(state) != book.identity
+        or not main
+        or len(commanders) != len(set(commanders))
+        or deck_identity(state) != identity
     ):
         raise ValueError("The complete deck and its current prints could not be verified")
+    return main, commanders
+
+
+def _printed_list(state, identity):
+    main, commanders = study_piles(state, identity)
     # Resolve the submitted list from today's installed Arena data. A legacy
     # playbook may contain old printed text. Its prose and old catalogue are
     # never evidence for these new passes.
@@ -85,8 +99,38 @@ def _guidance_input(book, state, scope):
         if card is None or type(card.arena_id) is not int or card.arena_id != gid:
             raise ValueError("The current Arena print could not be verified")
         catalog[gid] = dict(vars(card))
+    return catalog, Counter(main), sorted(commanders)
+
+
+def printed_study_deck(state, identity):
+    from arenamcp.deck_profile import build_profile
+
+    catalog, counts, commanders = _printed_list(state, identity)
+    # Native DeckRecord carries the submitted main pile separately from its
+    # commanders. An overlapping row leaves their allocation ambiguous.
+    if set(counts).intersection(commanders):
+        raise ValueError("The submitted list and its designated commander overlap")
+    profile = build_profile([{**catalog[gid], "count": n} for gid, n in sorted(counts.items())])
+    return PrintedStudyDeck(
+        identity,
+        catalog,
+        commanders,
+        {
+            "main_copies": profile.card_count,
+            "main_lands": profile.land_count,
+            "mana_curve": list(profile.curve),
+            "estimated_role_counts": list(profile.roles),
+        },
+    )
+
+
+def _guidance_input(book, state, scope):
+    if scope not in TOPICS:
+        raise ValueError("Unknown deck study topic")
+    catalog, counts, commanders = _printed_list(state, book.identity)
+    if set(catalog) != set(book.catalog) or commanders != sorted(book.commanders):
+        raise ValueError("The complete deck and its current prints could not be verified")
     book = replace(book, catalog=catalog)
-    counts = Counter(main)
     prints = {
         str(gid): {
             "card": gid,

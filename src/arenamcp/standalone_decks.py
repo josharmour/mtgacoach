@@ -340,7 +340,7 @@ class _DeckLibraryMixin:
             study_card,
             unresolved_card_count,
         )
-        from arenamcp.deck_local_guidance import TOPICS, deck_guidance
+        from arenamcp.deck_local_guidance import TOPICS, deck_guidance, printed_study_deck, study_piles
         from arenamcp.local_study_model import LocalStudyModel, installed_models
 
         deck_id, identity, gid = (request.get(k) for k in ("deck_id", "identity", "card"))
@@ -348,13 +348,22 @@ class _DeckLibraryMixin:
         record = (getattr(self, "_deck_library", {}) or {}).get(deck_id)
         if not record or not record.complete or not identity or identity != record.identity():
             return {**reply, "error": "The selected deck has changed. Refresh the Decks list."}
-        book = self._coach._cached_playbook(identity, record.game_state())
-        if book is None or book.identity != identity:
-            return {**reply, "error": "Open a saved deck strategy before studying its cards."}
         directory = logging_config.LOG_DIR / "cache" / "local_card_studies"
         plans = directory.parent / "local_deck_guidance"
         scope = request.get("scope", "cards")
         try:
+            state = record.game_state()
+            book = self._coach._cached_playbook(identity, state)
+            if book is None:
+                book = printed_study_deck(state, identity)
+            else:
+                main, commanders = study_piles(state, identity)
+                if (
+                    book.identity != identity
+                    or sorted(book.commanders) != sorted(commanders)
+                    or set(book.catalog) != set(main) | set(commanders)
+                ):
+                    raise ValueError("The saved strategy no longer matches this deck and commander")
             if scope not in ("cards", "report") and scope not in TOPICS:
                 raise ValueError("Unknown deck study topic")
             if request.get("operation") == "list":
