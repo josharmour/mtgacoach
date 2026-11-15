@@ -481,6 +481,54 @@ def test_larger_audit_reservation_preserves_minute_output_ceiling_and_deadline()
         budget.before_call(fresh, "", "", audit=True)
 
 
+def test_both_calls_remain_charged_until_the_later_audit_expires():
+    now = [0.0]
+    budget = CommentaryBudget(lambda: now[0])
+    for start in (0, 2):
+        now[0] = start
+        exchange = budget.begin(4)
+        budget.before_call(exchange, "", "", audit=False)
+        budget.after_call(exchange)
+        now[0] += 1
+        budget.before_call(exchange, "", "", audit=True)
+        budget.finish(exchange)
+    now[0] = 60.1
+    early = budget.begin(4)
+    with pytest.raises(BudgetExceeded, match="output_budget"):
+        budget.before_call(early, "", "", audit=False)
+    budget.finish(early, usable=False)
+    now[0] = 61
+    fresh = budget.begin(4)
+    assert budget.before_call(fresh, "", "", audit=False)[0] == 512
+
+
+def test_generation_requires_room_for_audit_after_a_partial_exchange():
+    now = [0.0]
+    budget = CommentaryBudget(lambda: now[0])
+    partial = budget.begin(4)
+    budget.before_call(partial, "", "", audit=False)
+    budget.finish(partial, usable=False)
+    now[0] = 5
+    complete = budget.begin(4)
+    budget.before_call(complete, "", "", audit=False)
+    budget.after_call(complete)
+    budget.before_call(complete, "", "", audit=True)
+    budget.finish(complete)
+    third = budget.begin(4)
+    with pytest.raises(BudgetExceeded, match="output_budget"):
+        budget.before_call(third, "", "", audit=False)
+    assert third.calls == third.output_tokens == 0
+    budget.finish(third, usable=False)
+    assert sum(item.output_tokens for item in budget.history) == 2048
+    # The failed attempt ages out. Exactly one more complete exchange fits.
+    now[0] = 60
+    fresh = budget.begin(4)
+    budget.before_call(fresh, "", "", audit=False)
+    budget.after_call(fresh)
+    budget.before_call(fresh, "", "", audit=True)
+    assert sum(item.output_tokens for item in budget.history) == 3072
+
+
 def test_broker_distinguishes_missing_final_content_without_repair():
     from arenamcp.backends.proxy import ProxyBackend
     from arenamcp.commentary.budget import broker_failure_code

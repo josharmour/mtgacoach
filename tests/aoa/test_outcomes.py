@@ -127,6 +127,24 @@ def test_hidden_exile_never_names_the_card():
     assert "SECRET" not in str(g._commentary_journal) and all("SECRET" not in l.text for l in lines)
 
 
+def test_generative_fallback_skips_anonymous_single_departure_without_losing_other_outcomes():
+    g = game()
+    add(g, 100, "PRIVATE_CANARY", kind="Exile", source=2, destination=4, hidden=True)
+    obs = observation(g)
+    event = next(e for e in obs.events if e.kind == "outcome")
+    obs = replace(obs, events=(event,))
+    factual = CommentaryConfig(mode="commentary", speakers=2)
+    generated = replace(factual, generative=True)
+    assert "1 permanent from" in deterministic(obs, factual)[0].text
+    assert not deterministic(obs, generated)
+    assert "PRIVATE_CANARY" not in str(obs.to_wire())
+    many = replace(event, event_id="other", payload={**event.payload, "count": 2})
+    mixed = replace(obs, events=(many, event))
+    line = deterministic(mixed, generated)[0]
+    assert "2 permanents from" in line.text and line.evidence_ids == ("other",)
+    assert "PRIVATE_CANARY" not in line.text
+
+
 def test_background_plan_and_commentary_overlap_but_urgent_decision_preempts():
     from arenamcp.backends.proxy import _BackgroundLane, _CallHandle
 

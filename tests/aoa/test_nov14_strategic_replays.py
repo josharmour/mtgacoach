@@ -306,7 +306,9 @@ def test_cached_placeholder_rejected_at_speech_boundary(value):
 
 
 @pytest.mark.usefixtures("source")
-@pytest.mark.parametrize("mode", ["approved", "audit_denied", "wrong_role", "silence", "already_called"])
+@pytest.mark.parametrize(
+    "mode", ["approved", "uncited_analyst", "audit_denied", "wrong_role", "silence", "already_called"]
+)
 def test_cast_partner_reply_passes_full_native_group_audit(mode):
     o = report("193910")
     event = next(e for e in o.events if e.kind == "action_observed")
@@ -333,19 +335,24 @@ def test_cast_partner_reply_passes_full_native_group_audit(mode):
         assert ctx["allowed_roles"] == ["color_analyst"]
         if mode == "silence":
             return {"turns": []}
+        refs = list(ctx["editorial_question"]["check_these_refs"])
+        if mode != "uncited_analyst":
+            refs.insert(0, ctx["new_events"][0])
+        else:
+            assert refs and not set(refs).intersection(ctx["partner_call"]["refs"])
         return {
             "turns": [
                 {
                     "role": "play_by_play" if mode == "wrong_role" else "color_analyst",
                     "text": "If the Case gains life, blockers alone might not stabilize the race.",
-                    "refs": [ctx["new_events"][0], *ctx["editorial_question"]["check_these_refs"]],
+                    "refs": refs,
                 }
             ]
         }
 
     b = HeadlessBooth(CommentaryConfig(mode="commentary", speakers=2, generative=True), rpc, time.monotonic)
     lines, _ = b.generate(o)
-    if mode in ("wrong_role", "silence"):
+    if mode in ("uncited_analyst", "wrong_role", "silence"):
         assert not lines and not audited
     elif mode == "audit_denied":
         assert not lines and [x["role"] for x in audited] == ["play_by_play", "color_analyst"]

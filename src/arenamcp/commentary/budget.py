@@ -59,6 +59,7 @@ class Exchange:
     output_tokens: int = 0
     request_seconds: float = 0.0
     call_started: float | None = None
+    last_call_finished: float | None = None
     closed: bool = False
     usable: bool = True
 
@@ -71,7 +72,13 @@ class CommentaryBudget:
 
     def begin(self, rate=2):
         now = self.clock()
-        while self.history and now - self.history[0].started >= 60:
+        while self.history:
+            oldest = self.history[0]
+            # Keep both reservations until even the later audit has aged out.
+            # Include the full occupancy of a cancelled or interrupted call.
+            end = oldest.last_call_finished if oldest.last_call_finished is not None else oldest.started
+            if not oldest.closed or now - end < 60:
+                break
             self.history.popleft()
         if (
             self.active is not None
@@ -100,12 +107,16 @@ class CommentaryBudget:
         # final audit JSON even when thinking-off was requested. Leave bounded
         # room for that final answer; the existing total/minute and wall-time
         # budgets remain authoritative (two full 1536-token exchanges/minute).
-        output = 1024 if audit else 512
+        generation_limit, audit_limit = 512, 1024
+        output = audit_limit if audit else generation_limit
+        # An accepted generation must still pass its audit before it can air.
+        # Check room for both, but charge only the calls actually attempted.
+        required = audit_limit if audit else generation_limit + audit_limit
         if tokens > 6000:
             raise BudgetExceeded("context_budget")
         if sum(item.input_tokens for item in self.history) + tokens > 48000:
             raise BudgetExceeded("input_budget")
-        if sum(item.output_tokens for item in self.history) + output > 3072:
+        if sum(item.output_tokens for item in self.history) + required > 3072:
             raise BudgetExceeded("output_budget")
         exchange.calls += 1
         exchange.input_tokens += tokens
@@ -115,7 +126,8 @@ class CommentaryBudget:
 
     def after_call(self, exchange):
         if exchange.call_started is not None:
-            exchange.request_seconds += max(0, self.clock() - exchange.call_started)
+            exchange.last_call_finished = self.clock()
+            exchange.request_seconds += max(0, exchange.last_call_finished - exchange.call_started)
             exchange.call_started = None
 
     def finish(self, exchange, *, usable=True):

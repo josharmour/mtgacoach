@@ -46,13 +46,25 @@ def _pair(first, text, observation, config, *, position=False, snapshot=False, s
 
 
 def outcome_exchange(observation, config):
-    events = [e for e in observation.events if e.kind == "outcome"]
+    # An unnamed single departure gives the analyst context, but adds little
+    # as a spoken fallback. Keep the original observation for model generation.
+    def announce(event):
+        p = event.payload
+        return not (
+            config.generative
+            and p.get("from_zone") == "battlefield"
+            and p.get("count") == 1
+            and not any(c.get("name") and c["name"] != "Unknown card" for c in p.get("cards") or [])
+        )
+
+    events = [e for e in observation.events if e.kind == "outcome" and announce(e)]
     if not events:
         return []
     event = max(events, key=lambda e: (event_priority(e, observation), e.received_at))
     if any(
         event_priority(other, observation) > event_priority(event, observation)
         for other in observation.events
+        if other.kind != "outcome" or announce(other)
     ):
         return []
     p = event.payload
@@ -91,7 +103,8 @@ def outcome_exchange(observation, config):
         if name:
             text = f"{owner} {name} " + ("was exiled." if destination == "exile" else "left the battlefield.")
         else:
-            text = f"{actor} lost {count} permanents from the battlefield."
+            noun = "permanent" if count == 1 else "permanents"
+            text = f"{actor} lost {count} {noun} from the battlefield."
         lost_creatures = any("creature" in c.get("type_line", "").lower() for c in cards)
         if lost_creatures:
             remaining = [
