@@ -586,30 +586,26 @@ def prepare_match_context(
             "Draw chances below assume this inventory is complete and the library is randomized; "
             "order is unknown. Conjure, seek, transforms and hidden moves may change the estimate."
         )
+    # Keep every remaining print individually visible to search and scry decisions.
+    # Identical copy counts have identical odds, so state those odds once when shorter.
+    listed = []
+    with_odds = []
     for gid, count in sorted(remaining.items()):
         if count <= 0:
             continue
-        odds = f" ({count / total:.1%} per random draw)" if total and not uncertain else ""
-        lines.append(f"{count}x {catalog[gid].get('name') or f'Unknown({gid})'} [grp:{gid}]{odds}")
+        row = f"{count}x {catalog[gid].get('name') or f'Unknown({gid})'} [grp:{gid}]"
+        listed.append(row)
+        odds = f" ({count / total:.1%} per random draw)" if not uncertain else ""
+        with_odds.append(row + odds)
+    if compact_decision and total and not uncertain:
+        counts = sorted({count for count in remaining.values() if count})
+        listed.append("Per random draw: " + ", ".join(f"{n}x = {n / total:.1%}" for n in counts))
+        if sum(len(row) + 1 for row in listed) < sum(len(row) + 1 for row in with_odds):
+            with_odds = listed
+    lines.extend(with_odds)
     if not total:
         lines.append("No original-deck cards remain in this estimate.")
-    summary = "\n".join(lines)
-    if compact_decision and result["library_listed"] and total:
-        # The same request already lists every starting print and multiplicity.
-        # Express the identical estimate as changes from that list; retain the
-        # full row for offered prints and preserve the original odds precision.
-        delta = lines[:2] + ["Unlisted prints keep their starting-deck counts. Estimated remaining copies:"]
-        for gid, count in sorted(remaining.items()):
-            if count != deck[gid] or gid in offered:
-                name = catalog[gid].get("name") or f"Unknown({gid})"
-                delta.append(f"{count}x {name} [grp:{gid}]")
-        if not uncertain:
-            odds_by_count = sorted({count for count in remaining.values() if count})
-            delta.append("Per random draw: " + ", ".join(f"{n}x = {n / total:.1%}" for n in odds_by_count))
-        compact = "\n".join(delta)
-        if len(compact) < len(summary):
-            summary = compact
-    result["library_summary"] = summary
+    result["library_summary"] = "\n".join(lines)
     return result
 
 

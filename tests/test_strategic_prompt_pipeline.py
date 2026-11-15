@@ -65,7 +65,8 @@ def assert_full_context(prompt, *, library=True):
     assert prompt.startswith("DECK REFERENCE")
     # The whole deck is listed; rules are quoted for the card in hand, not the
     # library card (2026-10-10: 99 Brawl cards' rules cost ~7k tokens a call).
-    assert "1x Card 139 [grp:139]" in prompt.split("MY LIBRARY", 1)[0]
+    reference = prompt.split("MY LIBRARY", 1)[0]
+    assert "1x Card 139 [grp:139]" in reference or "\n139 1x Card 139 " in reference
     assert "Distinct rules for 100." in prompt
     assert "Distinct rules for 139." not in prompt
     remaining = prompt.split("MY LIBRARY", 1)[1]

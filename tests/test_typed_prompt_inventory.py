@@ -35,13 +35,11 @@ def test_inventory_reconstructs_every_print_count_and_displayed_probability(cert
     old = original["library_summary"]
     new = compact["library_summary"]
     assert new[: new.index("\n", new.index("\n") + 1)] == old[: old.index("\n", old.index("\n") + 1)]
-    assert "Unlisted prints keep their starting-deck counts" in new and len(new) < len(old)
     row = re.compile(r"^(\d+)x .*?\[grp:(\d+)\]", re.M)
     listed = {int(gid): int(n) for n, gid in row.findall(old)}
-    starts = {int(gid): int(n) for gid, n in re.findall(r"^(\d+) (\d+)x ", compact["deck_reference"], re.M)}
-    starts.update({int(gid): int(n) for n, gid in row.findall(new)})
-    assert {gid: n for gid, n in starts.items() if n} == listed
-    assert "2x Shared name [grp:106]" in new and "0x Card 107 [grp:107]" in new
+    assert row.findall(new) == row.findall(old)
+    assert "2x Shared name [grp:106]" in new and "Card 107 [grp:107]" not in new
+    assert len(new) <= len(old)
     assert (
         split_deck_reference(compact["deck_reference"])[1]
         == split_deck_reference(original["deck_reference"])[1]
@@ -76,7 +74,7 @@ def test_typed_search_keeps_every_option_permanent_and_raw_rule(monkeypatch):
     planner = ActionPlanner(backend, timeout=5)
     planner.plan_decision_options(decision, s)
     prompt = backend.complete.call_args.args[1]
-    assert "Unlisted prints keep their starting-deck counts" in prompt
+    assert "1x Card 244 [grp:244]" in prompt.split("MY LIBRARY", 1)[1]
     assert "Fixture Guard" in prompt and "Vigilance" in prompt
     for op in options:
         assert (
