@@ -7,9 +7,10 @@ import pytest
 from tests.mac_bridge_fakes import FakeGame, adapter_for, enum, listing
 
 from arenamcp import match_packets
-from arenamcp.action_planner import ActionType, GameAction
+from arenamcp.action_planner import ActionPlanner, ActionType, GameAction
 from arenamcp.autopilot_bridge import _BridgeSubmitMixin
 from arenamcp.combat_receipt import bind_combat_confirmation, bind_combat_state, record_native_combat
+from arenamcp.decision_snapshot import game_state_from_snapshot
 from arenamcp.gre_bridge import GREBridge
 from arenamcp.session_review import _choice
 
@@ -87,18 +88,37 @@ def test_native_execution_through_bridge_handler_and_packet(tmp_path, monkeypatc
     pilot._attack_override = Mock(return_value=None)
     pilot._log_execution_path = Mock()
     pilot._gre_bridge_failed_methods = set()
+    poll = bridge.get_pending_actions()
     if attack:
-        action = GameAction(action_type=ActionType.DECLARE_ATTACKERS, attacker_names=["Copper Courier"])
-        result = pilot._try_bridge_declare_attackers(action)
+        response = {"action_type": "declare_attackers", "attacker_names": ["Copper Courier"]}
+        state["decision_context"] = {"type": "declare_attackers", "raw_attackers": poll["attackers"]}
+        state["legal_actions"] = ["Attack with: Copper Courier", "Done (confirm attackers)"]
         options = [f"attack:{ACTOR}:player:2", f"attack:{ACTOR}:planeswalker:{WALKER}"]
     else:
-        action = GameAction(
-            action_type=ActionType.DECLARE_BLOCKERS,
-            blocker_assignments={"Copper Courier": "Reed Visitor"},
-            blocker_instance_assignments={ACTOR: OTHER},
-        )
-        result = pilot._try_gre_bridge_blockers(action)
+        response = {
+            "action_type": "declare_blockers",
+            "blocker_assignments": {"Copper Courier": "Reed Visitor"},
+        }
+        state["decision_context"] = {"type": "declare_blockers", "raw_blockers": poll["blockers"]}
+        state["legal_actions"] = ["Block with: Copper Courier", "Done (confirm blockers)"]
         options = [f"block:{ACTOR}:attacker:{OTHER}", f"block:{ACTOR}:attacker:{WALKER}"]
+
+    def parse(board):
+        planner = ActionPlanner.__new__(ActionPlanner)
+        planner._last_menu = board["legal_actions"]
+        plan = planner._parse_response(
+            json.dumps(response), planner._last_menu, board["decision_context"], game_state=board
+        )
+        [action] = plan.actions
+        return action
+
+    action = parse(state)
+    if attack:
+        assert action.attacker_instance_ids == [ACTOR]
+        result = pilot._try_bridge_declare_attackers(action)
+    else:
+        assert action.blocker_instance_assignments == {ACTOR: OTHER}
+        result = pilot._try_gre_bridge_blockers(action)
     assert result.success
     row = packet.decisions[-1]
     pending = row["pending_decision"]
@@ -107,7 +127,7 @@ def test_native_execution_through_bridge_handler_and_packet(tmp_path, monkeypatc
     assert row["chosen_options"] == [options[0]]
     assert row["display_receipt"]["chosen"] == packet.recent_decisions()[0]["chosen"]
     assert "Copper Courier" in _choice(row)
-    assert row["state_snapshot"]
+    assert parse(game_state_from_snapshot(row["state_snapshot"])) == action
     assert "PRIVATE-CANARY" not in json.dumps(row)
     assert json.loads(packet.journal.read_text().splitlines()[-1])["entry"]["chosen_options"] == [options[0]]
 
