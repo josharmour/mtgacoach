@@ -255,3 +255,30 @@ def test_zero_printed_hand_sneak_needs_no_mana_source():
     (cast,) = sneak.payable_sneak_casts(state)
     assert cast.zone == "hand" and cast.cost == "{0}"
     assert _declare(state)
+
+
+@pytest.mark.parametrize("kind", ["Planeswalker", "Battle"])
+def test_legacy_ids_cannot_confirm_player_recipient_with_alternate_visible(kind):
+    state = _state()
+    state["battlefield"].append(
+        {
+            "name": "Other recipient",
+            "instance_id": 893113,
+            "controller_seat_id": 2,
+            "card_types": [f"CardType_{kind}"],
+            "type_line": kind,
+        }
+    )
+    assert _declare(state) is None
+    ctx = state["decision_context"]
+    ctx["raw_attackers"] = [
+        {
+            "attackerInstanceId": iid,
+            "legalDamageRecipients": [
+                {"type": "DamageRecType_Player", "playerSystemSeatId": 2},
+                {f"{kind.lower()}InstanceId": 893113},
+            ],
+        }
+        for iid in ctx["legal_attacker_ids"]
+    ]
+    assert _declare(state)

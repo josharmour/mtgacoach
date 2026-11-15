@@ -572,6 +572,12 @@ def _declared_sneak_floor(state, opponent, attackers, blockers) -> int | None:
             ):
                 return None
     for card in state.get("battlefield") or []:
+        if card.get("is_phased_out"):
+            continue
+        if "raw_attackers" not in context:
+            kinds = _types(card)
+            if "battle" in kinds or ("planeswalker" in kinds and _controller(card) == opponent):
+                return None  # the legacy IDs do not say which recipient this attacker can hit
         text = _oracle(card).lower()
         if _MULTI_BLOCK.search(text) or re.search(
             r"prevent .+?damage|(?:dies|enters|leaves|return)[^\n]*(?:gain[^\n]*life|gets? [+-]\d|create[^\n]*creature[^\n]*blocking)|"
