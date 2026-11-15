@@ -164,11 +164,11 @@ def _playbook_call_options(backend, discovery):
 
 def _playbook_prompt_fingerprint() -> str:
     """Changes whenever the prompts, schema or per-pass model settings that built a cached playbook change."""
-    from arenamcp.deck_strategy import DECK_DISCOVERY_PROMPT, PLAYBOOK_VERSION
+    from arenamcp.deck_strategy import DECK_DISCOVERY_PROMPT, LEGACY_PLAYBOOK_VERSION
 
     text = "\0".join(
         (
-            str(PLAYBOOK_VERSION),
+            str(LEGACY_PLAYBOOK_VERSION),
             DECK_DISCOVERY_PROMPT,
             DECK_ANALYSIS_PROMPT,
             _PLAYBOOK_AUDIT_INSTRUCTIONS,

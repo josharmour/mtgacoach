@@ -21,7 +21,8 @@ from arenamcp.loyalty_timing import (
     walkers_in,
 )
 
-PLAYBOOK_VERSION = 2
+LEGACY_PLAYBOOK_VERSION = 2
+PLAYBOOK_VERSION = 3
 
 DECK_ANALYSIS_PROMPT = (
     """Analyze every card in the supplied Magic deck using its supplied Oracle text, costs, types and faces. Build a reusable playbook for both coaching and autoplay, not a generic archetype summary. Explicitly analyze each designated commander; a legendary card is not necessarily the commander. If there is no commander, analyze the deck's engines normally.
@@ -105,7 +106,8 @@ def deck_identity(state: dict) -> str:
     deck = Counter(gid for gid in state.get("deck_cards") or [] if isinstance(gid, int) and gid > 4)
     if not deck:
         return ""
-    data = [PLAYBOOK_VERSION, sorted(deck.items()), commander_ids(state)]
+    # A format extension does not change which list or commander the owner saved.
+    data = [LEGACY_PLAYBOOK_VERSION, sorted(deck.items()), commander_ids(state)]
     return hashlib.sha256(json.dumps(data).encode()).hexdigest()
 
 
@@ -421,7 +423,15 @@ class DeckPlaybook:
             kinds = rule.get("decisions")
             if not isinstance(kinds, list) or not kinds or any(kind not in DECISION_KINDS for kind in kinds):
                 raise ValueError("Decision rule has an unknown decision scope")
+        if "study" in data:
+            from arenamcp.deck_study import validate_study
+
+            validate_study(data["study"], catalog)
         return cls(data, catalog, commanders, identity)
+
+    @property
+    def version(self):
+        return PLAYBOOK_VERSION if "study" in self.data else LEGACY_PLAYBOOK_VERSION
 
     @staticmethod
     def _rule_lines(rule: dict) -> list[str]:
@@ -597,7 +607,7 @@ class DeckPlaybook:
 
         data = self.data
         lines = [
-            f"DECK PLAYBOOK v{PLAYBOOK_VERSION}: {data['archetype']}",
+            f"DECK PLAYBOOK v{self.version}: {data['archetype']}",
             "Model-derived strategy; quoted Oracle text and live state govern its conditions.",
             f"Primary plan: {data['primary_plan']}",
             f"Backup plan: {data['backup_plan']}",
@@ -632,18 +642,27 @@ class DeckPlaybook:
         )
         return "\n".join(lines)
 
-    def export(self) -> dict:
+    def export(self, *, include_study: bool = True) -> dict:
+        data = self.data if include_study else {key: value for key, value in self.data.items() if key != "study"}
         return {
-            "version": PLAYBOOK_VERSION,
+            "version": self.version if include_study else LEGACY_PLAYBOOK_VERSION,
             "identity": self.identity,
-            "data": self.data,
+            "data": data,
             "catalog": self.catalog,
             "commanders": self.commanders,
         }
 
     @classmethod
     def restore(cls, saved: dict, state: dict):
-        if saved.get("version") != PLAYBOOK_VERSION or saved.get("identity") != deck_identity(state):
+        data = saved.get("data")
+        if not isinstance(data, dict):
+            raise ValueError("Deck playbook has no content")
+        version = PLAYBOOK_VERSION if "study" in data else LEGACY_PLAYBOOK_VERSION
+        if (
+            type(saved.get("version")) is not int
+            or saved["version"] != version
+            or saved.get("identity") != deck_identity(state)
+        ):
             raise ValueError("Deck playbook version or deck/commander identity changed")
         catalog = {int(gid): card for gid, card in saved["catalog"].items()}
         expected = set(state.get("deck_cards") or []) | set(commander_ids(state))

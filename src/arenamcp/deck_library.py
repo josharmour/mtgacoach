@@ -300,8 +300,11 @@ def _names(playbook: Any, gids: list) -> list[str]:
 
 def playbook_report(playbook: Any) -> dict[str, Any]:
     """The playbook as readable sections for the Decks window ("how it pops off")."""
+    from arenamcp.deck_study import coverage
+
     data = playbook.data
     return {
+        "study_coverage": coverage(data, playbook.catalog),
         "archetype": data.get("archetype", ""),
         "summary": data.get("spoken_summary", ""),
         "primary_plan": data.get("primary_plan", ""),

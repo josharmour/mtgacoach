@@ -790,7 +790,7 @@ class _DiagnosticsMixin:
                 context["system_prompt"] = getattr(self._coach, "_system_prompt", None)
                 context["deck_strategy"] = getattr(self._coach, "_deck_strategy", None)
                 playbook = getattr(self._coach, "_deck_playbook", None)
-                context["deck_playbook"] = playbook.export() if playbook else None
+                context["deck_playbook"] = playbook.export(include_study=False) if playbook else None
                 context["deck_analysis_pending"] = getattr(self._coach, "_deck_strategy_pending", False)
                 context["deck_analysis_error"] = getattr(self._coach, "_deck_analysis_error", "")
                 # The game plan the decisions were following, and the match

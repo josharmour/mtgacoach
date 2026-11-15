@@ -100,6 +100,21 @@ def report_html(report: dict[str, Any], name: str = "") -> str:
             for c in key_cards
         )
         parts.append(_section("KEY CARDS", "<ul>" + rows + "</ul>"))
+    if coverage := report.get("study_coverage"):
+        counts = (
+            f"{coverage['legacy_nonland_roles']} of {coverage['nonland_cards']} known nonland prints have playbook roles. "
+            f"{coverage['structured_cards']} have structured play, hold and avoid rules. "
+            f"{coverage['synergies']} structured synergies and {coverage['combos']} combos. "
+            f"{coverage['reviewed_prints']} of {coverage['catalog_prints']} prints have reviewed relationship records."
+        )
+        if coverage["reviewed_links"]:
+            counts += (
+                f" Of {coverage['reviewed_links']} reviewed in-deck links, "
+                f"{coverage['links_in_entries']} appear in interactions and {coverage['minor_links']} are marked minor."
+            )
+        if coverage["unresolved_types"]:
+            counts += f" {coverage['unresolved_types']} prints have unresolved types."
+        parts.append(_section("STUDY COVERAGE", theme.span(counts)))
     phases = report.get("phases") or {}
     if phases:
         rows = "".join(
