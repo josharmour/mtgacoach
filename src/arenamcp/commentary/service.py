@@ -115,7 +115,11 @@ class CommentaryService:
                 if item and uid in self.grounded_ids:
                     self.last_grounded = (item.epoch, time.monotonic())
                 if item:
-                    logger.info("Commentary delivery uid=%s role=%s state=started", uid, item.role)
+                    logger.info(
+                        "Commentary delivery uid=%s role=%s state=started",
+                        uid if uid in self.public_proposals else "withheld",
+                        item.role,
+                    )
         if state in TERMINAL_STATES:
             with self._lock:
                 self.inflight.pop(uid, None)
@@ -126,6 +130,12 @@ class CommentaryService:
                     self.heard.append(item.text)
                     if item.role == "color_analyst":
                         self.heard_analysis.append(item.text)
+                        if item.heard_grounded_reply and any(
+                            epoch == item.epoch and eid in item.evidence_ids and source is not None
+                            for epoch, eid, _text, source in self.heard_event_calls
+                        ):
+                            # In owner mode the event, wording and proposal ID remain private.
+                            logger.info("Commentary grounded handoff finished")
                     if item.role == "play_by_play" and len(item.evidence_ids) == 1:
                         self.heard_event_calls.append(
                             (
@@ -158,7 +168,7 @@ class CommentaryService:
                             opening["retry_at"] = time.monotonic() + 2
                     logger.info(
                         "Commentary delivery uid=%s role=%s state=%s reason=%s evidence=%s",
-                        uid,
+                        uid if public else "withheld",
                         item.role,
                         state,
                         reason or "unspecified",
@@ -354,14 +364,17 @@ class CommentaryService:
         self.status("grounded", reason=reason)
         return {eid for item in lines for eid in item.evidence_ids}
 
-    def _emit_proposal(self, item, observation, config):
-        # Scope comes from the engine's actual projection. A late worker result
-        # must not become public merely because a desktop checkbox changed.
-        public_only = (
+    @staticmethod
+    def _public_projection(observation, config):
+        return (
             not config.private_information
             and not observation.private_state
             and all(event.visibility == "public" for event in observation.events)
         )
+
+    def _emit_proposal(self, item, observation, config):
+        # A late proposal retains its originating projection's consent scope.
+        public_only = self._public_projection(observation, config)
         with self._lock:
             if public_only and self.proposals.get(item.utterance_id) is item:
                 self.public_proposals.add(item.utterance_id)
@@ -547,7 +560,11 @@ class CommentaryService:
                         )
                         if not prefix_valid:
                             self.status(
-                                "not_delivered", reason="expired_or_changed", utterance_id=item.utterance_id
+                                "not_delivered",
+                                reason="expired_or_changed",
+                                utterance_id=item.utterance_id
+                                if self._public_projection(observation, config)
+                                else "withheld",
                             )
                             self.client.delivered(item.utterance_id, "superseded")
                             continue

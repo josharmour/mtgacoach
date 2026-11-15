@@ -254,11 +254,12 @@ def test_public_mode_discards_late_private_proposals_for_every_voice(booth, prov
     tts._public_voice.speak.assert_not_called()
 
 
-def test_private_line_uses_the_private_local_audio_request(booth, monkeypatch):
+def test_private_line_uses_the_private_local_audio_request(booth, monkeypatch, caplog):
     control, tts, settings, _, _ = booth
     settings.update(tts_provider="chatterbox_remote", commentary_private_information=True)
     control.config = replace(control.config, private_information=True)
-    item = replace(line(control), text="A synthetic private deck fact.")
+    item = replace(line(control), text="A synthetic private deck fact.", utterance_id="sensitive-event-key")
+    caplog.set_level("INFO", logger="arenamcp.desktop.commentary_controller")
     control.spoken = Mock()
     request = Mock()
     monkeypatch.setattr(tts, "request_speech", request)
@@ -269,6 +270,8 @@ def test_private_line_uses_the_private_local_audio_request(booth, monkeypatch):
     control.spoken.assert_not_called()
     settings["commentary_private_information"] = False
     assert not payload["valid"]()
+    tts.speechStatus.emit(item.utterance_id, "superseded")
+    assert item.utterance_id not in caplog.text and item.text not in caplog.text
 
 
 @pytest.mark.parametrize("role,index", [("play_by_play", 0), ("color_analyst", 1)])

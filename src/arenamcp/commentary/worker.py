@@ -148,6 +148,12 @@ def main():
                             else observation.arrived_at + (15 if position else 8),
                             voice=item.voice or "atlas",
                             anchor_id=item.anchor_uid,
+                            heard_grounded_reply=(
+                                item.role == "color_analyst"
+                                and not item.anchor_uid
+                                and facade.heard_grounded_ref is not None
+                                and facade.heard_grounded_ref in tracked.get("refs", ())
+                            ),
                             evidence_ids=tuple(e.event_id for e in cited),
                             snapshot_id=observation.snapshot_id,
                             role=item.role,

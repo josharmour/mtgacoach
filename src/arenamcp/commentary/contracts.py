@@ -146,8 +146,14 @@ class Utterance:
     protocol_version: int = PROTOCOL_VERSION
     excitement: str | None = None
     salience: int = 1
+    heard_grounded_reply: bool = False
 
     def __post_init__(self) -> None:
+        if type(self.heard_grounded_reply) is not bool or (
+            self.heard_grounded_reply
+            and (self.role != "color_analyst" or self.category != SpeechCategory.COMMENTARY or self.anchor_id)
+        ):
+            raise ValueError("Grounded reply requires an independent analyst line")
         if self.excitement not in {None, "calm", "normal", "tense", "electric"}:
             raise ValueError("Invalid speech excitement")
         if type(self.salience) is not int or not 0 <= self.salience <= 3:

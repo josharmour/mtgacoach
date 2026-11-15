@@ -177,6 +177,7 @@ class CommentaryController(QObject):
             return
         settings = get_settings()
         if public_only is not True:
+            self.private_commentary_ids.add(item.utterance_id)
             if (
                 not self.config.private_information
                 or settings.get("commentary_private_information") is not True
@@ -184,7 +185,6 @@ class CommentaryController(QObject):
                 self.commentary_ids.add(item.utterance_id)
                 self._status(item.utterance_id, "superseded")
                 return
-            self.private_commentary_ids.add(item.utterance_id)
         provider = "kokoro" if public_only is not True else str(settings.get("tts_provider") or "kokoro")
         try:
             if not self.config.private_information and qwen_public.selected(settings):
@@ -363,18 +363,19 @@ class CommentaryController(QObject):
             if not self.arbiter.submit(item, allow_muted=True):
                 self._status(item_id, "failed")
 
+    def _private_speech_id(self, uid):
+        return uid.startswith("private-outs:") or uid in self.private_commentary_ids
+
     def _start(self, item):
         times = self.timings.setdefault(item.utterance_id, {"accepted": time.monotonic()})
         times["render_start"] = time.monotonic()
+        private = self._private_speech_id(item.utterance_id)
         logger.info(
             "Speech render uid=%s category=%s provider=%s queue_seconds=%.3f",
-            item.utterance_id,
+            "withheld" if private else item.utterance_id,
             item.category.value,
             item.provider,
             times["render_start"] - times["accepted"],
-        )
-        private = (
-            item.utterance_id.startswith("private-outs:") or item.utterance_id in self.private_commentary_ids
         )
         if item.category == SpeechCategory.COMMENTARY and not private:
             self.spoken(item.text)
@@ -430,7 +431,7 @@ class CommentaryController(QObject):
             times["started"] = now
         logger.info(
             "Speech lifecycle uid=%s state=%s reason=%s since_accept_seconds=%.3f render_seconds=%.3f",
-            uid,
+            "withheld" if self._private_speech_id(uid) else uid,
             state,
             reason,
             now - times.get("accepted", now),

@@ -159,7 +159,11 @@ def test_grounded_handoff_in_normal_worker(kind, mode, request):
     if mode in {"heard", "owner"}:
         assert [audit for _, audit in calls] == [False, True]
         assert [line.role for line in lines] == ["color_analyst"]
-        assert not lines[0].anchor_id and lines[0].evidence_ids == (event.event_id,)
+        assert (
+            lines[0].heard_grounded_reply
+            and not lines[0].anchor_id
+            and lines[0].evidence_ids == (event.event_id,)
+        )
         assert valid_for(lines[0], obs) and not valid_for(lines[0], replace(obs, snapshot_id="changed"))
     else:
         assert not lines
@@ -192,3 +196,31 @@ def test_expired_delivery_discards_grounded_evidence_without_a_late_handoff():
     assert uid not in service.proposals and uid not in service.grounded_ids
     service.delivery(uid, "finished")
     assert not service._heard_public_calls(obs.epoch, (event,))
+
+
+@pytest.mark.parametrize(
+    "mode", ["finished", "interrupted_analyst", "wrong_event", "no_native_proof", "revoked"]
+)
+def test_handoff_receipt_is_content_free_and_requires_both_finished_lines(mode, caplog):
+    import logging
+
+    service, config, obs, event, lead = prepare_lead("outcome", private=True)
+    service.delivery(lead["utterance_id"], "finished")
+    reply = replace(
+        Utterance.from_wire(lead),
+        utterance_id="sensitive-proposal-id",
+        role="color_analyst",
+        text="private sample wording",
+        heard_grounded_reply=mode != "no_native_proof",
+        evidence_ids=(("sensitive-unmatched-event" if mode == "wrong_event" else event.event_id),),
+    )
+    service.proposals[reply.utterance_id] = reply
+    if mode == "revoked":
+        service.configure()
+    caplog.set_level(logging.INFO, logger="arenamcp.commentary.service")
+    service.delivery(reply.utterance_id, "started")
+    service.delivery(reply.utterance_id, "superseded" if mode == "interrupted_analyst" else "finished")
+    service.delivery(reply.utterance_id, "finished")
+    receipt = [r.getMessage() for r in caplog.records if "grounded handoff" in r.getMessage()]
+    assert receipt == (["Commentary grounded handoff finished"] if mode == "finished" else [])
+    assert reply.text not in caplog.text and reply.utterance_id not in caplog.text

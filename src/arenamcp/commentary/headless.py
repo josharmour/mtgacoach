@@ -254,6 +254,13 @@ class HeadlessBooth:
                     )
                 if isinstance(turns, list) and len(turns) > config.speakers:
                     raise ModelError("too_many_lines")
+                if (
+                    lead
+                    and turns
+                    and selected.get("partner_call_heard")
+                    and lead["refs"][0] in context["heard_public_calls"]
+                ):
+                    owner.heard_grounded_ref = lead["refs"][0]
                 return output
 
             def verify(self, context, turns):
@@ -410,6 +417,7 @@ class HeadlessBooth:
         self.already_called = observation.recent_commentary
         self.heard_cast_calls = dict(observation.heard_cast_calls)
         self.heard_public_calls = confirmed_public_calls(observation, self.settings)
+        self.heard_grounded_ref = None
         self.recent_analysis = observation.recent_analysis
         self.deck_plan = (
             observation.private_state.get("deck_overview") if self.settings.private_information else None
