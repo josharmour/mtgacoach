@@ -1,6 +1,68 @@
 [
   {
     "grp_ids": [
+      94046,
+      97076
+    ],
+    "printed": {
+      "name": "Ball Lightning",
+      "mana_cost": "{R}{R}{R}",
+      "type_line": "Creature — Elemental",
+      "oracle_text": "Trample\nHaste\nAt the beginning of the end step, sacrifice this creature."
+    },
+    "record": {
+      "name": "Ball Lightning",
+      "rules_hash": "4cffd35e8e536281d1c262a77a5d9e1807e0606e1db635f02fd7465659820230",
+      "threat": {
+        "version": 1,
+        "plan": [
+          {
+            "text": "Ball Lightning has haste and trample. Its end-step trigger makes its controller sacrifice it when the trigger resolves, if that player still controls it.",
+            "origin": "model",
+            "evidence": [
+              {
+                "card": "Ball Lightning",
+                "quote": "Trample\nHaste\nAt the beginning of the end step, sacrifice this creature."
+              }
+            ]
+          }
+        ],
+        "clock": [],
+        "answers": []
+      },
+      "relationships": {
+        "version": 1,
+        "links": [
+          {
+            "card": "Minsc & Boo, Timeless Heroes",
+            "role": "enabler",
+            "claim": {
+              "text": "If one player controls both permanents, Minsc & Boo’s −2 ability can sacrifice Ball Lightning for damage based on its power before its end-step sacrifice. The draw requires a Hamster.",
+              "origin": "model",
+              "evidence": [
+                {
+                  "card": "Minsc & Boo, Timeless Heroes",
+                  "quote": "[-2]: Sacrifice a creature. When you do, Minsc & Boo deals X damage to any target, where X is that creature's power. If the sacrificed creature was a Hamster, draw X cards."
+                },
+                {
+                  "card": "Ball Lightning",
+                  "quote": "At the beginning of the end step, sacrifice this creature."
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "narrative_provenance": {
+        "source_text_sha256": {
+          "Ball Lightning": "43b64b2d5c2b7d37656bdaea534fdcbda5d21a981124ebb175f06ec5a4e5ed3a",
+          "Minsc & Boo, Timeless Heroes": "adbc676b3f663919c18782eeb5848255fd1d4418184d8d80927099213f389bb3"
+        }
+      }
+    }
+  },
+  {
+    "grp_ids": [
       88930
     ],
     "printed": {
@@ -174,6 +236,110 @@
   },
   {
     "grp_ids": [
+      73310,
+      93891
+    ],
+    "printed": {
+      "name": "Marauding Blight-Priest",
+      "mana_cost": "{2}{B}",
+      "type_line": "Creature — Vampire Cleric",
+      "oracle_text": "Whenever you gain life, each opponent loses 1 life."
+    },
+    "record": {
+      "name": "Marauding Blight-Priest",
+      "rules_hash": "ad5e7730e52e962171372d386567871f9d100e2c78da1a148d4c289abdbcf8b5",
+      "threat": {
+        "version": 1,
+        "plan": [
+          {
+            "text": "Each separate life gain by the Priest’s controller can cost each opponent 1 life, regardless of how much life was gained.",
+            "origin": "model",
+            "evidence": [
+              {
+                "card": "Marauding Blight-Priest",
+                "quote": "Whenever you gain life, each opponent loses 1 life."
+              }
+            ]
+          }
+        ],
+        "clock": [],
+        "answers": []
+      },
+      "relationships": {
+        "version": 1,
+        "links": []
+      },
+      "narrative_provenance": {
+        "source_text_sha256": {
+          "Marauding Blight-Priest": "616a3b7a8f2656839f794f9e9d3de5ad6f643b3891a879798991dbb182ab3b46"
+        }
+      }
+    }
+  },
+  {
+    "grp_ids": [
+      81841,
+      82936
+    ],
+    "printed": {
+      "name": "Minsc & Boo, Timeless Heroes",
+      "mana_cost": "{2}{R}{G}",
+      "type_line": "Legendary Planeswalker — Minsc",
+      "oracle_text": "When Minsc & Boo enters and at the beginning of your upkeep, you may create Boo, a legendary 1/1 red Hamster creature token with trample and haste.\n[+1]: Put three +1/+1 counters on up to one target creature with trample or haste.\n[-2]: Sacrifice a creature. When you do, Minsc & Boo deals X damage to any target, where X is that creature's power. If the sacrificed creature was a Hamster, draw X cards.\nMinsc & Boo, Timeless Heroes can be your commander."
+    },
+    "record": {
+      "name": "Minsc & Boo, Timeless Heroes",
+      "rules_hash": "0f4648c3ad00678bc3d7a2f3206ef3b6249a753e9c99fe12b437f1759a19b8a2",
+      "threat": {
+        "version": 1,
+        "plan": [
+          {
+            "text": "Minsc & Boo can turn a creature’s power into damage to any target through the −2 loyalty ability. The card draw also requires that the sacrificed creature was a Hamster.",
+            "origin": "model",
+            "evidence": [
+              {
+                "card": "Minsc & Boo, Timeless Heroes",
+                "quote": "[-2]: Sacrifice a creature. When you do, Minsc & Boo deals X damage to any target, where X is that creature's power. If the sacrificed creature was a Hamster, draw X cards."
+              }
+            ]
+          }
+        ],
+        "clock": [],
+        "answers": []
+      },
+      "relationships": {
+        "version": 1,
+        "links": [
+          {
+            "card": "Ball Lightning",
+            "role": "payoff",
+            "claim": {
+              "text": "If one player controls both permanents, Minsc & Boo’s −2 ability can sacrifice Ball Lightning for damage based on its power before its end-step sacrifice. The draw requires a Hamster.",
+              "origin": "model",
+              "evidence": [
+                {
+                  "card": "Minsc & Boo, Timeless Heroes",
+                  "quote": "[-2]: Sacrifice a creature. When you do, Minsc & Boo deals X damage to any target, where X is that creature's power. If the sacrificed creature was a Hamster, draw X cards."
+                },
+                {
+                  "card": "Ball Lightning",
+                  "quote": "At the beginning of the end step, sacrifice this creature."
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "narrative_provenance": {
+        "source_text_sha256": {
+          "Minsc & Boo, Timeless Heroes": "adbc676b3f663919c18782eeb5848255fd1d4418184d8d80927099213f389bb3",
+          "Ball Lightning": "43b64b2d5c2b7d37656bdaea534fdcbda5d21a981124ebb175f06ec5a4e5ed3a"
+        }
+      }
+    }
+  },
+  {
+    "grp_ids": [
       82159,
       82347,
       82352,
@@ -274,6 +440,48 @@
       "narrative_provenance": {
         "source_text_sha256": {
           "Thassa's Oracle": "0ca64b18556b9ed8565637bd61cf01c8abae0780fa86c24681ef7569df0b9d76"
+        }
+      }
+    }
+  },
+  {
+    "grp_ids": [
+      71909,
+      93584
+    ],
+    "printed": {
+      "name": "Vito, Thorn of the Dusk Rose",
+      "mana_cost": "{2}{B}",
+      "type_line": "Legendary Creature — Vampire Cleric",
+      "oracle_text": "Whenever you gain life, target opponent loses that much life.\n{o3oBoB}: Creatures you control gain lifelink until end of turn."
+    },
+    "record": {
+      "name": "Vito, Thorn of the Dusk Rose",
+      "rules_hash": "79353256574893a9ed98ce8dd34c6b8658ea9a6127c0668e1d9d37a9d4637a27",
+      "threat": {
+        "version": 1,
+        "plan": [
+          {
+            "text": "A life gain by Vito’s controller can make a target opponent lose that much life when the trigger resolves.",
+            "origin": "model",
+            "evidence": [
+              {
+                "card": "Vito, Thorn of the Dusk Rose",
+                "quote": "Whenever you gain life, target opponent loses that much life."
+              }
+            ]
+          }
+        ],
+        "clock": [],
+        "answers": []
+      },
+      "relationships": {
+        "version": 1,
+        "links": []
+      },
+      "narrative_provenance": {
+        "source_text_sha256": {
+          "Vito, Thorn of the Dusk Rose": "af0920e4300751fae6cf240d8633ae66c1b9eb5fc5d94a3bc84b6b926bd2c719"
         }
       }
     }

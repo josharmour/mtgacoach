@@ -167,3 +167,31 @@ def test_hidden_evidence_wins_over_public_visibility(hidden):
     state["zones"]["exile"] = [{**card, "visibility": "Visibility_Public", **hidden}]
     assert not OpponentRead().plan_block(state)
     assert not cast_read(OpponentRead(), state)
+
+
+def test_vito_targets_while_priest_drains_each_opponent_per_gain():
+    from dataclasses import asdict
+
+    from arenamcp.card_facts.reviewed_notes import corpus
+
+    state = captured(327)
+    sources = corpus()[0]
+
+    def permanent(gid):
+        return dict(
+            asdict(sources[gid]),
+            grp_id=gid,
+            instance_id=100 + gid,
+            owner_seat_id=2,
+            controller_seat_id=2,
+            object_kind="CARD",
+        )
+
+    state["zones"]["battlefield"] = [permanent(73310), permanent(71909)]
+    read = OpponentRead()
+    by_card = {v["evidence"][0]["name"]: v["text"] for v in cast_read(read, state).values()}
+    assert "each opponent 1 life" in by_card["Marauding Blight-Priest"]
+    assert "target opponent lose that much life" in by_card["Vito, Thorn of the Dusk Rose"]
+    # A conflicting printed version has no standing as a source.
+    state["zones"]["battlefield"] = [{**permanent(71909), "oracle_text": "Different rules"}]
+    assert not cast_read(OpponentRead(), state)

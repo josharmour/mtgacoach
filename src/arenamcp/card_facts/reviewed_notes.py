@@ -12,7 +12,7 @@ from importlib.resources import files
 
 from .validate import PrintedCard
 
-_CORPUS_SHA256 = "66f7b0f420d69afbd6bc84786a3b2d443aa1678e8fe713e37e7bea6a3197f6de"
+_CORPUS_SHA256 = "a43fde431a32b1f74f7185609a4016c5132cbba1549ff25cea73753a7ff96763"
 
 
 @lru_cache(maxsize=1)
