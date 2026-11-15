@@ -380,3 +380,98 @@ def test_revoking_hand_access_while_projecting_prevents_a_late_backend_call():
     finally:
         release.set()
         service.close()
+
+
+@pytest.mark.parametrize("result", ["heard", "private", "interrupted", "changed", "expired", "revoked"])
+def test_waiting_lead_cannot_be_replaced_by_its_own_analyst(booth, monkeypatch, result):
+    control, tts, settings, service, _ = booth
+    private = result in {"private", "revoked"}
+    settings.update(commentary_private_information=private, commentary_public_voice="kokoro")
+    config = replace(control.config, private_information=private)
+    service.config = control.config = config
+    control.send = lambda d: (
+        service.delivery(d["utterance_id"], d["state"], d.get("reason", ""))
+        if d["cmd"] == "commentary_delivery"
+        else None
+    )
+    render = Mock()
+    monkeypatch.setattr(tts, "request_speech", render)
+    obs = control.observation
+    advice = replace(line(control), utterance_id="advice", category=SpeechCategory.ADVICE)
+    control.arbiter.submit(advice)
+    tts.speechStatus.emit(advice.utterance_id, "started")
+    lead = replace(line(control), utterance_id="lead", event_bound=True, evidence_ids=("event",))
+    tail = replace(line(control, "color_analyst"), utterance_id="tail", anchor_id="lead")
+    for item in (lead, tail):
+        service.proposals[item.utterance_id] = item
+        service.inflight[item.utterance_id] = time.monotonic() + 60
+        service._emit_proposal(item, obs, config)
+
+    assert control.arbiter.pending and control.arbiter.pending.utterance_id == "lead"
+    assert service.waiting_for_anchor == {"tail"}
+    assert "tail" not in control.arbiter._states
+    assert render.call_count == 1
+    tts.speechStatus.emit(advice.utterance_id, "finished")
+    tts.speechStatus.emit(lead.utterance_id, "started")
+    assert render.call_count == 2 and not control.arbiter.pending
+    if result == "changed":
+        control.observation = replace(obs, snapshot_id="changed")
+    if result == "expired":
+        service.proposals["tail"] = replace(tail, expires_at=time.monotonic() - 1)
+    if result == "revoked":
+        settings["commentary_private_information"] = False
+        service.configure()
+    tts.speechStatus.emit(lead.utterance_id, "stopped" if result == "interrupted" else "finished")
+    assert not service.waiting_for_anchor
+    if result in {"heard", "private"}:
+        assert control.arbiter.active.utterance_id == "tail" and render.call_count == 3
+        assert render.call_args.kwargs.get("private", False) is private
+        tts.speechStatus.emit(tail.utterance_id, "started")
+        tts.speechStatus.emit(tail.utterance_id, "finished")
+        assert control.arbiter.active is None
+        assert list(service.heard) == [lead.text, tail.text]
+    else:
+        assert render.call_count == 2 and "tail" not in service.proposals
+
+
+def test_real_grounded_opening_waits_behind_advice_then_delivers_both_roles_once(booth, monkeypatch):
+    from test_narration_context import snapshot
+
+    control, tts, settings, service, _ = booth
+    settings.update(commentary_private_information=True, commentary_public_voice="kokoro")
+    cfg = replace(control.config, private_information=True)
+    service.config = control.config = cfg
+    state = snapshot()
+    service.latest = state
+    control.observe(state)
+    obs = service.adapter.observe(state, True)
+    service.pending_events = {e.event_id: e for e in obs.events}
+    feedback = []
+
+    def report(pkt):
+        if pkt["cmd"] == "commentary_delivery":
+            feedback.append((pkt["utterance_id"], pkt["state"]))
+            service.delivery(pkt["utterance_id"], pkt["state"], pkt.get("reason", ""))
+
+    session = SimpleNamespace(_pending_restart=None, _speech=control, commentaryStatusChanged=Mock())
+    service.emit = lambda evt: CoachSession._handle_process_event(session, evt)
+    control.send = report
+    render = Mock()
+    monkeypatch.setattr(tts, "request_speech", render)
+    advice = replace(line(control), utterance_id="first-advice", category=SpeechCategory.ADVICE)
+    control.arbiter.submit(advice)
+    tts.speechStatus.emit(advice.utterance_id, "started")
+    service._fallback(obs, cfg, "opening_deck_overview")
+    lead = control.arbiter.pending
+    assert lead and lead.role == "play_by_play"
+    (tail_id,) = service.waiting_for_anchor
+    assert service.proposals[tail_id].anchor_id == lead.utterance_id
+    tts.speechStatus.emit(advice.utterance_id, "finished")
+    tts.speechStatus.emit(lead.utterance_id, "started")
+    assert render.call_count == 2 and control.arbiter.pending is None
+    tts.speechStatus.emit(lead.utterance_id, "finished")
+    assert control.arbiter.active.utterance_id == tail_id and render.call_count == 3
+    tts.speechStatus.emit(tail_id, "started")
+    tts.speechStatus.emit(tail_id, "finished")
+    assert [u for u, state in feedback if state == "finished"] == [lead.utterance_id, tail_id]
+    assert next(iter(service.openings.values()))["finished"] == {"play_by_play", "color_analyst"}

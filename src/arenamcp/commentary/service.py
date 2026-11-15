@@ -48,6 +48,7 @@ class CommentaryService:
         self.fallback_events = set()
         self.proposals = {}
         self.public_proposals = set()
+        self.waiting_for_anchor = set()
         self.heard = deque(maxlen=24)
         self.heard_analysis = deque(maxlen=16)
         self.heard_event_calls = deque(maxlen=24)
@@ -70,6 +71,7 @@ class CommentaryService:
                 self.inflight.clear()
                 self.proposals.clear()
                 self.public_proposals.clear()
+                self.waiting_for_anchor.clear()
                 self.heard.clear()
                 self.heard_analysis.clear()
                 self.heard_event_calls.clear()
@@ -109,6 +111,15 @@ class CommentaryService:
             logger.info("Commentary opening suppressed reason=%s", reason)
 
     def delivery(self, uid, state, reason=""):
+        if state == "waiting_for_anchor":
+            with self._lock:
+                item = self.proposals.get(uid)
+                if item and item.anchor_id in self.proposals:
+                    self.waiting_for_anchor.add(uid)
+                    return
+            if item:
+                self.delivery(uid, "superseded", "anchor_unavailable")
+            return
         if state == "started":
             with self._lock:
                 item = self.proposals.get(uid)
@@ -126,6 +137,7 @@ class CommentaryService:
                 item = self.proposals.pop(uid, None)
                 public = uid in self.public_proposals
                 self.public_proposals.discard(uid)
+                self.waiting_for_anchor.discard(uid)
                 if item and state == "finished" and (public or self.config.private_information):
                     self.heard.append(item.text)
                     if item.role == "color_analyst":
@@ -179,6 +191,32 @@ class CommentaryService:
             except queue.Full:
                 self.cancelled.set()
             self.wake.set()
+
+            self._resume_replies(uid, state)
+
+    def _resume_replies(self, anchor_id, state):
+        # The desktop has one pending audio slot. An already-admitted reply
+        # stays in the engine's existing proposal table until its queued lead
+        # finishes. Final speech admission still rechecks the anchor and position.
+        with self._lock:
+            ready = [
+                (item, uid in self.public_proposals)
+                for uid in self.waiting_for_anchor
+                if (item := self.proposals.get(uid)) and item.anchor_id == anchor_id
+            ]
+            for item, _ in ready:
+                self.waiting_for_anchor.discard(item.utterance_id)
+        for item, public in ready:
+            if (
+                state == "finished"
+                and not self.muted()
+                and not self.cancelled.is_set()
+                and time.monotonic() < item.expires_at
+                and (public or self.config.private_information)
+            ):
+                self.emit({"type": "commentary_proposal", "utterance": item.to_wire(), "public_only": public})
+            else:
+                self.delivery(item.utterance_id, "superseded", "anchor_unavailable")
 
     def _heard_cast_calls(self, epoch, events):
         casts = {e.event_id for e in events if e.kind == "action_observed" and e.visibility == "public"}
@@ -431,6 +469,7 @@ class CommentaryService:
                     self.heard_event_calls.clear()
                     self.proposals.clear()
                     self.public_proposals.clear()
+                    self.waiting_for_anchor.clear()
                     self.openings.clear()
                     self.grounded_ids.clear()
                 for event in observation.events:
@@ -475,6 +514,7 @@ class CommentaryService:
                         uid: item for uid, item in self.proposals.items() if uid in self.inflight
                     }
                     self.public_proposals.intersection_update(self.proposals)
+                    self.waiting_for_anchor.intersection_update(self.proposals)
                     self.grounded_ids = {
                         uid: event for uid, event in self.grounded_ids.items() if uid in self.proposals
                     }

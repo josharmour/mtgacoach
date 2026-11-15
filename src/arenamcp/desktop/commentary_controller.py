@@ -185,6 +185,19 @@ class CommentaryController(QObject):
                 self.commentary_ids.add(item.utterance_id)
                 self._status(item.utterance_id, "superseded")
                 return
+        pending = self.arbiter.pending
+        if pending and item.anchor_id == pending.utterance_id and item.epoch == pending.epoch:
+            # Submitting a reply now would replace its own lead in the single
+            # pending slot. Ask the engine to reoffer it after the lead is heard.
+            self.private_commentary_ids.discard(item.utterance_id)
+            self.send(
+                {
+                    "cmd": "commentary_delivery",
+                    "utterance_id": item.utterance_id,
+                    "state": "waiting_for_anchor",
+                }
+            )
+            return
         provider = "kokoro" if public_only is not True else str(settings.get("tts_provider") or "kokoro")
         try:
             if not self.config.private_information and qwen_public.selected(settings):
