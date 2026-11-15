@@ -235,7 +235,7 @@ def test_worker_public_strategic_tail_survives_unrelated_private_draw(source):
     try:
         result = client.generate(obs, config, rpc, threading.Event())
         lines = [Utterance.from_wire(u) for u in result["utterances"]]
-        assert len(lines) == 2 and lines[1].position_scope == "public"
+        assert len(lines) == 2 and lines[1].position_scope == "facts:battlefield,identity"
         current = [obs]
         played = []
         a = SpeechArbiter(

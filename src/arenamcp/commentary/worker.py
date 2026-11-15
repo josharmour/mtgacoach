@@ -95,7 +95,12 @@ def main():
                     configuration = config
                 native, status = facade.generate(observation)
                 from .delivery import LEVELS, delivery_level, event_excitement
-                from .timeline import event_lifetime, historical_scope, position_fingerprint
+                from .timeline import (
+                    event_lifetime,
+                    generated_position_scope,
+                    historical_scope,
+                    position_fingerprint,
+                )
 
                 lines = []
                 for item in native:
@@ -109,6 +114,10 @@ def main():
                         if position and not any(k.startswith("private:") for k in dependencies)
                         else ""
                     )
+                    if position:
+                        position_scope = generated_position_scope(
+                            dependencies, tracked.get("facts", {}), position_scope
+                        )
                     cited = [
                         facade.event_sources[ref]
                         for ref in tracked.get("refs", ())

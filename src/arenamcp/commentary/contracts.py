@@ -181,6 +181,9 @@ class Utterance:
                 "strategy:land_counts",
             }
             and not re.fullmatch(r"cards:[0-9]+(?:,[0-9]+){0,15}", self.position_scope)
+            and not re.fullmatch(
+                r"facts:(?:battlefield,)?identity(?:,players)?(?:,private)?(?:,zones)?", self.position_scope
+            )
         ) or (self.position_scope and not self.position_id):
             raise ValueError("Invalid freshness scope")
 
