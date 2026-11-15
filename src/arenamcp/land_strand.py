@@ -308,6 +308,55 @@ def _remove(board, card):
     return [c for c in board if c.get("instance_id") != iid]
 
 
+def _has_unpriced_payoff(card, state):
+    """Keep a land whose non-mana play may matter on this public board."""
+    from arenamcp.play_safety import _activated_abilities
+
+    text = _rules(card)
+    if re.search(r"\b(?:when|whenever|at the beginning|win the game|loses the game)\b", text, re.I):
+        return True
+    for _cost_text, effect in _activated_abilities(card):
+        if _damage_tradeoff(effect, state):
+            return True
+    return False
+
+
+def _damage_tradeoff(effect, state):
+    """A pure fixed damage ability can be priced narrowly on an empty board."""
+    # Every other effect, including damage to a creature, damage scaled by X
+    # and life loss with a rider, has a payoff outside this mana forecast.
+    match = re.fullmatch(
+        r"[^.:]+ deals (\d+) damage to (?:any target|target (?:opponent|player))\."
+        r"(?: Activate only if [^.]+\.)?",
+        effect.strip(),
+        re.I,
+    )
+    if not match or state.get("stack"):
+        return True
+    local = _local_seat(state)
+    opponent = [p for p in state.get("players") or [] if p.get("seat_id") != local]
+    if len(opponent) != 1 or type(opponent[0].get("life_total")) is not int:
+        return True
+    if int(match[1]) >= opponent[0]["life_total"]:
+        return True
+    from arenamcp.board_assessment import harms_players
+
+    # Do not suppress the last points of a multi-spell kill. Count possible
+    # face effects even when their cost or magnitude is not modelled.
+    if any(not _land(c) and harms_players(c) for c in state.get("hand") or []):
+        return True
+    # Other permanents can supply recipients, modify the damage or trigger
+    # on gaining/losing life. A land creature is also a real recipient.
+    return any(
+        not _land(c)
+        or re.search(r"\b(?:creature|planeswalker|battle)\b", str(c.get("type_line") or ""), re.I)
+        or re.search(
+            r"\b(?:whenever|double|becomes a creature)\b|(?:damage|life)[^.]*\binstead\b", _rules(c), re.I
+        )
+        for c in state.get("battlefield") or []
+    )
+
+
 @dataclass(frozen=True)
 class LandChoice:
     option_id: str
@@ -319,6 +368,7 @@ class LandChoice:
     certain: bool
     kind: str
     life_cost: int = 0
+    unpriced_payoff: bool = False
     preserves_all_colours: bool = False
     mana_certain: bool = False
 
@@ -502,6 +552,7 @@ def land_choices(decision, state):
                     ]
                     or [0]
                 ),
+                unpriced_payoff=_has_unpriced_payoff(card, state),
                 preserves_all_colours=base_colors <= colors,
                 mana_certain=base_known and permanent_known and not uncertain_effect,
             )
@@ -510,7 +561,7 @@ def land_choices(decision, state):
 
 
 def _better(a, b):
-    if a.kind != b.kind:
+    if a.kind != b.kind or (a.unpriced_payoff if a.kind == "sacrifice" else b.unpriced_payoff):
         return False
     if a.mana_certain and b.mana_certain and b.lost and a.preserves_all_colours:
         return True
@@ -592,7 +643,7 @@ def _activation_losses(decision, state):
             possible_lethal = any(
                 type(life) is int and 0 < life <= max(aimed, each) for life in opponent_life
             )
-            losses[option.option_id] = (
+            note = (
                 f"{option.option_id} {card.get('name')}: sacrificing this land loses the only "
                 + "/".join(sorted(missing))
                 + " source the hand/commander needs."
@@ -602,6 +653,7 @@ def _activation_losses(decision, state):
                     else " Weigh the ability's payoff."
                 )
             )
+            losses[option.option_id] = (note, option.payable is False or not _damage_tradeoff(effect, state))
     return losses
 
 
@@ -655,7 +707,7 @@ def filter_land_choices(decision, state, *, lethal=False):
         "LAND COLOURS: mana-only forecast, each spell separately; this turn and our next "
         "turn use visible lands only. Unknown effects and real trade-offs need judgment."
     ]
-    notes.extend(activations.values())
+    notes.extend(note for note, _withhold in activations.values())
     for row in choices:
         now = ", ".join(names[i] for i in sorted(row.now)) or "none"
         later = ", ".join(names[i] for i in sorted(row.later)) or "none"
@@ -674,14 +726,7 @@ def filter_land_choices(decision, state, *, lethal=False):
         for r in choices
         if r.option_id in safe and any(better.option_id in safe and _better(better, r) for better in choices)
     }
-    # A land's actual ability can deal lethal damage, remove a blocker or enable
-    # another effect outside the board assessment. Unlike two alternative mana
-    # payments for one spell, an activation and a pass have different payoffs.
-    # An explicit negative payment verdict is already established by Arena's
-    # action parser. Missing autotap information (None) is not that verdict.
-    withheld.update(
-        o.option_id for o in decision.options if o.payable is False and o.option_id in activations
-    )
+    withheld.update(oid for oid, (_note, withhold) in activations.items() if withhold)
     kept = tuple(o for o in decision.options if o.option_id not in withheld)
     if withheld and any(o.payable is not False and decision.selection_is_valid([o.option_id]) for o in kept):
         if (lethal() if callable(lethal) else lethal) is not False:
@@ -756,6 +801,9 @@ def guard_land_sacrifice(decision, state, chosen, *, lethal=False):
     eligible = (o.option_id for o in decision.options if o.payable is not False)
     candidates = (list(combo) for combo in combinations(eligible, len(chosen)))
     for candidate in islice(candidates, 256):
+        newly_sacrificed = set(candidate) - set(chosen)
+        if any(_has_unpriced_payoff(cards[oid], state) for oid in newly_sacrificed):
+            continue
         if decision.selection_is_valid(candidate) and lost(candidate) == set():
             reason = (
                 "Preserve the only "

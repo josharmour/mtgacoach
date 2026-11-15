@@ -234,3 +234,30 @@ def test_fetch_followup_requires_real_payment_and_a_matching_unused_target():
     assert all(c["instance_id"] != 6 for c in _followups(fetch, [target], board, [target]))
     costly = dict(fetch, oracle_text="{2}, " + start + search)
     assert all(c["instance_id"] != 6 for c in _followups(costly, [], board, [target]))
+
+
+@pytest.mark.parametrize(
+    "opponent_life, extra, kept",
+    [
+        (1, None, True),
+        (20, card(8, "Public target", "Creature"), True),
+        (20, None, False),
+    ],
+)
+def test_damage_land_drop_retains_decisive_payoff_before_activation(opponent_life, extra, kept):
+    request, board = drop()
+    source = board["hand"][0]
+    source["oracle_text"] += "\n{T}, Sacrifice this land: This land deals 2 damage to any target."
+    board["players"][1]["life_total"] = opponent_life
+    if extra:
+        board["battlefield"].append(dict(extra, controller_seat_id=2, owner_seat_id=2))
+    result, _ = filter_land_choices(request, board, lethal=lambda: _lethal_this_turn(board))
+    assert ("pick:1" in result.option_ids()) is kept
+
+
+def test_a_damage_spell_in_hand_keeps_a_land_that_can_finish_the_kill():
+    request, board = drop()
+    board["players"][1]["life_total"] = 4
+    board["hand"][0]["oracle_text"] += "\n{T}, Sacrifice this land: This land deals 2 damage to any target."
+    board["hand"].append(card(9, "Other burn", "Instant", "Other burn deals 2 damage to any target.", "{R}"))
+    assert "pick:1" in filter_land_choices(request, board)[0].option_ids()
