@@ -70,6 +70,19 @@ def test_holds_defense_against_lethal_counterattack():
     assert result.assignments == {}
 
 
+def test_early_clean_hit_holds_the_only_defender_against_lethal_flying_damage():
+    state = board(
+        [creature(10, 4, 4, oracle_text="Flying"), creature(11, 1, 1)],
+        [creature(20, 5, 5, owner=2, oracle_text="Flying", is_tapped=True), creature(21, 1, 1, owner=2)],
+        life=5,
+    )
+    for entry in state["decision_context"]["raw_attackers"]:
+        entry["legalDamageRecipients"] = [{"type": "Player", "playerSystemSeatId": 2}]
+    best = combat_choice(state, budget=2)
+    assert best.bounded and not best.assignments
+    assert best.crackback < 5
+
+
 def test_vigilance_can_remove_walker_and_still_defend():
     result = combat_choice(
         board(

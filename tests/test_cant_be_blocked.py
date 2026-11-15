@@ -20,7 +20,11 @@ Player.log through arenamcp's LogParser + GameState.
 from __future__ import annotations
 
 from copy import deepcopy
+from types import SimpleNamespace
 
+import pytest
+
+import arenamcp.combat_strategy as combat_strategy
 import arenamcp.server as server_module
 from arenamcp.coach import CoachEngine
 from arenamcp.combat_keywords import annotate_cant_be_blocked, can_be_blocked_by, own_text_unblockable
@@ -219,6 +223,39 @@ def test_attack_search_sends_unblockable_damage_instead_of_holding():
     assert 305 in attackers  # the 4/1 Necromancer is 4 damage nothing can block
     assert choice.player_damage == sum(_by_id(_t26())[i]["power"] for i in attackers)
     assert choice.crackback < 4  # and it still survives the crack-back at 4 life
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_two_evaluations_find_clean_pressure_in_either_menu_order(reverse):
+    state = _t26()
+    if reverse:
+        state["decision_context"]["raw_attackers"].reverse()
+    best = combat_choice(state, budget=2)
+    assert best.bounded and best.player_damage == 4 and best.crackback < 4
+    assert set(best.assignments) == {305}
+
+
+def test_search_interrupted_during_all_in_keeps_fully_defended_clean_candidate(monkeypatch):
+    # Allow hold, the singleton and the clean group to finish. The first
+    # defending assignment of the mixed attack has no blocks; interrupt
+    # before it can consider the opponents' other legal assignments.
+    state = _t26()
+    evaluations = 0
+    guarded_blocks = combat_strategy.guarded_block_plan
+
+    def count_defenses(*args, **kwargs):
+        nonlocal evaluations
+        result = guarded_blocks(*args, **kwargs)
+        evaluations += 1
+        return result
+
+    monkeypatch.setattr(combat_strategy, "_memoized", lambda key, compute: compute())
+    monkeypatch.setattr(combat_strategy, "guarded_block_plan", count_defenses)
+    monkeypatch.setattr(combat_strategy, "time", SimpleNamespace(monotonic=lambda: float(evaluations >= 4)))
+    best = combat_choice(state)
+    assert evaluations == 4
+    assert best.bounded and set(best.assignments) == {305}
+    assert best.player_damage == 4 and best.crackback < 4
 
 
 def test_coach_prompt_shows_unblockable_attackers_not_impossible_blocks():
