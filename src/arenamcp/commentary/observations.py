@@ -47,17 +47,23 @@ def generated_or_changed_print(card):
     ) or any(card.get(key) not in (None, 0, card.get("grp_id")) for key in ("original_grp_id", "base_grp_id"))
 
 
-def _public_card(card: Mapping[str, Any]) -> dict[str, Any]:
+def card_identity_visible(card: Mapping[str, Any], zone: str) -> bool:
+    visibility = card.get("visibility")
+    return visibility in ("public", "Public", "Visibility_Public") or (zone != "exile" and visibility is None)
+
+
+def _public_card(card: Mapping[str, Any], zone: str = "") -> dict[str, Any]:
     result = _scalars(card, _CARD_FIELDS)
     hidden = bool(card.get("face_down") or card.get("isFacedown") or card.get("grp_id") == 3)
     result["face_down"] = hidden
-    private = card.get("visibility") not in (None, "public", "Public", "Visibility_Public")
-    if hidden or private:
+    if hidden or not card_identity_visible(card, zone):
         result["name"] = "Face-down card" if hidden else "Unknown card"
         # Private printed characteristics must not reveal a face-down card.
         result.pop("power", None)
         result.pop("toughness", None)
     else:
+        if zone == "exile":
+            result["visibility"] = "public"
         result.update(_scalars(card, _IDENTITY_FIELDS))
         result.update(_scalars(card, ("object_kind",)))
         if generated_or_changed_print(card):
@@ -87,7 +93,7 @@ def observation_from_snapshot(
             if isinstance(player, Mapping)
         ],
         "zones": {
-            zone: [_public_card(card) for card in zones.get(zone, ()) if isinstance(card, Mapping)]
+            zone: [_public_card(card, zone) for card in zones.get(zone, ()) if isinstance(card, Mapping)]
             for zone in _PUBLIC_ZONES
         },
     }

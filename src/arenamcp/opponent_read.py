@@ -7,7 +7,7 @@ from threading import Lock
 
 from arenamcp.card_facts.reviewed_notes import corpus, reviewed_print
 from arenamcp.commentary.card_annotations import annotation_digest
-from arenamcp.commentary.observations import generated_or_changed_print
+from arenamcp.commentary.observations import card_identity_visible, generated_or_changed_print
 
 _PUBLIC_ZONES = ("command", "battlefield", "stack", "graveyard", "exile")
 
@@ -75,7 +75,7 @@ class OpponentRead:
                     or card["owner_seat_id"] != opponent
                     or type(card.get("controller_seat_id")) is not int
                     or card["controller_seat_id"] != opponent
-                    or card.get("visibility") not in (None, "public", "Public", "Visibility_Public")
+                    or not card_identity_visible(card, zone)
                     or card.get("face_down")
                     or card.get("isFacedown")
                     or card.get("object_kind") != "CARD"

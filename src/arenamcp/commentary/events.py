@@ -36,13 +36,13 @@ def journal_event(game, event):
     )
     if obj is None:
         return
-    visible = _public_card(obj.to_dict())
     payload = {"instance_id": obj.instance_id}
     zone_type = (
         str(getattr(getattr(destination, "zone_type", None), "value", event.get("to_zone", "")))
         .replace("ZoneType_", "")
         .lower()
     )
+    visible = _public_card(obj.to_dict(), zone_type)
     if zone_type in {"battlefield", "graveyard", "exile", "hand", "library"}:
         payload["to_zone"] = zone_type
     if not visible.get("face_down") and visible.get("name") != "Unknown card":

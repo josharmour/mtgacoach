@@ -31,7 +31,7 @@ def game():
     return g
 
 
-def add(g, iid, name, *, kind="Mill", source=0, destination=1, hidden=False):
+def add(g, iid, name, *, kind="Mill", source=0, destination=1, hidden=False, visibility=None):
     row = {
         "instance_id": iid,
         "name": name,
@@ -39,6 +39,7 @@ def add(g, iid, name, *, kind="Mill", source=0, destination=1, hidden=False):
         "type_line": "Creature",
         "mana_cost": "{7}",
         "face_down": hidden,
+        "visibility": visibility,
     }
     g.game_objects[iid] = SimpleNamespace(
         instance_id=iid, grp_id=iid, controller_seat_id=2, owner_seat_id=2, to_dict=lambda: row
@@ -402,3 +403,10 @@ def test_parser_zone_transfer_annotations_feed_one_outcome_per_public_burst():
     payload = g._commentary_journal[0]["payload"]
     assert payload["count"] == 10 and payload["source_id"] == 999
     assert len(payload["cards"]) == 10 and payload["cards"][0]["name"] == "Known card 100"
+
+
+@pytest.mark.parametrize("visibility, shown", [(None, False), ("Visibility_Public", True)])
+def test_exile_journal_binds_identity_to_current_public_visibility(visibility, shown):
+    g = game()
+    add(g, 72, "Example card", kind="Exile", source=2, destination=4, visibility=visibility)
+    assert ("Example card" in str(g._commentary_journal)) == shown

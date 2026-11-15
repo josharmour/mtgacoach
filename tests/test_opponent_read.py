@@ -147,3 +147,14 @@ def test_commander_print_and_private_canaries():
     assert "canary" not in text and "untrusted" not in text and state == original
     commander["grp_id"] = 96294
     assert not OpponentRead().plan_block(state)
+
+
+@pytest.mark.parametrize(
+    "visibility, expected", [(None, False), ("Visibility_Private", False), ("Visibility_Public", True)]
+)
+def test_exile_identity_requires_public_visibility_in_both_plan_and_booth(visibility, expected):
+    state = captured(328)
+    card = state["zones"]["battlefield"].pop()
+    state["zones"]["exile"] = [{**card, "visibility": visibility}]
+    assert bool(OpponentRead().plan_block(state)) == expected
+    assert bool(cast_read(OpponentRead(), state)) == expected
