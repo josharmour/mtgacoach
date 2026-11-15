@@ -710,6 +710,9 @@ def _combat_life(
         )
     blockers = [b for b in blockers if b["_can_block"]]
     groups: dict[int, list[dict]] = {}
+    # Bodies are unchanged through block selection and winner resolution. Keep
+    # content keys for this call only; later projected combats may mutate them.
+    fight_keys: dict[int, tuple | None] = {}
     if blockers:
         allowed = None
         if any(a["_unblockable"] for a in attackers):
@@ -723,6 +726,8 @@ def _combat_life(
             max_options=_MAX_BLOCK_OPTIONS,
             defender=defender,
             defending_player=defending_player,
+            _fight_keys=fight_keys,
+            _only_assignments=True,
         )
         by_id = {b["instance_id"]: b for b in blockers}
         for blocker_id, attacker_id in (plan.assignments if plan else {}).items():
@@ -738,7 +743,7 @@ def _combat_life(
     first_damage = first_gain = 0
     for attacker in attackers:
         group = groups.get(attacker["instance_id"], [])
-        outcome = _resolve_attacker(attacker, group, defending_player=defending_player)
+        outcome = _resolve_attacker(attacker, group, defending_player=defending_player, keys=fight_keys)
         for identity, amount in outcome.counter_deltas.items():
             counter_deltas[identity] = counter_deltas.get(identity, 0) + amount
         for identity, amount in outcome.damage_deltas.items():
