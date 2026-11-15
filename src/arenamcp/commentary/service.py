@@ -293,12 +293,30 @@ class CommentaryService:
         user = json.dumps(context, ensure_ascii=False, separators=(",", ":"))
         from .context import audit_format, generation_format, parse_completed_json
 
-        response_format = audit_format() if audit else generation_format(reply="partner_call" in context)
+        if audit:
+            response_format = audit_format(single_reply=exchange.single_reply_audit)
+            lines = context.get("lines")
+            single_reply = (
+                isinstance(lines, list)
+                and len(lines) == 1
+                and isinstance(lines[0], dict)
+                and lines[0].get("role") == "color_analyst"
+            )
+        else:
+            response_format = generation_format(reply="partner_call" in context)
+            lead = context.get("partner_call")
+            single_reply = (
+                context.get("partner_call_heard") is True
+                and context.get("allowed_roles") == ["color_analyst"]
+                and isinstance(lead, dict)
+                and lead.get("role") == "play_by_play"
+            )
         output, timeout = self.budget.before_call(
             exchange,
             system,
             user,
             audit=audit,
+            single_reply=single_reply,
             schema=json.dumps(response_format, separators=(",", ":")),
         )
         try:
@@ -308,6 +326,10 @@ class CommentaryService:
 
             if not isinstance(backend, ProxyBackend):
                 raise BudgetExceeded("backend_has_no_commentary_admission")
+            if audit and exchange.single_reply_audit:
+                # The single audit shares the author's wire limit. Preserve a
+                # content-free stage marker for latency and truncation checks.
+                logger.info("Commentary single analyst audit requested max_tokens=%d", output)
             response = backend.complete(
                 system,
                 user,

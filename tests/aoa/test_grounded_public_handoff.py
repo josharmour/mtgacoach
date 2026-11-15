@@ -1,5 +1,6 @@
 """A completed grounded lead can hand one specific public event to the other speaker."""
 
+import json
 import sys
 import threading
 import time
@@ -8,6 +9,7 @@ from dataclasses import replace
 import pytest
 from test_headless_booth import source  # noqa: F401
 
+from arenamcp.backends.proxy import ProxyBackend
 from arenamcp.commentary.client import CommentaryClient
 from arenamcp.commentary.config import CommentaryConfig
 from arenamcp.commentary.contracts import Observation, Utterance
@@ -88,6 +90,7 @@ def prepare_lead(kind, *, private=False):
         ("outcome", "forged"),
         ("outcome", "uncited"),
         ("outcome", "failed_audit"),
+        ("outcome", "incomplete_audit"),
     ],
 )
 def test_grounded_handoff_in_normal_worker(kind, mode, request):
@@ -111,7 +114,7 @@ def test_grounded_handoff_in_normal_worker(kind, mode, request):
     obs = Observation.from_wire(replace(obs, heard_public_calls=heard).to_wire())
     calls = []
 
-    def rpc(system, ctx, audit):
+    def scripted_output(ctx, audit):
         calls.append((ctx, audit))
         if audit:
             return {
@@ -139,6 +142,25 @@ def test_grounded_handoff_in_normal_worker(kind, mode, request):
         }[kind]
         return {"turns": [{"role": "color_analyst", "text": text, "refs": [ref]}]}
 
+    class OfflineBackend(ProxyBackend):
+        def __init__(self):
+            self.limits = []
+
+        def complete(self, system, user, max_tokens, **opts):
+            self.limits.append(max_tokens)
+            audit = opts["response_format"]["json_schema"]["name"] == "commentary_audit"
+            output = scripted_output(json.loads(user), audit)
+            if audit and mode == "incomplete_audit":
+                return ""  # The proxy withholds responses stopped by a length limit.
+            return json.dumps(output)
+
+    backend = OfflineBackend()
+    service.backend = lambda: backend
+    exchange = service.budget.begin()
+
+    def rpc(system, ctx, audit):
+        return service._backend_request(exchange, system, ctx, audit, obs)
+
     client = CommentaryClient()
     try:
         result = client.generate(
@@ -149,6 +171,7 @@ def test_grounded_handoff_in_normal_worker(kind, mode, request):
         )
     finally:
         client.close()
+        service.budget.finish(exchange)
     ctx = calls[0][0]
     if mode in {"interrupted", "forged"}:
         assert "partner_call" not in ctx and "private canary" not in str(ctx)
@@ -167,6 +190,10 @@ def test_grounded_handoff_in_normal_worker(kind, mode, request):
         assert valid_for(lines[0], obs) and not valid_for(lines[0], replace(obs, snapshot_id="changed"))
     else:
         assert not lines
+    if mode in {"heard", "owner", "failed_audit", "incomplete_audit"}:
+        assert backend.limits == [512, 512] and exchange.output_tokens == 1024
+    if mode == "incomplete_audit":
+        assert result["status"]["reason"] == "incomplete_final_response"
     if mode == "uncited":
         assert result["status"]["state"] == "missing_partner_reference"
 

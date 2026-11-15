@@ -25,6 +25,7 @@ BROKER_REASONS = frozenset(
         "context_budget",
         "input_budget",
         "output_budget",
+        "audit_shape_changed",
         "first_token_timeout",
         "request_timeout",
         "invalid_json",
@@ -62,6 +63,7 @@ class Exchange:
     last_call_finished: float | None = None
     closed: bool = False
     usable: bool = True
+    single_reply_audit: bool = False
 
 
 class CommentaryBudget:
@@ -94,7 +96,7 @@ class CommentaryBudget:
         self.active = exchange
         return exchange
 
-    def before_call(self, exchange, system, user, *, audit, schema=""):
+    def before_call(self, exchange, system, user, *, audit, schema="", single_reply=False):
         now = self.clock()
         if exchange is not self.active or exchange.closed or exchange.call_started is not None:
             raise BudgetExceeded("obsolete_exchange")
@@ -103,11 +105,13 @@ class CommentaryBudget:
         # UTF-8 bytes plus message framing are a conservative token upper bound;
         # no gateway-specific tokenizer guess can undercount a dense Unicode prompt.
         tokens = len(system.encode("utf-8")) + len(user.encode("utf-8")) + len(schema.encode("utf-8")) + 256
-        # Reasoning-capable endpoints can consume output tokens before emitting
-        # final audit JSON even when thinking-off was requested. Leave bounded
-        # room for that final answer; the existing total/minute and wall-time
-        # budgets remain authoritative (two full 1536-token exchanges/minute).
-        generation_limit, audit_limit = 512, 1024
+        # An already-heard lead needs exactly one analyst verdict. An unheard
+        # lead can still be prepended locally and needs the full audit reserve.
+        if audit and exchange.single_reply_audit and not single_reply:
+            raise BudgetExceeded("audit_shape_changed")
+        single_reply_audit = exchange.single_reply_audit if audit else single_reply
+        generation_limit = 512
+        audit_limit = 512 if single_reply_audit else 1024
         output = audit_limit if audit else generation_limit
         # An accepted generation must still pass its audit before it can air.
         # Check room for both, but charge only the calls actually attempted.
@@ -118,6 +122,7 @@ class CommentaryBudget:
             raise BudgetExceeded("input_budget")
         if sum(item.output_tokens for item in self.history) + required > 3072:
             raise BudgetExceeded("output_budget")
+        exchange.single_reply_audit = single_reply_audit
         exchange.calls += 1
         exchange.input_tokens += tokens
         exchange.output_tokens += output  # reserve even when provider usage is missing

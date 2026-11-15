@@ -418,7 +418,7 @@ def isolate_overlength_lines(output, word_count):
     return {"turns": kept}, dropped
 
 
-def audit_format():
+def audit_format(*, single_reply=False):
     fields = {
         "index": {"type": "integer"},
         "supported": {"type": "boolean"},
@@ -436,7 +436,14 @@ def audit_format():
                 "type": "object",
                 "additionalProperties": False,
                 "required": ["checks"],
-                "properties": {"checks": {"type": "array", "minItems": 1, "maxItems": 2, "items": item}},
+                "properties": {
+                    "checks": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 1 if single_reply else 2,
+                        "items": item,
+                    }
+                },
             },
         },
     }

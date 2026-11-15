@@ -555,3 +555,88 @@ def test_broker_distinguishes_missing_final_content_without_repair():
     assert backend.calls[0][0][2] == 1024
     assert backend.calls[0][1]["enable_thinking"] is False
     assert exchange.calls == 2 and exchange.call_started is None
+
+
+def test_compact_heard_replies_reserve_three_complete_pairs_at_rate_four():
+    budget = CommentaryBudget(lambda: 0)
+    for _ in range(3):
+        exchange = budget.begin(4)
+        assert budget.before_call(exchange, "", "", audit=False, single_reply=True)[0] == 512
+        budget.after_call(exchange)
+        assert budget.before_call(exchange, "", "", audit=True, single_reply=True)[0] == 512
+        budget.finish(exchange)
+    assert sum(exchange.output_tokens for exchange in budget.history) == 3072
+    fourth = budget.begin(4)
+    with pytest.raises(BudgetExceeded, match="output_budget"):
+        budget.before_call(fourth, "", "", audit=False, single_reply=True)
+    assert fourth.calls == 0
+
+
+def test_smaller_audit_cannot_accept_expanded_roles_or_refund_a_cancelled_call():
+    budget = CommentaryBudget(lambda: 0)
+    exchange = budget.begin(4)
+    budget.before_call(exchange, "", "", audit=False, single_reply=True)
+    budget.after_call(exchange)
+    with pytest.raises(BudgetExceeded, match="audit_shape_changed"):
+        budget.before_call(exchange, "", "", audit=True)
+    budget.finish(exchange, usable=False)
+    assert exchange.calls == 1 and exchange.output_tokens == 512
+    normal = budget.begin(4)
+    budget.before_call(normal, "", "", audit=False)
+    budget.after_call(normal)
+    # A generic generation originally had room for two verdicts. Its broader
+    # audit retains full reasoning headroom even if only one analyst line survived.
+    assert budget.before_call(normal, "", "", audit=True, single_reply=True)[0] == 1024
+    budget.finish(normal)
+    compact = budget.begin(4)
+    assert budget.before_call(compact, "", "", audit=False, single_reply=True)[0] == 512
+    budget.after_call(compact)
+    assert budget.before_call(compact, "", "", audit=True, single_reply=True)[0] == 512
+    budget.finish(compact, usable=False)
+    assert sum(item.output_tokens for item in budget.history) == 3072
+
+
+@pytest.mark.parametrize(
+    "heard,roles,lead_role,audit_roles,expected_limit",
+    [
+        (False, ["color_analyst"], "play_by_play", ["play_by_play", "color_analyst"], 1024),
+        ("yes", ["color_analyst"], "play_by_play", ["color_analyst"], 1024),
+        (True, ["play_by_play", "color_analyst"], "play_by_play", ["color_analyst"], 1024),
+        (True, ["color_analyst"], "color_analyst", ["color_analyst"], 1024),
+        (True, ["color_analyst"], "play_by_play", ["color_analyst"], 512),
+        (True, ["color_analyst"], "play_by_play", ["play_by_play", "color_analyst"], None),
+        (True, ["color_analyst"], "play_by_play", ["play_by_play"], None),
+    ],
+)
+def test_broker_binds_audit_allowance_to_original_heard_reply(
+    heard, roles, lead_role, audit_roles, expected_limit, caplog
+):
+    from unittest.mock import Mock
+
+    from arenamcp.backends.proxy import ProxyBackend
+
+    backend = Mock(spec=ProxyBackend)
+    backend.complete.return_value = "{}"
+    service = CommentaryService(settings=lambda: {}, backend=lambda: backend, emit=lambda _: None)
+    exchange = service.budget.begin()
+    generation = {
+        "allowed_roles": roles,
+        "partner_call_heard": heard,
+        "partner_call": {"role": lead_role, "refs": ["event:1"], "text": "An attacker was declared."},
+    }
+    service._backend_request(exchange, "author", generation, False)
+    lines = {"lines": [{"role": r} for r in audit_roles]}
+    if expected_limit is None:
+        with pytest.raises(BudgetExceeded, match="audit_shape_changed"):
+            service._backend_request(exchange, "audit", lines, True)
+        assert backend.complete.call_count == 1 and exchange.output_tokens == 512
+    else:
+        service._backend_request(exchange, "audit", lines, True)
+        assert backend.complete.call_args.args[2] == expected_limit
+        schema = backend.complete.call_args.kwargs["response_format"]["json_schema"]["schema"]
+        assert schema["properties"]["checks"]["maxItems"] == (1 if expected_limit == 512 else 2)
+        assert exchange.output_tokens == 512 + expected_limit
+    receipts = [m for m in caplog.messages if "single analyst audit" in m]
+    assert receipts == (
+        ["Commentary single analyst audit requested max_tokens=512"] if expected_limit == 512 else []
+    )
