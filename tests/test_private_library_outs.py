@@ -945,7 +945,18 @@ def test_native_self_reference_preserves_all_other_printed_text(monkeypatch, pri
 
 
 @pytest.mark.parametrize("extra", [[987654], [None], [{"grpId": False}], [{"grpId": -1}], [True], ["bad"]])
-def test_private_count_withheld_on_divergent_or_malformed_gre_ability_lists(extra):
+def test_private_count_withheld_on_divergent_or_malformed_gre_ability_lists(extra, monkeypatch):
+    from types import SimpleNamespace
+
+    from arenamcp.commentary import private_outs
+
+    monkeypatch.setattr(
+        private_outs,
+        "get_card_database",
+        lambda: SimpleNamespace(get_ability_text=lambda gid: "Flying" if gid == 8 else None),
+    )
+    s = board()
+    s["zones"]["battlefield"][0]["ability_grp_ids"] = [8]
     g = opened()
 
     def update(**fields):
@@ -955,8 +966,9 @@ def test_private_count_withheld_on_divergent_or_malformed_gre_ability_lists(extr
     obj = g.game_objects[800]
     assert obj.native_abilities_incomplete and obj.ability_grp_ids == [8]
     assert obj.to_dict()["native_abilities_incomplete"]
-    assert project(board(), g) is None
+    assert project(s, g) is None
     update(uniqueAbilities=[{"id": 42, "grpId": 8}])
     assert g.game_objects[800].native_abilities_incomplete
     update(uniqueAbilities=[{"id": 42, "grpId": 8}], abilities=[8])
     assert not g.game_objects[800].native_abilities_incomplete
+    assert project(s, g) is not None
