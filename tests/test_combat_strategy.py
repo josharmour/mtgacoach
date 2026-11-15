@@ -57,6 +57,19 @@ def test_prefers_immediate_player_lethal_over_planeswalker():
     assert result.player_damage == 3
 
 
+def test_bounded_search_keeps_player_lethal_when_clean_hit_could_also_kill_a_walker():
+    state = board(
+        [creature(10, 4, 3, oracle_text="Flying"), creature(11, 3, 3)],
+        [creature(20, 2, 2, owner=2)],
+        opponent_life=4,
+        loyalty=3,
+    )
+    for budget in (2, 4):
+        best = combat_choice(state, budget=budget)
+        assert best.bounded and best.player_damage == 4
+        assert best.assignments[10]["playerSystemSeatId"] == 2
+
+
 def test_splits_attack_without_counting_walker_damage_as_player_damage():
     result = combat_choice(board([creature(10, 3, 3), creature(11, 4, 4)]))
     assert result.planeswalkers_removed == [99]

@@ -296,6 +296,7 @@ def _search(state: dict, raw: list[dict], budget: int, deadline_s: float) -> Com
         {card["instance_id"] for card in candidates if _can_block(card, blocker)} for blocker in blockers
     ]
     blockable = set().union(*blockable_by)
+    clean = [i for i, card in enumerate(candidates) if card["instance_id"] not in blockable]
 
     def assignments():
         yield tuple(None for _card in candidates)
@@ -308,19 +309,11 @@ def _search(state: dict, raw: list[dict], budget: int, deadline_s: float) -> Com
                 )
                 for options in choices
             )
-            # A mixed attack can have thousands of defending assignments. Try
-            # the strongest clean hit and the clean group first: each has just
-            # one set of blocks. Payment, must-attack and crackback still
-            # decide whether either is legal and improves on holding.
-            clean = [
-                i
-                for i, recipient in enumerate(all_to_target)
-                if recipient and candidates[i]["instance_id"] not in blockable
-            ]
-            if clean and any(
-                recipient and card["instance_id"] in blockable
-                for card, recipient in zip(candidates, all_to_target, strict=True)
-            ):
+            # With a single recipient, a mixed attack can have thousands of
+            # defenses. Try two one-defense candidates first. When recipients
+            # compete, an unblocked hit may kill a walker or win the game;
+            # leave the original joint recipient search order intact.
+            if len(targets) == 1 and blockable and clean:
                 strongest = max(clean, key=lambda i: _resolve_attacker(candidates[i], []).damage_through)
                 yield tuple(
                     recipient if i == strongest else None for i, recipient in enumerate(all_to_target)
@@ -352,7 +345,8 @@ def _search(state: dict, raw: list[dict], budget: int, deadline_s: float) -> Com
         if payment is None:
             continue
         block_options = [
-            [None, *(identity for identity in mapping if identity in eligible)] for eligible in blockable_by
+            [None, *(card["instance_id"] for card in attacking if card["instance_id"] in eligible)]
+            for eligible in blockable_by
         ]
         cost = 1
         for options in block_options:
