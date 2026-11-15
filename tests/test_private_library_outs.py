@@ -1129,3 +1129,40 @@ def test_every_mode_requires_a_complete_damage_fact_and_only_one_mode_can_apply(
         _answers_creature(card(25, "Example", "Creature — Bear", "Trample\nPlayers can't gain life."), target)
         is False
     )
+
+
+def test_whole_print_exile_in_the_private_library_census():
+    target = board()["zones"]["battlefield"][0]
+    land_search = (
+        "Exile target creature. Its controller may search their library for a basic land card, "
+        "put that card onto the battlefield tapped, then shuffle."
+    )
+    until_departure = (
+        "When this enchantment enters, exile target nonland permanent an opponent controls "
+        "until this enchantment leaves the battlefield."
+    )
+    from arenamcp.commentary.private_outs import _answers_creature
+
+    lookup = {
+        **CARDS,
+        17: card(17, "Optional search", "Instant", land_search),
+        19: card(19, "Temporary exile", "Enchantment", until_departure),
+    }
+    game = opened()
+    fact = private_removal_fact(board(), game, allow_private=True, card_lookup=lookup.get)
+    assert fact["answers"] == {"Optional search": 2, "Plummet": 3, "Strong Bolt": 3, "Temporary exile": 1}
+    assert (fact["direct_removal_total"], fact["remaining"]) == (9, 53)
+    assert _answers_creature(lookup[19], dict(target, type_line="Land Creature — Forest Dryad")) is False
+    for spell in (lookup[17], lookup[19]):
+        assert _answers_creature(dict(spell, linked_face_ids=[809]), target) is None
+        assert (
+            _answers_creature(dict(spell, oracle_text=spell["oracle_text"] + "\nFlashback {3}"), target)
+            is None
+        )
+    assert _answers_creature(dict(lookup[19], type_line="Enchantment — Aura"), target) is None
+    assert (
+        _answers_creature(
+            dict(lookup[17], oracle_text="Exile target creature unless its controller pays {2}."), target
+        )
+        is None
+    )

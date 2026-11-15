@@ -227,9 +227,21 @@ def printed_removal_effects(card, *, local_creature=False, local_basic=False):
     effects = _PRINTED_REMOVAL.get(digest)
     if effects:
         return effects
+    text = card["oracle_text"]
+    if card["type_line"] == "Enchantment" and text == (
+        "When this enchantment enters, exile target nonland permanent an opponent controls "
+        "until this enchantment leaves the battlefield."
+    ):
+        return (Exile("nonland permanent"),)
     if card["type_line"] not in _DAMAGE_SPELL_TYPES:
         return None
-    text = card["oracle_text"]
+    # The optional land search happens after exile. Its controller cannot
+    # keep the targeted creature by declining to search.
+    if text == (
+        "Exile target creature. Its controller may search their library for a basic land card, "
+        "put that card onto the battlefield tapped, then shuffle."
+    ):
+        return (Exile("creature"),)
     match = _REMOVAL.fullmatch(text)
     if match:
         kind, target = match.groups()
