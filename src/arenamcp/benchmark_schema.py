@@ -249,6 +249,60 @@ ACTION_CONTEXT = record(
         "action_types": sequence(ACTION),
     }
 )
+
+
+def mulligan_context(value):
+    """The native opening-hand prompt carries one numeric card count."""
+    fields = {
+        "type",
+        "mulligan_count",
+        "requestType",
+        "requestClass",
+        "prompt",
+        "sourceId",
+        "mulliganCount",
+        "freeMulliganCount",
+        "_bridge_source",
+    }
+    if type(value) is not dict or set(value) != fields:
+        return False
+    if (value["type"], value["requestType"], value["requestClass"]) != (
+        "mulligan",
+        "Mulligan",
+        "MulliganRequest",
+    ):
+        return False
+    if (
+        value["_bridge_source"] is not True
+        or value["sourceId"] != 0
+        or not all(
+            integer(value[k]) and value[k] >= 0
+            for k in ("sourceId", "mulligan_count", "mulliganCount", "freeMulliganCount")
+        )
+    ):
+        return False
+    prompt = value["prompt"]
+    if (
+        not isinstance(prompt, dict)
+        or set(prompt) != {"promptId", "parameters"}
+        or not integer(prompt["promptId"])
+        or prompt["promptId"] != 34
+    ):
+        return False
+    params = prompt["parameters"]
+    if type(params) is not list or len(params) != 1 or type(params[0]) is not dict:
+        return False
+    item = params[0]
+    return (
+        set(item) == {"parameterName", "type", "value", "valueCase"}
+        and (item["parameterName"], item["type"], item["valueCase"])
+        == ("NumberOfCards", "Number", "NumberValue")
+        and integer(item["value"])
+        and 0 <= item["value"] <= 7
+        and value["mulligan_count"] == value["mulliganCount"]
+    )
+
+
 CONTROLLED = record(
     {
         "opponent_controlled_by_you": boolean,

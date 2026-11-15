@@ -492,7 +492,16 @@ def assert_case_schema(snapshot, pending):
     for key, value in state.items():
         if private_key(key):
             continue
-        from arenamcp.benchmark_schema import legal_labels, state_field
+        from arenamcp.benchmark_schema import legal_labels, mulligan_context, state_field
+
+        if key == "decision_context" and pending.get("request_type") == "Mulligan":
+            if not (
+                mulligan_context(value)
+                and state.get("_bridge_request_type") == "Mulligan"
+                and state.get("_bridge_request_class") == "MulliganRequest"
+            ):
+                raise UnsafeCase("mismatched opening-hand context")
+            continue
 
         def card_check(card):
             try:

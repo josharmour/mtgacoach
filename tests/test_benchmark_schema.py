@@ -149,3 +149,57 @@ def test_native_target_id_shape_preserved_with_strict_numeric_reference():
     assert not s.TARGET({**target, "targetId": "Private Customer"})
     assert not s.TARGET({**target, "targetId": True})
     assert not s.TARGET({**target, "customer": "secret"})
+
+
+def test_archived_numeric_mulligan_prompt_and_no_arbitrary_parameters():
+    from copy import deepcopy
+
+    context = {
+        "type": "mulligan",
+        "mulligan_count": 0,
+        "requestType": "Mulligan",
+        "requestClass": "MulliganRequest",
+        "prompt": {
+            "promptId": 34,
+            "parameters": [
+                {"parameterName": "NumberOfCards", "type": "Number", "value": 7, "valueCase": "NumberValue"}
+            ],
+        },
+        "sourceId": 0,
+        "mulliganCount": 0,
+        "freeMulliganCount": 0,
+        "_bridge_source": True,
+    }
+    assert s.mulligan_context(context)
+    for patch in (
+        {"value": True},
+        {"value": "7"},
+        {"value": 8},
+        {"valueCase": "StringValue"},
+        {"parameterName": "Player"},
+        {"new": "unsupported"},
+    ):
+        mutated = deepcopy(context)
+        mutated["prompt"]["parameters"][0].update(patch)
+        assert not s.mulligan_context(mutated)
+    assert not s.mulligan_context(dict(context, mulliganCount=1))
+    assert not s.mulligan_context(dict(context, requestType="SelectTargets"))
+    from tools.decision_benchmark import UnsafeCase, assert_case_schema
+
+    pending = {"request_type": "Mulligan", "options": []}
+    state = {
+        "decision_context": context,
+        "_bridge_request_type": "Mulligan",
+        "_bridge_request_class": "MulliganRequest",
+    }
+    assert_case_schema({"version": 1, "state": state}, pending)
+    for field, wrong in (
+        ("_bridge_request_type", "SelectTargets"),
+        ("_bridge_request_class", "SelectTargetsRequest"),
+        ("decision_context", {}),
+        ("decision_context", {"type": "actions_available"}),
+        ("decision_context", dict(context, sourceId=1)),
+        ("decision_context", dict(context, prompt=dict(context["prompt"], promptId=35))),
+    ):
+        with pytest.raises(UnsafeCase):
+            assert_case_schema({"version": 1, "state": {**state, field: wrong}}, pending)
