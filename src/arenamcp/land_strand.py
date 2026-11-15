@@ -81,19 +81,25 @@ def _typed_board(board, external=()):
     # after a sacrifice/drop so an enabling permanent is not left behind.
     types = set()
     for card in [*board, *external]:
-        types.update(
-            re.findall(
-                r"each land is a (Plains|Island|Swamp|Mountain|Forest) in addition",
-                _rules(card),
+        for line in _rules(card).splitlines():
+            grant = re.fullmatch(
+                r"Each land is a (Plains|Island|Swamp|Mountain|Forest) in addition to its other land types\.",
+                line.strip(),
                 re.I,
             )
-        )
+            if grant:
+                types.add(grant[1])
     if not types:
         return board
     return [
         dict(card, subtypes=[*(card.get("subtypes") or []), *types]) if _land(card) else card
         for card in board
     ]
+
+
+def _life_charge(card):
+    cost = re.findall(r"(?:pay (\d+) life|deals? (\d+) damage to you)", _rules(card), re.I)
+    return max((int(n) for pair in cost for n in pair if n), default=0)
 
 
 def _source(card, board, state):
@@ -104,7 +110,7 @@ def _source(card, board, state):
         return (), False
     text = _rules(card)
     counters = card.get("counters") or {}
-    if not isinstance(counters, dict):
+    if not isinstance(counters, dict) or any(type(n) is not int or n < 0 for n in counters.values()):
         return (), False
     if any("stun" in str(k).lower() and n for k, n in counters.items()):
         return (), False
@@ -115,42 +121,39 @@ def _source(card, board, state):
         if re.search(r"spend .*only|activate only", text, re.I) and re.search(r"\badd\b", text, re.I):
             return options, False
         return options, bool(options) or not bool(re.search(r"\badd\b.*mana|\badd\s*\{", text, re.I))
-    available = land_colors(card, board)
-    # The parser removes mana whose counter/type condition is not met.
-    if "instead add" in text.lower() and any(
-        str(kind).lower().removeprefix("countertype_") in text.lower() and n for kind, n in counters.items()
-    ):
-        return tuple(_vector("{" + color + "}") for color in sorted(available)), True
     outputs = {_vector("{" + TYPES[t] + "}") for t in basic_types(card) if t in TYPES}
     known = bool(outputs)
-    for match in re.finditer(r"\{T\}(?:, Pay (\d+) life)?: Add ([^.]+)\.", text, re.I):
-        # Filter activations need a separate payment, not just a tap.
-        if text[: match.start()].rstrip().endswith(","):
+    unsupported = False
+    for line in text.strip().splitlines():
+        line = line.strip()
+        if not re.search(r"\badd\b", line, re.I):
+            if re.search(r"^(?:Spend|Activate only|Use this mana)", line, re.I):
+                unsupported = True
             continue
-        effect = match[2]
-        if "your commander's color identity" in effect.lower():
-            identity = set()
-            for commander in our_commanders(state):
-                identity.update(
-                    re.findall(
-                        r"\{([WUBRG])\}",
-                        _normalize_mana_symbols(
-                            str(commander.card.get("mana_cost") or "") + _rules(commander.card)
-                        ),
-                    )
-                )
-            parsed = tuple(_vector("{" + color + "}") for color in sorted(identity))
-        else:
-            parsed = _outputs(effect)
-        if parsed:
-            known = True
-        for output in parsed:
-            if all(not output[i] or c == "C" or c in available for i, c in enumerate(COLORS)):
-                outputs.add(output)
+        clause = _mana_clause(line, card)
+        if not clause:
+            unsupported = True
+            continue
+        rider = clause[3] or ""
+        if condition := _TYPE_CONDITION.fullmatch(rider):
+            kinds = {t.lower() for t in re.findall(_BASIC_TYPE, condition[0], re.I)}
+            if not any(basic_types(p) & kinds for p in board):
+                continue
+        parsed = _outputs(clause[2])
+        if replacement := _COUNTER_REPLACEMENT.fullmatch(rider):
+            kind = replacement[2].lower()
+            has_counter = any(
+                str(k).lower().removeprefix("countertype_") == kind and type(count) is int and count > 0
+                for k, count in counters.items()
+            )
+            if has_counter:
+                parsed = _outputs("one mana of any color")
+        outputs.update(parsed)
+        known = True
     # A structured production list is useful for older snapshots, but is not
     # authoritative over a printed conditional/restricted ability.
     if not text and card.get("color_production"):
-        outputs.update(_vector("{" + c + "}") for c in available)
+        outputs.update(_vector("{" + c + "}") for c in land_colors(card, board))
         known = bool(outputs)
     if re.search(r"spend .*only", text, re.I) or ("search your library" in text.lower() and not outputs):
         known = False
@@ -158,7 +161,8 @@ def _source(card, board, state):
         (p.get("life_total") for p in state.get("players") or [] if p.get("seat_id") == _local_seat(state)),
         None,
     )
-    if re.search(r"pay \d+ life|deals? \d+ damage to you", text, re.I) and (life is None or life < 5):
+    charge = _life_charge(card)
+    if charge and (type(life) is not int or life <= 2 * charge):
         known = False
     # A fresh hash binds the printed input, not the compiler's interpretation.
     # A record alone cannot turn a conditional or costly activation into free mana.
@@ -166,7 +170,7 @@ def _source(card, board, state):
     facts = _facts_mana(card, record) if record else None
     if facts and set(facts) != outputs:
         known = False
-    return tuple(sorted(outputs)), known
+    return tuple(sorted(outputs)), known and not unsupported
 
 
 def _sources(board, state, *, now):
@@ -175,8 +179,26 @@ def _sources(board, state, *, now):
         for c in state.get("battlefield") or []
         if c.get("controller_seat_id", c.get("owner_seat_id")) != _local_seat(state)
     ]
+    uncertain_type_grant = any(
+        re.search(r"\b(?:each|all|other) lands? (?:you control )?(?:is|are|have|has|lose)\b", line, re.I)
+        and not re.fullmatch(
+            r"Each land is a (Plains|Island|Swamp|Mountain|Forest) in addition to its other land types\.",
+            line.strip(),
+            re.I,
+        )
+        for c in [*board, *external]
+        for line in _rules(c).splitlines()
+    )
     board = _typed_board(board, external)
-    sources, certain = [], True
+    charges = sum(_life_charge(c) for c in board if _land(c))
+    local = next((p for p in state.get("players") or [] if p.get("seat_id") == _local_seat(state)), {})
+    life = local.get("life_total")
+    # The two-turn forecast prices spells independently. Keep the choices when
+    # using pain sources on both turns could exhaust the shared life payment.
+    sources, certain = (
+        [],
+        not uncertain_type_grant and (not charges or (type(life) is int and life > 2 * charges)),
+    )
     turn = int((state.get("turn") or {}).get("turn_number") or 0)
     for card in board:
         options, known = _source(card, board, state)
@@ -308,14 +330,77 @@ def _remove(board, card):
     return [c for c in board if c.get("instance_id") != iid]
 
 
-def _has_unpriced_payoff(card, state):
-    """Keep a land whose non-mana play may matter on this public board."""
-    from arenamcp.play_safety import _activated_abilities
+_BASIC_TYPE = r"(?:Plains|Island|Swamp|Mountain|Forest)"
+_PRINTED_MANA = re.compile(r"\{T\}(?:, Pay (\d+) life)?: Add ([^.]+)\.(?: (.*))?", re.I)
+_SELF_DAMAGE = re.compile(r"(This land|It|[^.:]+) deals (\d+) damage to you\.", re.I)
+_TYPE_CONDITION = re.compile(
+    rf"Activate only if you control (?:a|an) {_BASIC_TYPE} or (?:a|an) {_BASIC_TYPE}\.", re.I
+)
+_COUNTER_REPLACEMENT = re.compile(
+    r"If (this land|[^.:]+) has a ([a-z]+) counter on it, instead add one mana of any color\.", re.I
+)
 
-    text = _rules(card)
-    if re.search(r"\b(?:when|whenever|at the beginning|win the game|loses the game)\b", text, re.I):
+
+def _mana_clause(line, card):
+    """Return the complete printed tap ability, including its entire rider."""
+    match = _PRINTED_MANA.fullmatch(line.strip("()"))
+    if not match:
+        return None
+    payout, rider = match[2], match[3] or ""
+    if not _outputs(payout):
+        return None
+    if rider and not (
+        _SELF_DAMAGE.fullmatch(rider)
+        or _TYPE_CONDITION.fullmatch(rider)
+        or _COUNTER_REPLACEMENT.fullmatch(rider)
+    ):
+        return None
+    if subject := _SELF_DAMAGE.fullmatch(rider) or _COUNTER_REPLACEMENT.fullmatch(rider):
+        self_names = {"it", "this land", str(card.get("name") or "").casefold()}
+        # A card can have a changed display name. The opening-hand rule explicitly
+        # binds the named card beginning on the battlefield to "this card".
+        opening = re.match(
+            r"If this card is in your opening hand and you're not the starting player, "
+            r"you may begin the game with (.+?) on the battlefield with an? [a-z]+ counter on it\.",
+            _rules(card),
+            re.I,
+        )
+        if opening:
+            self_names.add(opening[1].casefold())
+        if subject[1].casefold() not in self_names:
+            return None
+    return match
+
+
+def _has_unpriced_payoff(card, state):
+    """Require a full account of every line before removing a land from a menu."""
+    text = _rules(card).strip()
+    if not text:
+        return not (basic_types(card) and "basic" in str(card.get("type_line") or "").lower())
+    for line in text.splitlines():
+        line = line.strip()
+        if _mana_clause(line, card):
+            continue
+        # Unconditional tapped entry and the two native, modelled land checks.
+        if re.fullmatch(
+            rf"(?:this land|{re.escape(str(card.get('name') or '?'))}) enters (?:the battlefield )?tapped"
+            rf"(?: unless you control (?:two or more other lands|(?:a|an) {_BASIC_TYPE}(?: or (?:a|an) {_BASIC_TYPE})?))?\.",
+            line,
+            re.I,
+        ):
+            continue
+        if ":" in line:
+            cost_text, effect = line.split(":", 1)
+            if re.fullmatch(
+                rf"(?:[\w ]+ — )?(?:\{{(?:[0-9]+|[WUBRGC])\}}, )*\{{T\}}, Sacrifice (?:this land|{re.escape(str(card.get('name') or '?'))})",
+                cost_text,
+                re.I,
+            ) and not _damage_tradeoff(effect, state):
+                continue
+        # Unknown static, entry, payment, trigger, and alternative-use text
+        # all preserve the original option. Future rules cannot add a free benefit.
         return True
-    return any(_damage_tradeoff(effect, state) for _cost_text, effect in _activated_abilities(card))
+    return False
 
 
 def _damage_tradeoff(effect, state):
@@ -538,17 +623,7 @@ def land_choices(decision, state):
                 frozenset(needed & (base_colors - colors)) if sacrifice else frozenset(),
                 certain,
                 kind,
-                max(
-                    [
-                        int(value)
-                        for pair in re.findall(
-                            r"(?:pay (\d+) life|deals? (\d+) damage to you)", _rules(card), re.I
-                        )
-                        for value in pair
-                        if value
-                    ]
-                    or [0]
-                ),
+                _life_charge(card),
                 unpriced_payoff=_has_unpriced_payoff(card, state),
                 preserves_all_colours=base_colors <= colors,
                 mana_certain=base_known and permanent_known and not uncertain_effect,
@@ -558,7 +633,9 @@ def land_choices(decision, state):
 
 
 def _better(a, b):
-    if a.kind != b.kind or (a.unpriced_payoff if a.kind == "sacrifice" else b.unpriced_payoff):
+    if a.kind != b.kind or a.unpriced_payoff or b.unpriced_payoff:
+        return False
+    if a.kind == "sacrifice" and a.life_cost != b.life_cost:
         return False
     if a.mana_certain and b.mana_certain and b.lost and a.preserves_all_colours:
         return True

@@ -261,3 +261,48 @@ def test_a_damage_spell_in_hand_keeps_a_land_that_can_finish_the_kill():
     board["hand"][0]["oracle_text"] += "\n{T}, Sacrifice this land: This land deals 2 damage to any target."
     board["hand"].append(card(9, "Other burn", "Instant", "Other burn deals 2 damage to any target.", "{R}"))
     assert "pick:1" in filter_land_choices(request, board)[0].option_ids()
+
+
+@pytest.mark.parametrize(
+    "target,rules",
+    [
+        (0, "{T}: Add {R}.\nCreatures you control have haste."),
+        (0, "When this land enters, target creature can't block this turn.\n{T}: Add {R}."),
+        (1, "{T}: Add {G}. Activate only if you control an artifact."),
+        (1, "{T}: Add {G}.\nActivate only if you control an artifact."),
+        (1, "{T}: Add {G}. Spend this mana only to cast a legendary spell."),
+        (1, "{T}: Add {G}. You lose the game at the beginning of the next end step."),
+        (1, "{T}: Add {G}. This land deals 1 damage to any target."),
+        (1, "As this land enters, sacrifice a creature or it enters tapped.\n{T}: Add {G}."),
+        (1, "As this land enters, you may pay 8 life. If you don't, it enters tapped.\n{T}: Add {G}."),
+        (1, "{T}, Pay 8 life: Add {G}."),
+        (1, "{T}: Add {G}. An enchantment deals 1 damage to you."),
+    ],
+)
+def test_uncertain_rider_or_static_value_keeps_both_normal_menu_options(monkeypatch, target, rules):
+    request, board = drop()
+    board["players"][0]["life_total"] = 6
+    board["hand"][target]["oracle_text"] = rules
+    planner = ActionPlanner(Mock())
+    monkeypatch.setattr("arenamcp.land_sequence.choose_land_sequence", lambda *a, **kw: (None, None))
+    seen = []
+
+    def choose(legal, state):
+        seen.append(legal.option_ids())
+        return ["pick:1"]
+
+    monkeypatch.setattr(planner, "_llm_decision_options", choose)
+    assert planner.plan_decision_options(request, board) == ["pick:1"]
+    assert seen == [request.option_ids()]
+
+
+def test_unknown_board_land_type_grant_is_not_applied_unconditionally():
+    req, board = drop()
+    conditional = card(
+        12,
+        "Conditional engine",
+        "Land",
+        "As long as you control an artifact, each land is a Forest in addition to its other land types.\n{T}: Add {C}.",
+    )
+    board["battlefield"].append(dict(conditional, owner_seat_id=2, controller_seat_id=2))
+    assert filter_land_choices(req, board)[0] is req
