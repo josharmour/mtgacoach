@@ -5,6 +5,7 @@ delivering new content via callback as it's written.
 """
 
 import glob
+import json
 import logging
 import os
 import re
@@ -59,6 +60,21 @@ DRAFT_ACTIVITY_TOKENS = (
     "SelfPack",
     "SelfPick",
 )
+# What follows a finished match in Player.log when Arena is NOT idle on Home /
+# Recently Played: a queue request, another match room, gameplay, a draft.
+POST_MATCH_ACTIVITY_TOKENS = (
+    "==> EventJoin",
+    "Event_Join",
+    "==> EventSetDeckV3",
+    "==> EventEnterPairing",
+    "==> EventAiBotMatch",
+    "atchGameRoomStateChangedEvent",
+    "MatchCreated",
+    "greToClientEvent",
+    "==> BotDraft",
+    "DraftMakePick",
+    *DRAFT_ACTIVITY_TOKENS,
+)
 ACTIVE_GAMEPLAY_TOKENS = (
     "GREMessageType_GameStateMessage",
     "GREMessageType_QueuedGameStateMessage",
@@ -86,6 +102,31 @@ def _is_active_gameplay_line(line: str) -> bool:
         line,
         INACTIVE_GAMEPLAY_TOKENS,
     )
+
+
+def _idle_completed_room(text: str, previous: str | None = None) -> str | None:
+    """Identity of the last explicit MatchCompleted room while Arena stays idle."""
+    terminal = "MatchGameRoomStateType_MatchCompleted"
+    if previous is None and terminal not in text:
+        return None
+    for line in reversed(text.splitlines()):
+        if terminal in line:
+            try:
+                payload = json.loads(line[line.index("{") :])
+                room = payload["matchGameRoomStateChangedEvent"]["gameRoomInfo"]
+                if room.get("stateType") != terminal:
+                    return None
+                config_id = (room.get("gameRoomConfig") or {}).get("matchId")
+                result_id = (room.get("finalMatchResult") or {}).get("matchId")
+                if config_id and result_id and config_id != result_id:
+                    return None
+                match_id = config_id or result_id
+                return match_id if isinstance(match_id, str) and match_id.strip() else None
+            except (ValueError, TypeError, KeyError, AttributeError):
+                return None
+        if _contains_any(line, POST_MATCH_ACTIVITY_TOKENS) or "GREMessageType_" in line:
+            return None
+    return previous
 
 
 def _latest_match_id_from_tail(content_bytes: bytes) -> str | None:
@@ -317,6 +358,7 @@ class MTGALogHandler(FileSystemEventHandler):
         super().__init__()
         self.log_path = _normalize_log_path(log_path)
         self.callback = callback
+        self.idle_completed_match_id: str | None = None
         self.file_position: int = 0
         # The observer thread (file events) and the coaching thread (poll())
         # both read: one reader at a time, so no chunk is delivered twice or
@@ -356,8 +398,13 @@ class MTGALogHandler(FileSystemEventHandler):
         # Reset position when file is recreated
         logger.info("Log file recreated, resetting position to 0")
         with self._read_lock:
+            self.idle_completed_match_id = None
             self.file_position = 0
             self._read_new_content_locked()
+
+    def _deliver(self, text: str) -> None:
+        self.idle_completed_match_id = _idle_completed_room(text, self.idle_completed_match_id)
+        self.callback(text)
 
     def _read_new_content(self) -> None:
         """Read new content from the log file and invoke callback."""
@@ -376,6 +423,7 @@ class MTGALogHandler(FileSystemEventHandler):
                     logger.info(
                         f"File truncated (size {file_size} < position {self.file_position}), resetting"
                     )
+                    self.idle_completed_match_id = None
                     self.file_position = 0
 
                 # Seek to our tracked position and read new content
@@ -385,7 +433,7 @@ class MTGALogHandler(FileSystemEventHandler):
                 if new_content:
                     self.file_position = f.tell()
                     logger.debug(f"Read {len(new_content)} chars, new position: {self.file_position}")
-                    self.callback(new_content)
+                    self._deliver(new_content)
 
         except FileNotFoundError:
             logger.debug("Log file not found (MTGA may not be running)")
@@ -415,7 +463,7 @@ class MTGALogHandler(FileSystemEventHandler):
 
                 if content:
                     logger.info(f"Backfill: read {len(content)} chars from position {start_position}")
-                    self.callback(content)
+                    self._deliver(content)
 
         except FileNotFoundError:
             logger.debug("Log file not found for backfill")
@@ -502,6 +550,10 @@ class MTGALogWatcher:
                 start_offset=start_offset,
                 file_size=file_size,
             )
+            if self._handler is not None and mode == "idle_or_completed":
+                self._handler.idle_completed_match_id = _idle_completed_room(
+                    content_bytes.decode("utf-8", errors="replace")
+                )
             logger.info(
                 "Startup anchor: mode=%s offset=%s match=%s (scanned last %.1fMB)",
                 mode,
@@ -514,6 +566,10 @@ class MTGALogWatcher:
         except OSError as e:
             logger.warning(f"Error scanning log for startup anchor: {e}")
             return 0, "scan_error"
+
+    @property
+    def idle_completed_match_id(self) -> str | None:
+        return self._handler.idle_completed_match_id if self._handler else None
 
     @property
     def last_relevant_match_id(self) -> str | None:

@@ -1198,11 +1198,15 @@ class StandaloneCoach(
 
     def _completed_match_wait(self, state: dict[str, Any]) -> bool:
         """A finished match must not generate more tactical advice or inputs."""
-        from arenamcp.server import get_completed_match_for_navigation
+        from arenamcp import server
 
         match_id = state.get("match_id")
-        completed = get_completed_match_for_navigation()
-        if not match_id or completed.get("match_id") != match_id:
+        finished_id = server.get_completed_match_for_navigation().get("match_id")
+        if state.get("_bridge_match_finished") is True:
+            idle_id = getattr(server.watcher, "idle_completed_match_id", None)
+            if idle_id and match_id in (None, idle_id):
+                match_id = finished_id = idle_id
+        if not match_id or finished_id != match_id:
             self._completed_match_notice_id = None
             return False
         if getattr(self, "_completed_match_notice_id", None) != match_id:

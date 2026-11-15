@@ -45,7 +45,7 @@ from arenamcp.parser import LogParser
 from arenamcp.scryfall import ScryfallCache
 from arenamcp.sealed_eval import analyze_sealed_pool, format_sealed_detailed, format_sealed_recommendation
 from arenamcp.stack_order import order_top_first
-from arenamcp.watcher import DRAFT_ACTIVITY_TOKENS, MTGALogWatcher
+from arenamcp.watcher import POST_MATCH_ACTIVITY_TOKENS, MTGALogWatcher
 
 # Defer voice/audio imports — sounddevice initializes PortAudio on import
 # which can hang if an audio device/driver is misbehaving.
@@ -622,21 +622,6 @@ def _queue_selection_from_log() -> dict[str, Any] | None:
     return None
 
 
-# What follows a finished match in Player.log when Arena is NOT idle on Home /
-# Recently Played: a queue request, another match room, gameplay, a draft.
-_NOT_IDLE_TOKENS = (
-    "==> EventJoin",
-    "Event_Join",
-    "==> EventSetDeckV3",
-    "==> EventEnterPairing",
-    "==> EventAiBotMatch",
-    "atchGameRoomStateChangedEvent",
-    "MatchCreated",
-    "greToClientEvent",
-    "==> BotDraft",
-    "DraftMakePick",
-    *DRAFT_ACTIVITY_TOKENS,
-)
 _RESTART_SCAN_BYTES = 8 * 1024 * 1024
 _MATCH_COMPLETED_TOKEN = "MatchGameRoomStateType_MatchCompleted"
 
@@ -696,7 +681,7 @@ def idle_completed_match_from_log(max_age_s: float = 1800.0) -> dict[str, Any] |
                     "completed_at": completed_at,
                     "match_complete": True,
                 }
-            elif any(token in line for token in _NOT_IDLE_TOKENS):
+            elif any(token in line for token in POST_MATCH_ACTIVITY_TOKENS):
                 return None
             continue
         # The queue request that started the completed match.
@@ -2136,6 +2121,11 @@ def _get_bridge_overlay(
 
     snapshot_lookup = _build_snapshot_object_lookup(fallback_zones)
     overlay["bridge_connected"] = True
+    # The log can omit the live match id after reset or a startup at EOF. Only
+    # the id read from this same visible board can bind it to the finished room.
+    finished = getattr(watcher, "idle_completed_match_id", None)
+    if finished and bridge_state.get("visible_match_id") == finished:
+        overlay["_bridge_match_finished"] = True
 
     bridge_players = [
         player for player in _copy_list(bridge_state.get("players")) if isinstance(player, dict)

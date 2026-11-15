@@ -165,6 +165,9 @@ def build_state_ops() -> tuple[_Ops, dict[str, int]]:
         ops.add("get", target={"ref": index[key]}, member="TotalCardCount", depth=2, optional=True)
         index[f"{key}_count"] = len(ops.ops) - 1
 
+    # Same CurrentGameState as the visible board, even after the log resets at intermission.
+    info = ops.get(state_ref, "GameInfo", optional=True)
+    index["visible_match_id"] = ops.get(info, "MatchID", optional=True)["ref"]
     return ops, index
 
 
@@ -308,6 +311,9 @@ def assemble_state(results: list[Any], index: dict[str, int]) -> dict[str, Any]:
                 zones[key]["card_ids"] = card_ids
 
     response: dict[str, Any] = {"ok": True, "turn": turn, "players": player_rows}
+    match_id = result("visible_match_id")
+    if isinstance(match_id, str) and match_id.strip():
+        response["visible_match_id"] = match_id
     if zones:
         response["zones"] = zones
 

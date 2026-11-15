@@ -240,11 +240,16 @@ class FakeProbe:
                         results.append(node)
                         objects.append(node)
                         continue
+                    if member == "GameInfo":
+                        node = self.scalars.get(member)
+                        results.append(node)
+                        objects.append(node)
+                        continue
                     if member in self.scalars:
                         results.append(self.scalars[member])
                         objects.append(None)
                         continue
-                if isinstance(target, dict) and member == "TotalCardCount":
+                if isinstance(target, dict) and member in {"TotalCardCount", "MatchID"}:
                     results.append(target.get(member))
                     objects.append(None)
                     continue
