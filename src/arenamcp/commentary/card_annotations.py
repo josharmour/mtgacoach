@@ -16,6 +16,7 @@ from dataclasses import dataclass
 
 from arenamcp.card_facts.hashing import rules_hash
 from arenamcp.card_facts.narrative import validate_layers
+from arenamcp.card_facts.spellbook import project_relationships, validate_recipe
 from arenamcp.card_facts.validate import PrintedCard
 
 
@@ -114,6 +115,34 @@ def project_annotation_facts(
         threat, relationships = record.get("threat", {}), record.get("relationships", {})
         if validate_layers(threat, relationships, sources, card_name=event.card):
             return {}
+        provenance = record.get("narrative_provenance", {})
+        source_pins = provenance.get("source_text_sha256", {}) if isinstance(provenance, dict) else {}
+        claims = [claim for field in ("plan", "clock", "answers") for claim in threat.get(field, [])]
+        claims += [link["claim"] for link in relationships.get("links", [])]
+        cited = {event.card} | {item["card"] for claim in claims for item in claim["evidence"]}
+        if not isinstance(source_pins, dict) or any(
+            source_pins.get(name) != hashlib.sha256(sources[name].encode()).hexdigest() for name in cited
+        ):
+            return {}
+        catalog = relationships.get("catalog")
+        if catalog is not None:
+            if not isinstance(catalog, dict) or not isinstance(catalog.get("recipes"), list):
+                return {}
+            if any(validate_recipe(recipe) for recipe in catalog["recipes"]):
+                return {}
+            focal_ids = {
+                piece["oracle_id"]
+                for recipe in catalog["recipes"]
+                for piece in recipe["pieces"]
+                if piece["name"] == event.card
+            }
+            if len(focal_ids) != 1:
+                return {}
+            rebuilt = project_relationships(
+                event.card, next(iter(focal_ids)), catalog["recipes"], catalog.get("source")
+            )
+            if annotation_digest(rebuilt) != annotation_digest(catalog):
+                return {}
     except (ValueError, TypeError, KeyError, RecursionError):
         return {}
     visible = {}
@@ -159,6 +188,8 @@ def project_annotation_facts(
         for field in ("plan", "clock", "answers"):
             for claim in threat.get(field, [])[:8]:
                 add("card_threat", claim["text"], claim["evidence"], field)
+    if event.kind != "permanent_entered":
+        return result
     for link in relationships.get("links", [])[:64]:
         partners = visible.get(link["card"], [])
         if not partners:
@@ -172,4 +203,19 @@ def project_annotation_facts(
             "possibility",
             partner,
         )
+    if catalog is not None:
+        recipes = {recipe["id"]: recipe for recipe in catalog["recipes"]}
+        for link in catalog["recipe_links"][:64]:
+            partners = visible.get(link["card"], [])
+            recipe = recipes.get(link["recipe_id"])
+            if not partners or recipe is None or len(json.dumps(recipe).encode()) > 4000:
+                continue
+            partner = next((p for p in partners if p.visibility == "public"), partners[0])
+            add(
+                "catalogue_relationship",
+                "Catalogue possibility: " + link["text"],
+                [{"catalogue_source": catalog["source"], "recipe": recipe}],
+                "possibility",
+                partner,
+            )
     return result
