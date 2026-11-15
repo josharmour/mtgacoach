@@ -1342,6 +1342,7 @@ class BoardAssessment:
     poison_fact: str = ""
     poison_turns: int | None = None
     poison_urgent: bool = False
+    unknown_bodies: tuple[str, ...] = ()
 
     @property
     def survival_mode(self) -> bool:
@@ -2520,6 +2521,7 @@ def _assess(state: dict) -> BoardAssessment | None:
         threats=threats,
         lookahead=lookahead,
         unknowns=unknowns,
+        unknown_bodies=model.unknown_bodies,
         library_count=library,
         decking_turns=decking.turns if decking is not None else None,
         mill_rate=decking.rate if decking is not None else None,

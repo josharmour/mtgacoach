@@ -1170,7 +1170,12 @@ def planner_certain_pick(result, decision, state) -> str | None:
         from arenamcp.board_assessment import assess
 
         assessment = assess(state)
-        if assessment.lethal_now or assessment.survival_mode or assessment.unknown_bodies:
+        if (
+            assessment is None
+            or assessment.lethal_now
+            or assessment.survival_mode
+            or assessment.unknown_bodies
+        ):
             return None
         evaluated = []
         for option in decision.options:

@@ -119,6 +119,32 @@ def certainty(monkeypatch):
     return result, d
 
 
+def test_certainty_uses_the_actual_assessment_and_abstains_on_an_unknown_body(monkeypatch):
+    from arenamcp.board_assessment import assess
+
+    r, d = certainty(monkeypatch)
+    monkeypatch.setattr("arenamcp.board_assessment.assess", assess)
+    state = _our_main()
+    baseline = assess(state)
+    assert baseline is not None and baseline.unknown_bodies == ()
+    assert lg.planner_certain_pick(r, d, state) == "a"
+    # The line search's older model can consider the board clear. The fresh
+    # assessment independently sees a creature whose public P/T are missing.
+    state["battlefield"].append(
+        {
+            "name": "Unknown creature body",
+            "instance_id": 889,
+            "card_types": ["Creature"],
+            "type_line": "Creature",
+            "controller_seat_id": 1,
+            "owner_seat_id": 1,
+        }
+    )
+    fresh = assess(state)
+    assert fresh is not None and fresh.unknown_bodies
+    assert lg.planner_certain_pick(r, d, state) is None
+
+
 def test_certainty_all_evaluated_clear_survivor_only(monkeypatch):
     r, d = certainty(monkeypatch)
     assert lg.planner_certain_pick(r, d, {}) == "a"
