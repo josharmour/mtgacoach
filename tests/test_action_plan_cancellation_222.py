@@ -1,6 +1,7 @@
 """A caller deadline must stop non-hedged network work, not only its waiter."""
 
 import threading
+import time
 
 import pytest
 from tests.test_game_plan import _state
@@ -11,6 +12,7 @@ from arenamcp.action_planner import ActionPlanner
 @pytest.mark.parametrize("repair", [False, True])
 def test_action_plan_timeout_cancels_its_cooperative_backend(monkeypatch, repair):
     release = threading.Event()
+    blocked = threading.Event()
     stopped = threading.Event()
     calls = []
 
@@ -20,13 +22,28 @@ def test_action_plan_timeout_cancels_its_cooperative_backend(monkeypatch, repair
             if repair and len(calls) == 1:
                 return "not JSON"
             cancel = kwargs.get("cancel_event")
-            if cancel is not None and cancel.wait(1):
+            blocked.set()
+            if cancel is not None and cancel.wait(2):
                 stopped.set()
             else:
                 release.wait(1)
             return '{"actions":[]}'
 
-    planner = ActionPlanner(Backend(), timeout=0.1, land_drop_first=False)
+    planner = ActionPlanner(Backend(), timeout=5, land_drop_first=False)
+    wait_for_model = planner._wait_for_model
+    waits = 0
+
+    def expire_in_flight(future, deadline):
+        nonlocal waits
+        waits += 1
+        if repair and waits == 1:
+            return wait_for_model(future, deadline)
+        # Expire the real waiter after the specific worker is running. An
+        # expired budget before repair admission legitimately starts no worker.
+        assert blocked.wait(2), "expected the chosen backend call to be in flight"
+        return wait_for_model(future, time.monotonic())
+
+    monkeypatch.setattr(planner, "_wait_for_model", expire_in_flight)
     monkeypatch.setattr("arenamcp.action_planner.declaration_effort", lambda *a: ("", ""))
     try:
         planner.plan_actions(
