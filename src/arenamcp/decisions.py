@@ -628,6 +628,38 @@ def _player_label(seat: int) -> str:
     return f"Opponent {name} ({life_text})" if name else f"Opponent (seat {seat}, {life_text})"
 
 
+def native_sole_pass_request(poll: dict[str, Any]) -> tuple[int, int] | None:
+    """Bind a forced Pass to a complete, current bridge menu before any filtering."""
+    if (
+        poll.get("ok") is not True
+        or poll.get("has_pending") is not True
+        or poll.get("request_type") != "ActionsAvailable"
+        or poll.get("request_class") != "ActionsAvailableRequest"
+        or poll.get("can_pass") is not True
+        or poll.get("can_cancel") is not False
+        or poll.get("allow_undo") is not False
+    ):
+        return None
+    game_id, message_id = poll.get("game_state_id"), poll.get("msg_id")
+    if type(game_id) is not int or type(message_id) is not int or min(game_id, message_id) <= 0:
+        return None
+    actions = poll.get("actions")
+    if not isinstance(actions, list) or len(actions) != 1 or not isinstance(actions[0], dict):
+        return None
+    action = actions[0]
+    if (
+        set(action) != {"actionType", "grpId", "instanceId", "assumeCanBePaidFor"}
+        or action["actionType"] not in ("Pass", "ActionType_Pass")
+        or type(action["grpId"]) is not int
+        or action["grpId"] != 0
+        or type(action["instanceId"]) is not int
+        or action["instanceId"] != 0
+        or action["assumeCanBePaidFor"] is not False
+    ):
+        return None
+    return game_id, message_id
+
+
 def build_pending_decision(
     poll: dict[str, Any] | None,
     *,

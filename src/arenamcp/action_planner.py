@@ -4804,7 +4804,9 @@ class ActionPlanner(_ActionLegalityMixin):
             ledger = self._hold_fate_ledger = HoldFates()
         return ledger
 
-    def _single_option_answer(self, decision: Any) -> list[str] | None:
+    def _single_option_answer(
+        self, decision: Any, native_sole_pass: tuple[int, int] | None = None
+    ) -> list[str] | None:
         """#226(a): one legal action left — submit it without the model.
 
         13% of typed decisions (2026-10-23 audit) offered exactly one legal
@@ -4819,7 +4821,7 @@ class ActionPlanner(_ActionLegalityMixin):
           modes) — with one candidate the interesting question is still
           cast-or-decline / find-or-fail, and the harmful-target gates are
           model-pick features;
-        - a lone ``pass`` (or decline) — the model's pass reasoning feeds the
+        - a filtered or unbound lone ``pass`` (or decline) — the model's pass reasoning feeds the
           decision memory and the reversal check, and several guards key on
           it;
         - anything with a cancel (a decline escape is a real choice);
@@ -4833,6 +4835,22 @@ class ActionPlanner(_ActionLegalityMixin):
             # model call even with one candidate: cast-or-decline, fail-to-find
             # and the harmful-target gates are real content there.
             return None
+        if (
+            native_sole_pass is not None
+            and native_sole_pass == decision.request_id
+            and decision.request_type == "ActionsAvailable"
+            and decision.can_pass is True
+            and decision.can_cancel is False
+            and decision.min_select == decision.max_select == 1
+            and decision.options[0].option_id == "pass"
+            and decision.selection_is_valid(["pass"])
+        ):
+            # The raw menu never offered a cast to hold. Preserve the normal
+            # decision-memory record with the exact reason priority was yielded.
+            self._last_decision_option_ids = ["pass"]
+            self._last_decision_reasoning = "Arena offered only Pass in this priority window."
+            self._last_decision_trace = {"policy": "native_sole_pass", "validated_ids": ["pass"]}
+            return ["pass"]
         if decision.can_cancel or decision.can_pass:
             return None
         option = decision.options[0]
@@ -5376,7 +5394,7 @@ class ActionPlanner(_ActionLegalityMixin):
                     len(decision.options),
                 )
                 decision = filtered
-        single = self._single_option_answer(decision)
+        single = self._single_option_answer(decision, game_state.get("_native_sole_pass_request"))
         if single is not None:
             return single
         reused = self._reusable_answer(decision, game_state)

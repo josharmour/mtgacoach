@@ -5613,6 +5613,7 @@ class AutopilotEngine(
 
         from arenamcp.decisions import (
             build_pending_decision,
+            native_sole_pass_request,
             select_n_needs_arena_default,
             submit_option,
         )
@@ -5627,6 +5628,7 @@ class AutopilotEngine(
         # snapshot (OptionalAction -> Search is a common ETB transition).
         # Keep the planner's context aligned with its actual typed option set.
         game_state = dict(caught_up)
+        sole_pass = native_sole_pass_request(poll)
         enrich_snapshot_from_pending_response(game_state, poll, bridge_connected=True)
         self._progress_game_state = game_state
         if self._wait_for_sideboard(game_state):
@@ -5795,7 +5797,10 @@ class AutopilotEngine(
                 # chose the revealed Plains and every answer was refused.
                 option_ids = []
             else:
-                option_ids = self._planner.plan_decision_options(decision, game_state)
+                planner_state = (
+                    {**game_state, "_native_sole_pass_request": sole_pass} if sole_pass else game_state
+                )
+                option_ids = self._planner.plan_decision_options(decision, planner_state)
         finally:
             if callable(set_cancel):
                 set_cancel(None)
@@ -5833,7 +5838,13 @@ class AutopilotEngine(
             self._state = AutopilotState.IDLE
             return True
         fresh_fp = decision_fingerprint(fresh_decision) if fresh_decision else None
-        if fresh_fp != fp or fresh_decision.request_id != decision.request_id:
+        if (
+            fresh_fp != fp
+            or fresh_decision.request_id != decision.request_id
+            # A newly offered mana action can disappear from the typed menu while
+            # the request ID and fingerprint stay equal. Recheck the raw evidence.
+            or (sole_pass is not None and native_sole_pass_request(fresh_poll) != sole_pass)
+        ):
             self._request_tracker.observe(fresh_fp, request_window(game_state))
             logger.info("typed-decision: request changed during planning; yielding for a fresh decision")
             self._state = AutopilotState.IDLE

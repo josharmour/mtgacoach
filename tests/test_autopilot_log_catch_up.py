@@ -312,3 +312,83 @@ def test_old_incomplete_or_disconnected_visible_boards_do_not_unblock_combat():
             engine._await_log_catch_up({"request_type": "DeclareAttackers", "game_state_id": 438}, stale)
             is None
         )
+
+
+def _bound_pass_poll():
+    return {
+        **_pass_only_poll(),
+        "request_class": "ActionsAvailableRequest",
+        "msg_id": 91,
+        "allow_undo": False,
+        "actions": [{"actionType": "Pass", "grpId": 0, "instanceId": 0, "assumeCanBePaidFor": False}],
+    }
+
+
+@pytest.mark.parametrize("gains_hidden_mana", [False, True])
+def test_real_planner_and_fresh_bridge_preserve_a_forced_priority_pass(gains_hidden_mana):
+    from tests.test_decision_layer_20261019 import _Model, _planner, _reply
+    from tests.test_planner_micro_wins_226 import _our_main
+
+    state = {**_our_main(), "_log_game_state_id": 204}
+    poll = _bound_pass_poll()
+    fresh = {**poll, "actions": list(poll["actions"])}
+    if gains_hidden_mana:
+        # This extra raw action preserves the typed pass-only fingerprint.
+        fresh["actions"].append({"actionType": "ActivateMana", "instanceId": 4})
+    engine = _engine([state])
+    model = _Model(_reply("pass", "hold"))
+    engine._planner = _planner(model)
+    engine._refresh_game_plan = MagicMock()
+    observations = iter([poll])
+    engine._gre_bridge.get_pending_actions.side_effect = lambda: next(observations, fresh)
+    assert engine._try_typed_decision_path(state, "decision_required") is True
+    assert not model.efforts
+    assert engine._planner.get_last_decision_trace()["policy"] == "native_sole_pass"
+    record = engine._planner._memory().this_turn(state)[-1]
+    assert record.chosen == ["pass"] and "only Pass" in record.reasoning
+    assert record.option_labels == {"pass": "Pass"}
+    assert engine._gre_bridge.submit_pass.call_count == (0 if gains_hidden_mana else 1)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"msg_id": 0},
+        {"game_state_id": True},
+        {"msg_id": "91"},
+        {"ok": False},
+        {"request_class": "DifferentRequest"},
+        {"request_type": "SelectTargets"},
+        {"has_pending": False},
+        {"can_cancel": "false"},
+        {"can_pass": False},
+        {"allow_undo": True},
+        {"actions": []},
+        {"actions": [{"actionType": "Pass"}]},
+        {"actions": [{"actionType": "Pass", "grpId": 0, "instanceId": False, "assumeCanBePaidFor": False}]},
+        {"actions": [*_bound_pass_poll()["actions"], {"actionType": "Cast"}]},
+        {"actions": [{**_bound_pass_poll()["actions"][0], "abilityGrpId": 7}]},
+    ],
+)
+def test_unverified_priority_menu_must_keep_the_normal_decision(change):
+    from arenamcp.decisions import native_sole_pass_request
+
+    assert native_sole_pass_request({**_bound_pass_poll(), **change}) is None
+
+
+def test_filtered_pass_still_asks_and_remembers_normal_reasoning():
+    from tests.test_decision_layer_20261019 import _Model, _planner, _reply
+    from tests.test_planner_micro_wins_226 import _our_main
+
+    state = {**_our_main(), "_log_game_state_id": 204}
+    poll = _bound_pass_poll()
+    poll["actions"].append({"actionType": "ActivateMana", "instanceId": 4})
+    engine = _engine([state])
+    model = _Model(_reply("pass", "Wait for a legal cast."))
+    engine._planner = _planner(model)
+    engine._refresh_game_plan = MagicMock()
+    engine._gre_bridge.get_pending_actions.return_value = poll
+    assert engine._try_typed_decision_path(state, "decision_required") is True
+    assert model.efforts
+    assert engine._planner.get_last_decision_trace().get("policy") != "native_sole_pass"
+    engine._gre_bridge.submit_pass.assert_called_once()
