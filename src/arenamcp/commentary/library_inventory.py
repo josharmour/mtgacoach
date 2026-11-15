@@ -56,8 +56,15 @@ def _undisturbed_members(message, zones, library_zone, members):
     for annotation in (*annotations, *persistent):
         if not isinstance(annotation, dict):
             return False
-        affected = _ids(annotation.get("affectedIds", []))
-        if affected is None or affected & members or annotation.get("affectorId") in members:
+        affected = annotation.get("affectedIds", [])
+        # PhaseOrStepModified legitimately references engine/seat zero. It
+        # cannot be a library instance (all are strictly positive). Renames
+        # below still require a complete set of positive physical ids.
+        if (
+            type(affected) is not list
+            or any(type(i) is not int or i in members for i in affected)
+            or annotation.get("affectorId") in members
+        ):
             return False
         if "AnnotationType_ObjectIdChanged" not in (annotation.get("type") or []):
             continue

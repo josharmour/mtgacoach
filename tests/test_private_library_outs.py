@@ -589,3 +589,19 @@ def test_repeated_opening_envelope_cannot_rearm_a_failed_census():
     g.update_from_message({"type": "GameStateType_Diff", "gameStateId": 5, "prevGameStateId": 4})
     g.update_from_message(full())
     assert g._draw_inventory is None
+
+
+def test_normal_phase_event_with_engine_zero_preserves_unmodified_inventory():
+    """88 of the first compiled 100 real replays hit this non-card phase annotation."""
+    g = opened()
+    g.update_from_message(
+        {
+            "type": "GameStateType_Diff",
+            "gameStateId": 3,
+            "prevGameStateId": 2,
+            "annotations": [{"type": ["AnnotationType_PhaseOrStepModified"], "affectedIds": [0]}],
+        }
+    )
+    s = board()
+    s["_log_game_state_id"] = 3
+    assert project(s, g)["remaining"] == 53
