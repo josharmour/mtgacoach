@@ -462,6 +462,9 @@ class CommentaryService:
                         uid: item for uid, item in self.proposals.items() if uid in self.inflight
                     }
                     self.public_proposals.intersection_update(self.proposals)
+                    self.grounded_ids = {
+                        uid: event for uid, event in self.grounded_ids.items() if uid in self.proposals
+                    }
                     speaking = bool(self.inflight)
                 if not observation.events or speaking:
                     self.status(

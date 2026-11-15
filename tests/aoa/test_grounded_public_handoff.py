@@ -177,3 +177,18 @@ def test_original_public_receipt_binds_payload_epoch_and_consent():
     assert not service._heard_public_calls(obs.epoch, obs.events)
     service.configure()
     assert not service.heard_event_calls
+
+
+def test_expired_delivery_discards_grounded_evidence_without_a_late_handoff():
+    service, config, obs, event, lead = prepare_lead("outcome")
+    uid = lead["utterance_id"]
+    service.pending_config, service.pending_epoch = config, obs.epoch
+    service.inflight[uid] = time.monotonic() - 1
+    # The producer already observed this state. Let the next normal empty poll
+    # expire the unacknowledged proposal, then stop without starting the client.
+    service.status = lambda *args, **kwargs: service.close()
+    service.wake.set()
+    service._run()
+    assert uid not in service.proposals and uid not in service.grounded_ids
+    service.delivery(uid, "finished")
+    assert not service._heard_public_calls(obs.epoch, (event,))
