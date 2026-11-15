@@ -14,6 +14,7 @@ from arenamcp.big_board import BIG_ATTACK_MENU
 from arenamcp.combat_hit import loses_on_combat_hit
 from arenamcp.combat_keywords import (
     annotate_cant_be_blocked,
+    attached_combat_limits,
     is_creature_modified,
     is_creature_now,
     modified_conditional_keywords,
@@ -842,8 +843,6 @@ def _is_int(value) -> bool:
 
 
 def _eligible_blockers(state: dict, opponent_seat: int) -> list[dict]:
-    from arenamcp.combat_keywords import attached_combat_limits
-
     blockers = []
     limits = attached_combat_limits(state.get("battlefield") or [])
     for card in state.get("battlefield") or []:
@@ -1480,6 +1479,52 @@ def losing_attack_prompt(state: dict, context: dict) -> str:
     )
 
 
+def _last_blocker_at_risk(state, attackers, local, opponent, targets) -> bool:
+    """Allow an all-in attack to be reviewed when our only blocker is attacking the player."""
+    if len(attackers) != 1 or state.get("hand_complete") is not True:
+        return False
+    if type(state.get("hand_count")) is not int or state["hand_count"] != 0 or state.get("hand") != []:
+        return False
+    seat = local.get("seat_id")
+    if state.get("stack") or any(
+        _controller(card) == seat for zone in ("exile", "command") for card in state.get(zone) or []
+    ):
+        return False
+    for target in (targets or {}).values():
+        if isinstance(target, dict):
+            if target.get("playerSystemSeatId") != opponent.get("seat_id"):
+                return False
+        elif target and str(target).strip().casefold() != "opponent":
+            return False
+    battlefield = state.get("battlefield") or []
+    body = attackers[0]
+    if [card for card in battlefield if _controller(card) == seat and is_creature_now(card)] != [body]:
+        return False
+    if (
+        body.get("is_tapped")
+        or body.get("is_phased_out")
+        or not _has(body, "vigilance")
+        or _has(body, "lifelink")
+        or _attack_payoff(body) != 0
+        or _TOP_CARD_USE.search(_rules_text(body))
+        or _CANT_BLOCK.search(_rules_text(body))
+        or attached_combat_limits(battlefield).get(body["instance_id"], (False, False))[1]
+    ):
+        return False
+    return any(
+        _controller(enemy) == opponent.get("seat_id")
+        and is_creature_now(enemy)
+        and _is_int(enemy.get("power"))
+        and enemy["power"] > 0
+        and can_attack_next_turn(enemy)
+        and _group_can_block(enemy, [body])
+        for enemy in battlefield
+    )
+
+
+_TOP_CARD_USE = re.compile(r"\bscry\b|\bdraw\b|\btop (?:card|of)\b")
+
+
 def losing_attackers(
     state: dict,
     attacker_ids: list[int],
@@ -1547,8 +1592,6 @@ def losing_attackers(
     opponent = next((player for player in players if not player.get("is_local")), None)
     if local is None or opponent is None or not attacker_ids:
         return {}
-    if _all_in(state):
-        return {}  # nothing to lose: a chump attack still might matter
     if _sneak_lethal(state):
         return {}  # #189: every attacker counts toward the lethal Sneak after blocks
     battlefield = state.get("battlefield") or []
@@ -1565,11 +1608,30 @@ def losing_attackers(
         for card in attackers
     ):
         return {}
+    all_in = _all_in(state)
+    if all_in and not _last_blocker_at_risk(state, attackers, local, opponent, attacker_targets):
+        return {}
+    scry_only = False
     rewarded: set[str] = set()  # creature types a typed attack payoff rewards
     for card in battlefield:
         if _controller(card) != local.get("seat_id") or card.get("instance_id") in attacker_ids:
             continue
-        payoff = _typed_attack_payoff(_rules_text(card))
+        rules = _rules_text(card).replace("“", '"').replace("”", '"')
+        if (
+            all_in
+            and card.get("attached_to_id") == attacker_ids[0]
+            and rules
+            == (
+                'enchant creature\nenchanted creature gets +1/+1 and has "whenever this creature attacks, scry 1."'
+            )
+        ):
+            # Looking one card deeper is real value. Only discount it when
+            # nothing else visible can use the top card or reward that scry.
+            scry_only = True
+            continue
+        if all_in and _TOP_CARD_USE.search(rules):
+            return {}
+        payoff = _typed_attack_payoff(rules)
         if payoff is None:
             return {}
         rewarded |= payoff
@@ -1601,6 +1663,8 @@ def losing_attackers(
     removal_tricks = [text for text, _cost, _identity in affordable if text and _REMOVES_BLOCKER.search(text)]
     opp_life = opponent.get("life_total")
     opp_life = opp_life if _is_int(opp_life) else 20
+    if all_in and any(text is None or _TOP_CARD_USE.search(text) for text, _, _ in affordable):
+        return {}
     pings = sum(_attack_ping_damage(card) for card in attackers)
     if _best_through(attackers, blockers, opp_life) + pings >= opp_life:
         return {}  # lethal through their best blocks (attack pings included): every attacker counts
@@ -1641,7 +1705,7 @@ def losing_attackers(
     # they block, whatever their best blocks are.
     remaining = list(attackers)
     losing: dict[int, str] = {}
-    while True:
+    while not all_in:
         worst = None
         for attacker in judged:
             if attacker not in remaining:
@@ -1699,6 +1763,10 @@ def losing_attackers(
             verdict = _doomed(attacker, thinning, blockers, payoff=payoffs[identity] or 0, **common)
             if verdict is None or verdict.kind != "fed":
                 continue
+            if all_in:
+                outcome = _resolve_attacker(attacker, mine)
+                if not outcome.attacker_died or outcome.blockers_died or outcome.damage_through or added > 0:
+                    continue
             if {card.get("instance_id") for card in mine} == {
                 card.get("instance_id") for card in verdict.group
             }:
@@ -1715,6 +1783,7 @@ def losing_attackers(
             battlefield,
             several=len(thinning) > 1,
             payoff=payoffs[attacker["instance_id"]] or 0,
+            scry_only=scry_only,
         )
         removed.append((attacker, reason, costly))
         thinning = [card for card in thinning if card is not attacker]
@@ -1816,7 +1885,13 @@ def _thinned_declaration(
 
 
 def _losing_reason(
-    attacker: dict, verdict: _Doomed, battlefield: list[dict], *, several: bool, payoff: int = 0
+    attacker: dict,
+    verdict: _Doomed,
+    battlefield: list[dict],
+    *,
+    several: bool,
+    payoff: int = 0,
+    scry_only: bool = False,
 ) -> str:
     group = verdict.group
     name = attacker.get("name") or attacker.get("instance_id")
@@ -1852,6 +1927,8 @@ def _losing_reason(
         payoff_note = (
             f"its attack trigger is worth only {payoff}" if payoff else "it has no attack or death payoff"
         )
+        if scry_only:
+            payoff_note = "the attack would scry 1 but cost our last blocker"
         reason = (
             f"{blocked_by} can block {name} {body}, kill it and survive; nothing gets through, "
             f"{payoff_note}, and no affordable trick could change that combat"

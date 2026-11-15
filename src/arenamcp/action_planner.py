@@ -2268,7 +2268,9 @@ class ActionPlanner(_ActionLegalityMixin):
             held = spoken_list([spoken_name(name) for name, _ in dropped])
             outcome = "they would die to blocks" if len(dropped) > 1 else "it would die to a block"
             outcome += " for nothing"
-            if all("for free:" in losing[i] for _, i in dropped):  # ledger #120: nothing dies
+            if any("cost our last blocker" in losing[i] for _, i in dropped):
+                outcome = "the attack would scry 1 but cost our last blocker"
+            elif all("for free:" in losing[i] for _, i in dropped):  # ledger #120: nothing dies
                 outcome = ("they" if len(dropped) > 1 else "it") + " would be blocked for nothing"
             elif all("keep the engine" in losing[i] for _, i in dropped):  # ledger #113
                 outcome = "our burn can kill that blocker instead of a trade"

@@ -889,3 +889,73 @@ def test_howlsquad_heavy_goblin_must_attack_never_held_by_crackback_or_omitted()
     assert pilot._try_bridge_declare_attackers(only_heavy).success
     entries = pilot._gre_bridge.submit_attackers_raw.call_args.args[0]
     assert [entry["attackerInstanceId"] for entry in entries] == [328, 360]
+
+
+def _lone_vigilant_board():
+    attacker = creature(
+        71, "Sentry", 2, 6, 6, "Vigilance\nFirst strike", keywords=["vigilance", "first strike"]
+    )
+    blockers = [creature(81, "Giant", 1, 14, 14), creature(82, "Colossus", 1, 13, 13, is_tapped=True)]
+    state = incident([attacker], blockers, opponent_life=6)
+    state.update(hand=[], hand_complete=True, hand_count=0, graveyard=[], recent_events=[])
+    state["players"][1]["life_total"] = 5
+    state["battlefield"] = [
+        attacker,
+        *blockers,
+        {
+            "instance_id": 92,
+            "controller_seat_id": 2,
+            "type_line": "Token Enchantment — Aura Role",
+            "attached_to_id": 71,
+            "oracle_text": 'Enchant creature\nEnchanted creature gets +1/+1 and has "Whenever this creature attacks, scry 1."',
+        },
+    ]
+    return state
+
+
+def test_bridge_preserves_lone_blocker_when_the_forced_race_only_scries():
+    from arenamcp.board_assessment import assess
+
+    state = _lone_vigilant_board()
+    assert assess(state).all_in
+    pilot = bridge_pilot(state, state["decision_context"]["raw_attackers"])
+    action = GameAction(
+        ActionType.DECLARE_ATTACKERS, attacker_names=["Sentry"], attacker_targets={"Sentry": "Opponent"}
+    )
+    result = pilot._try_bridge_declare_attackers(action)
+    assert result.success and result.submitted_action.attacker_names == []
+    pilot._gre_bridge.submit_attackers_raw.assert_called_once_with([])
+    assert "scry 1" in result.submitted_action.reasoning
+    assert "no attack or death payoff" not in result.submitted_action.reasoning
+
+
+@pytest.mark.parametrize(
+    "alternative", ["trade", "lethal", "mandatory", "draw", "scry_payoff", "unknown_hand", "walker"]
+)
+def test_losing_race_keeps_attacks_with_material_or_unresolved_upside(alternative):
+    state = _lone_vigilant_board()
+    target = "Opponent"
+    if alternative == "trade":
+        state["battlefield"][1].update(power=6, toughness=6, keywords=["first strike"])
+    elif alternative == "lethal":
+        state["battlefield"][1]["is_tapped"] = True
+    elif alternative == "mandatory":
+        state["decision_context"]["raw_attackers"][0]["mustAttack"] = True
+    elif alternative == "draw":
+        state["battlefield"][-1]["oracle_text"] = (
+            'Enchanted creature has "Whenever this creature attacks, draw a card."'
+        )
+    elif alternative == "scry_payoff":
+        state["battlefield"].append(
+            {
+                "instance_id": 93,
+                "controller_seat_id": 2,
+                "type_line": "Enchantment",
+                "oracle_text": "Whenever you scry, draw a card.",
+            }
+        )
+    elif alternative == "unknown_hand":
+        state["hand_complete"] = False
+    else:
+        target = {"planeswalkerInstanceId": 94}
+    assert losing_attackers(state, [71], attacker_targets={71: target}) == {}
