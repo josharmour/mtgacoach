@@ -68,7 +68,7 @@ def answer(prompt, fault=None):
             ],
         }
     read = [prompt["beginning_receipt"], *[p["receipt"] for p in prints], prompt["ending_receipt"]]
-    return {"result": result, "read_receipt": read if fault != "stale_receipt" else list(reversed(read))}
+    return {"result": result, "read_receipt": " ".join(read if fault != "stale_receipt" else reversed(read))}
 
 
 def writer():

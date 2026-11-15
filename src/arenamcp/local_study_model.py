@@ -78,6 +78,8 @@ class LocalStudyModel:
         self.template_bytes = len((meta.get("template") or "").encode())
         levels = meta.get("thinking") or {}
         supported = levels.get("values", []) if isinstance(levels, dict) else []
+        supported = supported if isinstance(supported, list) else []
+        self.can_disable_thinking = any(v is False for v in supported)
         self.thinks = "thinking" in (meta.get("capabilities") or [])
         if self.thinks and "low" in supported:
             self.thinks = "low"
@@ -111,7 +113,11 @@ class LocalStudyModel:
             if type(self.context_length) is not int or required > self.context_length:
                 raise ValueError("The installed model cannot verify room for the complete deck study")
             body["options"]["num_ctx"] = required
-        if self.thinks:
+        if verify_full_input and self.thinks and self.can_disable_thinking:
+            # The local server defaults to its own reasoning level if this key
+            # is omitted. Preserve the output allowance for the grounded JSON.
+            body["think"] = False
+        elif self.thinks:
             body["think"] = self.thinks
         conn = http.client.HTTPConnection(_HOST, _PORT, timeout=5)
         ended = threading.Event()

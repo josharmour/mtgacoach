@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 import secrets
+import string
 import time
 from collections import Counter
 from dataclasses import replace
@@ -260,19 +261,23 @@ def acknowledged_answer(model, system, context, key, result_schema, allowed, *, 
     # Receipts are absent from the response grammar. A silently truncated
     # prefix/suffix cannot satisfy this request by copying schema constants.
     prints = list(context["prints"].values())
-    receipts = secrets.SystemRandom().sample(range(10_000_000, 100_000_000), len(prints) + 2)
+    # Numeric receipts cost nine output tokens apiece on the installed Qwen
+    # tokenizer. Five random letters provide 52**5 possible values, with
+    # enough output budget left for the strategic answer.
+    unique = {}
+    while len(unique) < len(prints) + 2:
+        receipt = "".join(secrets.choice(string.ascii_letters) for _ in range(5))
+        unique[receipt] = None
+    receipts = list(unique)
+    expected = " ".join(receipts)
     shape = schema_object(
         {
-            "read_receipt": {
-                "type": "array",
-                "minItems": len(receipts),
-                "maxItems": len(receipts),
-                "items": {"type": "integer"},
-            },
+            "read_receipt": {"type": "string", "minLength": len(expected), "maxLength": len(expected)},
             key: result_schema,
         }
     )
     prompt = {
+        "receipt_format": "Copy the receipt words in order into one string separated by single spaces.",
         "beginning_receipt": receipts[0],
         **context,
         "prints": [{**row, "receipt": receipt} for row, receipt in zip(prints, receipts[1:-1], strict=True)],
@@ -288,6 +293,6 @@ def acknowledged_answer(model, system, context, key, result_schema, allowed, *, 
     )
     _object(answer, {key, "read_receipt"})
     echoed = answer["read_receipt"]
-    if type(echoed) is not list or any(type(v) is not int for v in echoed) or echoed != receipts:
+    if not isinstance(echoed, str) or echoed != expected:
         raise ValueError("The model did not acknowledge the complete deck input")
     return answer[key]

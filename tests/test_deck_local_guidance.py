@@ -44,11 +44,13 @@ def writer():
 
         answer = {
             "topics": rows,
-            "read_receipt": [
-                payload["beginning_receipt"],
-                *(p["receipt"] for p in payload["prints"]),
-                payload["ending_receipt"],
-            ],
+            "read_receipt": " ".join(
+                [
+                    payload["beginning_receipt"],
+                    *(p["receipt"] for p in payload["prints"]),
+                    payload["ending_receipt"],
+                ]
+            ),
         }
         assert kwargs["verify_full_input"] and Draft202012Validator(kwargs["response_format"]).is_valid(
             answer
@@ -199,11 +201,11 @@ def test_complete_input_and_scoped_loyalty_permissions_are_required(deck, tmp_pa
         if fault == "loyalty":
             answer["topics"]["fast_combo"]["advice"] = "Use +1 then −2 in the same turn."
         elif fault == "missing_receipt":
-            answer["read_receipt"].pop()
+            answer["read_receipt"] = answer["read_receipt"][6:]
         elif fault == "reversed_receipts":
-            answer["read_receipt"].reverse()
+            answer["read_receipt"] = " ".join(reversed(answer["read_receipt"].split()))
         else:
-            answer["read_receipt"][0] = True
+            answer["read_receipt"] = True
         return answer
 
     m.complete.side_effect = corrupt
@@ -212,14 +214,51 @@ def test_complete_input_and_scoped_loyalty_permissions_are_required(deck, tmp_pa
     assert not list(tmp_path.rglob("*.json"))
 
 
+def test_letter_receipts_cover_every_print_and_stay_outside_the_output_grammar():
+    import re
+
+    from arenamcp.deck_local_guidance import acknowledged_answer
+
+    context = {"prints": {str(gid): {"card": gid} for gid in range(1001, 1094)}}
+    seen = set()
+
+    def respond(system, prompt, **kw):
+        payload = json.loads(prompt)
+        words = [
+            payload["beginning_receipt"],
+            *(v["receipt"] for v in payload["prints"]),
+            payload["ending_receipt"],
+        ]
+        assert len(words) == len(set(words)) == 95
+        assert all(re.fullmatch(r"[a-zA-Z]{5}", w) for w in words)
+        receipt = " ".join(words)
+        assert kw["response_format"]["properties"]["read_receipt"] == {
+            "type": "string",
+            "minLength": len(receipt),
+            "maxLength": len(receipt),
+        }
+        assert receipt not in seen
+        seen.add(receipt)
+        return {"read_receipt": receipt, "result": {}}
+
+    model = Mock()
+    model.complete.side_effect = respond
+    for _ in range(2):
+        assert acknowledged_answer(model, "study", context, "result", {"type": "object"}, lambda: True) == {}
+
+
+@pytest.mark.parametrize("can_disable", [False, True])
 @pytest.mark.parametrize("fault", [None, "capacity", "count"])
-def test_full_deck_transport_reserves_input_and_output_and_requires_provider_receipt(monkeypatch, fault):
+def test_full_deck_transport_reserves_input_and_output_and_requires_provider_receipt(
+    monkeypatch, fault, can_disable
+):
     import io
 
     import arenamcp.local_study_model as local
 
     m = local.LocalStudyModel.__new__(local.LocalStudyModel)
-    m.name, m.digest, m.thinks = "test", "a" * 64, False
+    m.name, m.digest, m.thinks = "test", "a" * 64, "low"
+    m.can_disable_thinking = can_disable
     m.context_length = 64 if fault == "capacity" else 8192
     m.template_bytes = 11
     monkeypatch.setattr(local, "installed_models", lambda: {m.name: m.digest})
@@ -244,7 +283,9 @@ def test_full_deck_transport_reserves_input_and_output_and_requires_provider_rec
         assert m.complete("rules", "deck", allowed=lambda: True, verify_full_input=True, max_tokens=128) == {
             "ok": True
         }
-        opts = json.loads(conn.request.call_args.args[2])["options"]
+        sent = json.loads(conn.request.call_args.args[2])
+        assert sent["think"] == (False if can_disable else "low")
+        opts = sent["options"]
         assert opts["num_ctx"] >= len(b"rulesdeck") + 128 + 11 and opts["num_predict"] == 128
 
 
