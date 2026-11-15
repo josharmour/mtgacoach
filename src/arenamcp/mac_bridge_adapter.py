@@ -386,33 +386,34 @@ class Snapshot:
 
 def _bare_native_pass(action: dict) -> bool:
     """Check the source fields that serialize_action would omit for a bare Pass."""
+    # The protobuf dump includes declared zero, false and null fields. A
+    # missing field is an incomplete observation, even if the legacy display
+    # formatter uses the same default as a genuine Pass for that field.
     for member in (
-        "GrpId",
-        "InstanceId",
-        "AbilityGrpId",
-        "SourceId",
-        "AlternativeGrpId",
-        "FacetId",
-        "UniqueAbilityId",
+        "grpId_",
+        "instanceId_",
+        "abilityGrpId_",
+        "sourceId_",
+        "alternativeGrpId_",
+        "facetId_",
+        "uniqueAbilityId_",
     ):
-        value = field(action, member, None if member in ("GrpId", "InstanceId") else 0)
+        value = action.get(member)
         if type(value) is not int or value != 0:
             return False
     if (
-        field(action, "AssumeCanBePaidFor") is not False
-        or field(action, "ShouldStop", False) is not False
-        or field(action, "IsBatchable", False) is not False
-        or field(action, "AutoTapSolution") is not None
+        action.get("assumeCanBePaidFor_") is not False
+        or action.get("shouldStop_") is not False
+        or action.get("isBatchable_") is not False
+        or "autoTapSolution_" not in action
+        or action["autoTapSolution_"] is not None
     ):
         return False
-    missing = object()
-    highlight = field(action, "Highlight", missing)
-    if highlight is not missing and (highlight != {"e": "None", "v": 0} or type(highlight["v"]) is not int):
+    highlight = action.get("highlight_")
+    if highlight != {"e": "None", "v": 0} or type(highlight["v"]) is not int:
         return False
-    for member, element in (("ManaCost", "ManaRequirement"), ("Targets", "TargetSelection")):
-        values = field(action, member, missing)
-        if values is missing:
-            continue
+    for member, element in (("manaCost_", "ManaRequirement"), ("targets_", "TargetSelection")):
+        values = action.get(member)
         if (
             not isinstance(values, dict)
             or set(values) != {"$c", "$h", "$n", "$items"}
@@ -441,11 +442,11 @@ def _verified_sole_pass(snapshot: Snapshot) -> bool:
     original = snapshot.original_message
     if not isinstance(original, dict) or original.get("$c") != MESSAGING + "GREToClientMessage":
         return False
-    for member in ("GameStateId", "MsgId"):
-        value = field(original, member)
-        if type(value) is not int or not 1 <= value <= 0xFFFFFFFF:
+    for key, interpreted in (("gameStateId_", snapshot.game_state_id), ("msgId_", snapshot.msg_id)):
+        value = original.get(key)
+        if type(value) is not int or not 1 <= value <= 0xFFFFFFFF or value != interpreted:
             return False
-    actions = field(req, "Actions")
+    actions = req.get("Actions")
     if (
         not isinstance(actions, dict)
         or actions.get("$c") != "System.Collections.Generic.List<" + MESSAGING + "Action>"
@@ -479,7 +480,7 @@ def _verified_sole_pass(snapshot: Snapshot) -> bool:
         return False
     for value, name, number in (
         (controls.get("Type"), "ActionsAvailable", 1),
-        (field(action, "ActionType"), "Pass", 5),
+        (action.get("actionType_"), "Pass", 5),
     ):
         # Native enum_value encodes exactly a symbolic name and numeric value.
         if not isinstance(value, dict) or value != {"e": name, "v": number} or type(value["v"]) is not int:

@@ -1599,7 +1599,9 @@ def test_sole_pass_evidence_requires_complete_native_reflection(damage):
 
 def _native_single_pass():
     raw = action(11, "Pass", 0, 0, assumeCanBePaidFor_=False)
-    raw["actionType_"] = enum("Pass", 5)
+    raw.update(
+        actionType_=enum("Pass", 5), alternativeGrpId_=0, facetId_=0, uniqueAbilityId_=0, isBatchable_=False
+    )
     for member, element, pointer in (
         ("targets_", "TargetSelection", 21),
         ("manaCost_", "ManaRequirement", 22),
@@ -1696,3 +1698,42 @@ def test_bound_pass_never_falls_through_to_an_older_raw_plugin():
         bridge._send_command({"action": "submit_pass", "expected_game_state_id": 40, "expected_msg_id": 7})
     bridge._send_command_raw.assert_not_called()
     assert bridge._send_command({"action": "submit_pass"}) == {"ok": True}
+
+
+@pytest.mark.parametrize(
+    "missing",
+    [
+        "actionType_",
+        "grpId_",
+        "instanceId_",
+        "abilityGrpId_",
+        "sourceId_",
+        "alternativeGrpId_",
+        "facetId_",
+        "uniqueAbilityId_",
+        "assumeCanBePaidFor_",
+        "shouldStop_",
+        "isBatchable_",
+        "autoTapSolution_",
+        "highlight_",
+        "targets_",
+        "manaCost_",
+        "all_optional",
+    ],
+)
+def test_native_pass_receipt_rejects_missing_declared_action_fields(missing):
+    from arenamcp.decisions import native_sole_pass_request
+
+    raw, request = _native_single_pass()
+    if missing == "all_optional":
+        keep = {"$c", "$h", "actionType_", "grpId_", "instanceId_", "assumeCanBePaidFor_"}
+        for key in set(raw) - keep:
+            del raw[key]
+    else:
+        del raw[missing]
+    game = FakeGame(
+        request,
+        {"Type": enum("ActionsAvailable", 1), "CanPass": True, "CanCancel": False, "AllowUndo": False},
+    )
+    reply = adapter_for(game).handle({"action": "get_pending_actions"})
+    assert "native_sole_pass_verified" not in reply and native_sole_pass_request(reply) is None
