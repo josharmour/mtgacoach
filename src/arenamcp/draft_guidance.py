@@ -313,6 +313,11 @@ def normalize_card(source: Any, stats: Any = None) -> CardData:
 
     ``stats`` (a ``DraftStats``-like) overrides win-rate fields when given.
     """
+    role = None
+    if isinstance(source, dict) and "limited_role" in source:
+        from arenamcp.card_facts.limited_roles import rebind_attached_role
+
+        role = rebind_attached_role(source).get("limited_role")
     grp_id = int(_get(source, "grp_id", None) or _get(source, "arena_id", 0) or 0)
     name = str(_get(source, "name", "") or f"Unknown ({grp_id})")
     mana_cost = str(_get(source, "mana_cost", "") or "")
@@ -394,7 +399,7 @@ def normalize_card(source: Any, stats: Any = None) -> CardData:
         alsa=alsa,
         iwd_pct=iwd,
         games=int(games or 0),
-        limited_role=_get(source, "limited_role", None),
+        limited_role=role,
     )
 
 

@@ -1,21 +1,29 @@
 """Reviewed, source-bound Limited roles. These records have no power or win-rate fields."""
 
+import copy
 import hashlib
 import json
 from functools import lru_cache
 from pathlib import Path
 
-SUPPORTED_SETS = frozenset({"trk", "blb"})
+_CORPUS_SHA256 = {
+    "blb": "c783f588ef30b9017a828298aec0c72d066ee376b437e7049fb4ec74dd3a2e2f",
+    "trk": "7f6e9f6ba35029eba28db8bb08e9a6cb0c1148ac5daa7b8e0da0233bcee01b98",
+}
+SUPPORTED_SETS = frozenset(_CORPUS_SHA256)
 
 
 @lru_cache(maxsize=2)
 def _records(set_code) -> dict:
-    try:
-        return json.loads(Path(__file__).with_name(f"limited_{set_code}.json").read_text(encoding="utf-8"))[
-            "prints"
-        ]
-    except (OSError, ValueError):
+    if set_code not in SUPPORTED_SETS:
         return {}
+    try:
+        raw = Path(__file__).with_name(f"limited_{set_code}.json").read_bytes()
+    except OSError:
+        return {}
+    if hashlib.sha256(raw).hexdigest() != _CORPUS_SHA256[set_code]:
+        return {}
+    return json.loads(raw)["prints"]
 
 
 def print_role(set_code, grp_id, name, oracle, *, type_line, mana_cost):
@@ -31,7 +39,14 @@ def print_role(set_code, grp_id, name, oracle, *, type_line, mana_cost):
         return None
     if hashlib.sha256(oracle.encode()).hexdigest() != row["rules_sha256"]:
         return None
-    return {key: row[key] for key in ("roles", "removal", "archetypes", "note", "interaction") if key in row}
+    return {
+        "set_code": set_code,
+        **{
+            key: copy.deepcopy(row[key])
+            for key in ("roles", "removal", "archetypes", "note", "interaction")
+            if key in row
+        },
+    }
 
 
 def bound_roles(set_code, ids, lookup):
@@ -62,7 +77,19 @@ def with_role(card, set_code):
         type_line=card.get("type_line", ""),
         mana_cost=card.get("mana_cost", ""),
     )
-    return {**card, "limited_role": role} if role else card
+    if role:
+        return {**card, "limited_role": role}
+    if "limited_role" in card:
+        return {key: value for key, value in card.items() if key != "limited_role"}
+    return card
+
+
+def rebind_attached_role(card):
+    """Rebuild saved/advisor data from the current print; never trust a serialized claim."""
+    if "limited_role" not in card:
+        return card
+    prior = card["limited_role"]
+    return with_role(card, prior.get("set_code") if isinstance(prior, dict) else None)
 
 
 def partner_reason(role, partners, lane):

@@ -403,7 +403,7 @@ def _card_details(card: dict[str, Any]) -> dict[str, Any]:
         "toughness": card.get("toughness", ""),
         "related_faces": card.get("related_faces") or [],
         "rules_roles": rules_profile(card),
-        **({"limited_role": card["limited_role"]} if card.get("limited_role") else {}),
+        **({"limited_role": normalized.limited_role} if normalized.limited_role else {}),
     }
 
 

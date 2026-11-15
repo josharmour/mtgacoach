@@ -8,6 +8,7 @@ from itertools import combinations
 from types import SimpleNamespace
 from typing import Any
 
+from arenamcp.card_facts.limited_roles import rebind_attached_role
 from arenamcp.draft_guidance import normalize_card
 from arenamcp.limited_rules import rules_profile, synergy_evidence
 
@@ -107,6 +108,7 @@ CUT_REASON_DEFAULT = "not in the final 40"
 def validate_deck(payload: dict, pool: list[dict], *, source: str) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError("Deck response must be a JSON object")
+    pool = [rebind_attached_role(card) for card in pool]
     cards = _nonbasics(pool)
     available = Counter(card["grp_id"] for card in cards)
     by_id = {card["grp_id"]: card for card in cards}
@@ -678,6 +680,12 @@ def _role_removal(card):
             continue
         if "exile" in clause and re.search(r"return (?:it|that card|them).*battlefield", text):
             continue
+        # The general draft role includes planeswalker-only removal. A
+        # creature-interaction floor must require a target that can be a creature.
+        if "noncreature" in clause and not re.search(r"\bcreature\b|any target", clause):
+            continue
+        if "planeswalker" in clause and not re.search(r"\bcreature\b|any target|\bpermanent\b", clause):
+            continue
         if is_removal(SimpleNamespace(oracle=clause)):
             return True
     return False
@@ -891,6 +899,7 @@ def fallback_deck(
     fmt: str = "draft",
     strategy: DeckStrategy | None = None,
 ) -> dict[str, Any]:
+    pool = [rebind_attached_role(card) for card in pool]
     candidates = candidate_decks(pool, pair_win_rates, top=12, fmt=fmt, strategy=strategy)
     if not candidates:
         return {

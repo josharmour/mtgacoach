@@ -145,3 +145,58 @@ def test_payoff_checks_do_not_treat_own_card_blink_or_graveyard_recycling_as_rem
     ):
         assert not _role_removal({**base, "oracle_text": rules})
     assert _role_removal({**base, "oracle_text": "Destroy target creature."})
+
+
+@pytest.mark.parametrize(
+    "code, changes", [("FRA", {}), ("BLB", {"grp_id": 1}), ("BLB", {"oracle_text": "Reach"})]
+)
+def test_previous_annotation_removed_when_event_or_print_changes(code, changes):
+    bound = with_role(PAYOFF, "BLB")
+    changed = {**bound, **changes}
+    rebound = with_role(changed, code)
+    assert "limited_role" not in rebound and "limited_role" in bound
+    assert normalize_card(rebound).limited_role is None
+    assert "limited_role" not in _card_details(rebound)
+    if changes:
+        assert normalize_card(changed).limited_role is None
+        assert "limited_role" not in _card_details(changed)
+    pool = [rebound] + [filler(1000 + i) for i in range(23)]
+    assert "limited_checks" not in fallback_deck(pool)
+
+
+def test_serialized_claim_cannot_mutate_or_override_its_reviewed_source():
+    first = with_role(PAYOFF, "BLB")
+    first["limited_role"]["archetypes"][0]["partners"].clear()
+    first["limited_role"]["note"] = "Invented win-rate claim"
+    again = with_role(PAYOFF, "BLB")
+    assert again["limited_role"]["archetypes"][0]["partners"]
+    assert normalize_card(first).limited_role == again["limited_role"]
+    assert _card_details(first)["limited_role"] == again["limited_role"]
+
+
+def test_missing_or_changed_installed_corpus_cannot_credit_a_cached_role(monkeypatch):
+    from arenamcp.card_facts import limited_roles as roles
+
+    saved = with_role(PAYOFF, "BLB")
+    for data in (b"{}", b"unparseable", b'{"prints":{"91737":{}}}'):
+        with monkeypatch.context() as patch:
+            patch.setattr(roles.Path, "read_bytes", lambda *_, data=data: data)
+            roles._records.cache_clear()
+            assert "limited_role" not in with_role(saved, "BLB")
+        roles._records.cache_clear()
+
+
+@pytest.mark.parametrize(
+    "oracle",
+    [
+        "Destroy target planeswalker.",
+        "Exile target noncreature permanent.",
+        "Target opponent sacrifices a planeswalker.",
+    ],
+)
+def test_noncreature_only_answers_do_not_fill_creature_removal_slots(oracle):
+    from arenamcp.limited_deck import _role_removal
+
+    card = {"grp_id": 2, "name": "Public test", "type_line": "Sorcery", "mana_cost": "{B}"}
+    assert not _role_removal(dict(card, oracle_text=oracle))
+    assert _role_removal(dict(card, oracle_text="Destroy target creature or planeswalker."))
