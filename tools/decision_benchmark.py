@@ -481,6 +481,7 @@ def assert_record_schema(value, context):
 
 
 def assert_case_schema(snapshot, pending):
+    from arenamcp.benchmark_schema import legal_labels, mulligan_context, state_field, target_context
     from arenamcp.decision_snapshot import _STATE_KEYS
     from arenamcp.decisions import PendingDecision, TargetSlot
 
@@ -489,11 +490,14 @@ def assert_case_schema(snapshot, pending):
     state = snapshot["state"]
     if set(state) - set(_STATE_KEYS) - {"zones", "_zone_aliases"}:
         raise UnsafeCase("state fields")
+    is_target_request = pending.get("request_type") == "SelectTargets"
+    if is_target_request and not target_context(state, pending):
+        raise UnsafeCase("unverified target request or menu")
     for key, value in state.items():
         if private_key(key):
             continue
-        from arenamcp.benchmark_schema import legal_labels, mulligan_context, state_field
-
+        if key == "decision_context" and is_target_request:
+            continue
         if key == "decision_context" and pending.get("request_type") == "Mulligan":
             if not (
                 mulligan_context(value)

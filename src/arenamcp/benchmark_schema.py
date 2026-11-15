@@ -303,6 +303,244 @@ def mulligan_context(value):
     )
 
 
+def _same_json(value, expected):
+    """Compare a recorded mirror with a bounded, typed producer shape (True != 1)."""
+    if type(value) is not type(expected):
+        return False
+    if isinstance(expected, dict):
+        return value.keys() == expected.keys() and all(_same_json(value[k], v) for k, v in expected.items())
+    if isinstance(expected, list):
+        return len(value) == len(expected) and all(
+            _same_json(x, y) for x, y in zip(value, expected, strict=True)
+        )
+    return value == expected
+
+
+def _target_cards(state):
+    cards = {}
+    zones = state.get("zones", {})
+    if not isinstance(zones, dict):
+        return None
+    objects_by_zone = [
+        (key, state.get(key, []))
+        for key in (
+            "stack",
+            "battlefield",
+            "hand",
+            "graveyard",
+            "exile",
+            "command",
+            "pending_selection_objects",
+        )
+    ]
+    objects_by_zone.extend((key, zones.get(key, [])) for key in ("local_graveyard", "opponent_graveyard"))
+    for zone, objects in objects_by_zone:
+        if type(objects) is not list:
+            return None
+        for card in objects:
+            if type(card) is not dict:
+                return None
+            iid = card.get("instance_id")
+            if type(iid) is int and iid > 0:
+                # An ID with competing zone evidence cannot witness any role.
+                cards[iid] = (zone, card) if iid not in cards else None
+    return cards
+
+
+def _public_target_card(cards, iid, zone):
+    entry = cards.get(iid) if type(iid) is int else None
+    if not entry or entry[0] != zone:
+        return None
+    card = entry[1]
+    if (
+        not card
+        or card.get("zone") not in (None, zone)
+        or card.get("face_down_reason") not in (None, 0, "")
+        or card.get("face_down")
+        or card.get("identity_known") is False
+        or card.get("visibility") not in (None, "public")
+        or type(card.get("name")) is not str
+        or not card["name"]
+        or not integer(card.get("grp_id"))
+        or card["grp_id"] <= 0
+        or card["grp_id"] == 3  # Arena's face-down print, even without the flag.
+    ):
+        return None
+    return card
+
+
+def _target_menu(candidates, cards):
+    if type(candidates) is not list or not 1 <= len(candidates) <= 100:
+        return None
+    verified, ids, options = [], [], []
+    for candidate in candidates:
+        if type(candidate) is not dict:
+            return None
+        iid, highlight = candidate.get("targetInstanceId"), candidate.get("highlight")
+        card = _public_target_card(cards, iid, "battlefield")
+        if (
+            not card
+            or card.get("object_kind") != "CARD"
+            or iid in ids
+            or highlight
+            not in (
+                "HighlightType_Hot",
+                "HighlightType_Tepid",
+                "HighlightType_Cold",
+            )
+        ):
+            return None
+        ids.append(iid)
+        verified.append(
+            {"targetInstanceId": iid, "legalAction": "SelectAction_Select", "highlight": highlight}
+        )
+        options.append(
+            {
+                "option_id": f"tgt:{iid}",
+                "label": card["name"],
+                "payable": None,
+                "meta": {
+                    "instanceId": iid,
+                    "grpId": 0,
+                    "targetIdx": 1,
+                    "highlight": highlight.removeprefix("HighlightType_"),
+                },
+            }
+        )
+    return verified, ids, options
+
+
+def target_context(state, pending):
+    """Admit the observed single compulsory target with its full, unchanged public menu."""
+    ctx = state.get("decision_context")
+    if (
+        type(ctx) is not dict
+        or state.get("_bridge_request_type") != "SelectTargets"
+        or state.get("_bridge_request_class") != "SelectTargetsRequest"
+        or pending.get("request_type") != "SelectTargets"
+        or state.get("local_seat_id") not in (1, 2)
+        or type(state.get("local_seat_id")) is not int
+        or not _same_json(state.get("decision_seat_id"), state["local_seat_id"])
+    ):
+        return False
+    cards = _target_cards(state)
+    if not cards:
+        return False
+    source_id = ctx.get("sourceId")
+    source = _public_target_card(cards, source_id, "stack")
+    if (
+        not source
+        or type(source.get("oracle_text")) is not str
+        or not source["oracle_text"]
+        or pending.get("source_label") != source["name"]
+    ):
+        return False
+    origin = source
+    extra = {}
+    if source.get("object_kind") == "ABILITY":
+        origin = _public_target_card(cards, source.get("parent_instance_id"), "battlefield")
+        if (
+            not origin
+            or origin.get("object_kind") != "CARD"
+            or type(origin.get("oracle_text")) is not str
+            or not origin["oracle_text"]
+        ):
+            return False
+        extra = {
+            "source_parent_instance_id": origin["instance_id"],
+            "source_card_oracle_text": origin["oracle_text"],
+        }
+    elif source.get("object_kind") != "CARD":
+        return False
+    rows = ctx.get("targets")
+    if type(rows) is not list or len(rows) != 1 or type(rows[0]) is not dict:
+        return False
+    row = rows[0]
+    menu = _target_menu(row.get("targets"), cards)
+    if not menu:
+        return False
+    verified, ids, options = menu
+    prompt = row.get("prompt")
+    if (
+        type(prompt) is not dict
+        or type(prompt.get("promptId")) is not int
+        or prompt["promptId"] not in (1010, 152, 7087, 1330)
+    ):
+        return False
+    ability = ctx.get("abilityGrpId")
+    targeting_ability = row.get("targetingAbilityGrpId")
+    if not all(type(n) is int and n > 0 for n in (ability, targeting_ability)):
+        return False
+    if ability != source["grp_id"] or (source["object_kind"] == "ABILITY" and ability != targeting_ability):
+        return False
+    abilities = origin.get("ability_grp_ids")
+    if (
+        type(abilities) is not list
+        or not all(integer(gid) for gid in abilities)
+        or targeting_ability not in abilities
+    ):
+        return False
+    expected_rows = [
+        {
+            "targetIdx": 1,
+            "minTargets": 1,
+            "maxTargets": 1,
+            "targets": verified,
+            "targetingAbilityGrpId": targeting_ability,
+            "targetingPlayer": state["local_seat_id"],
+            "prompt": {
+                "promptId": prompt["promptId"],
+                "parameters": [
+                    {
+                        "parameterName": "CardId",
+                        "type": "ParameterType_Number",
+                        "numberValue": origin["instance_id"],
+                    }
+                ],
+            },
+        }
+    ]
+    raw = {"targets": expected_rows, "sourceId": source_id, "abilityGrpId": ability}
+    expected = {
+        **raw,
+        "type": "target_selection",
+        "source_id": source_id,
+        "source_card": origin["name"],
+        "source_oracle_text": source["oracle_text"],
+        "raw": raw,
+        **extra,
+        "requestType": "SelectTargets",
+        "requestClass": "SelectTargetsRequest",
+        "prompt": {"promptId": 10, "parameters": []},
+        "_bridge_source": True,
+    }
+    slots = [{"target_idx": 1, "min_targets": 1, "max_targets": 1, "selected": 0, "candidate_ids": ids}]
+    request_id = pending.get("request_id")
+    if (
+        type(request_id) is not list
+        or len(request_id) != 2
+        or not all(type(part) is int and part >= 0 for part in request_id)
+        or type(pending.get("can_cancel")) is not bool
+        or not _same_json(state.get("_bridge_can_cancel"), pending["can_cancel"])
+        or state.get("_bridge_can_pass") is not False
+    ):
+        return False
+    expected_pending = {
+        "request_id": request_id,
+        "request_type": "SelectTargets",
+        "options": options,
+        "min_select": 1,
+        "max_select": 1,
+        "can_pass": False,
+        "can_cancel": pending["can_cancel"],
+        "source_label": source["name"],
+        "slots": slots,
+        "min_weight": None,
+        "max_weight": None,
+    }
+    return _same_json(ctx, expected) and _same_json(pending, expected_pending)
+
+
 CONTROLLED = record(
     {
         "opponent_controlled_by_you": boolean,
