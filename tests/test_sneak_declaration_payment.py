@@ -458,3 +458,48 @@ def test_empty_windows_attack_poll_cannot_force_a_previous_menu(monkeypatch):
         patch.setattr(sys, "platform", "win32")
         _apply_bridge_attackers(state, {"request_type": "DeclareAttackersRequest"})
     assert _declare(state) is None
+
+
+@pytest.mark.parametrize("life,expected", [(10, False), (11, True), (24, True), (25, False)])
+def test_both_combat_totals_use_only_the_offered_attacker_subset(life, expected):
+    from tests.test_all_in_labels_20261020 import _declare_step_board_order_differs
+
+    state, legal = _declare_step_board_order_differs()
+    state["players"][0]["life_total"] = 60
+    state["players"][1]["life_total"] = life
+    hold = sneak.sneak_main_hold(state, declare_step=True, force_declaration=True)
+    assert bool(hold) == expected
+    if hold:
+        assert len(legal) == 14 and (hold.through, hold.total) == (10, 24)
+    assert bool(_declare(state)) == expected
+
+
+@pytest.mark.parametrize(
+    "bad", ["unknown_id", "duplicate", "fraction", "missing_menu", "not_ready", "empty", "raw_extra"]
+)
+def test_uncertain_offered_subset_still_withholds_a_forced_declaration(bad):
+    from tests.test_all_in_labels_20261020 import _declare_step_board_order_differs
+
+    state, legal = _declare_step_board_order_differs()
+    state["players"][0]["life_total"] = 60
+    ctx = state["decision_context"]
+    if bad == "unknown_id":
+        legal.append(123456789)
+    elif bad == "duplicate":
+        legal.append(legal[-1])
+    elif bad == "fraction":
+        legal[0] = float(legal[0])
+    elif bad == "missing_menu":
+        ctx.pop("legal_attacker_ids")
+    elif bad == "empty":
+        legal.clear()
+    elif bad == "not_ready":
+        card = next(c for c in state["battlefield"] if c["instance_id"] == legal[0])
+        card["is_tapped"] = True
+    elif bad == "raw_extra":
+        ctx["raw_attackers"] = [
+            {"attackerInstanceId": i, "legalDamageRecipients": [{"type": "Player", "playerSystemSeatId": 2}]}
+            for i in [*legal, 123456789]
+        ]
+    assert not sneak.sneak_main_hold(state, declare_step=True, force_declaration=True)
+    assert _declare(state) is None

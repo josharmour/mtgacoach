@@ -541,16 +541,8 @@ def _declared_sneak_floor(state, opponent, attackers, blockers) -> int | None:
     from arenamcp.concede import _MULTI_BLOCK
 
     context = state.get("decision_context") or {}
-    legal = context.get("legal_attacker_ids")
     ids = {a["instance_id"] for a in attackers}
     if not all_out_declaration_allowed(state, len(ids)):
-        return None
-    if (
-        not isinstance(legal, list)
-        or len(legal) != len(ids)
-        or any(type(i) is not int or i <= 0 for i in legal)
-        or set(legal) != ids
-    ):
         return None
     if "raw_attackers" in context:
         raw = context["raw_attackers"]
@@ -647,6 +639,19 @@ def sneak_main_hold(
     blockers = [b for b in model.theirs if not b["_tapped"]]
     floor = None
     if force_declaration:
+        # The native menu may omit a creature our turn-level model considers ready.
+        # Recompute both combat projections with exactly the offered group.
+        legal = (state.get("decision_context") or {}).get("legal_attacker_ids")
+        if not isinstance(legal, list) or not legal or any(type(i) is not int or i <= 0 for i in legal):
+            return None
+        offered = set(legal)
+        attackers = [a for a in attackers if a["instance_id"] in offered]
+        if (
+            len(offered) != len(legal)
+            or len(attackers) != len(offered)
+            or {a["instance_id"] for a in attackers} != offered
+        ):
+            return None
         floor = _declared_sneak_floor(state, opponent, attackers, blockers)
         if floor is None:
             return None
