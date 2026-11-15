@@ -724,3 +724,30 @@ def test_unmodeled_commander_activation_is_never_implicitly_free(sample, monkeyp
     with pytest.raises(ValueError, match="activation cost"):
         study_card(book, 1001, m, tmp_path, allowed=lambda: True)
     assert not list(tmp_path.rglob("*.json"))
+
+
+@pytest.mark.parametrize(
+    "rules",
+    [
+        "{T}: Draw a card. Activate only if you control an artifact.",
+        "{T}: Draw a card. Activate only once each turn.",
+        "{T}: Draw a card.\nActivate this ability only if you control an artifact.",
+        "+1: Draw a card.\nYou may activate this ability only during combat.",
+    ],
+)
+def test_commander_activation_suffix_and_unassigned_riders_withhold_unconditional_advice(
+    sample, monkeypatch, tmp_path, rules
+):
+    _, book, _ = sample
+    book.catalog[1001]["oracle_text"] = "When this permanent enters, scry 1.\n" + rules
+    if rules.startswith("+1"):
+        book.catalog[1001]["type_line"] = "Legendary Planeswalker — Fixture"
+    native_catalog(monkeypatch, book.catalog)
+    m = backend(book)
+    row = m.complete.return_value
+    row["evidence"].append({"card": 1001, "rule": 2})
+    row["action_rules"]["hold"].append({"card": 1001, "rule": 2})
+    row["hold"]["advice"] = "Activate this commander to draw whenever you need cards."
+    with pytest.raises(ValueError, match="activation permission"):
+        study_card(book, 1001, m, tmp_path, allowed=lambda: True)
+    assert not list(tmp_path.rglob("*.json"))

@@ -11,6 +11,12 @@ _SUBJECT = r"(another|a|an) (creature|artifact|land|enchantment|permanent)"
 _CAST_SAC = re.compile(r"^as an additional cost to cast this spell, sacrifice " + _SUBJECT + r"[.]$", re.I)
 _ACT_SAC = re.compile(r"^(?:(\{T\}),\s*)?sacrifice " + _SUBJECT + r"$", re.I)
 _SACRIFICE = re.compile(r"(?:^|:\s*|[.]\s*)(?:you may\s+)?sacrifice " + _SUBJECT + r"\b", re.I)
+_ACTIVATION_RIDER = re.compile(
+    r"\bactivat(?:e|ed|ing)\b[^.\n]{0,80}\b(?:only|once|twice|unless|if|during|before|after|no more than)\b"
+    r"|\b(?:can.t|cannot|may not) activate\b|\b(?:costs?|cost) [^.\n]+ to activate\b",
+    re.I,
+)
+_ACTIVATION_ADVICE = re.compile(r"\b(?:taps?|tapping|activate|activation|loyalty)\b|[+−-]\d", re.I)
 _SAC_WORD = re.compile(r"\b(?:sacrifice|sacrificing|sacrificed|fodder|fling)\b", re.I)
 _CAST_CONSTRAINT = re.compile(
     r"additional cost to cast|(?:this spell|it) costs [^.]*more to cast|(?:can.t cast|cast only|can cast [^.]*only)",
@@ -20,11 +26,15 @@ _CAST_CONSTRAINT = re.compile(
 
 def _costs(card, gid):
     resources, mandatory, unsupported_cast, unsupported_activation, tapped = [], [], [], [], []
-    loyalty = []
+    loyalty, activation_rows, riders = [], [], []
     types = card["type_line"].partition("—")[0].lower().split()
     for n, line in enumerate(oracle_rules(card), 1):
         prefix, colon, _ = line.partition(":")
         matches = []
+        if _ACTIVATION_RIDER.search(line):
+            riders.append(n)
+        if colon and prefix != "Printed characteristics":
+            activation_rows.append(n)
         if found := _CAST_SAC.fullmatch(line.strip()):
             mandatory.append(n)
             matches.append((*found.groups(), True))
@@ -73,7 +83,12 @@ def _costs(card, gid):
         "independent_battlefield_resources": resources,
         "mandatory_cast_rules": mandatory,
         "unsupported_cast_rules": unsupported_cast,
-        "unsupported_activation_rules": unsupported_activation,
+        # A standalone printed rider can govern a different paragraph. There
+        # is no verified per-ability ownership for it in the numbered text.
+        "activation_permission_rules": riders,
+        "unsupported_activation_rules": sorted(
+            set(unsupported_activation) | (set(activation_rows) if riders else set())
+        ),
         "tap_source_rules": tapped,
         "loyalty_rules": loyalty,
     }
@@ -133,6 +148,8 @@ def commander_conditions(row, context):
             action == "hold" and zone not in ("command", "battlefield")
         ):
             raise ValueError("Normal commander deployment and holding must account for the command zone")
+        if policy["activation_permission_rules"] and _ACTIVATION_ADVICE.search(row[action]["advice"]):
+            raise ValueError("The commander study cannot certify its printed activation permission")
         if any((gid, n) in keys for n in policy["unsupported_activation_rules"]):
             raise ValueError("The commander study cannot certify this printed activation cost")
         item = {}
