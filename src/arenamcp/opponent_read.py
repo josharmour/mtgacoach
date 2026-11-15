@@ -101,7 +101,15 @@ class OpponentRead:
         lines = [
             "  Opponent plan inferences from public cards. Use these possibilities when weighing which threats to answer."
         ]
-        for fact in list(facts.values())[:4]:
+        visible = list(facts.values())
+        # The two most recent native prints can change the read even when four
+        # older, curated hypotheses already exist. Keep the strongest reviewed
+        # hypotheses and reserve one of the four slots for the new evidence.
+        selected = visible[:4]
+        newest = next((fact for fact in visible if fact["kind"] == "opponent_revealed_rules"), None)
+        if newest is not None and newest not in selected:
+            selected[-1] = newest
+        for fact in selected:
             names = ", ".join(item["name"] for item in fact["evidence"])
             if fact["kind"] == "opponent_revealed_rules":
                 lines.append(
@@ -142,36 +150,52 @@ class OpponentRead:
 
                 rules = " ".join(oracle_lines(card["oracle_text"]))
                 if rules and len(rules) <= 620:
-                    current[(card["grp_id"], digest)] = (seq, card["grp_id"], zone, (card["name"], rules))
+                    current.setdefault(
+                        (card["grp_id"], digest), (seq, card["grp_id"], zone, (card["name"], rules))
+                    )
         epoch = (match, game, local)
         with self._lock:
-            seen = self._games.setdefault(epoch, {})
+            seen, first_command = self._games.setdefault(epoch, ({}, {}))
             for name, sighting in current.items():
+                if sighting[2] == "command" and sighting[3] is not None:
+                    first_command[name] = min(seq, first_command.get(name, seq))
                 if name not in seen or sighting[0] < seen[name][0]:
                     seen[name] = sighting
             if len(seen) > 256:
                 oldest = sorted(seen, key=lambda k: seen[k][0])[: len(seen) - 256]
                 for key in oldest:
                     del seen[key]
+                    first_command.pop(key, None)
             self._games.move_to_end(epoch)
             if len(self._games) > 4:
                 self._games.popitem(last=False)
             evidence = {name: sight for name, sight in seen.items() if sight[0] <= seq}
+            command_times = {key: when for key, when in first_command.items() if when <= seq}
         reviewed = {key: value for key, value in evidence.items() if value[3] is None}
         facts = _inferences(reviewed, opponent)
         # Ask about the newest public evidence, including a permanent that left
         # play. Observed rules are context for inference, never a scripted call.
-        observed = sorted(
+        ordered = sorted(
             ((key, value) for key, value in evidence.items() if value[3] is not None),
             key=lambda item: (-item[1][0], item[0]),
-        )[:2]
+        )
+        observed = ordered[:2]
+        # In Brawl the opening command-zone print can explain why two much
+        # later spells belong together. Retain its observed rules, even after
+        # the card moves. A sighting alone doesn't establish commander status.
+        command = next((row for row in ordered if row[0] in command_times), None)
+        if command is not None and command not in observed:
+            observed.append(command)
         if observed:
             references, rules = [], []
             for (gid, digest), (when, _, zone, (name, text)) in observed:
+                if (gid, digest) in command_times:
+                    when, zone = command_times[gid, digest], "command"
                 references.append(
                     dict(name=name, grp_id=gid, rules_hash=digest, observed_zone=zone, source_sequence=when)
                 )
-                rules.append(f"{name}: {text}")
+                zone_note = " (seen in opposing command zone)" if zone == "command" else ""
+                rules.append(f"{name}{zone_note}: {text}")
             facts["state:opponent_read:observed:" + ":".join(str(ref["grp_id"]) for ref in references)] = {
                 "kind": "opponent_revealed_rules",
                 "source": "native_public_prints",

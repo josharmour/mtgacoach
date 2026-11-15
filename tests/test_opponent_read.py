@@ -347,3 +347,59 @@ def test_serialized_restrictions_survive_native_and_bridge_paths(monkeypatch, ro
     blocked = project(serialize(restricted), "graveyard")
     assert not OpponentRead().plan_block(blocked)
     assert not cast_read(OpponentRead(), blocked)
+
+
+def test_command_zone_source_survives_new_public_reveals_within_same_game():
+    from arenamcp.card_facts.source_identity import legacy_lookup_hash
+
+    def native(gid, name, rules, zone, seq):
+        card = dict(
+            grp_id=gid,
+            name=name,
+            oracle_text=rules,
+            mana_cost="{G}",
+            type_line="Creature — Elf",
+            owner_seat_id=2,
+            controller_seat_id=2,
+            instance_id=gid + 1000,
+            object_kind="CARD",
+            visibility="public",
+        )
+        card["public_native_print"] = f"{gid}:{legacy_lookup_hash(card)}"
+        state = captured(327)
+        state["commentary_source_sequence"] = seq
+        state["zones"] = {zone: [card]}
+        return state
+
+    reader = OpponentRead()
+    opener = native(
+        90101, "Example Captain", "Whenever you cast a creature spell, draw a card.", "command", 1
+    )
+    second = native(90102, "Example Scout", "Haste", "stack", 2)
+    third = native(90103, "Example Sentry", "Flying", "battlefield", 3)
+    reader.plan_block(opener)
+    reader.plan_block(second)
+    [fact] = cast_read(reader, third).values()
+    assert [r["grp_id"] for r in fact["evidence"]] == [90103, 90102, 90101]
+    assert fact["evidence"][-1]["source_sequence"] == 1
+    assert fact["evidence"][-1]["observed_zone"] == "command"
+    assert "Example Captain (seen in opposing command zone)" in reader.plan_block(third)
+    assert "Example Sentry" not in reader.plan_block(second)
+    assert "Example Captain" not in reader.plan_block({**third, "game_number": 2})
+    private = native(90104, "Private commander canary", "Trample", "hand", 1)
+    assert not OpponentRead().plan_block(private)
+
+    # An earlier ordinary sighting and a subsequent command sighting are two
+    # distinct facts, even when a planning worker receives them out of order.
+    for chronological in (True, False):
+        reader = OpponentRead()
+        cast = native(90101, "Example Captain", "Vigilance", "stack", 1)
+        returned = native(90101, "Example Captain", "Vigilance", "command", 3)
+        for event in (cast, returned) if chronological else (returned, cast):
+            reader.plan_block(event)
+        prior = next(iter(cast_read(reader, second).values()))
+        early = next(r for r in prior["evidence"] if r["grp_id"] == 90101)
+        assert (early["observed_zone"], early["source_sequence"]) == ("stack", 1)
+        later = next(iter(cast_read(reader, {**third, "commentary_source_sequence": 4}).values()))
+        late = next(r for r in later["evidence"] if r["grp_id"] == 90101)
+        assert (late["observed_zone"], late["source_sequence"]) == ("command", 3)
