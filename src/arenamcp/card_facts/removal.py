@@ -7,6 +7,7 @@ versions are separate reviewed inputs; neither is normalized into the other.
 """
 
 import re
+from dataclasses import dataclass
 
 from arenamcp.ability_synthesizer import Bounce, Damage, Destroy, Exile
 from arenamcp.card_facts.source_identity import legacy_lookup_hash
@@ -143,12 +144,49 @@ _LIBRARY_NONREMOVAL = frozenset(
 )
 
 
+# Library-only. These complete lines affect the source, its controller's own
+# cards or a player. They do not certify that the creature is safe on the board.
+# Keep every line anchored so additional modes or effects stay unclassified.
+_MANA = r"(?:\{(?:[0-9]+|[WUBRGC]|(?:o(?:[0-9]+|[WUBRGC]))+)\})+"
+_SELF_PUMP = r"[Tt]his creature gets \+[0-9]+/\+[0-9]+ until end of turn\."
+_LIBRARY_CREATURE_LINE = re.compile(
+    rf"(?:Flying|Haste|First strike|Double strike|Lifelink|Prowess|Trample|Vigilance|Reach"
+    r"|Players can't gain life\."
+    rf"|Plot {_MANA}"
+    rf"|Whenever you cast a noncreature spell, {_SELF_PUMP}"
+    rf"|{_MANA}: {_SELF_PUMP}"
+    r"|(?:<i>Valiant</i> — )?Whenever this creature becomes the target of a spell or ability you control "
+    r"for the first time each turn, exile the top card of your library\. Until end of turn, you may play that card\."
+    r"|Whenever you attack with one or more [A-Za-z]+, this creature deals [1-9][0-9]? damage to target opponent\."
+    rf"|{_MANA}: Put a \+1/\+1 counter on this creature\."
+    r"(?: Activate only if an opponent lost life this turn and only once each turn\.)?"
+    r"|At the beginning of your end step, return this creature to its owner's hand\."
+    r"(?: <i>\(Return it only if it's on the battlefield\.\)</i>)?)"
+)
+
+
+@dataclass(frozen=True)
+class KickerDamage:
+    normal: int
+    kicked: int
+    target: str = "any target"
+
+
 def reviewed_library_nonremoval(card):
     digest = legacy_lookup_hash(card)
     if not digest:
         return False
     if digest in _LIBRARY_NONREMOVAL:
         return True
+    text = card["oracle_text"]
+    if card["type_line"].split(" — ")[0] in ("Creature", "Legendary Creature"):
+        return bool(text) and all(_LIBRARY_CREATURE_LINE.fullmatch(line) for line in text.splitlines())
+    if card["type_line"] in ("Instant", "Sorcery"):
+        return bool(
+            re.fullmatch(
+                rf"(?:{re.escape(card['name'])}|This spell) deals [1-9][0-9]? damage to each opponent\.", text
+            )
+        )
     # The Medallion cycle has only a cost reduction. Full-match the entire
     # single-faced printed text so a second ability can never be hidden.
     return card["type_line"] == "Artifact" and bool(
@@ -196,11 +234,44 @@ def printed_removal_effects(card, *, local_creature=False, local_basic=False):
     elif text == "Return target creature to its owner's hand.":
         effects = (Bounce(target="creature"),)
     else:
-        damage = re.fullmatch(
-            rf"(?:{re.escape(card['name'])}|This spell) deals ([1-9][0-9]?) damage to (any target|target creature(?: with flying| or planeswalker)?)\.",
+        source = rf"(?:{re.escape(card['name'])}|This spell)"
+        kicked = re.fullmatch(
+            rf"Kicker {_MANA}\n{source} deals ([1-9][0-9]?) damage to any target\. "
+            r"If this spell was kicked, it deals ([1-9][0-9]?) damage instead\.",
             text,
         )
-        if not damage:
-            return None
-        effects = (Damage(amount=int(damage[1]), target=damage[2]),)
+        if kicked:
+            return (KickerDamage(normal=int(kicked[1]), kicked=int(kicked[2])),)
+        return _printed_damage_modes(source, text)
     return effects
+
+
+def _printed_damage_modes(source, text):
+    # A complete choose-one card is a union of independent possible answers.
+    # Preserve each separate amount, target and mode, never add their damage.
+    lines = text.splitlines()
+    if lines and lines[0].rstrip() == "Choose one —" and len(lines) >= 3:
+        modes = []
+        for line in lines[1:]:
+            if line.startswith("•<indent=4%>") and line.endswith("</indent>"):
+                mode = line.removeprefix("•<indent=4%>").removesuffix("</indent>").strip()
+            elif line.startswith("• "):
+                mode = line.removeprefix("• ")
+            else:
+                return None
+            modes.append(mode)
+    else:
+        modes = [text]
+
+    damage = re.compile(
+        rf"(?:Damage can't be prevented this turn\. )?{source} deals ([1-9][0-9]?) damage to "
+        r"(any target|(?:up to one )?target creature(?: with flying| or planeswalker)?"
+        r"|each opponent and each creature they control|each creature your opponents control)\."
+    )
+    effects = []
+    for mode in modes:
+        match = damage.fullmatch(mode)
+        if not match:
+            return None
+        effects.append(Damage(amount=int(match[1]), target=match[2]))
+    return tuple(effects)

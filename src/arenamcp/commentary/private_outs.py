@@ -13,6 +13,7 @@ from collections import Counter
 from arenamcp.ability_synthesizer import Damage
 from arenamcp.card_db import get_card_database, is_unknown_card_name
 from arenamcp.card_facts.removal import (
+    KickerDamage,
     printed_removal_effects,
     reviewed_library_nonremoval,
     supported_public_creature,
@@ -134,11 +135,20 @@ def _answers_creature(card, threat, *, local_creature=False, local_basic=False):
         elif effect.target == "tapped creature":
             tapped = threat.get("is_tapped")
             results.append(tapped if type(tapped) is bool else None)
-        elif isinstance(effect, Damage):
+        elif isinstance(effect, (Damage, KickerDamage)):
             toughness = threat.get("modified_toughness", threat.get("toughness"))
             marked = threat.get("damage", 0)
             if type(toughness) is int and type(marked) is int and 0 <= marked < toughness:
-                results.append(effect.amount >= toughness - marked)
+                needed = toughness - marked
+                if isinstance(effect, KickerDamage):
+                    # Ordinary damage is available without kicker. A higher
+                    # kicked-only result requires a separate payment proof.
+                    if effect.normal < needed <= effect.kicked:
+                        results.append(None)
+                    else:
+                        results.append(effect.normal >= needed)
+                else:
+                    results.append(effect.amount >= needed)
             else:
                 results.append(None)
         else:

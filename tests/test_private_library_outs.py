@@ -1036,3 +1036,93 @@ def test_conditional_entry_land_must_have_only_mana_abilities():
     assert _answers_creature(land, target) is False
     land["oracle_text"] += "\n{oT}: Destroy target creature with flying."
     assert _answers_creature(land, target) is None
+
+
+@pytest.mark.parametrize(
+    ("text", "toughness", "marked", "answers"),
+    [
+        ("This spell deals 3 damage to each opponent.", 1, 0, False),
+        (
+            "Damage can't be prevented this turn. This spell deals 3 damage to up to one target creature or planeswalker.",
+            4,
+            1,
+            True,
+        ),
+        ("This spell deals 1 damage to each opponent and each creature they control.", 2, 0, False),
+        ("This spell deals 1 damage to each opponent and each creature they control.", 2, 1, True),
+        ("This spell deals 2 damage to up to one target creature with flying.", 1, 0, False),
+        ("This spell deals 3 damage to each attacking creature.", 1, 0, None),
+    ],
+)
+def test_complete_burn_print_requires_an_eligible_public_creature(text, toughness, marked, answers):
+    from arenamcp.commentary.private_outs import _answers_creature
+
+    target = dict(card(23, "Test Bear", "Creature — Bear", "Haste"), toughness=toughness, damage=marked)
+    spell = card(24, "Example", "Sorcery", text)
+    assert _answers_creature(spell, target) is answers
+    assert _answers_creature(dict(spell, oracle_text=text + " if you control a Wizard."), target) is None
+    assert _answers_creature(dict(spell, linked_face_ids=[50]), target) is None
+
+
+@pytest.mark.parametrize(
+    ("toughness", "marked", "answers"),
+    [(2, 0, True), (3, 1, True), (3, 0, None), (5, 0, False), (3, -1, None)],
+)
+def test_kicked_only_damage_requires_unproved_additional_payment(toughness, marked, answers):
+    from arenamcp.commentary.private_outs import _answers_creature
+
+    text = "Kicker {o3}\nTest Bolt deals 2 damage to any target. If this spell was kicked, it deals 4 damage instead."
+    bolt = card(24, "Test Bolt", "Instant", text)
+    target = dict(card(23, "Test Bear", "Creature — Bear", "Haste"), toughness=toughness, damage=marked)
+    assert _answers_creature(bolt, target) is answers
+    assert _answers_creature(dict(bolt, oracle_text=text + "\nDraw a card."), target) is None
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Flying\nPlot {o1oU}\nWhenever you cast a noncreature spell, this creature gets +1/+1 until end of turn.",
+        "Prowess\nWhenever this creature becomes the target of a spell or ability you control for the first time each turn, exile the top card of your library. Until end of turn, you may play that card.",
+        "Whenever you attack with one or more Birds, this creature deals 2 damage to target opponent.",
+        "{1}{G}: Put a +1/+1 counter on this creature.",
+        "At the beginning of your end step, return this creature to its owner's hand.\n{o1oR}: This creature gets +1/+0 until end of turn.",
+    ],
+)
+def test_library_only_self_and_opponent_rules_require_complete_print(text):
+    from arenamcp.commentary.private_outs import _answers_creature, _simple_text
+
+    creature = card(24, "Test Bird", "Creature — Bird", text)
+    target = dict(card(23, "Test Bear", "Creature — Bear", "Haste"), toughness=2)
+    assert _answers_creature(creature, target) is False
+    assert not _simple_text(creature)
+    assert (
+        _answers_creature(
+            dict(creature, oracle_text=text + "\nWhen this creature enters, destroy target creature."), target
+        )
+        is None
+    )
+    assert _answers_creature(dict(creature, related_faces=[{"name": "Other"}]), target) is None
+
+
+@pytest.mark.parametrize("native", [False, True])
+def test_every_mode_requires_a_complete_damage_fact_and_only_one_mode_can_apply(native):
+    from arenamcp.commentary.private_outs import _answers_creature
+
+    lines = [
+        "This spell deals 1 damage to each creature your opponents control.",
+        "This spell deals 4 damage to target creature.",
+    ]
+    modes = [f"•<indent=4%>{line} </indent>" if native else f"• {line}" for line in lines]
+    text = "Choose one — \n" + "\n".join(modes)
+    spell = card(24, "Example", "Sorcery", text)
+    target = dict(card(23, "Test Bear", "Creature — Bear", "Haste"), toughness=4)
+    assert _answers_creature(spell, target) is True
+    assert _answers_creature(spell, dict(target, toughness=5)) is False
+    assert (
+        _answers_creature(dict(spell, oracle_text=text.replace("Choose one", "Choose two")), target) is None
+    )
+    assert _answers_creature(dict(spell, oracle_text=text + "\n• Sacrifice a creature."), target) is None
+    assert (
+        _answers_creature(card(25, "Example", "Creature — Bear", "Trample\nPlayers can't gain life."), target)
+        is False
+    )
