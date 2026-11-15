@@ -43,6 +43,7 @@ class CommentaryService:
         self.last_grounded = (None, -float("inf"))
         self.pending_events = {}
         self.pending_epoch = None
+        self.pending_config = None
         self.fallback_events = set()
         self.proposals = {}
         self.public_proposals = set()
@@ -58,12 +59,13 @@ class CommentaryService:
 
     def configure(self):
         config = CommentaryConfig.from_settings(self.settings())
-        if config != self.config:
-            self.config = config
-            self.cancelled.set()
-            self.pending_events = {}
-            self.fallback_events.clear()
-            with self._lock:
+        with self._lock:
+            changed = config != self.config
+            if changed:
+                self.cancelled.set()
+                self.config = config
+                self.pending_events = {}
+                self.fallback_events.clear()
                 self.inflight.clear()
                 self.proposals.clear()
                 self.public_proposals.clear()
@@ -71,6 +73,7 @@ class CommentaryService:
                 self.heard_analysis.clear()
                 self.heard_event_calls.clear()
                 self.grounded_ids.clear()
+        if changed:
             self.emit({"type": "commentary_clear"})
         self.wake.set()
 
@@ -118,7 +121,7 @@ class CommentaryService:
                 item = self.proposals.pop(uid, None)
                 public = uid in self.public_proposals
                 self.public_proposals.discard(uid)
-                if item and state == "finished":
+                if item and state == "finished" and (public or self.config.private_information):
                     self.heard.append(item.text)
                     if item.role == "color_analyst":
                         self.heard_analysis.append(item.text)
@@ -359,7 +362,13 @@ class CommentaryService:
                         self.client.delivered(uid, state)
                     except Exception:
                         self.client.close()
-                config, snapshot = self.config, self.latest
+                with self._lock:
+                    if self.closed.is_set():
+                        break
+                    config, snapshot = self.config, self.latest
+                    # A revoked projection keeps its own latched cancellation through
+                    # worker admission and both model requests. Never clear it in place.
+                    self.cancelled = threading.Event()
                 if not config.enabled or self.muted() or snapshot is None:
                     self.client.close()
                     continue
@@ -369,8 +378,11 @@ class CommentaryService:
                     continue
                 # Keep a bounded fresh candidate while speech or gameplay owns
                 # capacity; observing the same snapshot must not erase it.
+                if self.cancelled.is_set() or config is not self.config:
+                    continue
                 now = time.monotonic()
-                if self.pending_epoch != observation.epoch:
+                if self.pending_epoch != observation.epoch or config is not self.pending_config:
+                    self.pending_config = config
                     self.pending_events = {}
                     self.pending_epoch = observation.epoch
                     self.fallback_events = set()
@@ -429,7 +441,6 @@ class CommentaryService:
                         reason="speech_inflight" if speaking else "no_fresh_public_event",
                     )
                     continue
-                self.cancelled.clear()
                 exchange = None
                 usable = False
                 try:

@@ -185,12 +185,13 @@ class CommentaryController(QObject):
                 self._status(item.utterance_id, "superseded")
                 return
             self.private_commentary_ids.add(item.utterance_id)
-        provider = str(settings.get("tts_provider") or "kokoro")
+        provider = "kokoro" if public_only is not True else str(settings.get("tts_provider") or "kokoro")
         try:
             if not self.config.private_information and qwen_public.selected(settings):
                 provider, pair = qwen_public.PROVIDER, qwen_public.PAIR
             else:
-                pair = voice_pair(settings, self._catalog(settings))
+                voice_settings = settings if public_only is True else {**settings, "tts_provider": "kokoro"}
+                pair = voice_pair(voice_settings, self._catalog(voice_settings))
             voice = pair[1 if item.role == "color_analyst" else 0]
         except VoicePairUnavailable as error:
             self.commentary_ids.add(item.utterance_id)
@@ -372,8 +373,10 @@ class CommentaryController(QObject):
             item.provider,
             times["render_start"] - times["accepted"],
         )
-        private_outs = item.utterance_id.startswith("private-outs:")
-        if item.category == SpeechCategory.COMMENTARY and not private_outs:
+        private = (
+            item.utterance_id.startswith("private-outs:") or item.utterance_id in self.private_commentary_ids
+        )
+        if item.category == SpeechCategory.COMMENTARY and not private:
             self.spoken(item.text)
         overrides = (
             {"settings_override": self.preview_settings[item.utterance_id]}
@@ -384,7 +387,7 @@ class CommentaryController(QObject):
         if item.category == SpeechCategory.COMMENTARY and self.observation is not None:
             speech_text = pronounce_players(speech_text, self.observation.public_state.get("player_names"))
         self.tts.request_speech(
-            **({"private": True} if private_outs else {}),
+            **({"private": True} if private else {}),
             **overrides,
             **({"role": item.role} if item.provider == qwen_public.PROVIDER else {}),
             **self._delivery(item),
@@ -395,7 +398,7 @@ class CommentaryController(QObject):
             speech_id=item.utterance_id,
             provider=None
             if item.provider == "kokoro"
-            and not private_outs
+            and not private
             and item.category != SpeechCategory.ESSENTIAL
             and item.utterance_id not in self.preview_settings
             else item.provider,

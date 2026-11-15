@@ -252,3 +252,81 @@ def test_public_mode_discards_late_private_proposals_for_every_voice(booth, prov
     assert sent[-1]["state"] == "superseded"
     spoken.assert_not_called()
     tts._public_voice.speak.assert_not_called()
+
+
+def test_private_line_uses_the_private_local_audio_request(booth, monkeypatch):
+    control, tts, settings, _, _ = booth
+    settings.update(tts_provider="chatterbox_remote", commentary_private_information=True)
+    control.config = replace(control.config, private_information=True)
+    item = replace(line(control), text="A synthetic private deck fact.")
+    control.spoken = Mock()
+    request = Mock()
+    monkeypatch.setattr(tts, "request_speech", request)
+    control.proposal(item.to_wire(), public_only=False)
+    payload = request.call_args.kwargs
+    assert payload["private"] and payload["provider"] == "kokoro"
+    assert payload["text"] == item.text and payload["valid"]()
+    control.spoken.assert_not_called()
+    settings["commentary_private_information"] = False
+    assert not payload["valid"]()
+
+
+def test_revoking_hand_access_while_projecting_prevents_a_late_backend_call():
+    import threading
+
+    from tests.aoa.test_runtime import snapshot
+
+    from arenamcp.backends.proxy import ProxyBackend
+
+    entered, release, public_observed = (threading.Event() for _ in range(3))
+    calls = []
+    settings = {"autoplay_speech": "commentary", "commentary_private_information": True}
+
+    class Backend(ProxyBackend):
+        def __init__(self):
+            pass
+
+        def complete(self, system, user, *args, **kwargs):
+            calls.append(user)
+            return "{}"
+
+    class Client:
+        def start(self, config):
+            pass
+
+        def close(self):
+            pass
+
+        def delivered(self, *args):
+            pass
+
+        def generate(self, observation, config, rpc, cancelled):
+            rpc("Synthetic public or private observation", {"scope": observation.private_state}, False)
+            return {"utterances": []}
+
+    service = CommentaryService(
+        settings=lambda: settings, backend=Backend, emit=lambda _: None, client_factory=Client
+    )
+    observe = service.adapter.observe
+
+    def gated(snapshot, private):
+        row = observe(snapshot, private)
+        if private:
+            entered.set()
+            assert release.wait(3)
+            return replace(row, private_state={**row.private_state, "secret": "private-test-value"})
+        public_observed.set()
+        return row
+
+    service.adapter.observe = gated
+    try:
+        service.offer(snapshot())
+        assert entered.wait(3)
+        settings["commentary_private_information"] = False
+        service.configure()
+        release.set()
+        assert public_observed.wait(3)
+        assert all("private-test-value" not in call for call in calls)
+    finally:
+        release.set()
+        service.close()

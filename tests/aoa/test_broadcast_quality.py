@@ -45,6 +45,7 @@ def test_analysis_memory_tracks_delivery_independently_of_action_calls():
         role = "color_analyst" if i == 0 else "play_by_play"
         item = replace(first, utterance_id=str(i), text=f"Delivered point {i}.", role=role)
         service.proposals[item.utterance_id] = item
+        service._emit_proposal(item, observation(), CommentaryConfig())
         service.delivery(item.utterance_id, "finished")
     assert "Delivered point 0." not in service.heard
     assert list(service.heard_analysis) == ["Delivered point 0."]
