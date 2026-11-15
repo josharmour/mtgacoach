@@ -655,3 +655,49 @@ def test_unmodeled_variable_commander_payment_is_reported_before_inference(sampl
     with pytest.raises(ValueError, match="ordinary payment"):
         study_card(book, 1001, m, tmp_path, allowed=lambda: True)
     m.complete.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "kind",
+    ["missing_cast_ref", "mandatory_cast", "tap_sacrifice", "unsupported_cast", "unsupported_activation"],
+)
+def test_commander_costs_require_real_additional_resources(sample, monkeypatch, tmp_path, kind):
+    _, book, _ = sample
+    gid = 1001
+    abilities = {
+        "missing_cast_ref": "As an additional cost to cast this spell, sacrifice a creature.",
+        "mandatory_cast": "As an additional cost to cast this spell, sacrifice a creature.",
+        "tap_sacrifice": "{T}, Sacrifice another creature: Draw a card.",
+        "unsupported_cast": "As an additional cost to cast this spell, discard two cards.",
+        "unsupported_activation": "{T}, Discard a card, Sacrifice another creature: Draw a card.",
+    }
+    book.catalog[gid]["oracle_text"] = "When this creature enters, scry 1.\n" + abilities[kind]
+    native_catalog(monkeypatch, book.catalog)
+    m = backend(book)
+    row = m.complete.return_value
+    row["evidence"].append({"card": gid, "rule": 2})
+    if kind == "mandatory_cast":
+        row["action_rules"]["play"].append({"card": gid, "rule": 2})
+    if kind in ("tap_sacrifice", "unsupported_activation"):
+        row["action_rules"]["hold"].append({"card": gid, "rule": 2})
+        row["hold"]["advice"] = "Keep another creature available for the sacrifice ability."
+    if kind in ("missing_cast_ref", "unsupported_activation", "unsupported_cast"):
+        with pytest.raises(ValueError, match="mandatory additional|activation cost|ordinary payment"):
+            study_card(book, gid, m, tmp_path, allowed=lambda: True)
+        assert not list(tmp_path.rglob("*.json"))
+        if kind == "unsupported_cast":
+            m.complete.assert_not_called()
+        return
+    result, _ = study_card(book, gid, m, tmp_path, allowed=lambda: True)
+    section = result["commander_conditions"]["play" if kind == "mandatory_cast" else "hold"]
+    assert section["independent_battlefield_resources"][0]["rule"] == 2
+    assert section["independent_battlefield_resources"][0]["exclude_source_instance"] is True
+    if kind == "tap_sacrifice":
+        assert section["activation_source"] == {
+            "card": gid,
+            "rules": [2],
+            "zone": "battlefield",
+            "controller": "self",
+            "must_be_untapped": True,
+            "tap_legality": "verify_current_game",
+        }

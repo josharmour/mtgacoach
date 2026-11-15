@@ -7,23 +7,42 @@ from arenamcp.deck_strategy import oracle_rules
 
 _ACTIONS = ("play", "hold", "avoid")
 _SYMBOLS = re.compile(r"(?:\{(?:[WUBRGC]|[0-9]+)\})+")
-# Only unambiguous instructions to the controller are classified. Other
-# costs/choices remain for semantic review, including additional mana costs.
-_SACRIFICE = re.compile(
-    r"(?:^|:\s*|[.]\s*|as an additional cost to cast this spell,\s*)"
-    r"(?:you may\s+)?sacrifice (another|a|an) (creature|artifact|land|enchantment|permanent)\b",
+_SUBJECT = r"(another|a|an) (creature|artifact|land|enchantment|permanent)"
+_CAST_SAC = re.compile(r"^as an additional cost to cast this spell, sacrifice " + _SUBJECT + r"[.]$", re.I)
+_ACT_SAC = re.compile(r"^(?:(\{T\}),\s*)?sacrifice " + _SUBJECT + r"$", re.I)
+_SACRIFICE = re.compile(r"(?:^|:\s*|[.]\s*)(?:you may\s+)?sacrifice " + _SUBJECT + r"\b", re.I)
+_SAC_WORD = re.compile(r"\b(?:sacrifice|sacrificing|sacrificed|fodder|fling)\b", re.I)
+_CAST_CONSTRAINT = re.compile(
+    r"additional cost to cast|(?:this spell|it) costs [^.]*more to cast|(?:can.t cast|cast only|can cast [^.]*only)",
     re.I,
 )
-_SAC_WORD = re.compile(r"\b(?:sacrifice|sacrificing|sacrificed|fodder|fling)\b", re.I)
 
 
-def _separate_resources(card, gid):
-    resources = []
+def _costs(card, gid):
+    resources, mandatory, unsupported_cast, unsupported_activation, tapped = [], [], [], [], []
+    types = card["type_line"].partition("—")[0].lower().split()
     for n, line in enumerate(oracle_rules(card), 1):
-        for match in _SACRIFICE.finditer(line):
-            determiner, kind = (part.lower() for part in match.groups())
-            types = card["type_line"].partition("—")[0].lower().split()
-            if determiner != "another" and (kind == "permanent" or kind in types):
+        prefix, colon, _ = line.partition(":")
+        matches = []
+        if found := _CAST_SAC.fullmatch(line.strip()):
+            mandatory.append(n)
+            matches.append((*found.groups(), True))
+        elif _CAST_CONSTRAINT.search(line):
+            unsupported_cast.append(n)
+        elif colon and re.search(r"\bsacrifice\b", prefix, re.I):
+            found = _ACT_SAC.fullmatch(prefix.strip())
+            if not found:
+                unsupported_activation.append(n)
+                continue
+            tap, determiner, kind = found.groups()
+            if tap:
+                tapped.append(n)
+            matches.append((determiner, kind, False))
+        else:
+            matches.extend((*m.groups(), False) for m in _SACRIFICE.finditer(line))
+        for determiner, kind, in_command in matches:
+            kind = kind.lower()
+            if not in_command and determiner.lower() != "another" and (kind == "permanent" or kind in types):
                 continue
             resources.append(
                 {
@@ -36,7 +55,13 @@ def _separate_resources(card, gid):
                     "exclude_source_instance": True,
                 }
             )
-    return resources
+    return {
+        "independent_battlefield_resources": resources,
+        "mandatory_cast_rules": mandatory,
+        "unsupported_cast_rules": unsupported_cast,
+        "unsupported_activation_rules": unsupported_activation,
+        "tap_source_rules": tapped,
+    }
 
 
 def deployment_context(card, gid):
@@ -52,7 +77,7 @@ def deployment_context(card, gid):
         "command_zone": "play must deploy the designated commander from command; hold may wait there or hold an already-deployed permanent on the battlefield",
         "timing": "Give an ordinary deployment line. Assume no acceleration or discount. State the printed base payment and allow the current commander tax in addition; the current tax is unknown outside a game.",
         "required_references": "Supply action_rules.play, hold and avoid with the numeric rules used by EACH action. Also include them in evidence. Cite any printed sacrifice you discuss. A piece in the deck is not a creature available to sacrifice.",
-        "independent_battlefield_resources": _separate_resources(card, gid),
+        **_costs(card, gid),
     }
 
 
@@ -64,7 +89,7 @@ def commander_conditions(row, context):
         raise ValueError("Commander study requires separate printed references for play, hold and avoid")
     cited = {(r["card"], r["rule"]) for r in row["evidence"]}
     base = policy["base_payment"]
-    if base is None:
+    if base is None or policy["unsupported_cast_rules"]:
         raise ValueError("The commander study cannot certify an ordinary payment for this printed cost")
     resources = policy["independent_battlefield_resources"]
     certified = {}
@@ -93,8 +118,22 @@ def commander_conditions(row, context):
             action == "hold" and zone not in ("command", "battlefield")
         ):
             raise ValueError("Normal commander deployment and holding must account for the command zone")
+        if any((gid, n) in keys for n in policy["unsupported_activation_rules"]):
+            raise ValueError("The commander study cannot certify this printed activation cost")
         item = {}
+        taps = [n for n in policy["tap_source_rules"] if (gid, n) in keys]
+        if taps:
+            item["activation_source"] = {
+                "card": gid,
+                "rules": taps,
+                "zone": "battlefield",
+                "controller": "self",
+                "must_be_untapped": True,
+                "tap_legality": "verify_current_game",
+            }
         if zone == "command" and action in ("play", "hold"):
+            if any((gid, n) not in keys for n in policy["mandatory_cast_rules"]):
+                raise ValueError("Commander deployment must cite its mandatory additional casting cost")
             mana = conditions["mana"]
             value = sum(base.values())
             if (
@@ -125,6 +164,10 @@ def explain_conditions(item):
         lines.append(
             f"Command-zone deployment • printed {payment['printed_cost']}, plus {{2}} for each prior cast "
             "of this commander from the command zone. Check the current tax and available mana."
+        )
+    if item.get("activation_source"):
+        lines.append(
+            "To activate the cited ability, the commander must be under your control on the battlefield, untapped and legally able to tap."
         )
     for resource in item.get("independent_battlefield_resources", []):
         lines.append(

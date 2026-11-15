@@ -216,7 +216,9 @@ def prepare_card_pass(book, directory, digest):
         except (ValueError, KeyError, TypeError):
             report["withheld"] += 1
             continue
-        if "commander_deployment" in context and context["commander_deployment"]["base_payment"] is None:
+        if (policy := context.get("commander_deployment")) and (
+            policy["base_payment"] is None or policy["unsupported_cast_rules"]
+        ):
             report["unsupported_payment"] += 1
             continue
         path = _directory(directory, context) / (digest.removeprefix("sha256:") + ".json")
@@ -282,7 +284,9 @@ def _validated_row(row, book, context):
 def study_card(book, gid, model, directory, *, allowed):
     context = _context(book, gid)
     ids = [int(i) for i in context["prints"]]
-    if "commander_deployment" in context and context["commander_deployment"]["base_payment"] is None:
+    if (policy := context.get("commander_deployment")) and (
+        policy["base_payment"] is None or policy["unsupported_cast_rules"]
+    ):
         raise ValueError("The commander study cannot certify an ordinary payment for this printed cost")
     if not allowed() or not _checked(book, ids):
         raise ValueError("The local card sources or deck are unavailable")
