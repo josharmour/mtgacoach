@@ -452,7 +452,7 @@ def _card_facts_hooks_are_inert(monkeypatch):
     # Line search imports facts_for directly; prefetch suppression alone does
     # not stop a cache miss from scheduling an HTTP lookup. Default to an empty
     # deterministic store, independent of the developer's disk cache.
-    monkeypatch.setattr("arenamcp.card_facts.client.facts_for", lambda cards: {})
+    monkeypatch.setattr("arenamcp.card_facts.client.facts_for", lambda cards, **kwargs: {})
     monkeypatch.setattr("arenamcp.line_search_moves.facts_for", lambda cards: {})
 
     def forbidden_lookup(*args, **kwargs):

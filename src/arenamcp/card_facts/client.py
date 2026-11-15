@@ -199,6 +199,23 @@ class CardFactsClient:
             self.queue_hashes(wanted)
         return results
 
+    def fresh_memory_facts(self, cards: Any) -> dict[str, dict[str, Any]]:
+        """Read prefetched records without disk I/O, refreshes, or background work."""
+        now = self._clock()
+        digests = {digest for card in cards if (digest := hash_for_card(card))}
+        results = {}
+        with self._lock:
+            for digest in digests:
+                entry = self._memory.get(digest)
+                if entry is None:
+                    continue
+                record, fetched_at = entry
+                if type(fetched_at) not in (int, float) or not 0 <= now - fetched_at <= REFRESH_AFTER_S:
+                    continue
+                if isinstance(record, dict) and record.get("rules_hash") == digest:
+                    results[digest] = record
+        return results
+
     def prefetch_grp_ids(self, grp_ids: Any) -> None:
         """Queue grp ids for background resolution and lookup. Never blocks."""
         ids = [gid for gid in (grp_ids or []) if isinstance(gid, int)]
@@ -453,9 +470,10 @@ def shared_client() -> CardFactsClient:
         return _shared
 
 
-def facts_for(cards: Any) -> dict[str, dict[str, Any]]:
-    """See :meth:`CardFactsClient.facts_for`."""
-    return shared_client().facts_for(cards)
+def facts_for(cards: Any, *, memory_only: bool = False) -> dict[str, dict[str, Any]]:
+    """Look up card records. Memory-only reads never initiate I/O or refreshes."""
+    client = shared_client()
+    return client.fresh_memory_facts(cards) if memory_only else client.facts_for(cards)
 
 
 def prefetch_grp_ids(grp_ids: Any) -> None:

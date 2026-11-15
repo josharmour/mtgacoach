@@ -4635,7 +4635,29 @@ class ActionPlanner(_ActionLegalityMixin):
         relay_costs = relay_cast_costs(game_state)
         decision, game_state = bind_offered_casts(decision, game_state)
         game_state = {**game_state, "_equipment_relay_costs": relay_costs}
+        self._land_strand_excluded = set()
         chosen = self._plan_decision_options(decision, game_state)
+        if self._land_strand_excluded:
+            from dataclasses import replace
+
+            decision = replace(
+                decision,
+                options=tuple(o for o in decision.options if o.option_id not in self._land_strand_excluded),
+            )
+        if decision.request_type == "SelectN":
+            from arenamcp.land_strand import guard_land_sacrifice
+
+            try:
+                chosen, reason = guard_land_sacrifice(
+                    decision, game_state, chosen, lethal=lambda: _lethal_this_turn(game_state)
+                )
+            except (AttributeError, IndexError, KeyError, TypeError, ValueError) as error:
+                reason = ""
+                logger.debug("Land sacrifice forecast unavailable (%s)", type(error).__name__)
+            if reason:
+                self._last_decision_reasoning = reason
+                self._last_decision_option_ids = chosen
+                self._last_decision_trace.update(land_strand=reason, validated_ids=chosen)
         # An unavailable correction does not erase a per-decision exclusion.
         # All later selection rewrites must see the same filtered menu.
         had_options = bool(decision.options)
@@ -5088,6 +5110,7 @@ class ActionPlanner(_ActionLegalityMixin):
         self._held_instants = []
         self._held_notes = []
         self._sneak_notes = []
+        self._land_strand_notes = []
         self._end_step_kept = []
         self._release_intent = None
         self._last_decision_option_ids = []
@@ -5221,6 +5244,17 @@ class ActionPlanner(_ActionLegalityMixin):
                 )
                 return flood
         decision = filter_play_options(decision, game_state)
+        from arenamcp.land_strand import filter_land_choices
+
+        try:
+            menu, self._land_strand_notes = filter_land_choices(
+                decision, game_state, lethal=lambda: _lethal_this_turn(game_state)
+            )
+            if menu is not decision:
+                self._land_strand_excluded = decision.option_ids() - menu.option_ids()
+                decision = menu
+        except (AttributeError, IndexError, KeyError, TypeError, ValueError) as error:
+            logger.debug("Land forecast unavailable for this state (%s)", type(error).__name__)
         if not decision.options:
             if decision.request_type == "Search" and decision.selection_is_valid([]):
                 return []
@@ -9915,6 +9949,7 @@ class ActionPlanner(_ActionLegalityMixin):
         from arenamcp.land_intent import land_payment_notes
 
         lines.extend(land_payment_notes(decision, game_state))
+        lines.extend(getattr(self, "_land_strand_notes", ()))
         from arenamcp.sequence_value import sequence_value_notes, sequence_values
 
         trigger_memory = getattr(self, "_public_trigger_uses", None)
