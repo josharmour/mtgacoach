@@ -21,6 +21,8 @@ from collections import Counter
 from dataclasses import dataclass
 from itertools import combinations
 
+from arenamcp import opening_fetches
+
 COLORS = "WUBRG"
 _COLOR_NAMES = {
     "white": "W",
@@ -83,6 +85,10 @@ class HandCard:
     # taps for mana without eating another hand card, or puts a land onto the
     # battlefield. Reactive burn does not qualify.
     makes_mana_or_finds_land: bool = False
+    fetch_targets: tuple[opening_fetches.FetchTarget, ...] | None = None
+    fetch_life: int = 0
+    entry_life: int | None = 0
+    fetch_pool: tuple[opening_fetches.FetchTarget, ...] = ()
 
 
 # A spell that can kill or stop a creature: damage it can aim at one (or at
@@ -319,7 +325,11 @@ def colors_reachable(card: HandCard, lands: list[HandCard]) -> bool:
 
 def castable_with(card: HandCard, lands: list[HandCard]) -> bool:
     """Castable using only these lands (land drops on curve, no draws)."""
-    return card.mana_value <= len(lands) and _pip_matching(card.pips, lands)
+    if card.mana_value > len(lands):
+        return False
+    if any(land.fetch_targets is not None for land in lands):
+        return opening_fetches.can_pay(card.pips, card.mana_value, lands)
+    return _pip_matching(card.pips, lands)
 
 
 def _card_value(card: HandCard, lands: list[HandCard], copies: int) -> float:
@@ -372,6 +382,9 @@ def best_keep(cards: list[HandCard], keep: int) -> tuple[list[HandCard], list[Ha
     best_key, best = None, None
     for chosen in combinations(range(len(cards)), keep):
         kept = [cards[i] for i in chosen]
+        kept = opening_fetches.after_bottom(
+            kept, {card.instance_id for i, card in enumerate(cards) if i not in chosen}
+        )
         key = (
             round(hand_score(kept, _keep_land_values(keep)), 6),
             sum(card.role for card in kept),
@@ -381,7 +394,8 @@ def best_keep(cards: list[HandCard], keep: int) -> tuple[list[HandCard], list[Ha
         if best_key is None or key > best_key:
             best_key, best = key, chosen
     kept = [cards[i] for i in best or ()]
-    return kept, [card for i, card in enumerate(cards) if i not in set(best or ())]
+    bottom = [card for i, card in enumerate(cards) if i not in set(best or ())]
+    return opening_fetches.after_bottom(kept, {card.instance_id for card in bottom}), bottom
 
 
 def dominated_bottom(state: dict, instance_ids: list[int], bottomed: list[int]) -> tuple[str, str] | None:
@@ -401,8 +415,10 @@ def dominated_bottom(state: dict, instance_ids: list[int], bottomed: list[int]) 
     if any(i not in by_id for i in instance_ids):
         return None
     out = set(bottomed)
-    cards = {i: hand_card(by_id[i]) for i in instance_ids}
-    lands = [card for i, card in cards.items() if card.is_land and i not in out]
+    cards = {c.instance_id: c for c in _opening_cards(state, list(by_id.values()))}
+    lands = opening_fetches.after_bottom(
+        [card for i, card in cards.items() if card.is_land and i not in out], out
+    )
 
     def worth(card: HandCard) -> tuple[float, float, int]:
         return (round(_card_value(card, lands, 0), 6), card.role, -card.mana_value)
@@ -542,10 +558,14 @@ def _laelia_enabler(state: dict, hand: list[dict]) -> str:
     return ""
 
 
+def _opening_cards(state, hand):
+    return opening_fetches.opening_cards(state, hand, [hand_card(card) for card in hand])
+
+
 def situation(state: dict, mulligans: int | None = None) -> MulliganSituation:
     hand = [card for card in state.get("hand") or [] if isinstance(card, dict)]
     return MulliganSituation(
-        cards=[hand_card(card) for card in hand],
+        cards=_opening_cards(state, hand),
         mulligans=mulligans if mulligans is not None else mulligans_from_state(state),
         on_play=on_the_play(state),
         free_mulligans=free_mulligans_from_state(state),
@@ -651,7 +671,11 @@ def _turn_note(card: HandCard, lands: list[HandCard]) -> str:
         missing = sorted(
             {color for pip in card.pips for color in pip} - {c for land in lands for c in land.produces}
         )
+        if any(land.fetch_targets is not None for land in lands):
+            return "no verified opening route to " + "/".join(missing)
         return "needs " + "/".join(missing) + " mana this hand cannot make yet"
+    if any(land.fetch_targets is not None for land in lands) and card.mana_value <= len(lands):
+        return "no verified payment with distinct available land sources"
     if not _pip_matching(card.pips, lands):
         return "needs more sources of its color than this hand has"
     return f"needs {card.mana_value - len(lands)} more land(s)"
@@ -767,6 +791,21 @@ def describe(
             f"No early carrier in this hand for {_names(dependent)}. Compare a mulligan with its independent plays and any available commander."
         )
     for card in found.cards:
+        if card.fetch_targets is not None:
+            routes = []
+            for t in card.fetch_targets:
+                entry = {0: "untapped", 2: "tapped or pay 2 more life for untapped", None: "tapped"}[
+                    t.entry_life
+                ]
+                routes.append(
+                    f"{t.name} ({'/'.join(sorted(t.colors, key=COLORS.find))}, {t.count} in library, {entry})"
+                )
+            lines.append(
+                f"  - {card.name}: pay 1 life to fetch; verified choices: "
+                + (", ".join(routes) or "none verified")
+                + ". Each physical target can be fetched only once."
+            )
+            continue
         if card.is_land:
             lines.append(
                 f"  - {card.name}: land, taps for {'/'.join(sorted(card.produces, key=COLORS.find)) or '?'}"
@@ -820,7 +859,8 @@ def bottom_choice(state: dict, instance_ids: list[int], count: int) -> list[int]
     by_id = {
         int(card.get("instance_id") or 0): card for card in state.get("hand") or [] if isinstance(card, dict)
     }
-    cards = [hand_card(by_id[i]) if i in by_id else None for i in instance_ids]
+    priced = {c.instance_id: c for c in _opening_cards(state, list(by_id.values()))}
+    cards = [priced.get(i) for i in instance_ids]
     if any(card is None for card in cards) or not 0 < count < len(cards):
         return []
     protected = laelia_bottom_choice(state, instance_ids, count)
@@ -889,8 +929,9 @@ def kept_score(state: dict, instance_ids: list[int], bottomed: list[int]) -> flo
     }
     if any(i not in by_id for i in instance_ids):
         return None
-    kept = [hand_card(by_id[i]) for i in instance_ids if i not in set(bottomed)]
-    return hand_score(kept, _keep_land_values(len(kept)))
+    priced = {c.instance_id: c for c in _opening_cards(state, list(by_id.values()))}
+    kept = [priced[i] for i in instance_ids if i not in set(bottomed)]
+    return hand_score(opening_fetches.after_bottom(kept, set(bottomed)), _keep_land_values(len(kept)))
 
 
 def kept_land_count(state: dict, instance_ids: list[int], bottomed: list[int]) -> int:

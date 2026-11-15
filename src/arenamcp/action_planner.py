@@ -10294,6 +10294,22 @@ class ActionPlanner(_ActionLegalityMixin):
                 lines.insert(lines.index("OPTIONS:"), intent_note)
         from arenamcp.stack_protection import protection_prompt_note
 
+        if (
+            decision.request_type == "ActionsAvailable"
+            and decision.can_pass
+            and own_stack_only(decision, game_state)
+        ):
+            from arenamcp.opening_fetches import FETCH
+
+            top = game_state["stack"][0]
+            if str(top.get("object_kind") or "").upper() == "ABILITY" and FETCH.fullmatch(
+                str(top.get("oracle_text") or "").strip()
+            ):
+                lines.append(
+                    f"{top.get('name') or 'Your land search'} is on the stack. Passing lets the search "
+                    "resolve if the opponent also passes. Reassess payable spells after choosing the land. "
+                    "Spending mana on a flash spell now can cost you a main-phase play."
+                )
         protection_note = protection_prompt_note(decision, game_state)
         if protection_note:
             lines.append("STACK PROTECTION FACTS: " + protection_note)

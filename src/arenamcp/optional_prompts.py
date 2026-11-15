@@ -180,6 +180,29 @@ def prompt_note(decision: Any, state: dict) -> str:
         lines.append(
             f"  Asked by {card.get('name') or 'unknown card'}{side}: {oracle or 'rules text unknown'}"
         )
+    if len(cards) == 1 and local is not None and cards[0].get("controller_seat_id") == local:
+        from arenamcp.opening_fetches import SHOCK
+
+        offered = str(getattr(decision, "prompt_text", "") or meta.get("promptText") or question).strip()
+        if offered.casefold().rstrip("?") == "pay 2 life" and SHOCK.search(
+            str(cards[0].get("oracle_text") or "")
+        ):
+            other_lands = [
+                c
+                for c in state.get("battlefield") or []
+                if c.get("controller_seat_id") == local
+                and c.get("instance_id") != cards[0].get("instance_id")
+                and (
+                    "CardType_Land" in (c.get("card_types") or [])
+                    or "land" in str(c.get("type_line") or "").lower().partition("—")[0].split()
+                )
+            ]
+            tapped = sum(c.get("is_tapped") is True for c in other_lands)
+            lines.append(
+                f"{tapped} of {len(other_lands)} other visible lands are tapped. Paying 2 life allows "
+                "this land to enter untapped. Compare what you could cast or activate before your next "
+                "untap after accounting for mana already spent, floating mana and other sources."
+            )
     if not cards and not question:
         lines.append(
             "  The card asking is not identified. Do not assume it is the same effect as an earlier "
