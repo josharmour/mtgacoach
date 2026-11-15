@@ -1047,7 +1047,11 @@ class PipeAdapter:
             self.log(str(exc))
             return
         bridge = getattr(getattr(self._coach, "_autopilot", None), "_gre_bridge", None)
-        if bridge is None or not getattr(bridge, "_connected", False) or not getattr(bridge, "_mac_adapter", None):
+        if (
+            bridge is None
+            or not getattr(bridge, "_connected", False)
+            or not getattr(bridge, "_mac_adapter", None)
+        ):
             self.log("A connected native reflection bridge on this machine is needed for the pairing check.")
             return
         try:
