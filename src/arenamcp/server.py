@@ -413,6 +413,7 @@ def _draft_helper_loop() -> None:
                     cards_in_pack=draft_state.cards_in_pack,
                     picked_cards=draft_state.picked_cards,
                     set_code=draft_state.set_code,
+                    event_name=draft_state.event_name,
                     scryfall=scryfall,
                     draft_stats=draft_stats_cache,
                     mtgadb=mtgadb,
@@ -2634,7 +2635,9 @@ def get_draft_pack() -> dict[str, Any]:
             draft_state.set_code = set_code
             logger.info(f"Derived set_code from event_name: {set_code}")
 
-    from arenamcp.card_facts.limited_roles import with_role
+    from arenamcp.card_facts.limited_roles import reviewed_event_set, with_role
+
+    role_set = reviewed_event_set(draft_state.event_name, set_code)
 
     # Get draft stats cache
     draft_stats_cache = _get_draft_stats()
@@ -2649,7 +2652,7 @@ def get_draft_pack() -> dict[str, Any]:
 
         pool_cards_data = []
         for grp_id in picked_cards:
-            card_info = with_role(enrich_with_oracle_text(grp_id), set_code)
+            card_info = with_role(enrich_with_oracle_text(grp_id), role_set)
             stats = None
             if set_code and card_info.get("name") and "Unknown" not in card_info["name"]:
                 stats = draft_stats_cache.get_draft_rating(card_info["name"], set_code)
@@ -2657,7 +2660,7 @@ def get_draft_pack() -> dict[str, Any]:
 
         pack_cards_data = []
         for grp_id in pack_cards:
-            card_info = with_role(enrich_with_oracle_text(grp_id), set_code)
+            card_info = with_role(enrich_with_oracle_text(grp_id), role_set)
             stats = None
             if set_code and card_info.get("name") and "Unknown" not in card_info["name"]:
                 stats = draft_stats_cache.get_draft_rating(card_info["name"], set_code)
@@ -2682,7 +2685,7 @@ def get_draft_pack() -> dict[str, Any]:
     cards = []
     for pack_index, grp_id in enumerate(pack_cards):
         # Use robust enrichment (MTGJSON -> MTGADb -> Scryfall)
-        card_info = with_role(enrich_with_oracle_text(grp_id), set_code)
+        card_info = with_role(enrich_with_oracle_text(grp_id), role_set)
         card_info["pack_index"] = pack_index
 
         ev = eval_map.get(grp_id)
@@ -2719,7 +2722,7 @@ def get_draft_pack() -> dict[str, Any]:
     # Get picked card details
     picked = []
     for grp_id in picked_cards:
-        enriched = with_role(enrich_with_oracle_text(grp_id), set_code)
+        enriched = with_role(enrich_with_oracle_text(grp_id), role_set)
         picked.append(enriched)
 
     return {
@@ -2770,6 +2773,7 @@ def evaluate_draft_pack_for_standalone() -> dict[str, Any]:
         cards_in_pack=draft_state.cards_in_pack,
         picked_cards=draft_state.picked_cards,
         set_code=draft_state.set_code,
+        event_name=draft_state.event_name,
         scryfall=_scryfall,
         draft_stats=_draft_stats,
         mtgadb=_mtga,
@@ -2932,7 +2936,10 @@ def analyze_draft_pool() -> dict[str, Any]:
     if not pool_grp_ids:
         return {"pool_size": 0, "message": "No picked cards to analyze."}
 
-    pool_cards = limited_pool_cards(pool_grp_ids, draft_state.set_code)
+    from arenamcp.card_facts.limited_roles import reviewed_event_set, with_role
+
+    role_set = reviewed_event_set(draft_state.event_name, draft_state.set_code)
+    pool_cards = [with_role(card, role_set) for card in limited_pool_cards(pool_grp_ids, draft_state.set_code)]
 
     from arenamcp.limited_deck import fallback_deck
 

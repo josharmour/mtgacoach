@@ -461,6 +461,8 @@ def evaluate_pack(
     scryfall: ScryfallCache,
     draft_stats: DraftStatsCache | None = None,
     mtgadb: MTGADatabase | None = None,
+    *,
+    event_name: str = "",
 ) -> list[CardEvaluation]:
     """Evaluate all cards in a pack with composite per-color-pair scoring.
 
@@ -480,7 +482,7 @@ def evaluate_pack(
         List of CardEvaluation sorted by score (highest first). Each
         evaluation includes per_pair_scores and a best_pair recommendation.
     """
-    from arenamcp.card_facts.limited_roles import bound_roles, partner_reason, role_note
+    from arenamcp.card_facts.limited_roles import bound_roles, partner_reason, reviewed_event_set, role_note
 
     def displayed_print(gid):
         card = scryfall.get_card_by_arena_id(gid)
@@ -488,7 +490,9 @@ def evaluate_pack(
             card = mtgadb.get_card(gid)
         return card
 
-    roles = bound_roles(set_code, cards_in_pack + picked_cards, displayed_print)
+    roles = bound_roles(
+        reviewed_event_set(event_name, set_code), cards_in_pack + picked_cards, displayed_print
+    )
     reviewed_pool = {g: roles[g]["name"] for g in picked_cards if g in roles}
 
     pick_depth = len(picked_cards)

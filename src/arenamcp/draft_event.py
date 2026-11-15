@@ -319,13 +319,14 @@ class DraftEventDriver:
 
     def _limited_pick_context(self, pack, primer):
         # Canonical aliases for a different printing have no reviewed record.
-        from arenamcp.card_facts.limited_roles import SUPPORTED_SETS, bound_roles
+        from arenamcp.card_facts.limited_roles import bound_roles, reviewed_event_set
 
-        if str(self.run.set_code).lower() not in SUPPORTED_SETS or self._db is None:
+        role_set = reviewed_event_set(self.run.event_name, self.run.set_code)
+        if not role_set or self._db is None:
             return {}
         actual = set(pack + self._drafted_pool())
         aliases = {self._canonical(gid, primer) for gid in actual if self._canonical(gid, primer) != gid}
-        roles = bound_roles(self.run.set_code, actual - aliases, self._db.get_card)
+        roles = bound_roles(role_set, actual - aliases, self._db.get_card)
         return {"limited_roles": roles} if roles else {}
 
     def _unrated_ranking(
@@ -338,8 +339,10 @@ class DraftEventDriver:
         overlay's unrated guidance instead, without borrowing printing-set
         ratings. These estimates are a fallback, not a veto on model picks.
         """
-        from arenamcp.card_facts.limited_roles import with_role
+        from arenamcp.card_facts.limited_roles import reviewed_event_set, with_role
         from arenamcp.draft_guidance import FormatContext, _base_score, evaluate_pack, normalize_card
+
+        role_set = reviewed_event_set(getattr(self.run, "event_name", ""), self.run.set_code)
 
         def card(grp_id: int):
             known = self._db.get_card(grp_id) if self._db is not None else None
@@ -353,7 +356,7 @@ class DraftEventDriver:
                         "oracle_text": getattr(known, "oracle_text", ""),
                         "rarity": getattr(known, "rarity", ""),
                     },
-                    self.run.set_code,
+                    role_set,
                 )
             )
 
@@ -873,6 +876,12 @@ class DraftEventDriver:
             if self._pool_cards_fn:
                 # The model and ranking must see the same pool after a takeover.
                 details["picked_cards"] = self._pool_cards_fn(self._drafted_pool(), self.run.set_code)
+            from arenamcp.card_facts.limited_roles import reviewed_event_set, with_role
+
+            role_set = reviewed_event_set(self.run.event_name, self.run.set_code)
+            for key in ("cards", "picked_cards"):
+                if details.get(key):
+                    details[key] = [with_role(card, role_set) for card in details[key]]
             if primer is not None:
                 # The committed lane's archetypes lead; the pool estimate only while open.
                 details["set_strategy"] = primer.prompt_context(
@@ -1206,6 +1215,10 @@ class DraftEventDriver:
             run.set_code = self._set_code_for(pool_ids)
         primer = self._primer(run.set_code)
         cards = self._pool_cards_fn(pool_ids, run.set_code) if self._pool_cards_fn else []
+        from arenamcp.card_facts.limited_roles import reviewed_event_set, with_role
+
+        role_set = reviewed_event_set(run.event_name, run.set_code)
+        cards = [with_role(card, role_set) for card in cards]
         from arenamcp.limited_deck import DeckStrategy, fallback_deck, score_deck
 
         fmt = self._limited_format(pool_ids)

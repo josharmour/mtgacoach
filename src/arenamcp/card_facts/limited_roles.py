@@ -3,6 +3,7 @@
 import copy
 import hashlib
 import json
+import re
 from functools import lru_cache
 from pathlib import Path
 
@@ -11,6 +12,23 @@ _CORPUS_SHA256 = {
     "trk": "7f6e9f6ba35029eba28db8bb08e9a6cb0c1148ac5daa7b8e0da0233bcee01b98",
 }
 SUPPORTED_SETS = frozenset(_CORPUS_SHA256)
+
+
+def reviewed_event_set(event_name, set_code):
+    """A pack's inferred printing set can supply ratings; roles need the named event too."""
+    if not isinstance(event_name, str):
+        return ""
+    # Only recognized native retail event names bind this set's archetypes.
+    # Mixed pools, Alchemy and unrelated formats may contain the same print.
+    match = re.fullmatch(
+        r"(?:PremierDraft|QuickDraft|Trad(?:itional)?_?(?:Draft|Sealed)|Contender(?:Draft|Sealed)|Draft|Sealed)"
+        r"_([A-Z0-9]{3})(?:_[0-9]{8})?",
+        event_name,
+    )
+    if not match:
+        return ""
+    declared = match.group(1)
+    return declared if declared.lower() in SUPPORTED_SETS and declared == str(set_code).upper() else ""
 
 
 @lru_cache(maxsize=2)
