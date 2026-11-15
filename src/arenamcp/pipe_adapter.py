@@ -619,6 +619,11 @@ class PipeAdapter:
             elif action == "cycle_mode":
                 # Legacy frontends only — local mode was removed (online-only).
                 self.log("Local mode was removed — the app is online-only.")
+            elif action == "dev_challenge_preflight":
+                from arenamcp.dev_challenge_pair import source_enabled
+
+                if source_enabled():
+                    threading.Thread(target=self._check_dev_challenge_pair, daemon=True).start()
             elif action == "cycle_model":
                 self._cycle_model()
             elif action == "cycle_voice":
@@ -1032,6 +1037,27 @@ class PipeAdapter:
             self.status("VOICE", voice_name)
         except Exception:
             pass
+
+    def _check_dev_challenge_pair(self):
+        from arenamcp.dev_challenge_pair import PairStatus, PairUnavailable, configured_pair
+
+        try:
+            configured_pair()
+        except PairUnavailable as exc:
+            self.log(str(exc))
+            return
+        bridge = getattr(getattr(self._coach, "_autopilot", None), "_gre_bridge", None)
+        if bridge is None or not getattr(bridge, "_connected", False) or not getattr(bridge, "_mac_adapter", None):
+            self.log("A connected native reflection bridge on this machine is needed for the pairing check.")
+            return
+        try:
+            result = bridge._send_command({"action": "dev_challenge_preflight"}, timeout=5.0)
+        except Exception:
+            self.log("The local bridge could not complete the pairing check.")
+            return
+        code = result.get("pair_status") if isinstance(result, dict) else None
+        feedback = PairStatus.__members__.get(code) if type(code) is str else None
+        self.log(feedback.value if feedback else "The pairing check was unavailable.")
 
     def _cycle_model(self) -> None:
         """Cycle through the models the online gateway serves.

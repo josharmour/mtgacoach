@@ -203,6 +203,12 @@ class MainWindow(QMainWindow):
         tools_menu = menu_bar.addMenu("Tools")
         preview_act = tools_menu.addAction("Draft deck recommendation…")
         preview_act.triggered.connect(lambda: self._limited_preview.show())
+        if os.environ.get("MTGACOACH_DEV_DIRECT_CHALLENGE") == "1":
+            from arenamcp.dev_challenge_pair import source_enabled
+
+            if source_enabled():
+                action = tools_menu.addAction("Check direct-challenge pairing…")
+                action.triggered.connect(lambda: self._session.send_command("dev_challenge_preflight"))
         repair_act = tools_menu.addAction("Setup && Repair…")
         repair_act.triggered.connect(self._show_repair_view)
         perf_act = tools_menu.addAction("Match History…")
