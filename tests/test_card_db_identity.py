@@ -78,3 +78,47 @@ def test_name_lookup_rejects_other_face_and_continues():
         [Source(by_name=card("Front // Back", "combined")), Source(by_name=card("Back", "right"))]
     )
     assert db.get_card_by_name("Back").oracle_text == "right"
+
+
+def test_preferred_complete_front_cannot_hide_local_linked_print(monkeypatch):
+    from types import SimpleNamespace
+
+    from arenamcp.card_db import MTGADatabaseAdapter, MTGJSONAdapter
+    from arenamcp.card_facts.source_identity import legacy_lookup_hash
+
+    front = SimpleNamespace(
+        name="Example",
+        oracle_text="Reach",
+        type_line="Creature — Elf",
+        mana_cost="{G}",
+        cmc=1,
+        colors=["G"],
+        arena_id=15,
+        layout="normal",
+    )
+    primary = MTGJSONAdapter(SimpleNamespace(available=True, get_card=lambda _: front))
+    local = SimpleNamespace(name=front.name, linked_face_ids=[16])
+    secondary = MTGADatabaseAdapter(SimpleNamespace(available=True, get_card=lambda _: local))
+    merged = FallbackCardDatabase([primary, secondary]).get_card_by_arena_id(15)
+    assert merged.name == front.name and legacy_lookup_hash(merged) is None
+    local.linked_face_ids = []
+    db = FallbackCardDatabase([primary, secondary])
+    assert legacy_lookup_hash(db.get_card_by_arena_id(15)) is not None
+
+    from arenamcp import card_db, match_context
+
+    monkeypatch.setattr(card_db, "get_card_database", lambda: db)
+    monkeypatch.setattr(card_db, "initialized_card_database", lambda: db)
+    assert legacy_lookup_hash(FallbackCardDatabase([primary]).get_card_by_arena_id(15)) is not None
+    secondary.raw.available = False
+    assert legacy_lookup_hash(db.get_card_by_arena_id(15)) is None
+    try:
+        first = match_context._local_card(15, 710)
+        assert first["name"] == front.name and legacy_lookup_hash(first) is None
+        assert match_context.prepared_card(15) is None
+        local.linked_face_ids = [16]
+        secondary.raw.available = True
+        assert legacy_lookup_hash(match_context._local_card(15, 711)) is None
+        assert match_context.prepared_card(15)["single_face_source"] is False
+    finally:
+        match_context._local_card.cache_clear()

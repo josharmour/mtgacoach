@@ -97,3 +97,79 @@ def test_unsupported_information_keeps_original_exactly(kind):
 def test_missing_record_and_arbitrary_source_keep_all_modal_text():
     text = "Choose one — attack; or defend. Other face: flying. Option 7."
     assert render({}, None, text, enabled=True, role="stable_deck") == text
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [{"layout": "meld"}, {"linked_face_ids": [19]}, {"related_faces": False}, {"single_face_source": False}],
+)
+def test_cached_record_stays_out_of_graph_and_render_after_public_projection(monkeypatch, metadata):
+    from types import SimpleNamespace
+
+    from arenamcp import server
+    from arenamcp.card_db import CardInfo
+    from arenamcp.card_facts.source_identity import legacy_lookup_hash
+    from arenamcp.line_search_moves import _record_key
+
+    card, record, text = sample()
+    assert render(dict(card, **metadata), record, text, enabled=True, role="stable_deck") == text
+    info = CardInfo(
+        name=card["name"],
+        oracle_text=card["oracle_text"],
+        type_line=card["type_line"],
+        mana_cost=card["mana_cost"],
+        cmc=3.0,
+        colors=["U"],
+        arena_id=81100,
+        source="local",
+        **metadata,
+    )
+    monkeypatch.setattr(server, "_get_card_db", lambda: SimpleNamespace(get_card_by_arena_id=lambda _: info))
+    raw = {
+        "grp_id": 81100,
+        "instance_id": 100,
+        "object_kind": "CARD",
+        "owner_seat_id": 1,
+        "controller_seat_id": 1,
+    }
+    for obj in [
+        server.enrich_with_oracle_text(81100),
+        server._serialize_snapshot_obj(raw),
+        server._serialize_bridge_card(raw, {100: raw}),
+    ]:
+        assert obj["single_face_source"] is False
+        assert legacy_lookup_hash(obj) is None and _record_key(obj) == ("", "", "", "")
+        assert "linked_face_ids" not in obj and "card_faces" not in obj
+
+
+@pytest.mark.parametrize(
+    "bridge",
+    [
+        {"grp_id": 3},
+        {"grp_id": 81101, "face_down": True},
+        {"grp_id": 81101, "isFacedown": True},
+        {"grp_id": 81101, "face_down_reason": 6},
+        {"grp_id": 81101},
+    ],
+)
+def test_conflicting_or_face_down_bridge_print_never_borrows_cached_identity(monkeypatch, bridge):
+    from arenamcp import server
+    from arenamcp.line_search_moves import _record_key
+
+    monkeypatch.setattr(
+        server, "enrich_with_oracle_text", lambda _: {"name": "Known Front", "oracle_text": ""}
+    )
+    stale = {
+        "grp_id": 81100,
+        "name": "Private print canary",
+        "oracle_text": "Private rule canary",
+        "mana_cost": "{8}{G}",
+        "card_faces": [{"name": "Private second face"}],
+    }
+    newer = dict(instance_id=5, object_type="Card", **bridge)
+    row = server._serialize_bridge_card(newer, {5: stale})
+    assert "Private" not in str(row) and "{8}{G}" not in str(row)
+    if server.is_face_down(newer):
+        assert "single_face_source" not in row
+    else:
+        assert row["single_face_source"] is False and _record_key(row) == ("", "", "", "")

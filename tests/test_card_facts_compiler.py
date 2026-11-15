@@ -17,6 +17,8 @@ import json
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from arenamcp.card_facts import (
     PrintedCard,
     card_facts_to_dict,
@@ -663,3 +665,124 @@ def test_aura_simple_typed_projections_and_conditional_grants_are_exact():
     record["body"]["keywords"] = ["Flash"]
     record["body"]["grants"] = "flying"
     assert compile_record(record).status == "failed"
+
+
+@pytest.mark.parametrize(
+    "layout",
+    [
+        "adventure",
+        "modal_dfc",
+        "transform",
+        "prepare",
+        "split",
+        "meld",
+        "flip",
+        "battle",
+        "reversible_card",
+        "future_layout",
+        [],
+        False,
+    ],
+)
+def test_explicit_layout_only_front_never_becomes_an_executable_source(layout, tmp_path):
+    from arenamcp.card_facts.source_identity import executable_source_hash, legacy_lookup_hash
+    from arenamcp.line_search_moves import _record_key
+    from arenamcp.scryfall import ScryfallCache
+
+    raw = {
+        "name": "Example Front",
+        "mana_cost": "{2}",
+        "type_line": "Artifact",
+        "oracle_text": "{T}: Add {C}.",
+        "layout": layout,
+    }
+    cache = ScryfallCache.__new__(ScryfallCache)
+    cache._name_index = {"example front": raw}
+    source = CardResolver(cache).resolve("Example Front")
+    assert executable_source_hash(source) is None
+    assert legacy_lookup_hash(raw) is None
+    assert _record_key(raw) == ("", "", "", "")
+    backend = FakeBackend([])
+    summary = compile_cards(["Example Front"], tmp_path, backend=backend, scryfall=cache)
+    assert summary["unresolved"] == 1 and summary["compiled"] == summary["skipped"] == 0
+    assert summary["cards"][0]["problems"] and not backend.calls and not list(tmp_path.iterdir())
+
+
+def test_source_layout_binding_preserves_any_incompatible_view():
+    from arenamcp.card_facts.compiler import _printed_from_scryfall_card
+    from arenamcp.card_facts.source_identity import executable_source_hash
+    from arenamcp.scryfall import ScryfallCache
+
+    c = ScryfallCache.__new__(ScryfallCache)
+    raw = {"name": "Example", "mana_cost": "{1}", "type_line": "Artifact", "oracle_text": "{T}: Add {C}."}
+    expected = executable_source_hash(raw)
+    for layout in (None, "normal", "saga", "class"):
+        assert executable_source_hash(dict(raw, layout=layout)) == expected
+    for upstream, cached in [("normal", "transform"), ("meld", "normal")]:
+        card = c._card_dict_to_scryfall_card(dict(raw, layout=upstream))
+        c._name_index = {"example": dict(raw, layout=cached)}
+        assert executable_source_hash(_printed_from_scryfall_card(card, c)) is None
+
+
+def test_native_linked_front_refuses_even_an_eligible_same_named_print(tmp_path):
+    from types import SimpleNamespace as NS
+
+    from arenamcp.scryfall import ScryfallCache
+
+    c = ScryfallCache.__new__(ScryfallCache)
+    native = NS(name="Example", grp_id=42, linked_face_ids=[43], expansion_code="SYN")
+    c._arena_index = {}
+    c._name_index = {
+        "example": dict(name="Example", mana_cost="{1}", type_line="Artifact", oracle_text="{T}: Add {C}.")
+    }
+    db = NS(available=True, get_card=lambda _: native)
+    b = FakeBackend([])
+    summary = compile_cards([42], tmp_path, backend=b, scryfall=c, mtgadb=db)
+    assert summary["unresolved"] == 1 and not b.calls and not list(tmp_path.iterdir())
+    assert "linked" in summary["cards"][0]["problems"][0]
+    assert "source_print_id" not in summary["cards"][0]
+
+
+def test_mtgjson_cached_layout_survives_local_resolution_and_old_indexes_rebuild(tmp_path):
+    from arenamcp.card_db import MTGJSONAdapter
+    from arenamcp.card_facts.source_identity import legacy_lookup_hash
+    from arenamcp.mtgjson import MTGJSONDatabase
+
+    db = MTGJSONDatabase(tmp_path)
+    raw = {
+        "name": "Example",
+        "type": "Artifact",
+        "text": "{T}: Add {C}.",
+        "manaCost": "{1}",
+        "layout": "meld",
+        "identifiers": {"mtgArenaId": "25"},
+    }
+    data = {"data": {"Example": [raw]}}
+    db._cache_file.write_text(json.dumps(data))
+    db._arena_index, db._name_index = db._build_indexes(data)
+    db._save_indexes()
+    assert db._load_indexes()
+    db._available = True
+    assert legacy_lookup_hash(MTGJSONAdapter(db).get_card_by_arena_id(25)) is None
+    assert legacy_lookup_hash(MTGJSONAdapter(db).get_card_by_name("Example")) is None
+    legacy = json.loads(db._name_index_file.read_text())
+    legacy["example"].pop("layout")
+    db._name_index_file.write_text(json.dumps(legacy))
+    assert not db._load_indexes()
+
+
+@pytest.mark.parametrize("key", ["linked_face_ids", "related_faces", "linked_faces", "card_faces"])
+def test_source_veto_survives_projection_without_native_face_text(key):
+    from arenamcp.card_facts.compiler import _printed_from_scryfall_card
+    from arenamcp.card_facts.source_identity import single_face_source
+    from arenamcp.scryfall import ScryfallCache
+
+    raw = dict(name="Synthetic", mana_cost="{1}", type_line="Artifact", oracle_text="", layout="normal")
+    cache = ScryfallCache.__new__(ScryfallCache)
+    cache._name_index = {"synthetic": raw}
+    for a, b in (
+        (dict(raw, **{key: [{"name": "Other"}]}), raw),
+        (raw, dict(raw, **{key: [{"name": "Other"}]})),
+    ):
+        projected = cache._card_dict_to_scryfall_card(a)
+        assert not single_face_source(_printed_from_scryfall_card(projected, cache, raw=b))

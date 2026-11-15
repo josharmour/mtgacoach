@@ -70,13 +70,13 @@ from arenamcp.card_facts.compiler import (  # noqa: E402
     _printed_from_scryfall_card,
     compile_one,
 )
-from arenamcp.card_facts.hashing import rules_hash  # noqa: E402
 from arenamcp.card_facts.schema import (  # noqa: E402
     CardFacts,
     card_facts_to_dict,
     from_json,
     to_json,
 )
+from arenamcp.card_facts.source_identity import executable_source_hash  # noqa: E402
 from arenamcp.card_facts.validate import validate  # noqa: E402
 
 # At most two compilations run at a time so the job shares the inference
@@ -177,7 +177,7 @@ def _raw_universe(scryfall: Any) -> Iterable[dict[str, Any]]:
     return index.values()
 
 
-def _printed_facts(scryfall: Any, raw: dict[str, Any]) -> dict[str, Any]:
+def _printed_facts(scryfall: Any, raw: dict[str, Any]) -> dict[str, Any] | None:
     """Printed facts, hash and the full printed card, as the compiler sees them.
 
     The ``printed`` entry is the same :class:`PrintedCard` the F1 validator
@@ -186,12 +186,16 @@ def _printed_facts(scryfall: Any, raw: dict[str, Any]) -> dict[str, Any]:
     fresh compile is held to.
     """
     card = scryfall._card_dict_to_scryfall_card(raw)
+    printed = _printed_from_scryfall_card(card, scryfall, raw=raw)
+    digest = executable_source_hash(printed)
+    if digest is None:
+        return None
     return {
         "name": card.name,
         "mana_cost": card.mana_cost,
         "type_line": card.type_line,
-        "rules_hash": rules_hash(card.name, card.mana_cost, card.type_line, card.oracle_text),
-        "printed": _printed_from_scryfall_card(card, scryfall),
+        "rules_hash": digest,
+        "printed": printed,
     }
 
 
@@ -220,7 +224,8 @@ def build_work_list(
         hash_to_facts: dict[str, dict[str, str]] = {}
         for raw in _raw_universe(scryfall):
             facts = _printed_facts(scryfall, raw)
-            hash_to_facts.setdefault(facts["rules_hash"], facts)
+            if facts is not None:
+                hash_to_facts.setdefault(facts["rules_hash"], facts)
         for entry in entries:
             digest = str(entry.get("rules_hash", ""))
             facts = hash_to_facts.get(digest)
@@ -234,6 +239,9 @@ def build_work_list(
             if wanted_set is not None and str(raw.get("set", "")).lower() != wanted_set:
                 continue
             facts = _printed_facts(scryfall, raw)
+            if facts is None:
+                unresolved += 1
+                continue
             items_by_hash[facts["rules_hash"]] = facts
 
     return list(items_by_hash.values()), unresolved

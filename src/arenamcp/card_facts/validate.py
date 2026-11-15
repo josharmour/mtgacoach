@@ -37,6 +37,10 @@ class PrintedCard:
     toughness: str | None = None
     loyalty: str | None = None
     card_faces: list[dict] = field(default_factory=list)
+    layout: str | None = None
+    linked_face_ids: list[int] = field(default_factory=list)
+    source_print_id: str | None = None
+    single_face_source: bool = True
 
 
 # Keyword abilities this validator recognises when stated by a type line or

@@ -10,6 +10,7 @@ import json
 from functools import lru_cache
 from importlib.resources import files
 
+from .source_identity import single_face_source
 from .validate import PrintedCard
 
 _CORPUS_SHA256 = "a43fde431a32b1f74f7185609a4016c5132cbba1549ff25cea73753a7ff96763"
@@ -38,7 +39,12 @@ def corpus():
 
 
 def reviewed_print(card):
-    if type(card) is not dict or type(card.get("grp_id")) is not int or card.get("face_down"):
+    if (
+        type(card) is not dict
+        or type(card.get("grp_id")) is not int
+        or card.get("face_down")
+        or not single_face_source(card)
+    ):
         return None
     source = corpus()[0].get(card["grp_id"])
     if source and all(

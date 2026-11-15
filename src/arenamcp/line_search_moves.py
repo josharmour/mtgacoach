@@ -121,6 +121,7 @@ from arenamcp.board_assessment import (
 from arenamcp.board_model import BoardModel, _regular_damage_part, cast_bans, spell_banned
 from arenamcp.card_facts.client import facts_for, hash_for_card
 from arenamcp.card_facts.schema import card_facts_from_dict
+from arenamcp.card_facts.source_identity import single_face_source
 from arenamcp.cast_growth_risk import grown, per_cast_growth
 from arenamcp.cast_triggers import cast_pumps, spell_kinds
 from arenamcp.combat_keywords import has_combat_keyword
@@ -1989,6 +1990,10 @@ _RECORD_USE_LOGGED: set[str] = set()
 
 def _record_key(card: dict) -> tuple[str, str, str, str]:
     """The card-facts lookup key of a card dict (cached-callable arguments)."""
+    # The cached lookup takes four strings; reject incomplete/multi-face
+    # identity here, before discarding the source's layout and face fields.
+    if not single_face_source(card):
+        return "", "", "", ""
     return (
         card.get("name") or "",
         card.get("oracle_text") or "",

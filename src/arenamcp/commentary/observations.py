@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from typing import Any
 
+from arenamcp.card_facts.source_identity import legacy_lookup_hash, single_face_source
 from arenamcp.player_names import snapshot_names
 
 from .contracts import Epoch, Evidence, Observation
@@ -76,9 +77,9 @@ def _public_card(card: Mapping[str, Any], zone: str = "") -> dict[str, Any]:
         if zone == "exile":
             result["visibility"] = "public"
         result.update(_scalars(card, _IDENTITY_FIELDS))
-        if isinstance(card.get("public_native_print"), str) and not generated_or_changed_print(card):
-            from arenamcp.card_facts.source_identity import legacy_lookup_hash
-
+        if not single_face_source(card):
+            result["single_face_source"] = False
+        elif isinstance(card.get("public_native_print"), str) and not generated_or_changed_print(card):
             digest = legacy_lookup_hash(card)
             if (
                 digest

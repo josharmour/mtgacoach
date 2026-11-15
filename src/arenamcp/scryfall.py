@@ -13,6 +13,7 @@ import requests
 
 from arenamcp.cache_utils import FileCache
 from arenamcp.card_db import is_unknown_card_name
+from arenamcp.card_facts.source_identity import single_face_source
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,8 @@ class ScryfallCard:
     power: str = ""  # Creature power (string because of "*" values)
     toughness: str = ""
     card_faces: list[dict] = field(default_factory=list)
+    layout: str | None = None
+    single_face_source: bool = True
 
 
 class ScryfallCache:
@@ -233,7 +236,10 @@ class ScryfallCache:
         # For DFCs/transform cards, oracle_text is in card_faces, not top level
         oracle_text = card.get("oracle_text", "")
         mana_cost = card.get("mana_cost", "")
-        faces = card.get("card_faces", [])
+        raw_faces = card.get("card_faces", [])
+        faces = (
+            raw_faces if isinstance(raw_faces, list) and all(isinstance(f, dict) for f in raw_faces) else []
+        )
 
         if not oracle_text and faces:
             # Combine oracle text from all faces
@@ -250,6 +256,8 @@ class ScryfallCache:
 
         return ScryfallCard(
             card_faces=[dict(face) for face in faces],
+            layout=card.get("layout"),
+            single_face_source=single_face_source(card),
             name=card.get("name", ""),
             oracle_text=oracle_text,
             type_line=card.get("type_line", ""),

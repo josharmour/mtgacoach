@@ -23,6 +23,7 @@ from arenamcp.card_db import (
     get_card_database,
     is_unknown_card_name,
 )
+from arenamcp.card_facts.source_identity import single_face_source
 from arenamcp.coach import CoachEngine, GameStateTrigger, create_backend
 from arenamcp.combat_keywords import annotate_cant_be_blocked
 from arenamcp.death_triggers import annotate_death_swings
@@ -1279,6 +1280,7 @@ def enrich_with_oracle_text(grp_id: int) -> dict[str, Any]:
             "toughness": found.toughness,
             "rarity": found.rarity,
             "related_faces": found.related_faces,
+            **({"single_face_source": False} if not single_face_source(found) else {}),
         }
 
     # Check if it's an ABILITY (e.g. on stack) via MTGA database
@@ -1377,7 +1379,7 @@ def face_down_reason_name(value: Any) -> str:
 
 def is_face_down(obj: dict[str, Any]) -> bool:
     """A face-down object: the snapshot's ``face_down`` flag, or a card object with grp id 3."""
-    if obj.get("face_down"):
+    if obj.get("face_down") or obj.get("isFacedown") or face_down_reason_name(obj.get("face_down_reason")):
         return True
     kind = obj.get("object_kind") or obj.get("object_type")
     return _coerce_int(obj.get("grp_id")) == FACE_DOWN_GRP_ID and not _is_ability_kind(kind)
@@ -1438,7 +1440,7 @@ def _parent_grp_id(parent_instance_id: Any, lookup: dict[int, dict[str, Any]] | 
         return None
     parent = (lookup or {}).get(parent_id)
     if parent is not None and _coerce_int(parent.get("grp_id")):
-        return _coerce_int(parent.get("grp_id"))
+        return None if is_face_down(parent) else _coerce_int(parent.get("grp_id"))
     parent_obj = (getattr(game_state, "game_objects", None) or {}).get(parent_id)
     return _coerce_int(getattr(parent_obj, "grp_id", None)) or None
 
@@ -1453,15 +1455,20 @@ def _serialize_game_object(obj) -> dict[str, Any]:
     parent_obj = (
         game_state.game_objects.get(obj.parent_instance_id) if obj.parent_instance_id is not None else None
     )
-    if _is_ability_kind(getattr(obj, "object_kind", None)):
-        enriched = enrich_ability(obj.grp_id, parent_obj.grp_id if parent_obj is not None else None)
+    serialized = obj.to_dict()
+    hidden = is_face_down(serialized)
+    hidden_parent = parent_obj is not None and is_face_down(parent_obj.to_dict())
+    if hidden:
+        enriched = face_down_info(serialized)
+    elif _is_ability_kind(getattr(obj, "object_kind", None)):
+        enriched = enrich_ability(obj.grp_id, parent_obj.grp_id if parent_obj and not hidden_parent else None)
     else:
         enriched = enrich_with_oracle_text(obj.grp_id)
 
     # Resolve source card for abilities (triggered/activated abilities on stack)
     source_card = None
-    if obj.parent_instance_id is not None:
-        if parent_obj:
+    if obj.parent_instance_id is not None and not hidden:
+        if parent_obj and not hidden_parent:
             source_enriched = enrich_with_oracle_text(parent_obj.grp_id)
             source_card = {
                 "instance_id": parent_obj.instance_id,
@@ -1500,11 +1507,14 @@ def _serialize_game_object(obj) -> dict[str, Any]:
     if source_card:
         result["source_card"] = source_card
 
-    serialized = obj.to_dict()
+    if hidden:
+        result["face_down"] = True
     for key in ("chosen_player_links", "protection_from_players"):
         if serialized.get(key):
             result[key] = serialized[key]
 
+    if not hidden and not (single_face_source(enriched) and single_face_source(serialized)):
+        result["single_face_source"] = False
     return result
 
 
@@ -1603,7 +1613,7 @@ def _serialize_snapshot_obj(obj: dict[str, Any]) -> dict[str, Any]:
     An ability is named from the ability table after its source (``enrich_ability``).
     """
     grp_id = int(obj.get("grp_id", 0) or 0)
-    if _is_ability_kind(obj.get("object_kind")):
+    if not is_face_down(obj) and _is_ability_kind(obj.get("object_kind")):
         enriched = enrich_ability(grp_id, _parent_grp_id(obj.get("parent_instance_id")))
     else:
         enriched = card_object_info(obj)
@@ -1684,6 +1694,8 @@ def _serialize_snapshot_obj(obj: dict[str, Any]) -> dict[str, Any]:
         result["related_faces"] = copy.deepcopy(enriched["related_faces"])
     result.update(_token_creator_facts(obj))
     _copy_identity_visibility(result, obj)
+    if not is_face_down(result) and not (single_face_source(enriched) and single_face_source(obj)):
+        result["single_face_source"] = False
     return result
 
 
@@ -1708,8 +1720,10 @@ def _serialize_bridge_card(
 
     fallback_grp_id = _coerce_int(fallback.get("grp_id"), 0) or 0
     grp_id = _coerce_int(card.get("grp_id"), fallback_grp_id) or 0
-    face_down = bool(card.get("face_down") or fallback.get("face_down"))
-    if _is_ability_kind(card.get("object_type") or fallback.get("object_kind")):
+    face_down = is_face_down(card) or is_face_down(fallback)
+    conflicting_print = bool(fallback_grp_id and grp_id != fallback_grp_id)
+    printed_fallback = {} if face_down or conflicting_print else fallback
+    if not face_down and _is_ability_kind(card.get("object_type") or fallback.get("object_kind")):
         parent_id = card.get("parent_instance_id", fallback.get("parent_instance_id"))
         enriched = enrich_ability(grp_id, _parent_grp_id(parent_id, snapshot_lookup))
     else:
@@ -1728,9 +1742,9 @@ def _serialize_bridge_card(
             }
         )
 
-    name = enriched.get("name") or fallback.get("name") or f"Unknown ({grp_id})"
-    type_line = enriched.get("type_line") or fallback.get("type_line") or ""
-    subtypes = _copy_list(card.get("subtypes") or fallback.get("subtypes"))
+    name = enriched.get("name") or printed_fallback.get("name") or f"Unknown ({grp_id})"
+    type_line = enriched.get("type_line") or printed_fallback.get("type_line") or ""
+    subtypes = _copy_list(card.get("subtypes") or printed_fallback.get("subtypes"))
     if is_unknown_card_name(name):
         basics = {"Forest", "Island", "Swamp", "Mountain", "Plains"}
         matching = basics.intersection(subtypes)
@@ -1742,9 +1756,9 @@ def _serialize_bridge_card(
         "instance_id": instance_id,
         "grp_id": grp_id,
         "name": name,
-        "oracle_text": enriched.get("oracle_text") or fallback.get("oracle_text") or "",
+        "oracle_text": enriched.get("oracle_text") or printed_fallback.get("oracle_text") or "",
         "type_line": type_line,
-        "mana_cost": enriched.get("mana_cost") or fallback.get("mana_cost") or "",
+        "mana_cost": enriched.get("mana_cost") or printed_fallback.get("mana_cost") or "",
         "owner_seat_id": _coerce_int(card.get("owner_id"), fallback.get("owner_seat_id")),
         "controller_seat_id": _coerce_int(card.get("controller_id"), fallback.get("controller_seat_id")),
         "power": _coerce_int(card.get("power"), fallback.get("power")),
@@ -1853,6 +1867,10 @@ def _serialize_bridge_card(
     if enriched.get("related_faces"):
         result["related_faces"] = copy.deepcopy(enriched["related_faces"])
 
+    if not face_down and (
+        conflicting_print or not all(single_face_source(view) for view in (enriched, card, fallback))
+    ):
+        result["single_face_source"] = False
     return result
 
 

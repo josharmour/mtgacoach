@@ -96,6 +96,8 @@ def test_public_sightings_survive_departure_and_cannot_cross_games_or_seats():
         {"controller_seat_id": 1},
         {"owner_seat_id": None},
         {"owner_seat_id": True},
+        {"layout": "transform"},
+        {"single_face_source": False},
         {"face_down": True},
         {"isFacedown": True},
         {"visibility": "Private"},

@@ -566,3 +566,23 @@ def test_drain_deadline_abandons_wedged_compile_and_exits_promptly(ingest, serve
     first_two = {_expected_hash("Fury"), _expected_hash("Minsc & Boo, Timeless Heroes")}
     assert set(statuses) <= first_two
     wedged.set()  # release the daemon threads so the test process stays clean
+
+
+def test_set_and_wanted_inventory_withhold_layout_only_front(ingest):
+    from types import SimpleNamespace
+
+    from arenamcp.card_facts.hashing import rules_hash
+    from arenamcp.scryfall import ScryfallCache
+
+    cache = ScryfallCache.__new__(ScryfallCache)
+    raw = dict(
+        name="Example Front", type_line="Creature — Scout", mana_cost="{G}", oracle_text="Reach", set="syn"
+    )
+    cache._name_index = {"example front": dict(raw, layout="meld")}
+    digest = rules_hash(raw["name"], raw["mana_cost"], raw["type_line"], raw["oracle_text"])
+    server = SimpleNamespace(wanted=lambda _: [{"rules_hash": digest}])
+    assert ingest.build_work_list("set", "syn", cache, None, 15) == ([], 1)
+    assert ingest.build_work_list("wanted", None, cache, server, 15) == ([], 1)
+    cache._name_index["example front"]["layout"] = "normal"
+    records, failures = ingest.build_work_list("wanted", None, cache, server, 15)
+    assert not failures and [v["rules_hash"] for v in records] == [digest]

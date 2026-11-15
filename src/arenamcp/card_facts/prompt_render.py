@@ -12,6 +12,7 @@ import re
 
 from arenamcp.card_facts.hashing import normalise, rules_hash
 from arenamcp.card_facts.schema import CardFacts
+from arenamcp.card_facts.source_identity import single_face_source
 
 _KEYWORDS = frozenset(
     {
@@ -63,7 +64,7 @@ def render(card, record, full_text, *, enabled=False, role="unknown"):
     try:
         if full_text != source_text(card):
             return full_text
-        if card.get("related_faces") or card.get("card_faces") or card.get("loyalty") is not None:
+        if not single_face_source(card) or card.get("loyalty") is not None:
             return full_text
         if (
             type(record.schema_version) is not int

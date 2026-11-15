@@ -11,6 +11,8 @@ import threading
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
+from arenamcp.card_facts.source_identity import single_face_source
+
 logger = logging.getLogger(__name__)
 
 # MTGA's ``Cards.Types`` column is a comma-separated list of numeric CardType
@@ -72,6 +74,8 @@ class CardInfo:
     is_token: bool = False
     linked_face_ids: list[int] = field(default_factory=list)
     card_faces: list[dict[str, Any]] = field(default_factory=list)
+    layout: str | None = None
+    single_face_source: bool = True
 
 
 @runtime_checkable
@@ -126,6 +130,8 @@ class ScryfallAdapter:
             scryfall_uri=card.scryfall_uri or "",
             source="scryfall",
             card_faces=getattr(card, "card_faces", []),
+            single_face_source=single_face_source(card),
+            layout=getattr(card, "layout", None),
             rarity=getattr(card, "rarity", ""),
             power=getattr(card, "power", ""),
             toughness=getattr(card, "toughness", ""),
@@ -146,6 +152,8 @@ class ScryfallAdapter:
             scryfall_uri=card.scryfall_uri or "",
             source="scryfall",
             card_faces=getattr(card, "card_faces", []),
+            single_face_source=single_face_source(card),
+            layout=getattr(card, "layout", None),
             rarity=getattr(card, "rarity", ""),
             power=getattr(card, "power", ""),
             toughness=getattr(card, "toughness", ""),
@@ -174,6 +182,8 @@ class MTGJSONAdapter:
             colors=card.colors or [],
             arena_id=card.arena_id or 0,
             source="mtgjson",
+            single_face_source=single_face_source(card),
+            layout=getattr(card, "layout", None),
         )
 
     def get_card_by_name(self, name: str) -> CardInfo | None:
@@ -191,6 +201,8 @@ class MTGJSONAdapter:
             colors=card.colors or [],
             arena_id=card.arena_id or 0,
             source="mtgjson",
+            single_face_source=single_face_source(card),
+            layout=getattr(card, "layout", None),
         )
 
 
@@ -248,7 +260,9 @@ class MTGADatabaseAdapter:
         from arenamcp.mana import mana_cost_to_cmc
 
         related_faces = []
-        for grp_id in getattr(card, "linked_face_ids", []):
+        ids = getattr(card, "linked_face_ids", [])
+        linked_ids = [gid for gid in ids if type(gid) is int and gid > 0] if type(ids) is list else []
+        for grp_id in linked_ids:
             face = self._db.get_card(grp_id)
             if face is not None:
                 related_faces.append(
@@ -274,7 +288,9 @@ class MTGADatabaseAdapter:
             power=getattr(card, "power", ""),
             toughness=getattr(card, "toughness", ""),
             related_faces=related_faces,
-            linked_face_ids=list(getattr(card, "linked_face_ids", [])),
+            linked_face_ids=linked_ids,
+            single_face_source=single_face_source(card),
+            layout=getattr(card, "layout", None),
             is_token=bool(getattr(card, "is_token", False)),
         )
 
@@ -399,6 +415,8 @@ class FallbackCardDatabase:
         name_result = self.get_card_by_name(card.name)
         if name_result is None:
             return
+        if not single_face_source(name_result):
+            card.single_face_source = False
         # Tokens share names across cards with different abilities (e.g. a
         # vanilla 2/2 Wolf token from Ranger Class vs a Deathtouch Wolf token),
         # and mtgadb already resolved this token's exact AbilityIds.
@@ -450,8 +468,26 @@ class FallbackCardDatabase:
                 # Never graft another card/face's rules or costs onto best.
                 continue
 
+            if best is not result and not single_face_source(result):
+                best.single_face_source = False
             # If we have oracle_text AND don't need enrichment, we're done
             if best.oracle_text and not self._needs_enrichment(best):
+                # A complete third-party front can conceal the installed Arena
+                # print's linked face. Consult only the local reader, never an API.
+                native = self.get_raw_mtgadb()
+                if isinstance(source, MTGJSONAdapter) and native is not None:
+                    if not native.available:
+                        best.single_face_source = False
+                        return best
+                    try:
+                        local = native.get_card(arena_id)
+                    except (OSError, ValueError, RuntimeError):
+                        local = None
+                        best.single_face_source = False
+                    if local is not None and (
+                        not self._same_identity(best.name, local.name) or not single_face_source(local)
+                    ):
+                        best.single_face_source = False
                 return best
 
             # Merge oracle_text from this source into best

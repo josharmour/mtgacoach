@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from arenamcp.card_facts.schema import CardFacts, card_facts_from_dict, to_json
-from arenamcp.card_facts.source_identity import executable_source_hash
+from arenamcp.card_facts.source_identity import executable_source_hash, single_face_source, supported_layout
 from arenamcp.card_facts.validate import PrintedCard, validate
 from arenamcp.game_plan import BACKGROUND_PRIORITY, accepted_call_kwargs
 
@@ -78,9 +78,14 @@ def _raw_card_dict(scryfall: Any, name: str) -> dict[str, Any]:
     return {}
 
 
-def _printed_from_scryfall_card(card: Any, scryfall: Any) -> PrintedCard:
+def _printed_from_scryfall_card(card: Any, scryfall: Any, *, raw: dict | None = None) -> PrintedCard:
     """PrintedCard from a ScryfallCard (or anything with the same fields)."""
-    raw = _raw_card_dict(scryfall, card.name)
+    if raw is None:
+        raw = _raw_card_dict(scryfall, card.name)
+    layout = raw.get("layout")
+    projected_layout = getattr(card, "layout", None)
+    if layout is None or not supported_layout(projected_layout):
+        layout = projected_layout
     # Either representation can establish unsupported face identity. Empty
     # metadata in the cache must not erase known object faces (or vice versa).
     faces = []
@@ -97,7 +102,24 @@ def _printed_from_scryfall_card(card: Any, scryfall: Any) -> PrintedCard:
         toughness=card.toughness or None,
         loyalty=_loyalty_of(raw),
         card_faces=faces,
+        layout=layout,
+        single_face_source=single_face_source(card) and single_face_source(raw),
     )
+
+
+def _source_problems(printed) -> list[str]:
+    if printed is None:
+        return ["printed source unresolved"]
+    if not single_face_source(printed):
+        layout = getattr(printed, "layout", None)
+        layout = layout if type(layout) is str and 0 < len(layout) <= 32 and layout.isidentifier() else None
+        message = (
+            f"unsupported printed layout {layout}"
+            if layout and not supported_layout(layout)
+            else "linked or malformed printed face data"
+        )
+        return [f"{message}: F1 requires a complete single face"]
+    return ["unsupported printed source representation"]
 
 
 class CardResolver:
@@ -138,14 +160,51 @@ class CardResolver:
                     mtga_card = None
                 if mtga_card is not None and getattr(mtga_card, "name", ""):
                     name = mtga_card.name
+                    index = getattr(self._scryfall, "_arena_index", {})
+                    raw = index.get(arena_id) if isinstance(index, dict) else None
+                    if not single_face_source(mtga_card) or (
+                        isinstance(raw, dict) and not single_face_source(raw)
+                    ):
+                        return self._linked_arena_print(arena_id, mtga_card, raw)
         if name is None:
             card = self._scryfall.get_card_by_arena_id(int(arena_id))
             if card is None:
                 return None
-            name = card.name
-        if not name:
-            return None
+            return _printed_from_scryfall_card(card, self._scryfall)
         return self.by_name(name)
+
+    def _linked_arena_print(self, arena_id, native, raw):
+        # A known linked front must never be compiled through a fuzzy name lookup.
+        # Use an exact English parent when available to explain the abstention.
+        if isinstance(raw, dict) and not single_face_source(raw):
+            faces = raw.get("card_faces") or []
+            if (
+                type(getattr(native, "grp_id", None)) is int
+                and native.grp_id == arena_id
+                and type(raw.get("arena_id")) is int
+                and raw["arena_id"] == arena_id
+                and raw.get("lang") == "en"
+                and raw.get("set") == str(getattr(native, "expansion_code", "")).lower()
+                and isinstance(faces, list)
+                and all(isinstance(f, dict) for f in faces)
+                and native.name in (raw.get("name"), *(f.get("name") for f in faces))
+            ):
+                card = self._scryfall._card_dict_to_scryfall_card(raw)
+                printed = _printed_from_scryfall_card(card, self._scryfall, raw=raw)
+                uuid = raw.get("id")
+                if isinstance(uuid, str) and re.fullmatch(
+                    "[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", uuid
+                ):
+                    printed.source_print_id = uuid
+                return printed
+        linked = getattr(native, "linked_face_ids", [])
+        fallback = PrintedCard(
+            name=native.name,
+            layout=getattr(native, "layout", None),
+            card_faces=getattr(native, "card_faces", []),
+            linked_face_ids=linked,
+        )
+        return fallback if not single_face_source(fallback) else None
 
     def resolve(self, identifier: int | str) -> PrintedCard | None:
         if isinstance(identifier, int) or (isinstance(identifier, str) and identifier.isdigit()):
@@ -645,7 +704,7 @@ def compile_one(
     printed = resolver.resolve(identifier)
     if printed is None or executable_source_hash(printed) is None:
         result.status = _STATUS_UNRESOLVED
-        result.problems = [f"could not resolve {identifier!r} to a printed card"]
+        result.problems = _source_problems(printed)
         result.seconds = time.perf_counter() - started
         return result
 
@@ -765,7 +824,14 @@ def compile_cards(
         printed = resolver.resolve(identifier)
         if printed is None or executable_source_hash(printed) is None:
             summary["unresolved"] += 1
-            summary["cards"].append({"identifier": str(identifier), "status": _STATUS_UNRESOLVED})
+            entry = {
+                "identifier": str(identifier),
+                "status": _STATUS_UNRESOLVED,
+                "problems": _source_problems(printed),
+            }
+            if printed and printed.source_print_id:
+                entry["source_print_id"] = printed.source_print_id
+            summary["cards"].append(entry)
             logger.warning("card_facts: unresolved identifier %r", identifier)
             continue
 

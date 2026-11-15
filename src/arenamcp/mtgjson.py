@@ -36,6 +36,7 @@ class MTGJSONCard:
     cmc: float
     colors: list[str]
     arena_id: int | None = None
+    layout: str | None = None
 
 
 class MTGJSONDatabase:
@@ -157,6 +158,7 @@ class MTGJSONDatabase:
                     mana_cost=printing.get("manaCost", ""),
                     cmc=printing.get("manaValue", 0.0),
                     colors=printing.get("colors", []),
+                    layout=printing.get("layout"),
                     arena_id=None,
                 )
                 # Index by lowercase name for case-insensitive lookup
@@ -187,6 +189,7 @@ class MTGJSONDatabase:
                     mana_cost=printing.get("manaCost", ""),
                     cmc=printing.get("manaValue", 0.0),
                     colors=printing.get("colors", []),
+                    layout=printing.get("layout"),
                     arena_id=arena_id,
                 )
                 arena_index[arena_id] = card
@@ -207,6 +210,7 @@ class MTGJSONDatabase:
                     "mana_cost": card.mana_cost,
                     "cmc": card.cmc,
                     "colors": card.colors,
+                    "layout": card.layout,
                 }
 
             with open(self._index_file, "w", encoding="utf-8") as f:
@@ -222,6 +226,7 @@ class MTGJSONDatabase:
                     "mana_cost": card.mana_cost,
                     "cmc": card.cmc,
                     "colors": card.colors,
+                    "layout": card.layout,
                 }
 
             with open(self._name_index_file, "w", encoding="utf-8") as f:
@@ -266,6 +271,7 @@ class MTGJSONDatabase:
                     mana_cost=card_data["mana_cost"],
                     cmc=card_data["cmc"],
                     colors=card_data["colors"],
+                    layout=card_data["layout"],
                     arena_id=arena_id,
                 )
 
@@ -282,6 +288,7 @@ class MTGJSONDatabase:
                     mana_cost=card_data["mana_cost"],
                     cmc=card_data["cmc"],
                     colors=card_data["colors"],
+                    layout=card_data["layout"],
                     arena_id=None,
                 )
 

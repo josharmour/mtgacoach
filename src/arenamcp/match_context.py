@@ -126,6 +126,8 @@ def _local_card(grp_id: int, epoch: int) -> dict[str, Any]:
     database = FallbackCardDatabase(
         [source for source in source_database.sources if not isinstance(source, ScryfallAdapter)]
     )
+    native = database.get_raw_mtgadb()
+    native_pending = native is not None and not native.available
     card = database.get_card_by_arena_id(grp_id)
     if card is None:
         return {"name": f"Unknown({grp_id})"}
@@ -136,7 +138,12 @@ def _local_card(grp_id: int, epoch: int) -> dict[str, Any]:
     result["related_faces"] = getattr(card, "related_faces", [])
     result["linked_face_ids"] = getattr(card, "linked_face_ids", [])
     result["card_faces"] = getattr(card, "card_faces", [])
-    if card.name and card.type_line and card.oracle_text:
+    provisional = native_pending and card.source == "mtgjson"
+    if provisional or getattr(card, "single_face_source", True) is not True:
+        result["single_face_source"] = False
+    if getattr(card, "layout", None) is not None:
+        result["layout"] = card.layout
+    if not provisional and card.name and card.type_line and card.oracle_text:
         with _cache_lock:
             # Retain the source object so its identity cannot be reused while cached.
             _resolved_cards[cache_key] = (source_database, result)
