@@ -431,7 +431,18 @@ class HeadlessBooth:
                     "text": fact["text"],
                     "controller": fact["controller"],
                     "instance_id": event.payload.get("instance_id"),
-                    **({"observed_partner": fact["observed_partner"]} if "observed_partner" in fact else {}),
+                    **(
+                        {
+                            "observed_partner": {
+                                **fact["observed_partner"],
+                                "as_of": "earlier observed cast"
+                                if fact["observed_partner"]["zone"] == "played"
+                                else "current public snapshot; timing at entry unknown",
+                            }
+                        }
+                        if "observed_partner" in fact
+                        else {}
+                    ),
                 }
                 if len(self.annotation_facts) >= 12:
                     break

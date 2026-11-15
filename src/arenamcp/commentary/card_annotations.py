@@ -293,6 +293,16 @@ def observed_annotations(observation, event, played=()):
     entry = event.kind != "action_observed"
     zones = observation.public_state["zones"]
     epoch = observation.epoch
+    # Do not associate a later observed arrival (or simultaneous arrival of
+    # unknown order) with an earlier entry in a coalesced observation.
+    later_entries = {
+        e.payload.get("instance_id")
+        for e in observation.events
+        if e.visibility == "public"
+        and e.source_sequence >= event.source_sequence
+        and e.kind in {"spell_resolved", "permanent_entered", "land_drop"}
+        and e.payload.get("to_zone") == "battlefield"
+    }
     partners = (
         tuple(
             KnownCard(card["name"], zone, event.seat, match_id=epoch.match_id, game_number=epoch.game_number)
@@ -300,7 +310,9 @@ def observed_annotations(observation, event, played=()):
             for card in zones.get(zone, ())
             if card.get("controller_seat_id") == event.seat
             and reviewed_print(card)
-            and card.get("instance_id") != focal["instance_id"]
+            and type(card.get("instance_id")) is int
+            and card["instance_id"] not in later_entries
+            and card["instance_id"] != focal["instance_id"]
         )
         if entry
         else ()

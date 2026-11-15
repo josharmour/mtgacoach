@@ -104,3 +104,28 @@ def test_same_name_rebalanced_print_supplies_no_ordinary_winota_claim():
     assert not reviewed_print(
         dict(card, oracle_text=card["oracle_text"].replace("a non-Human", "one or more non-Human"))
     )
+
+
+def test_later_arrival_cannot_supply_the_earlier_cards_entry_fact():
+    obs = report("193910")
+    lunar = next(e for e in obs.events if e.kind == "spell_resolved")
+    for seq in (lunar.source_sequence, lunar.source_sequence + 1):
+        case = replace(
+            lunar,
+            event_id="case-entry",
+            source_sequence=seq,
+            payload={
+                "instance_id": 332,
+                "name": "Case of the Uneaten Feast",
+                "grp_id": 88930,
+                "to_zone": "battlefield",
+            },
+        )
+        together = replace(obs, events=(lunar, case))
+        assert not any(
+            f["kind"] == "card_relationship" for f in observed_annotations(together, lunar).values()
+        )
+        if seq > lunar.source_sequence:
+            assert any(
+                f["kind"] == "card_relationship" for f in observed_annotations(together, case).values()
+            )
