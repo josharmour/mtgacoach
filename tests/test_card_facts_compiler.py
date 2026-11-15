@@ -523,3 +523,143 @@ def test_cli_initialises_local_mtgadb_and_preserves_comma_names(monkeypatch, tmp
     # resolver falls back to Scryfall's arena index — exactly the advertised
     # degradation path.
     assert isinstance(captured["mtgadb"], MTGADatabase)
+
+
+def test_aura_cast_restriction_is_separate_from_a_granted_keyword():
+    card = PrintedCard(
+        name="Sheltered by Ghosts",
+        mana_cost="{1}{W}",
+        type_line="Enchantment — Aura",
+        oracle_text=(
+            "Enchant creature you control\n"
+            "When this Aura enters, exile target nonland permanent an opponent controls until this Aura leaves the battlefield.\n"
+            "Enchanted creature gets +1/+0 and has lifelink and ward {2}."
+        ),
+    )
+    source = FakeScryfall()
+    source._cards[card.name] = FakeScryfallCard(card)
+    resolver = CardResolver(source)
+    record = {
+        "name": card.name,
+        "mana_cost": card.mana_cost,
+        "type_line": card.type_line,
+        "body": {"keywords": ["lifelink", "ward"]},
+        "modes": [{"name": "cast", "cost": {"mana": card.mana_cost}}],
+        "effects": [],
+    }
+
+    def compile_record():
+        answer = json.dumps(record)
+        return compile_one(card.name, resolver, FakeBackend([answer, answer]))
+
+    failed = compile_record()
+    assert failed.status == "failed"
+    assert any("attachment restriction" in problem for problem in failed.problems)
+    assert sum("not intrinsic" in problem for problem in failed.problems) == 2
+    record["body"]["keywords"] = []
+    restriction = {
+        "effect": {"effect_type": "Unknown", "text": "Enchant creature you control"},
+        "trigger": "ETB",
+    }
+    record["effects"].append(restriction)
+    assert compile_record().status == "failed"
+    restriction["trigger"] = "static"
+    restriction["conditions"] = ["only on entry"]
+    assert compile_record().status == "failed"
+    restriction["conditions"] = []
+    # A constraint alone cannot answer what resolves on entry, who stays
+    # affected and what causes the exiled card to return.
+    assert compile_record().status == "failed"
+    printed = card.oracle_text.splitlines()
+    entry = {"trigger": "ETB", "effect": {"effect_type": "Unknown", "text": printed[1]}}
+    grant = {"trigger": "static", "effect": {"effect_type": "Unknown", "text": printed[2]}}
+    record["effects"] += [entry, grant]
+    assert compile_record().status == "compiled"
+    for text in ("Enchanted creature has lifelink.", "Enchanted creature gets +1/+0 and has ward."):
+        grant["effect"]["text"] = text
+        assert compile_record().status == "failed"
+    grant["effect"]["text"] = printed[2]
+    entry["effect"] = {
+        "effect_type": "Exile",
+        "target": "target nonland permanent an opponent controls",
+        "duration": "until this Aura leaves the battlefield",
+    }
+    assert compile_record().status == "failed"
+    del entry["effect"]["duration"]
+    assert compile_record().status == "failed"
+    entry["effect"] = {"effect_type": "Unknown", "text": printed[1]}
+    entry["trigger"] = "static"
+    assert compile_record().status == "failed"
+    entry["trigger"] = "ETB"
+    record["effects"].append(
+        {
+            "trigger": "static",
+            "effect": {"effect_type": "Pump", "power": 1, "toughness": 0, "target": "enchanted creature"},
+        }
+    )
+    assert compile_record().status == "failed"
+    record["effects"].pop()
+    record["body"]["power"] = "1"
+    assert compile_record().status == "failed"
+    record["body"].pop("power")
+    record["body"]["keywords"] = ["enchanted creature"]
+    assert compile_record().status == "failed"
+
+
+def test_aura_simple_typed_projections_and_conditional_grants_are_exact():
+    from copy import deepcopy
+
+    card = PrintedCard(
+        name="Fixture mantle",
+        mana_cost="{W}",
+        type_line="Enchantment — Aura",
+        oracle_text="Flash\nEnchant creature\nWhen this Aura enters, draw a card.\nEnchanted creature gets +2/-1.\nAs long as enchanted creature is tapped, it has flying.",
+    )
+    source = FakeScryfall()
+    source._cards[card.name] = FakeScryfallCard(card)
+    resolver = CardResolver(source)
+    lines = card.oracle_text.splitlines()
+    record = {
+        "name": card.name,
+        "mana_cost": card.mana_cost,
+        "type_line": card.type_line,
+        "body": {"keywords": ["Flash"]},
+        "modes": [{"name": "cast", "cost": {"mana": card.mana_cost}}],
+        "effects": [
+            {"trigger": "static", "effect": {"effect_type": "Unknown", "text": lines[1]}},
+            {"trigger": "ETB", "effect": {"effect_type": "Draw", "count": 1}},
+            {
+                "trigger": "static",
+                "effect": {
+                    "effect_type": "Pump",
+                    "target": "enchanted creature",
+                    "power": 2,
+                    "toughness": -1,
+                },
+            },
+            {"trigger": "static", "effect": {"effect_type": "Unknown", "text": lines[4]}},
+        ],
+    }
+
+    def compile_record(data):
+        answer = json.dumps(data)
+        return compile_one(card.name, resolver, FakeBackend([answer, answer]))
+
+    assert compile_record(record).status == "compiled"
+    for index, key, bad in [
+        (0, "text", "Enchant permanent"),
+        (1, "count", 2),
+        (2, "target", "this creature"),
+        (2, "power", True),
+        (2, "duration", "until end of turn"),
+        (3, "text", "Enchanted creature has flying."),
+    ]:
+        changed = deepcopy(record)
+        changed["effects"][index]["effect"][key] = bad
+        assert compile_record(changed).status == "failed"
+    for invalid in (["Flash", "Flash"], ["Flash", "flying"], "Flash"):
+        record["body"]["keywords"] = invalid
+        assert compile_record(record).status == "failed"
+    record["body"]["keywords"] = ["Flash"]
+    record["body"]["grants"] = "flying"
+    assert compile_record(record).status == "failed"

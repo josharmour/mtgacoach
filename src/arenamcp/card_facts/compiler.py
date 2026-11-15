@@ -255,8 +255,19 @@ a value, use null / an empty list / an empty string — never invent one.
 because the text says three).
 3. Copy costs, alternate costs and activated abilities each get their own \
 entry in modes/effects.
-4. Keyword abilities named in the type line or rules text (flying, lifelink, \
-ward 2, ...) all go in body.keywords; ward keeps its number out of the name.
+4. Put only this permanent's unconditional intrinsic keyword abilities in body.keywords.
+A keyword granted to an enchanted creature, an equipped creature, a token or a target
+belongs to that effect, never to the source's body. Keep ward's cost in the grant.
+For an Aura preserve each printed "Enchant ..." restriction verbatim in a static
+Unknown effect. Its cast must target a legal recipient and it must remain legally
+attached. For Auras, represent EACH other printed rules paragraph once. A simple
+"Enchanted creature gets +N/+N." can use static Pump and "When this Aura enters,
+draw a card." can use ETB Draw. For every other rule or compound effect use one
+Unknown with its complete verbatim paragraph, including restrictions, grants,
+conditions, duration and costs; omit redundant partial typed effects. Use ETB
+for "When this Aura enters, ...", static for attachment and continuous effects,
+and keep conditions empty when the complete rule is in Unknown. Exile has
+no duration field. Do not represent temporary exile as unconditional Exile.
 5. Current TokenSpec cannot represent token colors or affirmative legendary status.
 For a token-creation sentence that states either, use Unknown with the entire
 original sentence verbatim; do not emit a lossy CreateToken or extension fields.
@@ -428,6 +439,43 @@ def _printed_cast_contract_problems(data: dict, printed: PrintedCard) -> list[st
     ):
         return ["printed nonland spell requires its normal cast mode, including a printed {0} cost"]
     return []
+
+
+def _raw_aura_problems(data, printed):
+    if "Aura" not in printed.type_line.split():
+        return []
+    fields = {
+        "Unknown": {"effect_type", "text"},
+        "Draw": {"effect_type", "count"},
+        "Pump": {"effect_type", "power", "toughness", "target"},
+    }
+    problems = []
+    body = data.get("body")
+    if not isinstance(body, dict) or set(body) - {"power", "toughness", "loyalty", "keywords"}:
+        problems.append("Aura body uses unknown or missing native fields")
+    elif "keywords" in body and (
+        not isinstance(body["keywords"], list) or any(not isinstance(k, str) for k in body["keywords"])
+    ):
+        problems.append("Aura body keywords must be strings in a list")
+    entries = data.get("effects", [])
+    if type(entries) is not list:
+        return ["Aura effects must be a list"]
+    for entry in entries:
+        if not isinstance(entry, dict) or not isinstance(entry.get("effect"), dict):
+            problems.append("Aura effect must have its native fields")
+            continue
+        effect = entry["effect"]
+        if (
+            set(entry) - {"effect", "trigger", "conditions"}
+            or not isinstance(effect.get("effect_type"), str)
+            or effect.keys() != fields.get(effect.get("effect_type"))
+            or ("trigger" in entry and not isinstance(entry["trigger"], str))
+            or ("conditions" in entry and not isinstance(entry["conditions"], list))
+        ):
+            problems.append(
+                "Aura effect uses unsupported or missing native fields; preserve the entire ability as Unknown"
+            )
+    return problems
 
 
 def _raw_native_type_problems(data: dict[str, Any]) -> list[str]:
@@ -622,7 +670,7 @@ def compile_one(
             record = None
         else:
             try:
-                raw_problems = _raw_native_type_problems(data)
+                raw_problems = _raw_native_type_problems(data) + _raw_aura_problems(data, printed)
                 if raw_problems:
                     raise ValueError("; ".join(raw_problems))
                 record_candidate = _stamp(dict(data), printed)

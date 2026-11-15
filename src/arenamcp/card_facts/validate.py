@@ -16,6 +16,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
+from arenamcp.ability_synthesizer import Draw, Pump, UnknownEffect
 from arenamcp.card_facts.hashing import normalise
 from arenamcp.card_facts.schema import CardFacts
 
@@ -89,6 +90,80 @@ def _stated_keywords(printed_text: str) -> set[str]:
     return stated
 
 
+def _aura_keywords(line):
+    # A granted or referenced keyword inside a sentence does not describe the
+    # Aura itself. Unrecognised mechanic lines retain their full printed text.
+    parts = [v.strip().casefold() for v in line.split(",")]
+    if all(v in KEYWORD_PHRASES for v in parts):
+        return set(parts)
+    if re.fullmatch(r"ward (?:\{[^{}]+\})+", line, re.I):
+        return {"ward"}
+    if re.fullmatch(r"protection from [\w -]+", line, re.I):
+        return {"protection"}
+    return set()
+
+
+def _aura_line_matches(entry, line):
+    if entry.conditions:
+        return False
+    lowered = line.casefold()
+    if lowered.startswith(("when this aura enters,", "when this aura enters the battlefield,")):
+        if entry.trigger != "ETB":
+            return False
+        if lowered in {
+            "when this aura enters, draw a card.",
+            "when this aura enters the battlefield, draw a card.",
+        } and entry.effect == Draw(count=1):
+            return True
+    elif lowered.startswith(("when ", "whenever ", "at ")):
+        if entry.trigger != line.partition(",")[0]:
+            return False
+    elif ":" in line.split(".")[0]:
+        if entry.trigger not in ("", "activate"):
+            return False
+    else:
+        if entry.trigger not in ("", "static"):
+            return False
+        pump = re.fullmatch(r"Enchanted creature gets ([+-]\d+)/([+-]\d+)\.", line, re.I)
+        if pump and entry.effect == Pump(int(pump[1]), int(pump[2]), "enchanted creature"):
+            return True
+    return isinstance(entry.effect, UnknownEffect) and entry.effect.text == line
+
+
+def _aura_problems(record, card):
+    lines = [line.strip() for line in card.oracle_text.splitlines() if line.strip()]
+    problems = []
+    if card.card_faces:
+        return ["Whole-Aura validation requires an isolated single-face print"]
+    if not any(line.startswith("Enchant ") for line in lines):
+        problems.append("Aura has no verified printed attachment restriction")
+    expected = set().union(*(_aura_keywords(line) for line in lines))
+    claimed = {normalise(k) for k in record.body.keywords}
+    if len(claimed) != len(record.body.keywords):
+        problems.append("Aura body claims duplicate keyword abilities")
+    for k in sorted(claimed - expected):
+        problems.append(f"keyword '{k}' is not intrinsic to the printed Aura")
+    for k in sorted(expected - claimed):
+        problems.append(f"keyword '{k}' stated by the Aura but missing")
+    for key in ("power", "toughness", "loyalty"):
+        if getattr(card, key) is None and getattr(record.body, key) is not None:
+            problems.append(f"Aura body has unprinted {key}")
+    remaining = list(record.effects)
+    for line in lines:
+        if all(word.strip().casefold() in KEYWORD_PHRASES for word in line.split(",")):
+            continue
+        for i, entry in enumerate(remaining):
+            if _aura_line_matches(entry, line):
+                del remaining[i]
+                break
+        else:
+            kind = "attachment restriction" if line.startswith("Enchant ") else "ability"
+            problems.append(f"Aura {kind} missing or changed: {line}")
+    if remaining:
+        problems.append("Aura has extra, duplicate or partial effects without a complete printed ability")
+    return problems
+
+
 def _check_stats(record_body, card: PrintedCard) -> list[str]:
     problems: list[str] = []
     pairs = (
@@ -148,15 +223,18 @@ def _validate(record: CardFacts, card: PrintedCard) -> list[str]:
     problems.extend(_check_stats(record.body, card))
 
     printed_text = f"{card.type_line}\n{card.oracle_text}"
-    stated = _stated_keywords(printed_text)
-    claimed = {normalise(k) for k in record.body.keywords}
-    for phrase in sorted(stated - claimed):
-        problems.append(f"keyword '{phrase}' stated by the card but missing")
-    for phrase in sorted(claimed - stated):
-        if phrase not in printed_text.casefold():
-            problems.append(
-                f"keyword '{phrase}' claimed by the record but not stated by the type line or rules text"
-            )
+    if "Aura" in card.type_line.split():
+        problems.extend(_aura_problems(record, card))
+    else:
+        stated = _stated_keywords(printed_text)
+        claimed = {normalise(k) for k in record.body.keywords}
+        for phrase in sorted(stated - claimed):
+            problems.append(f"keyword '{phrase}' stated by the card but missing")
+        for phrase in sorted(claimed - stated):
+            if phrase not in printed_text.casefold():
+                problems.append(
+                    f"keyword '{phrase}' claimed by the record but not stated by the type line or rules text"
+                )
 
     problems.extend(_check_modes(record, card))
 
