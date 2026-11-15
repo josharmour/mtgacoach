@@ -9,6 +9,8 @@ both sides of the race, plus the abstentions: an unknown library count and a
 planeswalker recipient must not be scored as a player loss.
 """
 
+import pytest
+
 from arenamcp.combat_strategy import combat_choice
 
 
@@ -68,6 +70,38 @@ def state(
 
 
 MILL_THREE = "Whenever this creature deals combat damage to a player, that player mills three cards."
+
+
+@pytest.mark.parametrize(
+    ("text", "counters"),
+    [
+        ("Toxic 1", {"opp_poison": 9}),
+        (MILL_THREE, {"opp_library": 3}),
+        ("Whenever this creature deals combat damage to a player, that player loses the game.", {}),
+    ],
+)
+def test_clean_attack_with_a_known_winning_hit_before_larger_nonlethal_damage(text, counters):
+    ours = [
+        creature(10, 4, 3, "Flying", keywords=["flying"]),
+        creature(11, 2, 3),
+        creature(12, 1, 2, "Flying\n" + text, keywords=["flying"]),
+    ]
+    best = combat_choice(state(ours, [creature(20, 1, 4, seat=2)], **counters), budget=2)
+    assert best.bounded and set(best.assignments) == {12}
+    assert best.score == 10000
+
+
+def test_tight_budget_tries_combined_clean_lethal_before_nonlethal_singleton():
+    ours = [
+        creature(10, 4, 3, "Flying", keywords=["flying"]),
+        creature(11, 2, 3),
+        creature(12, 2, 2, "Flying", keywords=["flying"]),
+    ]
+    snapshot = state(ours, [creature(20, 1, 4, seat=2)])
+    snapshot["players"][1]["life_total"] = 6
+    best = combat_choice(snapshot, budget=2)
+    assert best.bounded and set(best.assignments) == {10, 12}
+    assert best.player_damage == 6 and best.score == 10000
 
 
 def test_tenth_poison_counter_wins_and_ninth_does_not():

@@ -298,6 +298,15 @@ def _search(state: dict, raw: list[dict], budget: int, deadline_s: float) -> Com
     blockable = set().union(*blockable_by)
     clean = [i for i, card in enumerate(candidates) if card["instance_id"] not in blockable]
 
+    def player_loses(damage: int, poison: int, mill: int, ends_game: bool) -> bool:
+        return damage >= opponent_life or ends_game or _finishes(their_loss, their_loss.hit(poison, mill))
+
+    def pressure(hits):
+        damage = sum(hit.damage_through for hit in hits)
+        poison = sum(hit.poison_given for hit in hits)
+        mill = sum(hit.cards_milled for hit in hits)
+        return player_loses(damage, poison, mill, any(hit.player_loses for hit in hits)), damage
+
     def assignments():
         yield tuple(None for _card in candidates)
         targets = {recipient_key(recipient) for options in choices for recipient in options if recipient}
@@ -309,19 +318,22 @@ def _search(state: dict, raw: list[dict], budget: int, deadline_s: float) -> Com
                 )
                 for options in choices
             )
-            # With a single recipient, a mixed attack can have thousands of
-            # defenses. Try two one-defense candidates first. When recipients
-            # compete, an unblocked hit may kill a walker or win the game;
-            # leave the original joint recipient search order intact.
-            if len(targets) == 1 and blockable and clean:
-                strongest = max(clean, key=lambda i: _resolve_attacker(candidates[i], []).damage_through)
-                yield tuple(
-                    recipient if i == strongest else None for i, recipient in enumerate(all_to_target)
-                )
-                yield tuple(
-                    recipient if card["instance_id"] not in blockable else None
-                    for card, recipient in zip(candidates, all_to_target, strict=True)
-                )
+            # A mixed attack can have thousands of defenses. When the player is
+            # the only recipient, try two one-defense candidates first, giving
+            # visible wins priority. With competing recipients keep the joint
+            # search order: the same hit could kill a walker or win the game.
+            if targets == {("player", opponent_id)} and blockable and clean:
+                hits = {i: _resolve_attacker(candidates[i], []) for i in clean}
+
+                strongest = max(clean, key=lambda i: pressure((hits[i],)))
+                singleton = (strongest,)
+                combined_win = pressure(hits.values())[0] and not pressure((hits[strongest],))[0]
+                seeds = (clean, singleton) if combined_win else (singleton, clean)
+                for indices in seeds:
+                    selected = set(indices)
+                    yield tuple(
+                        recipient if i in selected else None for i, recipient in enumerate(all_to_target)
+                    )
             yield all_to_target
         yield from product(*choices)
 
@@ -434,11 +446,7 @@ def _search(state: dict, raw: list[dict], budget: int, deadline_s: float) -> Com
                 - crackback * 5 / max(1, your_life - crackback)
                 - walker_crackback_cost(crackback, your_life, our_walkers)
             )
-            if (
-                player_damage >= opponent_life
-                or ends_game
-                or _finishes(their_loss, their_loss.hit(poison_given, cards_milled))
-            ):
+            if player_loses(player_damage, poison_given, cards_milled, ends_game):
                 score = 10000
             elif (
                 crackback >= your_life
