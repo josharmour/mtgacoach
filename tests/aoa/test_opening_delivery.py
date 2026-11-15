@@ -326,3 +326,19 @@ def test_settings_echo_does_not_interrupt_a_running_introduction(qapp, monkeypat
         assert sum(e.get("state") == "finished" for e in sent) == 2
     finally:
         c.close()
+
+
+def test_live_next_game_uses_fresh_events_after_both_heard_the_same_saved_overview(monkeypatch):
+    s, arbiter, obs, now, played, events = setup(monkeypatch)
+    s.config = replace(s.config, generative=True)
+    overview = next(e for e in obs.events if e.kind == "deck_overview")
+    another = replace(overview, event_id="new-game-overview")
+    s._fallback(obs, s.config, "opening_deck_overview")
+    finish(arbiter)
+    assert s._opening_available(another, obs.epoch, now[0])
+    finish(arbiter)
+    s.openings.clear()  # The worker clears per-game evidence on an epoch change.
+    assert not s._opening_available(another, replace(obs.epoch, match_id="another"), now[0])
+    assert s._opening_available(replace(another, kind="action_observed"), obs.epoch, now[0])
+    changed = replace(another, payload={**another.payload, "summary": "A different reviewed opening."})
+    assert s._opening_available(changed, obs.epoch, now[0])

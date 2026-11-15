@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import queue
@@ -47,6 +48,8 @@ class CommentaryService:
         self.heard = deque(maxlen=24)
         self.heard_analysis = deque(maxlen=16)
         self.openings = {}
+        # Remembers only fully heard saved overviews across matches in this session.
+        self.heard_overviews = deque(maxlen=32)
         self.grounded_ids = set()
         self.suppressed_opening_epoch = None
         self._lock = threading.Lock()
@@ -123,6 +126,8 @@ class CommentaryService:
                         if opening:
                             if state == "finished":
                                 opening["finished"].add(item.role)
+                                if opening["roles"] <= opening["finished"]:
+                                    self.heard_overviews.append(opening["summary_digest"])
                             elif state == "muted" or reason in {
                                 "user_stop",
                                 "mode_changed",
@@ -156,6 +161,8 @@ class CommentaryService:
             return True
         if self.suppressed_opening_epoch == (epoch.match_id, epoch.game_number):
             return False
+        if self.config.generative and self._overview_digest(event) in self.heard_overviews:
+            return False
         item = self.openings.get(event.event_id)
         return not item or (
             not item["blocked"]
@@ -163,6 +170,11 @@ class CommentaryService:
             and not item["roles"].issubset(item["finished"])
             and now >= item["retry_at"]
         )
+
+    @staticmethod
+    def _overview_digest(event):
+        summary = str(event.payload.get("summary") or "")
+        return hashlib.sha256(" ".join(summary.split()).casefold().encode()).digest()
 
     def status(self, state, **details):
         signature = (state, details.get("reason"))
@@ -273,6 +285,7 @@ class CommentaryService:
                         "finished": set(),
                         "blocked": False,
                         "roles": {u.role for u in lines},
+                        "summary_digest": self._overview_digest(overview),
                         "retry_at": 0,
                     },
                 )
