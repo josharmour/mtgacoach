@@ -89,7 +89,12 @@ class CommentaryController(QObject):
             self.arbiter.reset(observation.epoch)
         else:
             self.arbiter.tick()
-        if self.private_removal and not self.arbiter.pending and not self.arbiter.active:
+        if (
+            self.private_removal
+            and not self.arbiter.muted
+            and not self.arbiter.pending
+            and not self.arbiter.active
+        ):
             threat_id, text = self.private_removal
             if threat_id not in self.private_removal_played and len(self.private_removal_played) < 100:
                 # The full text stays on the desktop. It never enters the

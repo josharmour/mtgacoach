@@ -334,6 +334,11 @@ def test_private_only_local_voice_no_history_cancel_on_revocation(qapp, monkeypa
     f = project(s, opened())
     c.configure(CommentaryConfig(mode="commentary", private_information=True).to_wire())
     try:
+        c.arbiter.set_muted(True)
+        c.observe(s, private_removal=f)
+        tts.request_speech.assert_not_called()
+        assert not c.private_removal_played
+        c.arbiter.set_muted(False)
         c.observe(s, private_removal=f)
         call = tts.request_speech.call_args.kwargs
         assert call["provider"] == "kokoro"
@@ -869,3 +874,26 @@ def test_mana_value_capped_exile_never_treats_unknown_as_zero():
         _answers_creature(targeted, dict(target, type_line="Land Creature — Forest Dryad", mana_cost="{0}"))
         is False
     )
+
+
+def test_current_positive_proof_of_empty_library_is_distinct_from_unavailable():
+    game = opened()
+    final_draw = next_draw()
+    # The local player draws the whole remaining library. Every departing
+    # instance appears by its unchanged id in the own private hand.
+    remaining = [15] * 3 + [16] * 44 + [17] * 2 + [18] * 3 + [19]
+    final_draw["zones"][0]["objectInstanceIds"] = []
+    final_draw["zones"][1]["objectInstanceIds"] = IDS
+    final_draw["gameObjects"] = [
+        dict(draw_opening()["gameObjects"][0], instanceId=iid, grpId=gid, overlayGrpId=gid)
+        for iid, gid in zip(IDS[7:], remaining, strict=True)
+    ]
+    final_draw["annotations"] = [dict(final_draw["annotations"][1], affectedIds=IDS[7:])]
+    game.update_from_message(final_draw)
+    s = board()
+    s["_log_game_state_id"] = 3
+    fact = project(s, game)
+    assert fact["remaining"] == 0 and fact["direct_removal_total"] == 0 and fact["answers"] == {}
+    assert "0-card library" in private_removal_line(fact, s)[1]
+    game.log_summarized_at_gsid = 3
+    assert project(s, game) is None

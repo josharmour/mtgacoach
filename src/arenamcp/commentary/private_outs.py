@@ -229,7 +229,7 @@ def private_removal_fact(snapshot, game, *, allow_private, card_lookup):
     counts = game.commentary_library_counts(
         match, number, seat, state_id, allow_private=allow_private, battlefield=battlefield
     )
-    if not counts:
+    if counts is None:
         return None
     qualified = Counter()
     complete = True
@@ -301,7 +301,7 @@ def private_removal_line(fact, snapshot):
         return None
     answers = fact.get("answers")
     size = fact.get("remaining")
-    if type(size) is not int or not 1 <= size <= 250 or not isinstance(answers, dict) or len(answers) > size:
+    if type(size) is not int or not 0 <= size <= 250 or not isinstance(answers, dict) or len(answers) > size:
         return None
     if (
         any(
