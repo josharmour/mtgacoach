@@ -998,7 +998,10 @@ class CoachSession(QObject):
             state = event.get("data") if "data" in event else event.get("game_state", {})
             if isinstance(state, dict):
                 self._last_game_state = state
-                self._speech.observe(state)
+                if event.get("private_library_removal"):
+                    self._speech.observe(state, private_removal=event["private_library_removal"])
+                else:
+                    self._speech.observe(state)
                 self.gameStateChanged.emit(state)
 
         elif ev_type in ("turn_plan", "emit_turn_plan"):

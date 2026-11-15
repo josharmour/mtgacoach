@@ -38,6 +38,9 @@ class CommentaryController(QObject):
         settings = get_settings()
         self.config = CommentaryConfig.from_settings(settings)
         self.observation = None
+        self.private_removal = None
+        self.private_removal_played = set()
+        self.private_removal_uid = None
         self.adapter = ObservationAdapter()
         self.timings = {}
         self.voice_names = {}
@@ -61,13 +64,15 @@ class CommentaryController(QObject):
         if updated == self.config:
             return  # The engine echoes settings; an acknowledgment is not Stop.
         self.config = updated
+        self.private_removal = None
         self.arbiter.disable_commentary()
         self.observation = None
         if self.config.mode != "actions":
             self.arbiter.tick()
         self.statusChanged.emit({"state": "waiting" if self.config.enabled else "disabled"})
 
-    def observe(self, snapshot):
+    def observe(self, snapshot, *, private_removal=None):
+        self.private_removal = None
         try:
             observation = self.adapter.project(snapshot, self.config.private_information)
         except (ValueError, TypeError, KeyError):
@@ -75,12 +80,53 @@ class CommentaryController(QObject):
             self.arbiter.disable_commentary()
             return
         self.observation = observation
+        if self.config.enabled and self.config.private_information and private_removal:
+            from arenamcp.commentary.private_outs import private_removal_line
+
+            self.private_removal = private_removal_line(private_removal, snapshot)
         if observation.epoch != self.arbiter.epoch:
+            self.private_removal_played.clear()
             self.arbiter.reset(observation.epoch)
         else:
             self.arbiter.tick()
+        if self.private_removal and not self.arbiter.pending and not self.arbiter.active:
+            threat_id, text = self.private_removal
+            if threat_id not in self.private_removal_played and len(self.private_removal_played) < 100:
+                # The full text stays on the desktop. It never enters the
+                # generated booth, heard-text history, transcript, or a remote voice.
+                settings = get_settings()
+                if settings.get("tts_provider", "kokoro") != "kokoro":
+                    return
+                try:
+                    pair = voice_pair(settings)
+                except VoicePairUnavailable:
+                    return
+                item = Utterance(
+                    "private-outs:" + uuid.uuid4().hex,
+                    text,
+                    SpeechCategory.COMMENTARY,
+                    observation.epoch,
+                    time.monotonic() + 8,
+                    role="color_analyst" if self.config.speakers == 2 else "play_by_play",
+                    provider="kokoro",
+                    voice=pair[1 if self.config.speakers == 2 else 0],
+                    speed=speech_rate(settings),
+                )
+                self.private_removal_uid = (item.utterance_id, self.private_removal)
+                self.private_removal_played.add(threat_id)
+                self.arbiter.submit(item)
 
     def _valid(self, item):
+        if item.utterance_id.startswith("private-outs:"):
+            return bool(
+                self.config.enabled
+                and self.config.private_information
+                and self.private_removal
+                and self.observation
+                and item.epoch == self.observation.epoch
+                and self.private_removal_uid == (item.utterance_id, self.private_removal)
+                and item.provider == "kokoro"
+            )
         if item.utterance_id in self.preview_settings:
             return True
         if item.category != SpeechCategory.COMMENTARY:
@@ -93,7 +139,7 @@ class CommentaryController(QObject):
     def proposal(self, payload):
         try:
             item = Utterance.from_wire(payload)
-            if item.category != SpeechCategory.COMMENTARY:
+            if item.category != SpeechCategory.COMMENTARY or item.utterance_id.startswith("private-outs:"):
                 raise ValueError()
         except (ValueError, TypeError, KeyError):
             return
@@ -282,7 +328,8 @@ class CommentaryController(QObject):
             item.provider,
             times["render_start"] - times["accepted"],
         )
-        if item.category == SpeechCategory.COMMENTARY:
+        private_outs = item.utterance_id.startswith("private-outs:")
+        if item.category == SpeechCategory.COMMENTARY and not private_outs:
             self.spoken(item.text)
         overrides = (
             {"settings_override": self.preview_settings[item.utterance_id]}
@@ -302,6 +349,7 @@ class CommentaryController(QObject):
             speech_id=item.utterance_id,
             provider=None
             if item.provider == "kokoro"
+            and not private_outs
             and item.category != SpeechCategory.ESSENTIAL
             and item.utterance_id not in self.preview_settings
             else item.provider,

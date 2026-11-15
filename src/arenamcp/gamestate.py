@@ -297,6 +297,7 @@ class GameState(_GameStateAnnotationsMixin):
         "event_id": "",
         # Deck list
         "deck_cards": list,
+        "_draw_inventory": None,
         # Connection deck provenance. ConnectResp can precede the room ID,
         # including between two known matches, and carries no match ID itself.
         "_connection_deck_metadata": None,
@@ -470,6 +471,7 @@ class GameState(_GameStateAnnotationsMixin):
         only the next new room or authoritative gameInfo can associate it; no
         elapsed-time guess or prior deck contents establishes ownership.
         """
+        self._draw_inventory = None
         bound_match = self._awaiting_connection_match_id
         self._connection_deck_metadata = {
             "match_id": bound_match,
@@ -2183,11 +2185,62 @@ class GameState(_GameStateAnnotationsMixin):
 
             # After the annotations, which may still name a deleted object (ResolutionComplete).
             self._apply_deleted_instance_ids(message)
+            self._update_draw_inventory(message)
 
             # #112: a Room door's promised token may have arrived with this message.
             self._refresh_room_door_facts()
 
             self._published_snapshot = self._build_raw_snapshot_locked()
+
+    def _update_draw_inventory(self, message: dict) -> None:
+        from arenamcp.commentary.library_inventory import DrawInventory
+
+        try:
+            if message.get("type") == "GameStateType_Full":
+                self._draw_inventory = DrawInventory.start(message, self._connection_deck_metadata)
+            elif self._draw_inventory and not self._draw_inventory.advance(message):
+                self._draw_inventory = None
+        except (ValueError, KeyError, TypeError, AttributeError):
+            # Malformed optional GRE evidence must not affect normal gameplay.
+            self._draw_inventory = None
+
+    def commentary_library_counts(self, match_id, game_number, seat, state_id, *, allow_private, battlefield):
+        """Copy current proven grp-id counts for local commentary only, never to a shared snapshot."""
+        with self._state_lock:
+            proof = self._draw_inventory
+            if (
+                allow_private is not True
+                or proof is None
+                or type(game_number) is not int
+                or game_number != 1
+                or self.game_number != game_number
+                or proof.match != match_id
+                or self.match_id != match_id
+                or type(seat) is not int
+                or proof.seat != seat
+                or self.local_seat_id != seat
+                or type(state_id) is not int
+                or proof.state_id != state_id
+                or self.log_game_state_id != state_id
+                or getattr(self, "log_summarized_at_gsid", -1) >= 0
+                or self.get_zone_card_count(ZoneType.LIBRARY, seat) != sum(proof.remaining.values())
+            ):
+                return None
+            # The bridge's projection may omit visibility; prove every announced
+            # board identity against the same GRE frame and its explicit members.
+            zones = [z for z in self.zones.values() if z.zone_type == ZoneType.BATTLEFIELD]
+            if not zones or any(not z.object_ids_known for z in zones):
+                return None
+            members = {iid for z in zones for iid in z.object_instance_ids}
+            objects = self.get_objects_in_zone(ZoneType.BATTLEFIELD)
+            if len(members) != len(objects) or any(
+                obj.visibility != "Visibility_Public" or obj.face_down for obj in objects
+            ):
+                return None
+            identities = {(obj.instance_id, obj.grp_id, obj.controller_seat_id) for obj in objects}
+            if identities != battlefield or self._current_result_locked():
+                return None
+            return dict(proof.remaining)
 
     def _apply_deleted_instance_ids(self, message: dict) -> None:
         """Forget the objects a GameStateMessage lists in ``diffDeletedInstanceIds``.
@@ -3597,6 +3650,7 @@ def create_game_state_handler(game_state: GameState) -> Callable[[dict], None]:
                     # it carried will never arrive in detail. Readers waiting for the log to
                     # reach the bridge's gameStateId stop waiting (autopilot catch-up gate).
                     game_state.log_summarized_at_gsid = int(getattr(game_state, "log_game_state_id", 0) or 0)
+                    game_state._draw_inventory = None
                     # Missing GRE details may contain draws/discards/zone changes.
                     # Keep known objects, but don't call their subset the whole hand.
                     for zone in game_state.zones.values():

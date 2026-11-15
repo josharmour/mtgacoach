@@ -99,6 +99,18 @@ def strategic_policy(subjects: Iterable[str] = SITUATIONAL_SUBJECTS) -> str:
     return compose_rules(STRATEGIC_POLICY_PARTS, subjects)
 
 
+def prepared_card(grp_id: int) -> dict[str, Any] | None:
+    """Read previously resolved local rules without loading a source on the gameplay thread."""
+    from arenamcp.card_db import initialized_card_database
+
+    source = initialized_card_database()
+    if source is None:
+        return None
+    with _cache_lock:
+        entry = _resolved_cards.get((id(source), grp_id))
+        return entry[1] if entry is not None else None
+
+
 @lru_cache(maxsize=4096)
 def _local_card(grp_id: int, epoch: int) -> dict[str, Any]:
     # Refresh periodically so startup's asynchronously loaded databases can

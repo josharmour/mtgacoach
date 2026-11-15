@@ -275,7 +275,14 @@ class PipeAdapter:
             explanations = getattr(getattr(self._coach, "_autopilot", None), "_commentary_explanations", ())
             if explanations:
                 snapshot = {**snapshot, "commentary_action_explanations": explanations}
-        self._emit({"type": "game_state", "data": snapshot})
+        # Keep the private count out of the shared state, model worker and match bundles.
+        from arenamcp.commentary.private_outs import private_outs_for_desktop
+
+        event = {"type": "game_state", "data": snapshot}
+        private_outs = private_outs_for_desktop(self._coach, snapshot)
+        if private_outs:
+            event["private_library_removal"] = private_outs
+        self._emit(event)
         if self._coach is not None:
             if self._commentary is None:
                 from arenamcp.commentary.service import CommentaryService

@@ -654,6 +654,11 @@ _card_db: FallbackCardDatabase | None = None
 _card_db_lock = threading.Lock()
 
 
+def initialized_card_database() -> FallbackCardDatabase | None:
+    """Return an available local catalog without opening or warming its sources."""
+    return _card_db
+
+
 def get_card_database() -> FallbackCardDatabase:
     """Get or create the global FallbackCardDatabase singleton.
 
