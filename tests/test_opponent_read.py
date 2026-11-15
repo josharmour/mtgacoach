@@ -295,3 +295,55 @@ def test_cold_or_busy_native_catalog_abstains():
     assert db.cached_cards({11, 22}) == {22: "already read"}
     with db._conn_lock:
         assert not db.cached_cards({22})
+
+
+@pytest.mark.parametrize("route", ["log", "bridge", "overlaid"])
+@pytest.mark.parametrize(
+    "restricted",
+    [
+        {"visibility": "Visibility_Private"},
+        {"visibility": "Visibility_Hidden"},
+        {"identity_known": False},
+        {"identity_known": 0},
+        {"isFacedown": True},
+        {"face_down_reason": 8},
+        {"generated": True},
+        {"original_grp_id": 123},
+        {"token_creator_id": 123},
+    ],
+)
+def test_serialized_restrictions_survive_native_and_bridge_paths(monkeypatch, route, restricted):
+    from types import SimpleNamespace
+
+    from arenamcp import server
+    from arenamcp.opponent_read import mark_public_native_prints
+
+    data = dict(name="Public catalog creature", mana_cost="{1}", type_line="Creature", oracle_text="Flying")
+    gid = 902
+    actual = SimpleNamespace(**data, grp_id=gid, is_token=False, linked_face_ids=[])
+    monkeypatch.setattr(server, "card_object_info", lambda obj: data)
+    monkeypatch.setattr(server, "_token_creator_facts", lambda obj: {})
+    db = SimpleNamespace(get_raw_mtgadb=lambda: SimpleNamespace(cached_cards=lambda gids: {gid: actual}))
+    monkeypatch.setattr("arenamcp.card_db.initialized_card_database", lambda: db)
+    obj = dict(grp_id=gid, instance_id=77, owner_seat_id=2, controller_seat_id=2, object_kind="CARD")
+
+    def serialize(flags):
+        if route == "log":
+            return server._serialize_snapshot_obj({**obj, **flags})
+        if route == "bridge":
+            return server._serialize_bridge_card({**obj, **flags}, {77: obj})
+        return server._serialize_bridge_card(
+            {**obj, "visibility": "Visibility_Public"}, {77: {**obj, **flags}}
+        )
+
+    def project(card, zone):
+        state = captured(327)
+        state["zones"] = {zone: [card]}
+        mark_public_native_prints(state)
+        return state
+
+    good = project(serialize({"visibility": "Visibility_Public"}), "exile")
+    assert cast_read(OpponentRead(), good)
+    blocked = project(serialize(restricted), "graveyard")
+    assert not OpponentRead().plan_block(blocked)
+    assert not cast_read(OpponentRead(), blocked)

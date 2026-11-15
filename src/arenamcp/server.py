@@ -1574,6 +1574,29 @@ def _token_creator_facts(obj: dict[str, Any]) -> dict[str, Any]:
     return facts
 
 
+def _copy_identity_visibility(result, *sources):
+    """Keep both log and bridge restrictions when the two projections disagree."""
+    public = ("public", "Public", "Visibility_Public")
+    for source in sources:
+        visibility = source.get("visibility")
+        if visibility is not None:
+            if visibility not in public or (
+                result.get("visibility") is None and source.get("grp_id") == result.get("grp_id")
+            ):
+                result["visibility"] = visibility if isinstance(visibility, str) else "unknown"
+        if "identity_known" in source and source["identity_known"] is not True:
+            result["identity_known"] = False
+        if source.get("face_down") or source.get("isFacedown") or source.get("face_down_reason"):
+            result["face_down"] = True
+        if any(
+            source.get(k)
+            for k in ("generated", "is_copy", "copied_from_grp_id", "is_token", "token_creator_id")
+        ) or any(
+            source.get(k) not in (None, 0, result.get("grp_id")) for k in ("base_grp_id", "original_grp_id")
+        ):
+            result["generated"] = True
+
+
 def _serialize_snapshot_obj(obj: dict[str, Any]) -> dict[str, Any]:
     """Serialize a published-snapshot object with oracle text enrichment.
 
@@ -1660,6 +1683,7 @@ def _serialize_snapshot_obj(obj: dict[str, Any]) -> dict[str, Any]:
     if enriched.get("related_faces"):
         result["related_faces"] = copy.deepcopy(enriched["related_faces"])
     result.update(_token_creator_facts(obj))
+    _copy_identity_visibility(result, obj)
     return result
 
 
@@ -1809,9 +1833,7 @@ def _serialize_bridge_card(
     if attached_with_ids:
         result["attached_with_ids"] = [value for value in attached_with_ids if value is not None]
 
-    visibility = card.get("visibility")
-    if visibility:
-        result["visibility"] = visibility
+    _copy_identity_visibility(result, card, fallback)
     if card.get("summoning_sickness"):
         result["summoning_sickness"] = True
     if card.get("revealed_to_opponent"):

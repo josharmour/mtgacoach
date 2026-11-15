@@ -57,7 +57,7 @@ def _face_down(card: Mapping[str, Any]) -> bool:
 
 
 def card_identity_visible(card: Mapping[str, Any], zone: str) -> bool:
-    if _face_down(card) or card.get("identity_known") is False:
+    if _face_down(card) or ("identity_known" in card and card["identity_known"] is not True):
         return False
     visibility = card.get("visibility")
     return visibility in ("public", "Public", "Visibility_Public") or (zone != "exile" and visibility is None)
