@@ -80,13 +80,13 @@ class LocalStudyModel:
             self.thinks = "low"
         self.last_metrics = {}
 
-    def complete(self, system, prompt, *, allowed, max_tokens=4096, max_seconds=120):
+    def complete(self, system, prompt, *, allowed, response_format=None, max_tokens=4096, max_seconds=120):
         if not allowed() or self.digest != installed_models().get(self.name):
             raise ValueError("The deck, match or selected model changed")
         body = {
             "model": self.name,
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
-            "format": "json",
+            "format": response_format if response_format is not None else "json",
             "stream": True,
             "options": {"num_predict": max_tokens, "temperature": 0.2},
         }

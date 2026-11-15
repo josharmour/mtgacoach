@@ -28,7 +28,7 @@ Zones: hand, battlefield, graveyard, exile, command, library, stack. Number only
 Evidence is a list of {card, rule} numeric references, one or more for every card used by your advice.
 Use one short sentence each for role, play, hold and avoid. Prefer the smallest sufficient
 set of pieces and rule references. Think briefly, then provide the complete JSON."""
-_VERSION = 1
+_VERSION = 2
 
 
 def _checked(book, gids):
@@ -83,6 +83,56 @@ def _context(book, gid):
             for i in sorted(ids)
         },
     }
+
+
+def _role_format(context):
+    """Constrain every model-supplied identity to this job's exact printed menu."""
+
+    def obj(fields, required=None):
+        return {
+            "type": "object",
+            "properties": fields,
+            "required": list(fields) if required is None else required,
+            "additionalProperties": False,
+        }
+
+    numeric = {"type": "integer", "minimum": 0}
+    ids = [int(key) for key in context["prints"]]
+    card = {"type": "integer", "enum": ids}
+    text = {"type": "string", "minLength": 1}
+    zones = ["hand", "battlefield", "graveyard", "exile", "command", "library", "stack"]
+    pieces = {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": len(ids),
+        "items": obj({"card": card, "zone": {"type": "string", "enum": zones}}),
+    }
+    mana = obj({key: numeric for key in ("generic", *"WUBRGC")}, ["generic"])
+    conditions = obj({"pieces": pieces, "first_turn": {"type": "integer", "minimum": 1}, "mana": mana})
+    advice = obj({"advice": text, "conditions": conditions})
+    references = [
+        obj(
+            {
+                "card": {"type": "integer", "enum": [int(gid)]},
+                "rule": {"type": "integer", "enum": [r["rule"] for r in printed["rules"]]},
+            }
+        )
+        for gid, printed in context["prints"].items()
+    ]
+    return obj(
+        {
+            "card": {"type": "integer", "enum": [context["card"]]},
+            "role": text,
+            "play": advice,
+            "hold": advice,
+            "avoid": advice,
+            "evidence": {
+                "type": "array",
+                "minItems": 1,
+                "items": references[0] if len(references) == 1 else {"anyOf": references},
+            },
+        }
+    )
 
 
 def _directory(directory, context):
@@ -140,7 +190,15 @@ def study_card(book, gid, model, directory, *, allowed):
     except (OSError, ValueError, KeyError, TypeError):
         pass
     started = time.monotonic()
-    row = model.complete(_SYSTEM, json.dumps(context, sort_keys=True), allowed=allowed)
+    # JSON map keys are strings. Put numeric IDs directly beside each rule
+    # menu so the model does not copy a string key back as a card reference.
+    prompt = {
+        **context,
+        "prints": [{"card": int(gid), **printed} for gid, printed in context["prints"].items()],
+    }
+    row = model.complete(
+        _SYSTEM, json.dumps(prompt, sort_keys=True), allowed=allowed, response_format=_role_format(context)
+    )
     duration = round(time.monotonic() - started, 2)
     if not isinstance(row, dict) or not isinstance(row.get("evidence"), list):
         raise ValueError("The model supplied no usable printed evidence")
@@ -149,8 +207,10 @@ def study_card(book, gid, model, directory, *, allowed):
         if type(ref) is not dict or set(ref) != {"card", "rule"}:
             raise ValueError("The study needs numeric references to supplied printed rules")
         card, number = ref["card"], ref["rule"]
-        if type(card) is not int or type(number) is not int or str(card) not in context["prints"]:
-            raise ValueError("Unrecognized print or rule in the card study")
+        if type(card) is not int or type(number) is not int:
+            raise ValueError("The local model returned a nonnumeric card or rule reference")
+        if str(card) not in context["prints"]:
+            raise ValueError("The local model cited a print outside this card study")
         source = context["prints"][str(card)]
         if not 1 <= number <= len(source["rules"]):
             raise ValueError("Printed rule reference is out of range")

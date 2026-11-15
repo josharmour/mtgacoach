@@ -258,3 +258,26 @@ def test_old_deck_analysis_cannot_overwrite_new_list_same_deck_id(qapp):
     tab.on_analysis({"deck_id": "d", "identity": "prior", "status": "ready", "report": {"summary": "stale"}})
     assert tab._decks[0]["strategy"]["status"] == "none" and "d" not in tab._reports
     tab.close()
+
+
+def test_local_writer_constrains_every_numeric_card_and_rule_reference(sample, tmp_path):
+    from jsonschema import Draft202012Validator
+
+    _, book, _ = sample
+    writer = backend(book)
+    study_card(book, 1001, writer, tmp_path, allowed=lambda: True)
+    call = writer.complete.call_args
+    prints = json.loads(call.args[1])["prints"]
+    assert all(type(row["card"]) is int for row in prints)
+    validator = Draft202012Validator(call.kwargs["response_format"])
+    valid = writer.complete.return_value
+    assert validator.is_valid(valid)
+    for ref in (
+        {"card": "1001", "rule": 1},
+        {"card": 1001, "rule": "1"},
+        {"card": 999999, "rule": 1},
+        {"card": 1001, "rule": 0},
+        {"card": 1001, "rule": 999},
+    ):
+        assert not validator.is_valid({**valid, "evidence": [ref]})
+    assert not validator.is_valid({**valid, "card": 1002})
