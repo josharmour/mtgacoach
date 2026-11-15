@@ -348,3 +348,41 @@ def test_stream_requires_assistant_output_without_tools(monkeypatch, extra):
     monkeypatch.setattr(local.http.client, "HTTPConnection", Mock(return_value=conn))
     with pytest.raises(ValueError, match="output channel"):
         m.complete("system", "user", allowed=lambda: True)
+
+
+def test_model_alias_must_still_identify_the_original_weights_at_completion(monkeypatch):
+    import io
+
+    import arenamcp.local_study_model as local
+
+    m = LocalStudyModel.__new__(LocalStudyModel)
+    m.name, m.digest, m.thinks = "fixture", "a" * 64, False
+    monkeypatch.setattr(local, "installed_models", Mock(side_effect=[{m.name: m.digest}, {m.name: "b" * 64}]))
+    stream = io.BytesIO(
+        json.dumps(
+            {
+                "model": m.name,
+                "done": True,
+                "done_reason": "stop",
+                "message": {"role": "assistant", "content": '{"ok":true}'},
+            }
+        ).encode()
+    )
+    stream.status = 200
+    conn = Mock()
+    conn.getresponse.return_value = stream
+    monkeypatch.setattr(local.http.client, "HTTPConnection", Mock(return_value=conn))
+    with pytest.raises(ValueError, match="weights changed"):
+        m.complete("system", "user", allowed=lambda: True)
+    conn.request.assert_called_once()
+
+
+def test_general_cache_read_ignores_unverifiable_model_identity(sample, tmp_path):
+    _, book, _ = sample
+    study_card(book, 1001, backend(book), tmp_path, allowed=lambda: True)
+    file = next(tmp_path.rglob("*.json"))
+    data = json.loads(file.read_text())
+    data["model"] = "not-local-weights"
+    file.rename(file.with_name("not-local-weights.json"))
+    file.with_name("not-local-weights.json").write_text(json.dumps(data))
+    assert "awaiting review" not in read_card(book, 1001, tmp_path)

@@ -173,6 +173,10 @@ class LocalStudyModel:
                         raise ValueError("The local card study reached its output token limit")
                     if reason != "stop":
                         raise ValueError("The local model did not confirm complete output")
+                    if self.digest != installed_models().get(self.name):
+                        raise ValueError("The selected local model weights changed during the study")
+                    if not allowed() or time.monotonic() >= until:
+                        raise ValueError("The local study was interrupted before verification")
                     return json.loads("".join(parts))
             self.last_metrics["cancelled"] = True
             raise ValueError("Card study paused when the deck or match changed")

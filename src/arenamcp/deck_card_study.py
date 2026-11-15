@@ -141,6 +141,8 @@ def _directory(directory, context):
 
 
 def _cached(path, book, context):
+    if not re.fullmatch(r"[a-f0-9]{64}", path.stem):
+        raise ValueError("Missing cached model weights identity")
     raw = json.loads(path.read_text(encoding="utf-8"))
     if raw["input"] != path.parent.name or raw["model"] != path.stem:
         raise ValueError("The local study does not match this input")
