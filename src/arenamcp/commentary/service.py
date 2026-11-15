@@ -192,7 +192,7 @@ class CommentaryService:
         user = json.dumps(context, ensure_ascii=False, separators=(",", ":"))
         from .context import audit_format, generation_format, parse_completed_json
 
-        response_format = audit_format() if audit else generation_format()
+        response_format = audit_format() if audit else generation_format(reply="partner_call" in context)
         output, timeout = self.budget.before_call(
             exchange,
             system,

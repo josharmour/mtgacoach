@@ -4,7 +4,7 @@ import json
 import re
 
 
-def generation_format():
+def generation_format(reply=False):
     """Constrain transport shape without weakening factual validation."""
     return {
         "type": "json_schema",
@@ -18,13 +18,16 @@ def generation_format():
                 "properties": {
                     "turns": {
                         "type": "array",
-                        "maxItems": 2,
+                        "maxItems": 1 if reply else 2,
                         "items": {
                             "type": "object",
                             "additionalProperties": False,
                             "required": ["role", "text", "refs"],
                             "properties": {
-                                "role": {"type": "string", "enum": ["play_by_play", "color_analyst"]},
+                                "role": {
+                                    "type": "string",
+                                    "enum": ["color_analyst"] if reply else ["play_by_play", "color_analyst"],
+                                },
                                 "text": {
                                     "description": "One complete broadcast sentence. Lead with the takeaway and stop. Aim for 60-95 characters.",
                                     "type": "string",
@@ -153,6 +156,22 @@ def compact_context(system, context):
                 refs = [focal_key, f"card:{focal_card['grp_id']}", key, f"card:{partner['grp_id']}"]
                 order += refs
                 result["editorial_question"] = {"question": question, "check_these_refs": refs}
+                event = facts[ranked[0]]
+                name = (event.get("data") or {}).get("name")
+                who = event.get("player")
+                if (
+                    event.get("kind") == "cast"
+                    and name
+                    and who
+                    and actor in (1, 2)
+                    and set(result.get("allowed_roles", ())) == {"play_by_play", "color_analyst"}
+                    and event["data"].get("grp_id") == focal_card.get("grp_id")
+                ):
+                    result["partner_call"] = {
+                        "role": "play_by_play",
+                        "text": f"{who} {'cast' if who == 'You' else 'casts'} {name}.",
+                        "refs": [ranked[0]],
+                    }
                 break
     order += related
     order += focal
@@ -187,8 +206,13 @@ def compact_context(system, context):
             if key in result["new_events"]:
                 result["new_events"].remove(key)
     angle = result.get("editorial_question")
-    if angle and not set(angle["check_these_refs"]).issubset(result["facts"]):
+    if angle and (
+        not set(angle["check_these_refs"]).issubset(result["facts"])
+        or not ranked
+        or ranked[0] not in result["new_events"]
+    ):
         result.pop("editorial_question")
+        result.pop("partner_call", None)
     for key in ("heard", "earlier_points", "in_flight"):
         result.setdefault(key, [])
         for item in reversed(context.get(key, ())[-2:]):

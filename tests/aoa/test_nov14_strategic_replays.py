@@ -185,3 +185,55 @@ def test_karn_and_unattributed_objects_do_not_supply_an_unconditional_lifegain_e
 @pytest.mark.parametrize("value", ["N/A.", "To be written.", "Omitted."])
 def test_cached_placeholder_rejected_at_speech_boundary(value):
     assert not speakable_overview(value)
+
+
+@pytest.mark.usefixtures("source")
+@pytest.mark.parametrize("mode", ["approved", "audit_denied", "wrong_role", "silence", "already_called"])
+def test_cast_partner_reply_passes_full_native_group_audit(mode):
+    o = report("193910")
+    event = next(e for e in o.events if e.kind == "action_observed")
+    lead = "Your opponent casts Lunar Convocation."
+    o = replace(o, events=(event,), recent_commentary=(lead,) if mode == "already_called" else ())
+    audited = []
+
+    def rpc(system, ctx, audit):
+        if audit:
+            audited.extend(ctx["lines"])
+            return {
+                "checks": [
+                    dict(
+                        index=i,
+                        supported=mode != "audit_denied",
+                        adds_insight=True,
+                        unsupported_claim="unsupported" if mode == "audit_denied" else "",
+                        scope="position",
+                    )
+                    for i in range(len(audited))
+                ]
+            }
+        assert ctx["partner_call"]["text"] == lead
+        assert ctx["allowed_roles"] == ["color_analyst"]
+        if mode == "silence":
+            return {"turns": []}
+        return {
+            "turns": [
+                {
+                    "role": "play_by_play" if mode == "wrong_role" else "color_analyst",
+                    "text": "If the Case gains life, blockers alone might not stabilize the race.",
+                    "refs": [ctx["new_events"][0], *ctx["editorial_question"]["check_these_refs"]],
+                }
+            ]
+        }
+
+    b = HeadlessBooth(CommentaryConfig(mode="commentary", speakers=2, generative=True), rpc, time.monotonic)
+    lines, _ = b.generate(o)
+    if mode in ("wrong_role", "silence"):
+        assert not lines and not audited
+    elif mode == "audit_denied":
+        assert not lines and [x["role"] for x in audited] == ["play_by_play", "color_analyst"]
+    else:
+        assert [x["text"] for x in audited] == [item.text for item in lines]
+        if mode == "already_called":
+            assert len(lines) == 1 and lines[0].role == "color_analyst"
+        else:
+            assert len(lines) == 2 and lines[0].text == lead and lines[1].anchor_uid == lines[0].uid
