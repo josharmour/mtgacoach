@@ -631,7 +631,9 @@ def _player_label(seat: int) -> str:
 def native_sole_pass_request(poll: dict[str, Any]) -> tuple[int, int] | None:
     """Bind a forced Pass to a complete, current bridge menu before any filtering."""
     if (
-        poll.get("ok") is not True
+        poll.get("bridge_runtime") != "il2cpp-macos"
+        or poll.get("native_sole_pass_verified") is not True
+        or poll.get("ok") is not True
         or poll.get("has_pending") is not True
         or poll.get("request_type") != "ActionsAvailable"
         or poll.get("request_class") != "ActionsAvailableRequest"

@@ -317,6 +317,8 @@ def test_old_incomplete_or_disconnected_visible_boards_do_not_unblock_combat():
 def _bound_pass_poll():
     return {
         **_pass_only_poll(),
+        "bridge_runtime": "il2cpp-macos",
+        "native_sole_pass_verified": True,
         "request_class": "ActionsAvailableRequest",
         "msg_id": 91,
         "allow_undo": False,
@@ -353,6 +355,10 @@ def test_real_planner_and_fresh_bridge_preserve_a_forced_priority_pass(gains_hid
 @pytest.mark.parametrize(
     "change",
     [
+        {"bridge_runtime": "bepinex"},
+        {"bridge_runtime": "il2cpp-android"},
+        {"native_sole_pass_verified": False},
+        {"native_sole_pass_verified": "true"},
         {"msg_id": 0},
         {"game_state_id": True},
         {"msg_id": "91"},
@@ -380,7 +386,7 @@ def test_filtered_pass_still_asks_and_remembers_normal_reasoning():
     from tests.test_decision_layer_20261019 import _Model, _planner, _reply
     from tests.test_planner_micro_wins_226 import _our_main
 
-    state = {**_our_main(), "_log_game_state_id": 204}
+    state = {**_our_main(), "_log_game_state_id": 204, "_native_sole_pass_request": (204, 91)}
     poll = _bound_pass_poll()
     poll["actions"].append({"actionType": "ActivateMana", "instanceId": 4})
     engine = _engine([state])

@@ -1487,3 +1487,64 @@ def test_repeatable_casting_modes_reach_arena_in_one_submission():
     assert submit_option(bridge, decision, ["idx:1"] * 3)
     [batch] = game.submits()
     assert submitted_uint_values(batch) == [167296] * 3
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        None,
+        "missing_getter",
+        "integer_getter",
+        "true_string",
+        "partial_list",
+        "bool_count",
+        "missing_count",
+        "extra_raw_item",
+        "unresolved_action",
+        "truncated_action",
+        "missing_pass_cost_flag",
+        "coerced_group",
+        "string_enum",
+        "float_message",
+        "source_error",
+    ],
+)
+def test_sole_pass_evidence_requires_complete_native_reflection(damage):
+    from arenamcp.decisions import native_sole_pass_request
+
+    raw = action(11, "Pass", 0, 0, assumeCanBePaidFor_=False)
+    request = actions_request(raw)
+    getters = {"Type": enum("ActionsAvailable", 1), "CanPass": True, "CanCancel": False, "AllowUndo": False}
+    game = FakeGame(request, getters)
+    if damage == "missing_getter":
+        getters.pop("CanCancel")
+    elif damage == "integer_getter":
+        getters["AllowUndo"] = 0
+    elif damage == "true_string":
+        getters["CanPass"] = "yes"
+    elif damage == "partial_list":
+        request["Actions"]["$n"] = 2
+    elif damage == "bool_count":
+        request["Actions"]["$n"] = True
+    elif damage == "missing_count":
+        del request["Actions"]["$n"]
+    elif damage == "extra_raw_item":
+        request["Actions"]["$items"].append({})
+    elif damage == "unresolved_action":
+        raw["$ref"] = True
+    elif damage == "truncated_action":
+        raw["$more"] = True
+    elif damage == "missing_pass_cost_flag":
+        raw.pop("assumeCanBePaidFor_")
+    elif damage == "coerced_group":
+        raw["grpId_"] = False
+    elif damage == "string_enum":
+        raw["actionType_"] = "Pass"
+    elif damage == "float_message":
+        game.msg = 7.0
+    elif damage == "source_error":
+        request["Actions"]["$bad_ptr"] = True
+    response = adapter_for(game).handle({"action": "get_pending_actions"})
+    assert response["ok"]
+    assert native_sole_pass_request(response) == ((40, 7) if damage is None else None)
+    assert response.get("native_sole_pass_verified") is (True if damage is None else None)

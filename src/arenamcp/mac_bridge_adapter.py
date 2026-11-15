@@ -384,6 +384,55 @@ class Snapshot:
         return handle(self.request)
 
 
+def _verified_sole_pass(snapshot: Snapshot) -> bool:
+    """Require the uncoerced controls, request identity and entire native Actions list."""
+    req, controls = snapshot.request, snapshot.getters
+    if (
+        not isinstance(req, dict)
+        or req.get("$c") != "GreClient.Rules.ActionsAvailableRequest"
+        or controls.get("CanCancel") is not False
+        or controls.get("AllowUndo") is not False
+        or controls.get("CanPass") is not True
+    ):
+        return False
+    original = snapshot.original_message
+    if (
+        not isinstance(original, dict)
+        or original.get("$c") != "Wotc.Mtgo.Gre.External.Messaging.GREToClientMessage"
+    ):
+        return False
+    for member in ("GameStateId", "MsgId"):
+        value = field(original, member)
+        if type(value) is not int or value <= 0:
+            return False
+    actions = field(req, "Actions")
+    if not isinstance(actions, dict) or type(actions.get("$n")) is not int or actions["$n"] != 1:
+        return False
+    entries = items(actions)
+    if (
+        len(entries) != 1
+        or not isinstance(entries[0], dict)
+        or entries[0].get("$c") != "Wotc.Mtgo.Gre.External.Messaging.Action"
+    ):
+        return False
+    action = entries[0]
+    for node in (req, original, actions, action):
+        if (
+            not isinstance(node.get("$c"), str)
+            or not node["$c"]
+            or type(node.get("$h")) is not int
+            or node["$h"] <= 0
+            or any(k in node for k in ("$more", "$ref", "$bad_ptr", "$none", "$unity"))
+        ):
+            return False
+    for value, name in ((controls.get("Type"), "ActionsAvailable"), (field(action, "ActionType"), "Pass")):
+        if not isinstance(value, dict) or value.get("e") != name or type(value.get("v")) is not int:
+            return False
+    return field(action, "AssumeCanBePaidFor") is False and all(
+        type(value) is int and value == 0 for value in (field(action, "GrpId"), field(action, "InstanceId"))
+    )
+
+
 class MacBridgeAdapter:
     # Also drives the Android build of the same probe ("il2cpp-android"): the
     # reflect-1 protocol and the game's classes are identical on both.
@@ -2031,6 +2080,8 @@ class MacBridgeAdapter:
             "allow_undo": bool(getters.get("AllowUndo")),
             "bridge_runtime": self._runtime,
         }
+        if self._runtime == "il2cpp-macos" and _verified_sole_pass(snapshot):
+            response["native_sole_pass_verified"] = True
         if snapshot.game_state_id is not None:
             response["game_state_id"] = snapshot.game_state_id
             response["msg_id"] = snapshot.msg_id

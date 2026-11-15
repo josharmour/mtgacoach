@@ -5797,9 +5797,7 @@ class AutopilotEngine(
                 # chose the revealed Plains and every answer was refused.
                 option_ids = []
             else:
-                planner_state = (
-                    {**game_state, "_native_sole_pass_request": sole_pass} if sole_pass else game_state
-                )
+                planner_state = {**game_state, "_native_sole_pass_request": sole_pass}
                 option_ids = self._planner.plan_decision_options(decision, planner_state)
         finally:
             if callable(set_cancel):
