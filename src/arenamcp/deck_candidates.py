@@ -176,6 +176,9 @@ class _DeckPrint:
 
 def _name_key(name: str) -> str:
     text = name.casefold().replace("’", "'")
+    # Public lists and the native catalog spell face separators and spaced ellipses differently.
+    text = re.sub(r"\s+/{2,3}\s+", " // ", text)
+    text = re.sub(r"(?<=\S)\s*\.\s+\.\s+\.", "...", text)
     return "".join(ch for ch in unicodedata.normalize("NFKD", text) if not unicodedata.combining(ch))
 
 

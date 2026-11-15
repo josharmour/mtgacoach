@@ -161,3 +161,44 @@ def test_source_tiles_require_goldfish_deck_identity(tmp_path, monkeypatch):
     assert client._parse_tile(tile("/deck/8390123#paper"))["url"].endswith("/deck/8390123#paper")
     assert client._parse_tile(tile("//other.example/archetype/standard")) is None
     assert client._parse_tile(tile("/settings")) is None
+
+
+def test_public_lists_match_native_split_titles_and_spaced_ellipses():
+    # Two unresolved public titles in the November 14 live deck suggestions.
+    database = dc._ArenaPrices([(73788, "Dusk /// Dawn", "rare"), (97839, "With Great Power . . .", "rare")])
+    cost = dc.compare_collection(
+        {"mainboard": ["1 Dusk // Dawn", "1 With Great Power..."]}, {73788: 1}, {}, database
+    )
+    assert cost["spend"] == {"rare": 1} and not cost["unknown"]
+    assert database.get_card_by_name("Dawn") is None
+    assert database.get_card_by_name("Generous Gift") is None
+
+
+def test_missing_rate_source_preserves_native_empty_filter_feedback(qapp):
+    from arenamcp.desktop.deck_builder import DeckBuilderDialog
+
+    dialog = DeckBuilderDialog(None)
+    try:
+        deck = {
+            "name": "Example",
+            "source": "Public list",
+            "cost": {
+                "owned": False,
+                "affordable": False,
+                "unknown": [],
+                "spend": {"rare": 2},
+                "missing": {"Example": 2},
+            },
+        }
+        dialog._loaded([deck], "Fleet results unavailable.")
+        assert (
+            "nearest first" in dialog.status.text() and "Fleet results unavailable." in dialog.status.text()
+        )
+        assert dialog.table.rowCount() == 1
+        dialog.mode.setCurrentIndex(2)
+        dialog.order.setCurrentIndex(1)
+        assert "Fleet results unavailable." in dialog.status.text()
+        dialog._loaded([deck], "")
+        assert "Fleet results unavailable." not in dialog.status.text()
+    finally:
+        dialog.close()

@@ -101,6 +101,7 @@ class DeckBuilderDialog(QDialog):
         self._visible = []
         self._worker = None
         self._checking_paste = False
+        self._source_warning = ""
         layout = QVBoxLayout(self)
         intro = QLabel(
             "Find a deck you can build with your cards or wildcards, then import it into Arena. "
@@ -210,11 +211,12 @@ class DeckBuilderDialog(QDialog):
             self.mode.setCurrentIndex(2)
         else:
             self._candidates = candidates
+            self._source_warning = error if candidates else ""
         self._render()
         if self._checking_paste and candidates:
             self.table.selectRow(next(i for i, deck in enumerate(self._visible) if deck is candidates[-1]))
         self._checking_paste = False
-        if error:
+        if error and not candidates:
             self.status.setText(error + " You can still paste a source deck export to check its cost.")
 
     def _render(self):
@@ -271,6 +273,8 @@ class DeckBuilderDialog(QDialog):
                 f"{len(self._visible)} decks match this filter. "
                 "Try All candidates or paste another deck if none fit."
             )
+        if self._source_warning:
+            self.status.setText(self.status.text() + "\n" + self._source_warning)
         self._select()
 
     def _selected(self):
