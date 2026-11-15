@@ -70,9 +70,10 @@ class CommentarySettingsDialog(QDialog):
             ],
             speech_rate(settings),
         )
-        self.private = QCheckBox("Discuss my hand and deck")
-        self.private.setChecked(self.config.private_information)
-        self.public_label = QLabel("Public announcers")
+        self.provider.setToolTip(
+            "Chatterbox renders announcer lines, including your cards, on the Coach speech server. Kokoro and the on-device Qwen pair can render them locally."
+        )
+        self.public_label = QLabel("Announcer voices")
         self.public_voice = combo([("kokoro", "Kokoro voices")], "kokoro")
         self.saved_public_voice = settings.get("commentary_public_voice", "kokoro")
         self.local_available = False
@@ -102,7 +103,6 @@ class CommentarySettingsDialog(QDialog):
             ("Voice engine", self.provider),
             ("Hear", self.mode),
             (self.style_label, self.style),
-            ("", self.private),
             (self.public_label, self.public_voice),
             (self.voice_label, self.voice),
             (self.analyst_label, self.analyst),
@@ -127,7 +127,6 @@ class CommentarySettingsDialog(QDialog):
         self.enabled.toggled.connect(self._update_status)
         self.mode.currentIndexChanged.connect(self._update_controls)
         self.public_voice.currentIndexChanged.connect(self._update_controls)
-        self.private.toggled.connect(self._update_controls)
         self.catalog_signals.local_ready.connect(self._local_ready)
         if self.saved_public_voice == qwen_public.PROVIDER:
             self.public_voice.addItem("Qwen3 · checking local pack…", qwen_public.PROVIDER)
@@ -158,11 +157,7 @@ class CommentarySettingsDialog(QDialog):
         self._update_controls()
 
     def _expressive(self):
-        return (
-            self._kokoro_duo()
-            and not self.private.isChecked()
-            and self.public_voice.currentData() == qwen_public.PROVIDER
-        )
+        return self._kokoro_duo() and self.public_voice.currentData() == qwen_public.PROVIDER
 
     def _kokoro_duo(self):
         return self.mode.currentData() == "commentary" and self.provider.currentData() == "kokoro"
@@ -206,7 +201,6 @@ class CommentarySettingsDialog(QDialog):
         )
         self.public_label.setVisible(choice_visible)
         self.public_voice.setVisible(choice_visible)
-        self.public_voice.setEnabled(not self.private.isChecked())
         expressive = self._expressive()
         self.voice.setVisible(not expressive)
         self.voice_label.setVisible(not expressive)
@@ -214,7 +208,6 @@ class CommentarySettingsDialog(QDialog):
         self.speed.setToolTip("Guides the local announcers’ speaking pace." if expressive else "")
         self.analyst_label.setVisible(kokoro_duo and not expressive)
         self.analyst.setVisible(kokoro_duo and not expressive)
-        self.private.setVisible(duo)
         self.style.setVisible(duo)
         self.style_label.setVisible(duo)
         self.pair_error = ""
@@ -313,13 +306,6 @@ class CommentarySettingsDialog(QDialog):
                 else ""
             )
             or (
-                "Hand and deck commentary uses your Kokoro pair."
-                if self._kokoro_duo()
-                and self.private.isChecked()
-                and self.public_voice.currentData() == qwen_public.PROVIDER
-                else ""
-            )
-            or (
                 "Loading Chatterbox voices…"
                 if self.catalog_pending
                 else "Preview auditions the selected voice or both announcers without saving. Announcers use play-by-play then analyst; advice stays silent. Server default + partner keeps the server lead and adds a distinct available voice."
@@ -338,7 +324,6 @@ class CommentarySettingsDialog(QDialog):
             autoplay_speech=self.mode.currentData(),
             commentary_persona=self.style.currentData(),
             commentary_public_voice=self.public_voice.currentData(),
-            commentary_private_information=self.private.isChecked(),
             commentary_speakers=2,
             commentary_kokoro_pair=self.pairs["kokoro"],
             commentary_chatterbox_pair=self.pairs["chatterbox"],
@@ -366,7 +351,7 @@ class CommentarySettingsDialog(QDialog):
             speakers=2,
             persona=self.style.currentData(),
             focus="analysis",
-            private_information=self.private.isChecked(),
+            private_information=self.mode.currentData() == "commentary",
             generative=True,
             muted=False,
             output_owner="coach",
@@ -375,7 +360,11 @@ class CommentarySettingsDialog(QDialog):
         )
         values.update(autoplay_speech=config.mode, muted=not self.enabled.isChecked())
         values.update(
-            {"commentary_" + key: value for key, value in config.to_wire().items() if key != "mode"}
+            {
+                "commentary_" + key: value
+                for key, value in config.to_wire().items()
+                if key not in {"mode", "private_information"}
+            }
         )
         for key, value in values.items():
             self.settings.set(key, value)

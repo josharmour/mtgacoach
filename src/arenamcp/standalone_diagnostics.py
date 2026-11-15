@@ -66,6 +66,9 @@ class _DiagnosticsMixin:
                 progress_cb=progress_cb,
                 extra_context=extra_context,
             )
+            from arenamcp.speech_journal import for_game
+
+            report["speech_transcript"] = for_game(report.get("game_state"))
             report["reason"] = reason
             bug_file = _write_report(bug_dir, f"bug_{timestamp}", report)
 

@@ -288,7 +288,7 @@ def test_game_bound_seed_reconnect_and_summarized_window():
     assert project(board(), g) is None
 
 
-def test_real_pipe_only_passes_fact_to_desktop_with_explicit_permission(monkeypatch):
+def test_real_pipe_supplies_verified_local_outs_whenever_announcers_are_enabled(monkeypatch):
     from arenamcp import match_context
     from arenamcp.pipe_adapter import PipeAdapter
 
@@ -306,9 +306,11 @@ def test_real_pipe_only_passes_fact_to_desktop_with_explicit_permission(monkeypa
     event = p._emit.call_args.args[0]
     assert event["private_library_removal"]["answers"] == {"Plummet": 3, "Strong Bolt": 3}
     assert event["data"] is s
-    p._commentary.offer.assert_called_once_with(s)
+    inventory = event["commentary_library_inventory"]
+    assert sum(row["count"] for row in inventory) == event["private_library_removal"]["remaining"]
+    p._commentary.offer.assert_called_once_with({**s, "commentary_library_inventory": inventory})
     assert "private_library_removal" not in s
-    p._coach.settings["commentary_private_information"] = False
+    p._coach.settings["autoplay_speech"] = "actions"
     p.emit_game_state(s)
     assert "private_library_removal" not in p._emit.call_args.args[0]
 

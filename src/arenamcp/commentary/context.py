@@ -264,6 +264,14 @@ def compact_context(system, context, *, reply_system=None, pair_for=None):
         result.get("editorial_question", {}).get("check_these_refs", ()) if result.get("partner_call") else ()
     )
     order = ranked[:2] + annotations + list(reads) + list(handoff) + order[len(ranked[:2]) :]
+    sequence = [ref for ref in context.get("play_sequence", ()) if ref in facts][-4:]
+    if sequence:
+        result["play_sequence"] = list(sequence)
+        order += sequence
+    order += [key for key in facts if key.startswith("private:hand:")]
+    order += ["state:revealed_opposing_hand", "private:library"]
+    remaining = [key for key in facts if key.startswith("private:remaining:")]
+    order += remaining[:2]
     order += related
     order += focal
     others = [k for k in permanents if k not in focal]
@@ -284,7 +292,7 @@ def compact_context(system, context, *, reply_system=None, pair_for=None):
     ]
     order += ["state:board"]
     order += [k for k in facts if k.startswith("private:hand:")]
-    order += ranked[2:]
+    order += ranked[2:] + remaining[2:]
     order += [k for k in facts if k.startswith("card:")]
     for key in dict.fromkeys(order):
         if key not in facts:
@@ -296,6 +304,8 @@ def compact_context(system, context, *, reply_system=None, pair_for=None):
             result["facts"].pop(key)
             if key in result["new_events"]:
                 result["new_events"].remove(key)
+    if sequence:
+        result["play_sequence"] = [ref for ref in sequence if ref in result["facts"]]
     for key, references in reads.items():
         if not any(ref in result["new_events"] for ref in references):
             result["facts"].pop(key, None)

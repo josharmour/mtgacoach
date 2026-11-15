@@ -268,7 +268,7 @@ def _public_removal_threat(snapshot):
     return highest_public_creature_threat(board, candidates, local, opponent)
 
 
-def private_removal_fact(snapshot, game, *, allow_private, card_lookup):
+def _census(snapshot, game, allow_private):
     if allow_private is not True or not game or not isinstance(snapshot, dict):
         return None
     # A bridge overlay and its GRE census can describe different revisions.
@@ -278,21 +278,36 @@ def private_removal_fact(snapshot, game, *, allow_private, card_lookup):
         type(bridge) is not int or bridge != state_id
     ):
         return None
-    threat = _public_removal_threat(snapshot)
-    if not threat:
-        return None
-    seat = snapshot["local_seat_id"]
+    seat = snapshot.get("local_seat_id")
     match = snapshot.get("match_id")
     number = snapshot.get("game_number")
-    rows = snapshot["zones"]["battlefield"]
+    rows = (snapshot.get("zones") or {}).get("battlefield")
+    if not isinstance(rows, list) or not all(isinstance(c, dict) for c in rows):
+        return None
     battlefield = {c.get("instance_id"): c for c in rows}
     if len(battlefield) != len(rows):
         return None
-    census = game.commentary_removal_census(
+    return game.commentary_removal_census(
         match, number, seat, state_id, allow_private=allow_private, battlefield=battlefield
     )
+
+
+def private_removal_fact(snapshot, game, *, allow_private, card_lookup):
+    if allow_private is not True or not isinstance(snapshot, dict) or not _public_removal_threat(snapshot):
+        return None
+    return _removal(snapshot, _census(snapshot, game, allow_private), card_lookup)
+
+
+def _removal(snapshot, census, card_lookup):
     if census is None:
         return None
+    threat = _public_removal_threat(snapshot)
+    if not threat:
+        return None
+    rows = snapshot["zones"]["battlefield"]
+    seat = snapshot["local_seat_id"]
+    match, number = snapshot["match_id"], snapshot["game_number"]
+    state_id = snapshot["_log_game_state_id"]
     counts, local_plains = census
     qualified = Counter()
     complete = True
@@ -323,25 +338,28 @@ def private_removal_fact(snapshot, game, *, allow_private, card_lookup):
     }
 
 
-def private_outs_for_desktop(coach, snapshot):
+def player_library_facts(coach, snapshot):
+    """Read one verified frame for both the announcers and the exact outs line."""
     from arenamcp.match_context import prepared_card
 
     from .config import CommentaryConfig
 
-    settings = getattr(coach, "settings", {})
-    config = CommentaryConfig.from_settings(settings)
-    if not config.enabled or config.private_information is not True:
-        return None
+    config = CommentaryConfig.from_settings(getattr(coach, "settings", {}))
+    if not config.enabled or not config.private_information:
+        return None, None
     server = getattr(getattr(coach, "_mcp", None), "_server", None)
     try:
-        return private_removal_fact(
-            snapshot,
-            getattr(server, "game_state", None),
-            allow_private=True,
-            card_lookup=prepared_card,
-        )
+        census = _census(snapshot, getattr(server, "game_state", None), True)
+        if census is None:
+            return None, None
+        counts, _ = census
+        inventory = [
+            {"grp_id": gid, "count": count, "name": (prepared_card(gid) or {}).get("name")}
+            for gid, count in sorted(counts.items())
+        ]
+        return inventory, _removal(snapshot, census, prepared_card)
     except (TypeError, KeyError, ValueError, AttributeError):
-        return None
+        return None, None
 
 
 def private_removal_line(fact, snapshot):

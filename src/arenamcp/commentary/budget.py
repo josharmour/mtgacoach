@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import time
+import uuid
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 class BudgetExceeded(RuntimeError):
@@ -66,6 +67,7 @@ class Exchange:
     closed: bool = False
     usable: bool = True
     single_reply_audit: bool = False
+    attempt: str = field(default_factory=lambda: uuid.uuid4().hex)
 
 
 class CommentaryBudget:

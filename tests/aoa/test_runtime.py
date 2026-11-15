@@ -707,3 +707,22 @@ def test_analysis_duo_paces_routine_fallbacks_without_consuming_the_analyst_evid
     service._fallback(obs, cfg, "output_budget")
     assert any(m["type"] == "commentary_proposal" for m in proposals) is expected
     assert service.pending_events[source.event_id] == source
+
+
+def test_solo_analyst_preserves_the_single_line_audit_reservation():
+    from unittest.mock import Mock
+
+    from arenamcp.backends.proxy import ProxyBackend
+
+    backend = Mock(spec=ProxyBackend)
+    backend.complete.return_value = "{}"
+    service = CommentaryService(settings=lambda: {}, backend=lambda: backend, emit=lambda _: None)
+    exchange = service.budget.begin()
+    service._backend_request(
+        exchange,
+        "author",
+        {"allowed_roles": ["color_analyst"], "standalone_event": "event:2", "new_events": ["event:2"]},
+        False,
+    )
+    service._backend_request(exchange, "audit", {"lines": [{"role": "color_analyst"}]}, True)
+    assert backend.complete.call_args.args[2] == 512

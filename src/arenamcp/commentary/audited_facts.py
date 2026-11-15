@@ -174,7 +174,20 @@ def binding(scope, tracked, sources, observation, text):
         ):
             snapshot = True
             continue
-        if key in {"state:turn", "state:game_read", "private:deck_plan"} and key in deps:
+        if (
+            key
+            in {
+                "state:turn",
+                "state:game_read",
+                "private:deck_plan",
+                "private:library",
+                "state:revealed_opposing_hand",
+            }
+            and key in deps
+        ):
+            snapshot = True
+            continue
+        if key in deps and re.fullmatch(r"private:remaining:[0-9]+", key):
             snapshot = True
             continue
         if key not in deps:

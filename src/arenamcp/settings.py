@@ -88,7 +88,6 @@ DEFAULTS = {
     "commentary_focus": "analysis",
     "commentary_exchanges_per_minute": 2,
     "commentary_generative": False,
-    "commentary_private_information": False,
     "commentary_muted": False,
     "commentary_output_owner": "coach",
     "commentary_python": "",

@@ -404,3 +404,92 @@ def test_single_mills_stay_in_context_without_requesting_generation(source):
     output, _ = booth.generate(only_mills)
     assert not output and not booth.booth.pending
     assert sum(r["data"].get("category") == "Mill" for r in booth.booth.recent) == 2
+
+
+def test_analysis_duo_can_air_an_independent_color_line_after_an_unrelated_play_call(source):
+    obs = replace(observation(), recent_commentary=("Rival attacks with two creatures.",))
+    cfg = CommentaryConfig(mode="commentary", generative=True, focus="analysis")
+    seen = []
+
+    def rpc(system, ctx, audit):
+        seen.append((audit, ctx))
+        if audit:
+            return {
+                "checks": [
+                    {
+                        "index": 0,
+                        "supported": True,
+                        "adds_insight": True,
+                        "unsupported_claim": "",
+                        "scope": "historical",
+                    }
+                ]
+            }
+        assert ctx["allowed_roles"] == ["color_analyst"]
+        assert not ctx.get("partner_call") and not ctx.get("partner_call_heard")
+        assert ctx["standalone_event"] in ctx["play_sequence"]
+        return {
+            "turns": [
+                {
+                    "role": "color_analyst",
+                    "text": "Opt offered a choice about the next draw.",
+                    "refs": [ctx["standalone_event"]],
+                }
+            ]
+        }
+
+    booth = HeadlessBooth(cfg, rpc, lambda: obs.arrived_at)
+    items, _ = booth.generate(obs)
+    assert items and [i.role for i in items] == ["color_analyst"]
+    assert [a for a, _ in seen] == [False, True]
+
+
+def test_player_library_and_reveals_reach_the_native_analyst(source):
+    base = observation()
+    obs = replace(
+        base,
+        private_state={
+            "local_seat": 1,
+            "library_inventory": [{"grp_id": 123, "name": "Disenchant", "count": 2}],
+            "library": {"size": 31, "visible_cards": []},
+            "revealed_opposing_hand": {"cards": [{"name": "Opt", "grp_id": 1}]},
+        },
+        recent_commentary=("A creature attacked.",),
+    )
+    requests = []
+
+    def rpc(system, ctx, audit):
+        requests.append(ctx)
+        if audit:
+            return {
+                "checks": [
+                    {
+                        "index": 0,
+                        "supported": True,
+                        "adds_insight": True,
+                        "scope": "snapshot",
+                        "unsupported_claim": "",
+                    }
+                ]
+            }
+        return {
+            "turns": [
+                {
+                    "role": "color_analyst",
+                    "text": "Two copies of Disenchant leave an answer in the library.",
+                    "refs": [ctx["standalone_event"], "private:remaining:123"],
+                }
+            ]
+        }
+
+    booth = HeadlessBooth(
+        CommentaryConfig(mode="commentary", generative=True, private_information=True),
+        rpc,
+        lambda: base.arrived_at,
+    )
+    items, _ = booth.generate(obs)
+    assert requests[0]["facts"]["private:library"]["size"] == 31
+    assert requests[0]["facts"]["state:revealed_opposing_hand"]["cards"][0]["name"] == "Opt"
+    assert requests[0]["facts"]["private:remaining:123"]["remaining_copies"] == 2
+    assert [i.role for i in items] == ["color_analyst"]
+    assert "private:remaining:123" in requests[1]["facts"]

@@ -561,6 +561,7 @@ def _bug_report_entry(path: Path) -> dict[str, Any] | None:
     if report is None:
         return None
     report = dict(report)
+    report.pop("speech_transcript", None)  # Owner-local verbatim audio and rejected drafts.
     report.pop("screenshots", None)
     report.pop("mtga_log", None)
     raw_settings = report.pop("settings", None)

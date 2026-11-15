@@ -138,12 +138,9 @@ def main():
                             item.text,
                             SpeechCategory.COMMENTARY,
                             observation.epoch,
-                            (
-                                min(
-                                    (e.received_at or observation.arrived_at) + event_lifetime(e.kind)
-                                    for e in cited
-                                )
-                            )
+                            # An audited retrospective can use an older event as context.
+                            # Give the finished line its playback window once the audit returns.
+                            time.monotonic() + event_lifetime(cited[-1].kind)
                             if historical
                             else observation.arrived_at + (15 if position else 8),
                             voice=item.voice or "atlas",

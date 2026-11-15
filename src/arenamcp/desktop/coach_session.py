@@ -638,7 +638,6 @@ class CoachSession(QObject):
                     "autoplay_speech",
                     "commentary_persona",
                     "commentary_public_voice",
-                    "commentary_private_information",
                     "commentary_kokoro_pair",
                     "commentary_chatterbox_pair",
                     "voice",
@@ -923,6 +922,9 @@ class CoachSession(QObject):
                 "screenshots": screenshots,
                 "process_running": False,
             }
+            from arenamcp.speech_journal import for_game
+
+            report["speech_transcript"] = for_game(self._last_game_state)
             with open(bug_file, "w", encoding="utf-8") as f:
                 json.dump(report, f, indent=2, default=str)
             self.bugReportSaved.emit(str(bug_file), "")
@@ -1004,10 +1006,15 @@ class CoachSession(QObject):
             state = event.get("data") if "data" in event else event.get("game_state", {})
             if isinstance(state, dict):
                 self._last_game_state = state
+                speech_state = (
+                    {**state, "commentary_library_inventory": event["commentary_library_inventory"]}
+                    if "commentary_library_inventory" in event
+                    else state
+                )
                 if event.get("private_library_removal"):
-                    self._speech.observe(state, private_removal=event["private_library_removal"])
+                    self._speech.observe(speech_state, private_removal=event["private_library_removal"])
                 else:
-                    self._speech.observe(state)
+                    self._speech.observe(speech_state)
                 self.gameStateChanged.emit(state)
 
         elif ev_type in ("turn_plan", "emit_turn_plan"):

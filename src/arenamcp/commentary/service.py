@@ -12,6 +12,8 @@ from collections import deque
 from copy import deepcopy
 from dataclasses import replace
 
+from arenamcp import speech_journal
+
 from .budget import BudgetExceeded, CommentaryBudget
 from .client import CommentaryClient
 from .config import CommentaryConfig
@@ -35,6 +37,7 @@ class CommentaryService:
         self.closed = threading.Event()
         self.wake = threading.Event()
         self.latest = None
+        self.snapshots = deque(maxlen=16)
         self.thread = None
         self.deliveries = queue.Queue(maxsize=64)
         self.inflight = {}
@@ -66,6 +69,7 @@ class CommentaryService:
             if changed:
                 self.cancelled.set()
                 self.config = config
+                self.snapshots.clear()
                 self.pending_events = {}
                 self.fallback_events.clear()
                 self.inflight.clear()
@@ -83,13 +87,19 @@ class CommentaryService:
     def offer(self, snapshot):
         # The producer hands over an already-published detached snapshot. No
         # projection, model work, or worker I/O occurs on the gameplay thread.
-        previous = self.latest
-        self.latest = snapshot
-        if previous and (previous.get("match_id"), previous.get("game_number")) != (
-            snapshot.get("match_id"),
-            snapshot.get("game_number"),
-        ):
-            self.cancelled.set()
+        with self._lock:
+            previous = self.latest
+            self.latest = snapshot
+            if previous and (previous.get("match_id"), previous.get("game_number")) != (
+                snapshot.get("match_id"),
+                snapshot.get("game_number"),
+            ):
+                self.cancelled.set()
+                self.snapshots.clear()
+            if self.config.enabled and not self.muted():
+                self.snapshots.append((snapshot, time.monotonic()))
+            else:
+                self.snapshots.clear()
         if self.muted():
             self.cancelled.set()
             self.suppress_opening("muted")
@@ -303,13 +313,22 @@ class CommentaryService:
                 and lines[0].get("role") == "color_analyst"
             )
         else:
-            response_format = generation_format(reply="partner_call" in context)
+            response_format = generation_format(
+                reply="partner_call" in context or "standalone_event" in context
+            )
+            standalone = context.get("standalone_event")
             lead = context.get("partner_call")
-            single_reply = (
-                context.get("partner_call_heard") is True
-                and context.get("allowed_roles") == ["color_analyst"]
-                and isinstance(lead, dict)
-                and lead.get("role") == "play_by_play"
+            single_reply = context.get("allowed_roles") == ["color_analyst"] and (
+                (
+                    context.get("partner_call_heard") is True
+                    and isinstance(lead, dict)
+                    and lead.get("role") == "play_by_play"
+                )
+                or (
+                    isinstance(standalone, str)
+                    and standalone in context.get("new_events", ())
+                    and lead is None
+                )
             )
         output, timeout = self.budget.before_call(
             exchange,
@@ -349,11 +368,36 @@ class CommentaryService:
                 lane_wait_s=0,
                 first_token_timeout_s=min(2, timeout),
             )
-            if self.cancelled.is_set() or time.monotonic() >= exchange.deadline:
-                raise BudgetExceeded("cancelled_or_late")
             if not isinstance(response, str) or not response.strip():
                 raise BudgetExceeded("incomplete_final_response")
-            result = parse_completed_json(response)
+            try:
+                result = parse_completed_json(response)
+            except (BudgetExceeded, ValueError):
+                if expected is not None:
+                    speech_journal.record(
+                        expected.epoch,
+                        "unparseable_audit" if audit else "unparseable_draft",
+                        attempt=exchange.attempt,
+                        response=response,
+                    )
+                raise
+            if expected is not None and isinstance(result, dict):
+                if not audit and isinstance(result.get("turns"), list):
+                    for line in result["turns"]:
+                        if isinstance(line, dict) and isinstance(line.get("text"), str):
+                            speech_journal.record(
+                                expected.epoch,
+                                "model_draft",
+                                attempt=exchange.attempt,
+                                role=line.get("role"),
+                                text=line["text"],
+                            )
+                if audit and isinstance(result.get("checks"), list):
+                    speech_journal.record(
+                        expected.epoch, "audit_result", attempt=exchange.attempt, checks=result["checks"]
+                    )
+            if self.cancelled.is_set() or time.monotonic() >= exchange.deadline:
+                raise BudgetExceeded("cancelled_or_late")
             actual_output = usage.output_tokens
             return result
         finally:
@@ -392,7 +436,10 @@ class CommentaryService:
             available = tuple(
                 e
                 for e in available
-                if not (e.kind in {"action_observed", "life_change"} and event_excitement(e) == "normal")
+                if not (
+                    e.kind in {"action_observed", "life_change", "combat", "outcome", "permanent_entered"}
+                    and event_excitement(e) == "normal"
+                )
             )
         # A stale low-value candidate must not poison every other event in the burst.
         lines = []
@@ -403,6 +450,15 @@ class CommentaryService:
             if now < candidates[0].expires_at and valid_for(candidates[0], fresh):
                 lines = [u for u in candidates if now < u.expires_at and valid_for(u, fresh)]
                 break
+            for candidate in candidates:
+                speech_journal.record(
+                    candidate.epoch,
+                    "superseded",
+                    uid=candidate.utterance_id,
+                    text=candidate.text,
+                    role=candidate.role,
+                    reason="grounded_facts_changed",
+                )
             rejected = {eid for u in candidates for eid in u.evidence_ids}
             self.status("dropped", reason="facts_changed")
             available = tuple(e for e in available if e.event_id not in rejected)
@@ -443,6 +499,9 @@ class CommentaryService:
                     None,
                 )
         for item in lines:
+            speech_journal.record(
+                item.epoch, "fallback", uid=item.utterance_id, text=item.text, role=item.role, reason=reason
+            )
             self._emit_proposal(item, observation, config)
         self.status("grounded", reason=reason)
         return {eid for item in lines for eid in item.evidence_ids}
@@ -489,6 +548,8 @@ class CommentaryService:
                     if self.closed.is_set():
                         break
                     config, snapshot = self.config, self.latest
+                    snapshots = tuple(self.snapshots)
+                    self.snapshots.clear()
                     # A revoked projection keeps its own latched cancellation through
                     # worker admission and both model requests. Never clear it in place.
                     self.cancelled = threading.Event()
@@ -496,7 +557,13 @@ class CommentaryService:
                     self.client.close()
                     continue
                 try:
-                    observation = self.adapter.observe(snapshot, config.private_information)
+                    events = []
+                    for frame, arrived in snapshots or ((snapshot, time.monotonic()),):
+                        observation = self.adapter.observe(
+                            frame, config.private_information, arrived_at=arrived
+                        )
+                        events.extend(observation.events)
+                    observation = replace(observation, events=tuple(events))
                 except (TypeError, ValueError, KeyError):
                     continue
                 # Keep a bounded fresh candidate while speech or gameplay owns
@@ -571,6 +638,7 @@ class CommentaryService:
                     )
                     continue
                 exchange = None
+                outcome = "no_candidate"
                 usable = False
                 try:
                     if any(e.kind == "deck_overview" for e in observation.events):
@@ -603,13 +671,19 @@ class CommentaryService:
                         self.cancelled,
                     )
                     fresh = self.adapter.project(self.latest, config.private_information)
+                    outcome = str(
+                        result.get("status", {}).get("reason")
+                        or result.get("status", {}).get("state")
+                        or "empty"
+                    )
                     if (
                         self.cancelled.is_set()
                         or self.muted()
                         or config != self.config
                         or fresh.epoch != observation.epoch
                     ):
-                        self.status("dropped", reason="facts_or_mode_changed")
+                        outcome = "facts_or_mode_changed"
+                        self.status("dropped", reason=outcome)
                         self.client.close()
                         self._fallback(observation, config, "analysis_facts_changed")
                         continue
@@ -644,6 +718,17 @@ class CommentaryService:
                             prefix_valid and time.monotonic() < item.expires_at and valid_for(item, fresh)
                         )
                         if not prefix_valid:
+                            outcome = "expired_or_changed"
+
+                            speech_journal.record(
+                                item.epoch,
+                                "superseded",
+                                uid=item.utterance_id,
+                                role=item.role,
+                                text=item.text,
+                                attempt=exchange.attempt,
+                                reason="expired_or_changed",
+                            )
                             self.status(
                                 "not_delivered",
                                 reason="expired_or_changed",
@@ -656,6 +741,15 @@ class CommentaryService:
                         with self._lock:
                             self.inflight[item.utterance_id] = item.expires_at + 30
                             self.proposals[item.utterance_id] = item
+
+                        speech_journal.record(
+                            item.epoch,
+                            "audited",
+                            uid=item.utterance_id,
+                            attempt=exchange.attempt,
+                            text=item.text,
+                            role=item.role,
+                        )
                         self._emit_proposal(item, observation, config)
                         usable = True
                     if prefix_valid:
@@ -678,14 +772,22 @@ class CommentaryService:
                         request_seconds=round(exchange.request_seconds, 3),
                     )
                 except BudgetExceeded as error:
+                    outcome = str(error)
                     self.status("analysis_deferred", reason=str(error))
                     self._fallback(observation, config, str(error))
                 except Exception as error:
+                    outcome = type(error).__name__
                     self.status("unavailable", reason=type(error).__name__)
                     self.client.close()
                     self._fallback(observation, config, "analysis_unavailable")
                 finally:
                     if exchange:
+                        speech_journal.record(
+                            observation.epoch,
+                            "generation_finished",
+                            attempt=exchange.attempt,
+                            reason="proposed" if usable else outcome,
+                        )
                         self.budget.finish(exchange, usable=usable)
                         if not usable:
                             self.next_analysis_at = time.monotonic() + 5

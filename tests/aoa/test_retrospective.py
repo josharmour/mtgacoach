@@ -141,7 +141,7 @@ def test_real_worker_scopes_recent_recaps_and_fresh_analysis(scope):
             line.event_bound == (scope == "historical") and line.evidence_ids == (event.event_id,)
             for line in lines
         )
-        ceiling = {"historical": 12, "position": 15, "snapshot": 8}[scope]
+        ceiling = {"historical": 30, "position": 15, "snapshot": 8}[scope]
         assert ceiling - 5 < lines[0].expires_at - time.monotonic() <= ceiling
         moved = copy.deepcopy(obs.public_state)
         moved["turn_info"]["phase"] = "Combat"

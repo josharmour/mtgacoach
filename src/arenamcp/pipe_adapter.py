@@ -276,11 +276,14 @@ class PipeAdapter:
             explanations = getattr(getattr(self._coach, "_autopilot", None), "_commentary_explanations", ())
             if explanations:
                 snapshot = {**snapshot, "commentary_action_explanations": explanations}
-        # Keep the private count out of the shared state, model worker and match bundles.
-        from arenamcp.commentary.private_outs import private_outs_for_desktop
+        # Keep the verified inventory in the announcer projection and off the shared state.
+        from arenamcp.commentary.private_outs import player_library_facts
 
         event = {"type": "game_state", "data": snapshot}
-        private_outs = private_outs_for_desktop(self._coach, snapshot)
+        inventory, private_outs = player_library_facts(self._coach, snapshot)
+        if inventory is not None:
+            event["commentary_library_inventory"] = inventory
+            snapshot = {**snapshot, "commentary_library_inventory": inventory}
         if private_outs:
             event["private_library_removal"] = private_outs
         self._emit(event)
@@ -829,7 +832,7 @@ class PipeAdapter:
                 config = CommentaryConfig.from_wire(cmd.get("config") or {})
                 coach.settings.set("autoplay_speech", config.mode)
                 for key, value in config.to_wire().items():
-                    if key != "mode":
+                    if key not in {"mode", "private_information"}:
                         coach.settings.set("commentary_" + key, value)
                 autopilot = getattr(coach, "_autopilot", None)
                 if autopilot is not None:

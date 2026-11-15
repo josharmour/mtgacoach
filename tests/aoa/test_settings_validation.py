@@ -192,16 +192,14 @@ def test_two_role_style_pair_preview_and_save(dialog, style):
     reopened.close()
 
 
-def test_own_hand_and_deck_preference_is_visible_and_persists(dialog):
+def test_announcers_include_player_cards_without_a_switch(dialog):
     widget, settings, session = dialog
+    settings["commentary_private_information"] = False  # Legacy preference.
     widget.mode.setCurrentIndex(widget.mode.findData("commentary"))
-    assert not widget.private.isHidden()
-    widget.private.setChecked(True)
     assert widget._apply()
-    assert settings["commentary_private_information"] is True
     assert session.configure_commentary.call_args.args[0]["private_information"] is True
-    widget.mode.setCurrentIndex(widget.mode.findData("actions"))
-    assert widget.private.isHidden()
+    assert ui.CommentaryConfig.from_settings(settings).private_information
+    assert not hasattr(widget, "private")
 
 
 def test_kokoro_custom_role_voices_preview_save_and_reopen(dialog):
@@ -224,7 +222,7 @@ def test_kokoro_custom_role_voices_preview_save_and_reopen(dialog):
     reopened.close()
 
 
-def test_optional_public_pair_preview_save_and_private_switch(dialog):
+def test_local_pair_preview_save_with_player_cards(dialog):
     from arenamcp.commentary import qwen_public
 
     widget, settings, session = dialog
@@ -238,14 +236,6 @@ def test_optional_public_pair_preview_save_and_private_switch(dialog):
     assert settings == before and widget.voice.isHidden() and widget.analyst.isHidden()
     widget._apply()
     assert qwen_public.selected(settings)
-    widget.private.setChecked(True)
-    widget._preview()
-    assert not widget.public_voice.isEnabled() and not widget.analyst.isHidden()
-    assert not qwen_public.selected(session.preview_voice.call_args.args[0])
-    widget._apply()
-    assert settings["commentary_public_voice"] == qwen_public.PROVIDER
-    assert not qwen_public.selected(settings)
-    widget.private.setChecked(False)
     assert widget._expressive()
     widget.mode.setCurrentIndex(widget.mode.findData("actions"))
     assert widget.public_voice.isHidden() and not qwen_public.selected(widget._values())

@@ -45,6 +45,7 @@ class CommentaryConfig:
     def from_settings(cls, settings):
         data = {key: settings.get("commentary_" + key, default) for key, default in asdict(cls()).items()}
         data["mode"] = settings.get("autoplay_speech", "actions")
+        data["private_information"] = data["mode"] == "commentary"
         return cls.from_wire(data)
 
     @classmethod

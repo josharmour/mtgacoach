@@ -79,7 +79,7 @@ def test_engine_public_projection_routes_typed_roles_and_live_chunk_revocation(b
     assert gen > first and analyst["role"] == "color_analyst" and analyst["excitement"] == "tense"
     cancelled = Mock()
     tts._public_voice.cancel = cancelled
-    settings["commentary_private_information"] = True
+    settings["commentary_public_voice"] = "kokoro"
     assert not valid()
     tts._on_stream_chunk(gen, b"\0\0")
     cancelled.assert_called_once()
@@ -88,6 +88,7 @@ def test_engine_public_projection_routes_typed_roles_and_live_chunk_revocation(b
 
 def test_missing_late_or_private_engine_projection_cannot_render(booth):
     control, tts, _, service, sent = booth
+    control.config = replace(control.config, private_information=False)  # Explicit public-only wire.
     item = line(control)
     control.proposal(item.to_wire())
     service._emit_proposal(
@@ -144,7 +145,7 @@ def test_preview_both_public_voices_and_local_failure(booth):
 @pytest.mark.parametrize(
     "route",
     [
-        {"private": True},
+        {"private": True, "role": None},
         {"category": "essential"},
         {"provider": None},
         {"voice_id": "Serena"},
@@ -236,7 +237,11 @@ def test_private_projection_never_writes_the_line_to_the_engine_log(booth, caplo
     assert item.text not in caplog.text
     public = replace(item, utterance_id="public-trace", text="Public combat finished.")
     service.proposals[public.utterance_id] = public
-    service._emit_proposal(public, control.observation, control.config)
+    service._emit_proposal(
+        public,
+        replace(control.observation, private_state={}),
+        replace(control.config, private_information=False),
+    )
     service.delivery(public.utterance_id, "finished")
     assert public.text in caplog.text
 
@@ -244,6 +249,7 @@ def test_private_projection_never_writes_the_line_to_the_engine_log(booth, caplo
 @pytest.mark.parametrize("provider", ["kokoro", "chatterbox"])
 def test_public_mode_discards_late_private_proposals_for_every_voice(booth, provider):
     control, tts, settings, _, sent = booth
+    control.config = replace(control.config, private_information=False)  # Public-only projection.
     settings.update(tts_provider=provider, commentary_public_voice="kokoro")
     spoken = Mock()
     control.spoken = spoken
@@ -256,7 +262,7 @@ def test_public_mode_discards_late_private_proposals_for_every_voice(booth, prov
 
 def test_private_line_uses_the_private_local_audio_request(booth, monkeypatch, caplog):
     control, tts, settings, _, _ = booth
-    settings.update(tts_provider="chatterbox_remote", commentary_private_information=True)
+    settings.update(tts_provider="kokoro", commentary_public_voice="kokoro")
     control.config = replace(control.config, private_information=True)
     item = replace(line(control), text="A synthetic private deck fact.", utterance_id="sensitive-event-key")
     caplog.set_level("INFO", logger="arenamcp.desktop.commentary_controller")
@@ -268,7 +274,7 @@ def test_private_line_uses_the_private_local_audio_request(booth, monkeypatch, c
     assert payload["private"] and payload["provider"] == "kokoro"
     assert payload["text"] == item.text and payload["valid"]()
     control.spoken.assert_not_called()
-    settings["commentary_private_information"] = False
+    control.configure(replace(control.config, mode="actions").to_wire())
     assert not payload["valid"]()
     tts.speechStatus.emit(item.utterance_id, "superseded")
     assert item.utterance_id not in caplog.text and item.text not in caplog.text
@@ -286,7 +292,7 @@ def test_real_settings_route_private_proposals_to_local_voice(
     prefs = Settings()
     for key, value in {
         "autoplay_speech": "commentary",
-        "tts_provider": "chatterbox_remote",
+        "tts_provider": "kokoro",
         "voice": "am_adam",
         "commentary_private_information": True,
         "commentary_kokoro_pair": selected_pair,
@@ -318,17 +324,17 @@ def test_real_settings_route_private_proposals_to_local_voice(
     assert [s["state"] for s in sent][-2:] == ["started", "finished"]
     control.spoken.assert_not_called()
     control._catalog.assert_not_called()
-    assert prefs.get("tts_provider") == "chatterbox_remote"
+    assert prefs.get("tts_provider") == "kokoro"
 
 
-def test_revoking_hand_access_while_projecting_prevents_a_late_backend_call():
+def test_turning_off_announcers_while_projecting_prevents_a_late_backend_call():
     import threading
 
     from tests.aoa.test_runtime import snapshot
 
     from arenamcp.backends.proxy import ProxyBackend
 
-    entered, release, public_observed = (threading.Event() for _ in range(3))
+    entered, release, closed = (threading.Event() for _ in range(3))
     calls = []
     settings = {"autoplay_speech": "commentary", "commentary_private_information": True}
 
@@ -345,7 +351,7 @@ def test_revoking_hand_access_while_projecting_prevents_a_late_backend_call():
             pass
 
         def close(self):
-            pass
+            closed.set()
 
         def delivered(self, *args):
             pass
@@ -359,23 +365,22 @@ def test_revoking_hand_access_while_projecting_prevents_a_late_backend_call():
     )
     observe = service.adapter.observe
 
-    def gated(snapshot, private):
-        row = observe(snapshot, private)
+    def gated(snapshot, private, **kwargs):
+        row = observe(snapshot, private, **kwargs)
         if private:
             entered.set()
             assert release.wait(3)
             return replace(row, private_state={**row.private_state, "secret": "private-test-value"})
-        public_observed.set()
         return row
 
     service.adapter.observe = gated
     try:
         service.offer(snapshot())
         assert entered.wait(3)
-        settings["commentary_private_information"] = False
+        settings["autoplay_speech"] = "actions"
         service.configure()
         release.set()
-        assert public_observed.wait(3)
+        assert closed.wait(3)
         assert all("private-test-value" not in call for call in calls)
     finally:
         release.set()
@@ -396,6 +401,7 @@ def test_waiting_lead_cannot_be_replaced_by_its_own_analyst(booth, monkeypatch, 
     )
     render = Mock()
     monkeypatch.setattr(tts, "request_speech", render)
+    control.observe({"match_id": "m", "game_number": 1, "zones": {}, "turn_info": {}, "players": []})
     obs = control.observation
     advice = replace(line(control), utterance_id="advice", category=SpeechCategory.ADVICE)
     control.arbiter.submit(advice)
@@ -419,7 +425,7 @@ def test_waiting_lead_cannot_be_replaced_by_its_own_analyst(booth, monkeypatch, 
     if result == "expired":
         service.proposals["tail"] = replace(tail, expires_at=time.monotonic() - 1)
     if result == "revoked":
-        settings["commentary_private_information"] = False
+        settings["autoplay_speech"] = "actions"
         service.configure()
     tts.speechStatus.emit(lead.utterance_id, "stopped" if result == "interrupted" else "finished")
     assert not service.waiting_for_anchor
@@ -475,3 +481,18 @@ def test_real_grounded_opening_waits_behind_advice_then_delivers_both_roles_once
     tts.speechStatus.emit(tail_id, "finished")
     assert [u for u, state in feedback if state == "finished"] == [lead.utterance_id, tail_id]
     assert next(iter(service.openings.values()))["finished"] == {"play_by_play", "color_analyst"}
+
+
+def test_selected_hosted_voice_also_renders_player_perspective(booth, monkeypatch):
+    control, tts, settings, _, _ = booth
+    settings.update(
+        tts_provider="chatterbox_remote",
+        _commentary_voice_catalog={"voices": ["atlas", "mira"], "default": "atlas"},
+    )
+    hosted = Mock()
+    monkeypatch.setattr(tts, "_request_chatterbox_speech", hosted)
+    item = replace(line(control, role="color_analyst"), text="A known card in your hand.")
+    control.proposal(item.to_wire(), public_only=False)
+    assert hosted.call_args.kwargs["text"] == item.text
+    assert hosted.call_args.kwargs["chatterbox_voice"] == "mira"
+    tts._should_offload_to_remote.assert_not_called()

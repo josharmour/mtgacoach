@@ -18,7 +18,6 @@ def selected(settings):
         settings.get("commentary_public_voice") == PROVIDER
         and settings.get("tts_provider", "kokoro") == "kokoro"
         and settings.get("autoplay_speech") == "commentary"
-        and settings.get("commentary_private_information", False) is False
     )
 
 

@@ -182,13 +182,60 @@ class ObservationAdapter:
         if isinstance(snapshot.get("last_game_result"), str):
             public["last_game_result"] = snapshot["last_game_result"][:40]
         if private:
-            # Explicit consent only covers the local player's hand and deck.
+            # Project only identities Arena made available to this player.
             hand = (snapshot.get("zones") or {}).get("my_hand", [])
             local = snapshot.get("local_seat_id")
             cards = [_public_card({**c, "visibility": "public"}) for c in hand[:100] if isinstance(c, dict)]
             deck = [v for v in snapshot.get("deck_cards", [])[:250] if type(v) is int]
             cards = [card for card in cards if local and card.get("owner_seat_id") in (None, local)]
             private_state = {"local_seat": local, "hand": cards, "deck": deck}
+            from arenamcp.library_counts import observed_library_count
+
+            if local in (1, 2):
+                bridge = snapshot.get("_bridge_game_state_id")
+                matched = not (snapshot.get("_bridge_connected") or snapshot.get("bridge_connected")) or (
+                    type(bridge) is int and bridge == snapshot.get("_log_game_state_id")
+                )
+                visible = (snapshot.get("library_visible") or []) if matched else []
+                known = [
+                    {"name": row["name"], "grp_id": row["grp_id"]}
+                    for row in visible
+                    if isinstance(row, dict)
+                    and row.get("owner_seat_id") == local
+                    and row.get("name")
+                    and type(row.get("grp_id")) is int
+                    and row["grp_id"] > 3
+                    and not row.get("face_down")
+                    and row.get("identity_known", True) is True
+                ]
+                size = observed_library_count(snapshot)
+                if known or size is not None:
+                    private_state["library"] = {
+                        "size": size,
+                        "visible_cards": known,
+                        "source": "observed local library; identities may be incomplete and are unordered",
+                    }
+                inventory = snapshot.get("commentary_library_inventory")
+                if matched and isinstance(inventory, list):
+                    private_state["library_inventory"] = inventory
+                revealed = snapshot.get("revealed_cards")
+                if matched and isinstance(revealed, list):
+                    seen = [
+                        {"name": row["name"], "grp_id": row["grp_id"]}
+                        for row in revealed
+                        if isinstance(row, dict)
+                        and row.get("zone", "").lower() in {"hand", "zonetype_hand"}
+                        and row.get("name")
+                        and type(row.get("grp_id")) is int
+                        and row["grp_id"] > 3
+                        and row.get("owner_seat_id", 3 - local) == 3 - local
+                        and not row.get("face_down")
+                    ]
+                    if seen:
+                        private_state["revealed_opposing_hand"] = {
+                            "cards": seen,
+                            "source": "cards revealed in opponent hand; other cards unknown",
+                        }
             from .overview_quality import speakable_overview
 
             overview = snapshot.get("commentary_deck_overview")
@@ -204,8 +251,10 @@ class ObservationAdapter:
             observation = replace(observation, private_state=private_state)
         return replace(observation, snapshot_id=state_fingerprint(observation))
 
-    def observe(self, snapshot, private=False):
+    def observe(self, snapshot, private=False, *, arrived_at=None):
         current = self.project(snapshot, private)
+        if arrived_at is not None:
+            current = replace(current, arrived_at=arrived_at)
         previous = self.previous
         boundary = previous is None or previous.epoch != current.epoch
         if boundary:

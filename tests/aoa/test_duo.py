@@ -19,7 +19,7 @@ CATALOG = {"voices": ["atlas", "mira", "default"], "default": "atlas"}
 
 def observed(kind="action_observed"):
     state = {"match_id": "duo", "game_number": 1, "turn_info": {"turn_number": 4}, "zones": {}, "players": []}
-    obs = ObservationAdapter().project(state)
+    obs = ObservationAdapter().project(state, True)
     event = Evidence(
         "public-cast",
         kind,

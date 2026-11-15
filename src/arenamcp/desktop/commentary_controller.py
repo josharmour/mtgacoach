@@ -10,6 +10,7 @@ from dataclasses import replace
 
 from PySide6.QtCore import QObject, QTimer, Signal
 
+from arenamcp import speech_journal
 from arenamcp.chatterbox_remote import HOSTED_BASE
 from arenamcp.commentary import qwen_public
 from arenamcp.commentary.config import CommentaryConfig, normalize_persona, speech_rate
@@ -44,6 +45,7 @@ class CommentaryController(QObject):
         self.private_removal_uid = None
         self.adapter = ObservationAdapter()
         self.timings = {}
+        self.speech_epochs = {}
         self.voice_names = {}
         self.preview_settings = {}
         self.engine_ids = set()
@@ -66,12 +68,7 @@ class CommentaryController(QObject):
     def configure(self, config):
         updated = CommentaryConfig.from_wire(config)
         settings = get_settings()
-        if (
-            updated.enabled
-            and not updated.private_information
-            and not settings.get("muted", False)
-            and qwen_public.selected(settings)
-        ):
+        if updated.enabled and not settings.get("muted", False) and qwen_public.selected(settings):
             self.tts.warm_public_voice()
         elif not self.preview_settings and hasattr(self.tts, "release_public_voice"):
             self.tts.release_public_voice()
@@ -111,8 +108,7 @@ class CommentaryController(QObject):
         ):
             threat_id, text = self.private_removal
             if threat_id not in self.private_removal_played and len(self.private_removal_played) < 100:
-                # The full text stays on the desktop. It never enters the
-                # generated booth, heard-text history, transcript, or a remote voice.
+                # Exact census lines are rendered on the desktop.
                 settings = get_settings()
                 if settings.get("tts_provider", "kokoro") != "kokoro" or not self.tts.private_render_ready:
                     return
@@ -133,6 +129,7 @@ class CommentaryController(QObject):
                 )
                 self.private_removal_uid = (item.utterance_id, self.private_removal)
                 self.private_removal_played.add(threat_id)
+                self._attempt(item)
                 self.arbiter.submit(item)
 
     def _valid(self, item):
@@ -150,14 +147,9 @@ class CommentaryController(QObject):
             return item.provider != qwen_public.PROVIDER or qwen_public.selected(
                 self.preview_settings[item.utterance_id]
             )
-        if item.utterance_id in self.private_commentary_ids and (
-            not self.config.private_information
-            or get_settings().get("commentary_private_information") is not True
-        ):
+        if item.utterance_id in self.private_commentary_ids and not self.config.private_information:
             return False
-        if item.provider == qwen_public.PROVIDER and (
-            self.config.private_information or not qwen_public.selected(get_settings())
-        ):
+        if item.provider == qwen_public.PROVIDER and not qwen_public.selected(get_settings()):
             return False
         if item.category != SpeechCategory.COMMENTARY:
             return (
@@ -175,13 +167,11 @@ class CommentaryController(QObject):
             return
         if item.utterance_id in self.arbiter._states:
             return
+        self._attempt(item)
         settings = get_settings()
         if public_only is not True:
             self.private_commentary_ids.add(item.utterance_id)
-            if (
-                not self.config.private_information
-                or settings.get("commentary_private_information") is not True
-            ):
+            if not self.config.private_information:
                 self.commentary_ids.add(item.utterance_id)
                 self._status(item.utterance_id, "superseded")
                 return
@@ -190,6 +180,8 @@ class CommentaryController(QObject):
             # Submitting a reply now would replace its own lead in the single
             # pending slot. Ask the engine to reoffer it after the lead is heard.
             self.private_commentary_ids.discard(item.utterance_id)
+            self.speech_epochs.pop(item.utterance_id, None)
+            speech_journal.record(item.epoch, "waiting_for_anchor", uid=item.utterance_id)
             self.send(
                 {
                     "cmd": "commentary_delivery",
@@ -198,12 +190,14 @@ class CommentaryController(QObject):
                 }
             )
             return
-        provider = "kokoro" if public_only is not True else str(settings.get("tts_provider") or "kokoro")
+        provider = str(settings.get("tts_provider") or "kokoro")
+        if not public_only and provider != "chatterbox_remote":
+            provider = "kokoro"
         try:
-            if not self.config.private_information and qwen_public.selected(settings):
+            if qwen_public.selected(settings):
                 provider, pair = qwen_public.PROVIDER, qwen_public.PAIR
             else:
-                catalog = self._catalog(settings) if public_only is True else None
+                catalog = self._catalog(settings) if public_only or provider == "chatterbox_remote" else None
                 pair = voice_pair(settings, catalog, provider=provider)
             voice = pair[1 if item.role == "color_analyst" else 0]
         except VoicePairUnavailable as error:
@@ -237,6 +231,9 @@ class CommentaryController(QObject):
             category = SpeechCategory(event.get("speech_category") or "workflow")
         except ValueError:
             category = SpeechCategory.WORKFLOW  # Urgent alerts must be explicitly categorized.
+        epoch = self.arbiter.epoch or Epoch("desktop", 1)
+        self.speech_epochs[uid] = epoch
+        speech_journal.record(epoch, "proposed", uid=uid, text=text, category=category.value)
         if (
             category not in {SpeechCategory.ESSENTIAL, SpeechCategory.ADVICE}
             and self.config.mode != "actions"
@@ -373,8 +370,20 @@ class CommentaryController(QObject):
                 role="color_analyst" if index else "play_by_play",
                 anchor_id=uid if index else None,
             )
+            self._attempt(item)
             if not self.arbiter.submit(item, allow_muted=True):
                 self._status(item_id, "failed")
+
+    def _attempt(self, item):
+        self.speech_epochs[item.utterance_id] = item.epoch
+        speech_journal.record(
+            item.epoch,
+            "proposed",
+            uid=item.utterance_id,
+            category=item.category.value,
+            role=item.role,
+            text=item.text,
+        )
 
     def _private_speech_id(self, uid):
         return uid.startswith("private-outs:") or uid in self.private_commentary_ids
@@ -400,6 +409,14 @@ class CommentaryController(QObject):
         speech_text = item.text
         if item.category == SpeechCategory.COMMENTARY and self.observation is not None:
             speech_text = pronounce_players(speech_text, self.observation.public_state.get("player_names"))
+        speech_journal.record(
+            item.epoch,
+            "render_requested",
+            uid=item.utterance_id,
+            text=speech_text,
+            provider=item.provider,
+            voice=item.voice,
+        )
         self.tts.request_speech(
             **({"private": True} if private else {}),
             **overrides,
@@ -437,6 +454,9 @@ class CommentaryController(QObject):
     def _status(self, uid, state):
         now = time.monotonic()
         reason = self.arbiter.reasons.get(uid, state)
+        epoch = self.speech_epochs.get(uid)
+        if epoch:
+            speech_journal.record(epoch, state, uid=uid, reason=reason)
         if state == "accepted":
             self.timings[uid] = {"accepted": now}
         times = self.timings.get(uid, {})
@@ -455,6 +475,7 @@ class CommentaryController(QObject):
         if uid in self.commentary_ids:
             self.send({"cmd": "commentary_delivery", "utterance_id": uid, "state": state, "reason": reason})
         if state in TERMINAL_STATES:
+            self.speech_epochs.pop(uid, None)
             self.timings.pop(uid, None)
             self.voice_names.pop(uid, None)
             preview = self.preview_settings.pop(uid, None)

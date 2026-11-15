@@ -173,7 +173,11 @@ class TtsManager(QObject):
         role=None,
         private=False,
     ) -> None:
-        if private and (provider != "kokoro" or category != "commentary" or not self.private_render_ready):
+        if private and (
+            category != "commentary"
+            or provider not in {"kokoro", qwen_public.PROVIDER, "chatterbox_remote"}
+            or (provider == "kokoro" and not self.private_render_ready)
+        ):
             if speech_id:
                 self.speechStatus.emit(speech_id, "failed")
             return
@@ -186,6 +190,10 @@ class TtsManager(QObject):
 
         settings = settings_override if settings_override is not None else get_settings()
         selected = provider or str(settings.get("tts_provider") or "kokoro")
+        if private and selected == "chatterbox_remote" and settings.get("tts_provider") != selected:
+            if speech_id:
+                self.speechStatus.emit(speech_id, "failed")
+            return
         if selected == qwen_public.PROVIDER:
             preview = (
                 settings_override is not None
@@ -200,7 +208,6 @@ class TtsManager(QObject):
                 or (not preview and not qwen_public.selected(get_settings()))
                 or role not in {"play_by_play", "color_analyst"}
                 or voice_id != qwen_public.PAIR[role == "color_analyst"]
-                or private
             ):
                 if speech_id:
                     self.speechStatus.emit(speech_id, "failed")
@@ -267,7 +274,7 @@ class TtsManager(QObject):
                 speed=float(speed),
                 api_key=str(get_settings().get("license_key") or ""),
                 chatterbox_voice=voice_id
-                if voice_id in {"atlas", "mira", "default", "server_default"}
+                if category == "commentary" or voice_id in {"atlas", "mira", "default", "server_default"}
                 else str(settings.get("chatterbox_voice_override") or "server_default"),
                 speech_id=speech_id,
                 excitement=excitement,
