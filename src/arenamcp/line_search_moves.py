@@ -1628,7 +1628,18 @@ class Mid:
 
 
 class Deadline(Exception):
-    pass
+    # Only completed opponent turns on the normal block line count as a
+    # survival witness. Speculative block variants cannot refute its clock.
+    def __init__(self):
+        super().__init__()
+        self.survived_attacks = 0
+        self.completed: list[Node] = []
+
+    def observe(self, node: Node) -> None:
+        if node.block in ("", "best") and node.dead_at is None:
+            self.survived_attacks = max(self.survived_attacks, node.attacks)
+        if node.terminal or node.k >= len(LABELS):
+            self.completed.append(node)
 
 
 def hand_info(card: dict) -> Any:
@@ -6366,23 +6377,32 @@ class Moves:
         ):
             candidates.append(tuple(c for c in best if not self.spells[c[0].spell].floored))
         children = []
-        for casts in candidates:
-            mid = self.begin(node, land, casts)
-            options, _possible = self.attack_choices(mid)
-            if cheap and len(options) > 1:
-                everyone = next((o for o in options if o[0] == "all"), options[0])
-                attackers = [b for b in mid.ours if b["instance_id"] in everyone[1]]
-                blockers = [b for b in mid.theirs if b["instance_id"] not in mid.their_tapped]
-                fighting, tag = self.cast_pumped(attackers, mid.pumps)
-                damage = self.combat(fighting, blockers, mid.opp_life, tag=tag)[0]
-                lethal = damage + self.sneak_gain(mid, fighting, blockers, tag) >= mid.opp_life
-                options = [everyone if lethal else options[0]]
-            children += [self.finish(mid, option, greedy=True) for option in options]
+        try:
+            for casts in candidates:
+                mid = self.begin(node, land, casts)
+                options, _possible = self.attack_choices(mid)
+                if cheap and len(options) > 1:
+                    everyone = next((o for o in options if o[0] == "all"), options[0])
+                    attackers = [b for b in mid.ours if b["instance_id"] in everyone[1]]
+                    blockers = [b for b in mid.theirs if b["instance_id"] not in mid.their_tapped]
+                    fighting, tag = self.cast_pumped(attackers, mid.pumps)
+                    damage = self.combat(fighting, blockers, mid.opp_life, tag=tag)[0]
+                    lethal = damage + self.sneak_gain(mid, fighting, blockers, tag) >= mid.opp_life
+                    options = [everyone if lethal else options[0]]
+                children.extend(self.finish(mid, option, greedy=True) for option in options)
+        except Deadline as cutoff:
+            for child in children:
+                cutoff.observe(child)
+            raise
         return max(enumerate(children), key=lambda item: (self.score(item[1]), -item[0]))[1]
 
     def rollout(self, node: Node, *, cheap: bool = False) -> Node:
-        while not node.terminal and node.k < len(LABELS):
-            node = self.greedy_step(node, cheap=cheap)
+        try:
+            while not node.terminal and node.k < len(LABELS):
+                node = self.greedy_step(node, cheap=cheap)
+        except Deadline as cutoff:
+            cutoff.observe(node)
+            raise
         return node
 
     def fill_steps(self, node: Node, k: int, count: int) -> list[Step]:

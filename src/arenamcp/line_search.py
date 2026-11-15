@@ -57,7 +57,7 @@ import dataclasses
 import logging
 import re
 import time
-from collections.abc import Collection
+from collections.abc import Collection, Iterator
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -387,7 +387,11 @@ class LineSearchResult:
             head = "LINES (one opposing noncreature spell could pump their attackers to lethal): "
         if self.choice_caveats:
             head = "LINES (bounded public sacrifice choices; advisory): "
-        parts = [f"best {self.best.summary()}{_unmodelled_mark(self.best, unmodelled)}"]
+        label = "best"
+        if self.truncated:
+            head = head.replace("LINES (", "LINES (search interrupted; ", 1)
+            label = "greedy line" if self.best is self.baseline else "best completed line"
+        parts = [f"{label} {self.best.summary()}{_unmodelled_mark(self.best, unmodelled)}"]
         parts += [
             f"alt {line.summary(90)}{_unmodelled_mark(line, unmodelled)}"
             for line in self.lines
@@ -684,17 +688,19 @@ class _Search(Moves):
         self.free = False
         groups: list[_Group] = []
         root_complete = False
+        survived_on_cutoff = 0
         try:
-            groups, root_complete = self._root_groups(roots)
+            root_complete = self._root_groups(roots, groups)
             chosen, extra = self._pick(groups, base_leaf)
             self._expand(chosen, extra)
-        except Deadline:
+        except Deadline as cutoff:
             self.truncated = True
-        result = self._result(groups, base_leaf, root_complete)
+            survived_on_cutoff = cutoff.survived_attacks
+        result = self._result(groups, base_leaf, root_complete, survived_on_cutoff)
         self.free = True  # later calls (to_projections) must never raise Deadline
         return result
 
-    def _root_groups(self, roots) -> tuple[list[_Group], bool]:
+    def _root_groups(self, roots, groups: list[_Group]) -> bool:
         """Every T step after each root: one per action key first, then by spell value."""
         pairs = []
         for block, node in roots:
@@ -715,25 +721,24 @@ class _Search(Moves):
         for pair in pairs:  # coverage: the best pair for each key not yet seen goes first
             (first if not pair[5] <= covered else rest).append(pair)
             covered |= pair[5]
-        groups: list[_Group] = []
         by_sig: dict = {}
         for order, pair in enumerate(first + rest):
             if order and self.past_soft():
                 self.bounded = True
-                return groups, False
+                return False
             _value, _block, node, land, casts, keys = pair
             if node.terminal:
                 children = [(keys, False, node)]
             else:
                 mid = self.begin(node, land, casts)
-                children = [
+                children = (
                     (
                         keys | {("attack", frozenset(ids)) if ids else ("noattack",)},
                         bool(ids),
                         self.finish(mid, (n, ids)),
                     )
                     for n, ids in self.attack_choices(mid)[0]
-                ]
+                )
             for child_keys, attacks, child in children:
                 if child.history and child.history[0].public_response:
                     child_keys = keys | child.history[0].keys
@@ -745,7 +750,7 @@ class _Search(Moves):
                 text = f"{self._pair_text(pair)}|{child.history[0].attack if child.history else ''}"
                 by_sig[sig] = _Group(len(groups), child, frozenset(child_keys), text, attacks)
                 groups.append(by_sig[sig])
-        return groups, True
+        return True
 
     def _pair_text(self, pair) -> str:
         _value, block, _node, land, casts, _keys = pair
@@ -791,25 +796,36 @@ class _Search(Moves):
         return chosen, [g for g in keyed if g not in chosen]  # keys past the cap: greedy rollout
 
     def _expand(self, chosen: list[_Group], extra: list[_Group]) -> None:
-        for group in chosen:
-            if group.node.terminal:
-                group.leaves = [group.node]
-            elif self.past_soft():
-                self.bounded = True
-                group.leaves = [dataclasses.replace(self.rollout(group.node, cheap=True), rolled=True)]
-            else:
-                kids = self._next(group.node)
-                kids.sort(key=lambda item: (tuple(-x for x in self.score(item[1])), item[0]))
-                group.leaves = [
-                    self.rollout(kid, cheap=self.past_soft()) for _text, kid in kids[: self.width]
-                ]
-        for group in extra:
-            leaf = group.node if group.node.terminal else self.rollout(group.node, cheap=self.past_soft())
-            group.leaves = [dataclasses.replace(leaf, rolled=leaf is not group.node)]
+        for index, group in enumerate((*chosen, *extra)):
+            kids = []
+            rolled = False
+            try:
+                if group.node.terminal:
+                    group.leaves = [group.node]
+                elif index >= len(chosen) or self.past_soft():
+                    rolled = True
+                    cheap = self.past_soft()
+                    if index < len(chosen):
+                        self.bounded = True
+                    leaf = self.rollout(group.node, cheap=cheap)
+                    group.leaves = [dataclasses.replace(leaf, rolled=True)]
+                else:
+                    kids.extend(self._next(group.node))
+                    kids.sort(key=lambda item: (tuple(-x for x in self.score(item[1])), item[0]))
+                    for _text, kid in kids[: self.width]:
+                        group.leaves.append(self.rollout(kid, cheap=self.past_soft()))
+            except Deadline as cutoff:
+                # Only a returned finish() has resolved the opponent's policy.
+                # Keep its terminal/horizon evidence if a later sibling expires.
+                for _text, kid in kids:
+                    cutoff.observe(kid)
+                group.leaves.extend(
+                    dataclasses.replace(leaf, rolled=True) if rolled else leaf for leaf in cutoff.completed
+                )
+                raise
 
-    def _next(self, node: Node) -> list[tuple[str, Node]]:
+    def _next(self, node: Node) -> Iterator[tuple[str, Node]]:
         """T+1: land classes x (the top ``k_next`` cast sets + none) x attacks."""
-        kids = []
         for land in self.land_options(node):
             _base, sources = self.sources(node, land)
             sets = self.cast_sets(node, sources, instant_only=False)
@@ -817,10 +833,15 @@ class _Search(Moves):
                 mid = self.begin(node, land, casts)
                 for attack in self.attack_choices(mid)[0]:
                     text = f"{land.name if land else ''}|{self.choice_text(casts)}|{attack[1]}"
-                    kids.append((text, self.finish(mid, attack)))
-        return kids
+                    yield text, self.finish(mid, attack)
 
-    def _result(self, groups: list[_Group], base_leaf: Node, root_complete: bool) -> LineSearchResult:
+    def _result(
+        self, groups: list[_Group], base_leaf: Node, root_complete: bool, survived_on_cutoff: int
+    ) -> LineSearchResult:
+        if self.truncated:
+            for group in groups:
+                if group.node.terminal and not group.leaves:
+                    group.leaves = [group.node]
         expanded = [g for g in groups if g.leaves]
         alive = sorted(
             (
@@ -862,6 +883,20 @@ class _Search(Moves):
             for key in line.first_actions:
                 if key not in first_action or line.ranked > first_action[key].ranked:
                     first_action[key] = line
+        dead_in = best.dead_at
+        if self.truncated and dead_in is not None:
+            # A completed losing line is still useful. Its death turn cannot
+            # represent the search when only the baseline was evaluated, or
+            # another unfinished line has already survived that attack.
+            only_baseline = best is baseline and not any(
+                group.line and group.line.first_sig != baseline.first_sig for group in main
+            )
+            survived = max(
+                (group.node.attacks for group in main if group.node.dead_at is None),
+                default=0,
+            )
+            if only_baseline or max(survived_on_cutoff, survived) >= dead_in:
+                dead_in = None
         exact_root = root_complete and not self.truncated
         # A T step's node has seen their first attack after T (or died to the one under way).
         dead_first = [g for g in main if g.node.dead_at is not None]
@@ -879,7 +914,7 @@ class _Search(Moves):
             first_action=first_action,
             now_life=best.now_life,
             dead_now=False,
-            dead_in=None if self.public_responses or self.public_unmodelled else best.dead_at,
+            dead_in=None if self.public_responses or self.public_unmodelled else dead_in,
             dead_in_greedy=None if self.public_responses or self.public_unmodelled else baseline.dead_at,
             all_dead_at_first=exact_root and bool(main) and all(g.node.dead_at == 1 for g in main),
             exact_first_attack=exact_root and self.exact_first,
@@ -984,6 +1019,8 @@ class _Search(Moves):
         if self.lethal_now or (best.cls == WIN and best.win_at == 1):
             who = ", ".join(best.steps[0].attack) if best.steps else ""
             return "lethal", f"attack{f' with {who}' if who else ''} for lethal"
+        if self.truncated:
+            return "either", "Search stopped before comparing all attack lines."
         attacking = [g.line for g in groups if g.attacks]
         holding = [g.line for g in groups if not g.attacks]
         if not attacking or not holding:

@@ -52,6 +52,7 @@ from tests.strategic_states import (
 )
 
 from arenamcp import board_assessment as ba
+from arenamcp import line_search, line_search_moves
 from arenamcp.board_assessment import TurnProjection
 from arenamcp.board_model import build_board_model
 from arenamcp.line_search import (
@@ -333,26 +334,80 @@ def test_a_suicidal_attack_is_dropped_for_a_safe_one():
     assert step.policy == "hold-dying" and step.life_after == 20 and step.their_creatures_after == 1
 
 
-def test_a_lethal_policy_is_never_filtered_out():
-    class Cautious:
-        def attack_policies(self, moves, able, blockers, life):
-            return [("cautious", ())]
+class _CautiousOpponent:
+    def attack_policies(self, moves, able, blockers, life):
+        return [("cautious", ())]
 
-        def chance(self, moves, life):
-            return [(1.0, NOTHING)]
+    def chance(self, moves, life):
+        return [(1.0, NOTHING)]
 
-    class CautiousThenEverything(Cautious):
-        def attack_policies(self, moves, able, blockers, life):
-            return [("cautious", ()), ("everything", tuple(able))]
 
+class _CautiousThenEverything(_CautiousOpponent):
+    def attack_policies(self, moves, able, blockers, life):
+        return [("cautious", ()), ("everything", tuple(able))]
+
+
+def test_a_lethal_policy_is_never_filtered_out(unlimited_search_deadline):
+    # This comparison needs both policies evaluated through the second attack.
+    # The cutoff tests below exercise the production clock at earlier nodes.
     survival, lethal_now = _hints(G1_T14)
     model = build_board_model(deepcopy(G1_T14))
-    calm = search_lines(model, survival=survival, lethal_now=lethal_now, opponent=Cautious())
-    paranoid = search_lines(
-        model, survival=survival, lethal_now=lethal_now, opponent=CautiousThenEverything()
+    calm = line_search.search_lines(
+        model, survival=survival, lethal_now=lethal_now, opponent=_CautiousOpponent()
+    )
+    paranoid = line_search.search_lines(
+        model, survival=survival, lethal_now=lethal_now, opponent=_CautiousThenEverything()
     )
     assert calm.best.cls == ALIVE and calm.dead_in is None
     assert paranoid.best.cls == DEAD and paranoid.dead_in == 2
+
+
+def _interrupt_search_clock(monkeypatch, cutoff):
+    from types import SimpleNamespace
+
+    tick = line_search_moves.Moves.tick
+    elapsed = 0.0
+
+    def delayed_tick(moves):
+        nonlocal elapsed
+        if not moves.free and moves.nodes + 1 == cutoff:
+            elapsed = 0.351
+        tick(moves)
+
+    clock = SimpleNamespace(perf_counter=lambda: elapsed)
+    monkeypatch.setattr(line_search_moves, "time", clock)
+    monkeypatch.setattr(line_search, "time", clock)
+    monkeypatch.setattr(line_search_moves.Moves, "tick", delayed_tick)
+
+
+@pytest.mark.parametrize(
+    ("cutoff", "death", "best_death"),
+    [(2, None, 1), (4, None, 1), (5, None, 1), (6, 2, 2)],
+)
+def test_interrupted_policy_search_keeps_only_witnessed_death_clocks(monkeypatch, cutoff, death, best_death):
+    survival, lethal_now = _hints(G1_T14)
+    model = build_board_model(deepcopy(G1_T14))
+    _interrupt_search_clock(monkeypatch, cutoff)
+    result = search_lines(model, survival=survival, lethal_now=lethal_now, opponent=_CautiousThenEverything())
+    assert result.nodes == cutoff and result.elapsed_ms == 351
+    assert result.truncated and not result.exact_first_attack and not result.all_dead_at_first
+    assert result.dead_in == death
+    assert result.best.dead_at == best_death
+    assert result.dead_in_greedy == result.baseline.dead_at == 1
+    assert "search interrupted" in result.prompt_line()
+    assert ("greedy line" if death is None else "best completed line") in result.prompt_line()
+    assert result.posture == "either" and "no attack available" not in result.posture_reason
+
+
+def test_greedy_sibling_completed_the_horizon_before_cutoff(monkeypatch):
+    survival, lethal_now = _hints(G1_T12_AFTER_VOLUME)
+    model = build_board_model(deepcopy(G1_T12_AFTER_VOLUME))
+    _interrupt_search_clock(monkeypatch, 11)
+    result = search_lines(model, survival=survival, lethal_now=lethal_now)
+    assert result.truncated and result.nodes == 11
+    assert result.best.cls == ALIVE and len(result.best.steps) == 3
+    assert result.dead_in is None and result.dead_in_greedy == 2
+    assert not result.all_dead_at_first and not result.only_survivor
 
 
 def test_a_land_that_enters_tapped_adds_mana_from_the_next_turn():
