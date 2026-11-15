@@ -59,6 +59,7 @@ def response(context, audit, supported=True, count=2):
                     "index": i,
                     "supported": supported,
                     "adds_insight": True,
+                    "scope": "snapshot",
                     "unsupported_claim": "" if supported else "unsupported",
                 }
                 for i in range(len(context["lines"]))
@@ -235,7 +236,7 @@ def test_worker_public_strategic_tail_survives_unrelated_private_draw(source):
     try:
         result = client.generate(obs, config, rpc, threading.Event())
         lines = [Utterance.from_wire(u) for u in result["utterances"]]
-        assert len(lines) == 2 and lines[1].position_scope == "facts:battlefield,identity"
+        assert len(lines) == 2 and lines[1].position_scope == "audit:field,identity"
         current = [obs]
         played = []
         a = SpeechArbiter(

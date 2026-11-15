@@ -5,11 +5,17 @@ summary rather than silently translating, deleting characters or modifying the
 saved playbook. Latin-script card names and ordinary typography remain intact.
 """
 
+import re
 import unicodedata
 
 
 def speakable_overview(value: object) -> bool:
     if type(value) is not str or not value.strip() or len(value) > 500:
+        return False
+    # Incomplete suffixes, model field labels and explicit placeholders aren't speech.
+    if not re.search(r"""[.!?]["”’')\]]*$""", value.strip()) or re.search(
+        r"^\W*(?:spoken summary|summary omitted)\b|\b(?:placeholder|see above|tbd|lorem ipsum)\b", value, re.I
+    ):
         return False
     has_letter = False
     latin_base = False

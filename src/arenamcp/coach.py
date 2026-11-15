@@ -1184,18 +1184,28 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
     @staticmethod
     def _repair_spoken_summary(playbook) -> None:
         """Never speak a placeholder; fall back to the archetype and primary plan."""
+        from arenamcp.commentary.overview_quality import speakable_overview
+
         data = playbook.data
-        summary = str(data.get("spoken_summary") or "").strip()
-        if len(summary) >= 20 and not _PLACEHOLDER_SUMMARY_RE.search(summary):
+        summary = data.get("spoken_summary")
+        if speakable_overview(summary) and not _PLACEHOLDER_SUMMARY_RE.search(summary):
             return
-        parts = [str(data.get(key) or "").strip().rstrip(".") for key in ("archetype", "primary_plan")]
-        replacement = ". ".join(part for part in parts if part)
-        if not replacement:
-            return
-        logger.info(
-            "Deck playbook spoken summary %r is a placeholder; using the archetype and plan", summary[:80]
-        )
-        data["spoken_summary"] = replacement[:400].rstrip(".") + "."
+        # The archetype is a label; the primary plan must supply a whole sentence.
+        # Never make a truncated fragment look complete by appending punctuation.
+        label = str(data.get("archetype") or "").strip().rstrip(".")
+        plan = str(data.get("primary_plan") or "").strip()
+        sentence = re.match(r"^.*?[.!?](?:\s|$)", plan)
+        parts = [
+            part
+            for part in (label + ".", sentence[0].strip() if sentence else "")
+            if speakable_overview(part) and not _PLACEHOLDER_SUMMARY_RE.search(part)
+        ]
+        replacement = " ".join(parts)
+        if speakable_overview(replacement):
+            data["spoken_summary"] = replacement
+        elif parts:
+            data["spoken_summary"] = parts[0]
+        # Otherwise keep the source for diagnosis; both speech paths reject it.
 
     @staticmethod
     def _estimate_tokens(text: str) -> int:

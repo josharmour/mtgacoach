@@ -169,6 +169,8 @@ class Utterance:
             raise ValueError("Invalid position fingerprint")
         if self.anchor_id == self.utterance_id:
             raise ValueError("An utterance cannot depend on itself")
+        from .audited_facts import scope_keys
+
         if (
             self.position_scope
             not in {
@@ -180,6 +182,7 @@ class Utterance:
                 "strategy:creature_presence",
                 "strategy:land_counts",
             }
+            and not scope_keys(self.position_scope)
             and not re.fullmatch(r"cards:[0-9]+(?:,[0-9]+){0,15}", self.position_scope)
             and not re.fullmatch(
                 r"facts:(?:battlefield,)?identity(?:,players)?(?:,private)?(?:,zones)?", self.position_scope

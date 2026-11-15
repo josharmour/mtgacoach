@@ -11,26 +11,7 @@ from test_strategy_content import card
 from arenamcp.commentary.client import CommentaryClient
 from arenamcp.commentary.config import CommentaryConfig
 from arenamcp.commentary.contracts import Utterance
-from arenamcp.commentary.timeline import generated_position_scope, position_fingerprint, valid_for
-
-
-@pytest.mark.parametrize(
-    "deps", [{}, {"state:game_read": {}}, {"state:turn": {}}, {"private:deck_plan": {}}, {"unknown": {}}]
-)
-def test_unknown_or_empty_dependencies_keep_full_scope(deps):
-    assert generated_position_scope(deps, {}, "public") == "public"
-
-
-def test_cited_premises_all_retained_including_arithmetic():
-    deps = {"state:battlefield": {}, "private:hand:1": {}, "state:player:2": {}}
-    assert generated_position_scope(deps, {}, "") == "facts:battlefield,identity,players,private"
-    assert (
-        generated_position_scope(
-            {"state:battlefield": {}}, {"card:1": {"hypothetical_arithmetic": {}}}, "public"
-        )
-        == "facts:battlefield,identity,players"
-    )
-    assert generated_position_scope({"state:battlefield": {}}, {"state:turn": {}}, "public") == "public"
+from arenamcp.commentary.timeline import position_fingerprint, valid_for
 
 
 @pytest.mark.usefixtures("source")
@@ -73,7 +54,7 @@ def test_real_worker_binds_only_audited_position_dependencies(scope):
         result = client.generate(obs, config, rpc, threading.Event())
         assert len(result["utterances"]) == 1, result["status"]
         line = Utterance.from_wire(result["utterances"][0])
-        assert line.position_scope == ("facts:battlefield,identity" if scope == "position" else "")
+        assert line.position_scope == ("audit:field,identity" if scope == "position" else "")
         assert line.expires_at == obs.arrived_at + (15 if scope == "position" else 8)
         changed = copy.deepcopy(public)
         changed["players"][0]["life_total"] = 17
@@ -101,14 +82,3 @@ def test_private_and_player_changes_invalidate_exact_components():
         ("facts:identity,zones", replace(obs, public_state={**obs.public_state, "zones": {}})),
     ]:
         assert position_fingerprint(obs, scope) != position_fingerprint(change, scope)
-
-
-def test_computed_event_read_keeps_full_scope():
-    assert (
-        generated_position_scope({"state:battlefield": {}}, {"event:x": {"kind": "game_read"}}, "public")
-        == "public"
-    )
-
-
-def test_unknown_fact_prefix_keeps_full_scope():
-    assert generated_position_scope({"state:battlefield": {}}, {"future:premise": {}}, "public") == "public"

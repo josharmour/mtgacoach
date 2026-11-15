@@ -190,9 +190,9 @@ class CommentaryService:
             if fresh.epoch != expected.epoch:
                 raise BudgetExceeded("facts_changed")
         user = json.dumps(context, ensure_ascii=False, separators=(",", ":"))
-        from .context import generation_format
+        from .context import audit_format, generation_format, parse_completed_json
 
-        response_format = {"type": "json_object"} if audit else generation_format()
+        response_format = audit_format() if audit else generation_format()
         output, timeout = self.budget.before_call(
             exchange,
             system,
@@ -227,7 +227,7 @@ class CommentaryService:
                 raise BudgetExceeded("cancelled_or_late")
             if not isinstance(response, str) or not response.strip():
                 raise BudgetExceeded("incomplete_final_response")
-            return json.loads(response)
+            return parse_completed_json(response)
         finally:
             self.budget.after_call(exchange)
 
