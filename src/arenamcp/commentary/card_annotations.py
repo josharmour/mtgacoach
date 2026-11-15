@@ -1,4 +1,4 @@
-"""Opt-in N2 fact projection; not wired into the running announcer.
+"""Printed threat and relationship evidence for the native commentary booth.
 
 Only caller-supplied independently reviewed exact record digests are eligible.
 A record cannot self-authorize by setting confidence/provenance fields. Printed
@@ -11,6 +11,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass
 
@@ -334,3 +335,81 @@ def observed_annotations(observation, event, played=()):
         printed=sources,
         reviewed_digests=pins,
     )
+
+
+def public_pair_refs(zones, events, event, facts):
+    """Select two exact public prints for an open-ended analyst question."""
+    from arenamcp.card_facts.source_identity import legacy_lookup_hash
+    from arenamcp.commentary.audited_facts import permanent_fact
+    from arenamcp.limited_rules import synergy_evidence
+    from arenamcp.opponent_read import _public_cards
+
+    if (
+        event not in events
+        or event.visibility != "public"
+        or type(event.seat) is not int
+        or event.seat not in (1, 2)
+    ):
+        return []
+    if event.kind != "action_observed" and not (
+        event.kind in ("spell_resolved", "permanent_entered")
+        and event.payload.get("to_zone") == "battlefield"
+    ):
+        return []
+    iid = event.payload.get("instance_id")
+    if type(iid) is not int or iid <= 0:
+        return []
+    all_ids = Counter(
+        c.get("instance_id") for cards in zones.values() for c in cards if type(c.get("instance_id")) is int
+    )
+    eligible = []
+    for zone, card in _public_cards(zones, event.seat):
+        if zone not in ("stack", "battlefield") or type(card.get("instance_id")) is not int:
+            continue
+        gid = card["grp_id"]
+        source = facts.get(f"card:{gid}", {})
+        digest = legacy_lookup_hash(card)
+        if (
+            digest
+            and card.get("public_native_print") == f"{gid}:{digest}"
+            and all_ids[card["instance_id"]] == 1
+            and source.get("source") == "local_card_database"
+            and source.get("mana_cost") == card["mana_cost"]
+            and source.get("name") == card["name"]
+            and source.get("rules") == card["oracle_text"]
+            and source.get("type_line") == card["type_line"]
+        ):
+            eligible.append((zone, card))
+    focal = next(
+        (
+            c
+            for zone, c in eligible
+            if c["instance_id"] == iid
+            and c["grp_id"] == event.payload.get("grp_id")
+            and c["name"] == event.payload.get("name")
+            and (zone == "battlefield" or event.kind == "action_observed")
+        ),
+        None,
+    )
+    if focal is None:
+        return []
+    arriving = {
+        e.payload.get("instance_id")
+        for e in events
+        if e.visibility == "public"
+        and e.source_sequence >= event.source_sequence
+        and e.payload.get("to_zone") == "battlefield"
+    }
+    for zone, partner in eligible:
+        gid = partner["grp_id"]
+        key = f"state:permanent:{partner['instance_id']}"
+        if (
+            zone != "battlefield"
+            or gid == focal["grp_id"]
+            or partner["instance_id"] in arriving
+            or facts.get(key) != permanent_fact(partner)
+        ):
+            continue
+        if any(not relation.get("indirect") for relation in synergy_evidence(focal, partner)):
+            return [f"card:{focal['grp_id']}", key, f"card:{gid}"]
+    return []

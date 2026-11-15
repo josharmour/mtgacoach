@@ -217,7 +217,15 @@ class HeadlessBooth:
                     if (evidence := owner.event_sources.get(ref))
                     and evidence.event_id in owner.heard_public_calls
                 }
-                selected = compact_context(SYSTEM, context, reply_system=REPLY)
+                from .card_annotations import public_pair_refs
+
+                def pair_for(ref):
+                    event = owner.event_sources.get(ref)
+                    if event is None:
+                        return []
+                    return public_pair_refs(owner.public_zones, owner.public_events, event, context["facts"])
+
+                selected = compact_context(SYSTEM, context, reply_system=REPLY, pair_for=pair_for)
                 self.analysis_memory = selected["recent_analysis"]
                 lead = selected.get("partner_call")
                 if lead:
@@ -414,6 +422,8 @@ class HeadlessBooth:
 
         from .delivery import event_excitement
 
+        self.public_zones = observation.public_state["zones"]
+        self.public_events = tuple(e for e in observation.events if e.visibility == "public")
         self.already_called = observation.recent_commentary
         self.heard_cast_calls = dict(observation.heard_cast_calls)
         self.heard_public_calls = confirmed_public_calls(observation, self.settings)

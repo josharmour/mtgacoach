@@ -56,7 +56,7 @@ def request_size(system, context):
     )
 
 
-def compact_context(system, context, *, reply_system=None):
+def compact_context(system, context, *, reply_system=None, pair_for=None):
     limit = 5900 - len(json.dumps(generation_format(), separators=(",", ":")).encode())
     result = {
         key: context[key] for key in ("booth", "allowed_roles", "style", "focus", "airtime") if key in context
@@ -176,6 +176,14 @@ def compact_context(system, context, *, reply_system=None):
                         "refs": [ranked[0]],
                     }
                 break
+    if ranked and pair_for is not None and not result["editorial_question"]["check_these_refs"]:
+        # Give the model the event, current permanent and both complete printed rules.
+        # Their compatibility focuses attention without asserting the ability triggered.
+        pair = pair_for(ranked[0])
+        if pair and all(key in facts for key in pair):
+            refs = [ranked[0], *pair]
+            result["editorial_question"]["check_these_refs"] = refs
+            order += refs
     if ranked and set(result.get("allowed_roles", ())) == {"play_by_play", "color_analyst"}:
         ref = ranked[0]
         event = facts[ref]

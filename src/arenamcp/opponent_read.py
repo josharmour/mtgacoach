@@ -13,7 +13,7 @@ from arenamcp.commentary.observations import card_identity_visible, generated_or
 _PUBLIC_ZONES = ("command", "battlefield", "stack", "graveyard", "exile")
 
 
-def _public_cards(zones, opponent):
+def _public_cards(zones, seat):
     for zone in _PUBLIC_ZONES:
         cards = zones.get(zone)
         if not isinstance(cards, (tuple, list)):
@@ -22,9 +22,9 @@ def _public_cards(zones, opponent):
             if (
                 isinstance(card, dict)
                 and type(card.get("owner_seat_id")) is int
-                and card["owner_seat_id"] == opponent
+                and card["owner_seat_id"] == seat
                 and type(card.get("controller_seat_id")) is int
-                and card["controller_seat_id"] == opponent
+                and card["controller_seat_id"] == seat
                 and type(card.get("grp_id")) is int
                 and card["grp_id"] > 0
                 and card_identity_visible(card, zone)
@@ -35,13 +35,13 @@ def _public_cards(zones, opponent):
 
 
 def mark_public_native_prints(state):
-    """Bind the final, public opponent snapshot to complete locally cached Arena prints."""
+    """Bind both players’ public cards to complete locally cached Arena prints."""
     from arenamcp.card_db import initialized_card_database
 
     local, zones = state.get("local_seat_id"), state.get("zones")
     if type(local) is not int or local not in (1, 2) or not isinstance(zones, dict):
         return
-    cards = [card for _, card in _public_cards(zones, 3 - local)]
+    cards = [card for seat in (local, 3 - local) for _, card in _public_cards(zones, seat)]
     for card in cards:
         card.pop("public_native_print", None)
     if not cards:
