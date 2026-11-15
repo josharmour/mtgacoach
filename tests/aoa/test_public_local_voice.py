@@ -201,6 +201,7 @@ def test_worker_stop_drops_stale_chunks_and_recovers(qapp, monkeypatch, tmp_path
     stream.done.connect(lambda g: loop.quit())
     stream.failed.connect(failed.append)
     stream.speak(1, {"text": "cancel"}, lambda: True)
+    wrapper = stream.process
 
     def replace_slow_request():
         if not stream.rendering:
@@ -216,7 +217,10 @@ def test_worker_stop_drops_stale_chunks_and_recovers(qapp, monkeypatch, tmp_path
     timeout.start(5000)
     loop.exec()
     assert received == [(2, b"\1\0")] and not failed and stream.ready
+    assert stream.process is wrapper  # Native child changed; the Qt signal receiver remained alive.
     stream.speak(3, {"text": "obsolete"}, lambda: False)
     assert failed == [3] and not stream.ready
     timeout.stop()
-    stream.close()
+    stream.shutdown()
+    assert wrapper.state() == wrapper.ProcessState.NotRunning
+    qapp.processEvents()
