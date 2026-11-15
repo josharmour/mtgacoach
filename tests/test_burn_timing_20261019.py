@@ -439,6 +439,7 @@ def test_hazard_that_pumps_an_attacker_now_is_not_held():
     assert "Cast Tectonic Hazard" in model.prompts[0][model.prompts[0].index("OPTIONS:") :]
 
 
+@pytest.mark.usefixtures("unlimited_search_deadline")
 def test_a_line_best_tag_won_only_by_the_spells_own_face_damage_keeps_the_face_burn_concern(monkeypatch):
     state = _e917434f_t1()
     result = assess(state).line_search
