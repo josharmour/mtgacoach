@@ -20,6 +20,7 @@ _CAST_CONSTRAINT = re.compile(
 
 def _costs(card, gid):
     resources, mandatory, unsupported_cast, unsupported_activation, tapped = [], [], [], [], []
+    loyalty = []
     types = card["type_line"].partition("—")[0].lower().split()
     for n, line in enumerate(oracle_rules(card), 1):
         prefix, colon, _ = line.partition(":")
@@ -38,6 +39,19 @@ def _costs(card, gid):
             if tap:
                 tapped.append(n)
             matches.append((determiner, kind, False))
+        elif colon and prefix.strip() == "{T}":
+            tapped.append(n)
+            matches.extend((*m.groups(), False) for m in _SACRIFICE.finditer(line))
+        elif colon and prefix != "Printed characteristics":
+            # A colon separates an activation cost from its effect. Other-face
+            # annotations and granted/conditional costs may be more complex;
+            # abstain on those rather than treating the ability as free.
+            label = prefix.strip().replace("−", "-")
+            if "planeswalker" in types and re.fullmatch(r"(?:\[[+-]?\d+\]|[+-]\d+|0)", label):
+                loyalty.append({"rule": n, "change": int(label.strip("[]"))})
+                matches.extend((*m.groups(), False) for m in _SACRIFICE.finditer(line))
+            else:
+                unsupported_activation.append(n)
         else:
             matches.extend((*m.groups(), False) for m in _SACRIFICE.finditer(line))
         for determiner, kind, in_command in matches:
@@ -61,6 +75,7 @@ def _costs(card, gid):
         "unsupported_cast_rules": unsupported_cast,
         "unsupported_activation_rules": unsupported_activation,
         "tap_source_rules": tapped,
+        "loyalty_rules": loyalty,
     }
 
 
@@ -121,6 +136,16 @@ def commander_conditions(row, context):
         if any((gid, n) in keys for n in policy["unsupported_activation_rules"]):
             raise ValueError("The commander study cannot certify this printed activation cost")
         item = {}
+        loyalty = [r for r in policy["loyalty_rules"] if (gid, r["rule"]) in keys]
+        if loyalty:
+            item["loyalty_source"] = {
+                "card": gid,
+                "zone": "battlefield",
+                "controller": "self",
+                "timing": "own_main_empty_stack",
+                "activation_available": "verify_current_game",
+                "alternatives": loyalty,
+            }
         taps = [n for n in policy["tap_source_rules"] if (gid, n) in keys]
         if taps:
             item["activation_source"] = {
@@ -165,6 +190,12 @@ def explain_conditions(item):
             f"Command-zone deployment • printed {payment['printed_cost']}, plus {{2}} for each prior cast "
             "of this commander from the command zone. Check the current tax and available mana."
         )
+    if source := item.get("loyalty_source"):
+        for rule in source["alternatives"]:
+            needed = max(0, -rule["change"])
+            lines.append(
+                f"Loyalty rule {rule['rule']} • on your main phase with an empty stack, verify the permanent has an activation available and at least {needed} loyalty."
+            )
     if item.get("activation_source"):
         lines.append(
             "To activate the cited ability, the commander must be under your control on the battlefield, untapped and legally able to tap."

@@ -627,6 +627,14 @@ def test_commander_deployment_and_independent_resources_are_proven(sample, monke
         "generic_per_prior_command_cast": 2,
         "prior_casts": "read_from_current_game",
     }
+    assert certified["avoid"]["loyalty_source"] == {
+        "card": gid,
+        "zone": "battlefield",
+        "controller": "self",
+        "timing": "own_main_empty_stack",
+        "activation_available": "verify_current_game",
+        "alternatives": [{"rule": 2, "change": -2}],
+    }
     assert certified["avoid"]["independent_battlefield_resources"] == [
         {
             "card": gid,
@@ -701,3 +709,18 @@ def test_commander_costs_require_real_additional_resources(sample, monkeypatch, 
             "must_be_untapped": True,
             "tap_legality": "verify_current_game",
         }
+
+
+@pytest.mark.parametrize(
+    "cost", ["{2}, {T}", "Pay 2 life", "Discard a card", "Remove a charge counter from this permanent"]
+)
+def test_unmodeled_commander_activation_is_never_implicitly_free(sample, monkeypatch, tmp_path, cost):
+    _, book, _ = sample
+    book.catalog[1001]["oracle_text"] = f"When this creature enters, scry 1.\n{cost}: Draw a card."
+    native_catalog(monkeypatch, book.catalog)
+    m = backend(book)
+    m.complete.return_value["evidence"].append({"card": 1001, "rule": 2})
+    m.complete.return_value["action_rules"]["hold"].append({"card": 1001, "rule": 2})
+    with pytest.raises(ValueError, match="activation cost"):
+        study_card(book, 1001, m, tmp_path, allowed=lambda: True)
+    assert not list(tmp_path.rglob("*.json"))
