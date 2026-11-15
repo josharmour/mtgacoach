@@ -31,7 +31,17 @@ class DeckCardStudyDialog(QDialog):
         self.next_job.setSingleShot(True)
         self.next_job.timeout.connect(self.advance_pass)
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel("Card"))
+        self.view = QComboBox()
+        self.view.setAccessibleName("Deck study topic")
+        for label, key in (
+            ("Individual cards", "cards"),
+            ("Sequencing and recovery", "sequencing"),
+            ("Opponent threat classes", "switches"),
+        ):
+            self.view.addItem(label, key)
+        layout.addWidget(self.view)
+        self.card_label = QLabel("Card")
+        layout.addWidget(self.card_label)
         self.cards = QComboBox()
         self.cards.setAccessibleName("Card to study")
         layout.addWidget(self.cards)
@@ -59,6 +69,7 @@ class DeckCardStudyDialog(QDialog):
         self.progress.setWordWrap(True)
         self.progress.hide()
         layout.addWidget(self.progress)
+        self.view.currentIndexChanged.connect(self.change_topic)
         self.cards.currentIndexChanged.connect(self.read)
         self.build.clicked.connect(self.generate)
         session.deckCardStudyChanged.connect(self.received)
@@ -74,20 +85,31 @@ class DeckCardStudyDialog(QDialog):
                 "identity": self.identity,
                 "card": self.cards.currentData(),
                 "model": self.models.currentText(),
+                "scope": self.view.currentData(),
                 "token": self.token,
                 "expected_digest": self.pass_digest if self.running_pass else None,
             }
         )
 
+    def change_topic(self):
+        cards = self.view.currentData() == "cards"
+        self.cards.setVisible(cards)
+        self.card_label.setVisible(cards)
+        self.pass_button.setVisible(cards)
+        self.progress.hide()
+        self.build.setText("Study this card" if cards else "Study these topics")
+        self.read()
+
     def read(self):
-        if self.cards.currentData() is not None:
+        if self.view.currentData() != "cards" or self.cards.currentData() is not None:
             self.detail.setPlainText("Reading saved card study…")
             self.request("read")
 
     def generate(self):
         self.build.setEnabled(False)
         self.pass_button.setEnabled(self.running_pass)
-        self.detail.setPlainText("Studying this card on your device…")
+        self.view.setEnabled(False)
+        self.detail.setPlainText("Studying on your device…")
         self.request("build")
 
     def toggle_pass(self):
@@ -121,7 +143,8 @@ class DeckCardStudyDialog(QDialog):
         super().closeEvent(event)
 
     def controls(self):
-        available = bool(self.models.count() and self.cards.count())
+        available = bool(self.models.count() and (self.view.currentData() != "cards" or self.cards.count()))
+        self.view.setEnabled(not self.running_pass and self.operation not in ("build", "prepare"))
         self.build.setEnabled(
             available and not self.running_pass and self.operation not in ("build", "prepare")
         )

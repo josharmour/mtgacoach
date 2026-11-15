@@ -340,6 +340,7 @@ class _DeckLibraryMixin:
             study_card,
             unresolved_card_count,
         )
+        from arenamcp.deck_local_guidance import TOPICS, deck_guidance
         from arenamcp.local_study_model import LocalStudyModel, installed_models
 
         deck_id, identity, gid = (request.get(k) for k in ("deck_id", "identity", "card"))
@@ -351,7 +352,11 @@ class _DeckLibraryMixin:
         if book is None or book.identity != identity:
             return {**reply, "error": "Open a saved deck strategy before studying its cards."}
         directory = logging_config.LOG_DIR / "cache" / "local_card_studies"
+        plans = directory.parent / "local_deck_guidance"
+        scope = request.get("scope", "cards")
         try:
+            if scope != "cards" and scope not in TOPICS:
+                raise ValueError("Unknown deck study topic")
             if request.get("operation") == "list":
                 try:
                     models = list(installed_models())
@@ -364,8 +369,11 @@ class _DeckLibraryMixin:
                     "unresolved": unresolved_card_count(book),
                 }
             if request.get("operation") == "read":
+                if scope in TOPICS:
+                    detail, _ = deck_guidance(book, record.game_state(), scope, plans)
+                    return {**reply, "detail": detail}
                 return {**reply, "detail": read_card(book, gid, directory)}
-            if request.get("operation") == "prepare":
+            if request.get("operation") == "prepare" and scope == "cards":
                 if not self._study_outside_match():
                     raise ValueError("Card studies can run after the match has finished")
                 model = LocalStudyModel(request.get("model"))
@@ -387,6 +395,12 @@ class _DeckLibraryMixin:
 
                 if not allowed():
                     raise ValueError("Card studies can run after the match has finished")
+                if scope in TOPICS:
+                    model = LocalStudyModel(request.get("model"))
+                    detail, reused = deck_guidance(
+                        book, record.game_state(), scope, plans, model=model, allowed=allowed
+                    )
+                    return {**reply, "detail": detail, "reused": reused}
                 if any(r["card"] == gid for r in (book.data.get("study") or {}).get("cards", [])):
                     return {**reply, "detail": card_detail(book, gid), "reused": True}
                 model = LocalStudyModel(request.get("model"))

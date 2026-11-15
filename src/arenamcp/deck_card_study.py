@@ -99,19 +99,20 @@ def _context(book, gid):
     }
 
 
-def _role_format(context):
+def schema_object(fields, required=None):
+    return {
+        "type": "object",
+        "properties": fields,
+        "required": list(fields) if required is None else required,
+        "additionalProperties": False,
+    }
+
+
+def advice_fields(prints):
     """Constrain every model-supplied identity to this job's exact printed menu."""
 
-    def obj(fields, required=None):
-        return {
-            "type": "object",
-            "properties": fields,
-            "required": list(fields) if required is None else required,
-            "additionalProperties": False,
-        }
-
     numeric = {"type": "integer", "minimum": 0}
-    ids = [int(key) for key in context["prints"]]
+    ids = [int(key) for key in prints]
     card = {"type": "integer", "enum": ids}
     text = {"type": "string", "minLength": 1}
     zones = ["hand", "battlefield", "graveyard", "exile", "command", "library", "stack"]
@@ -119,32 +120,40 @@ def _role_format(context):
         "type": "array",
         "minItems": 1,
         "maxItems": len(ids),
-        "items": obj({"card": card, "zone": {"type": "string", "enum": zones}}),
+        "items": schema_object({"card": card, "zone": {"type": "string", "enum": zones}}),
     }
-    mana = obj({key: numeric for key in ("generic", *"WUBRGC")}, ["generic"])
-    conditions = obj({"pieces": pieces, "first_turn": {"type": "integer", "minimum": 1}, "mana": mana})
-    advice = obj({"advice": text, "conditions": conditions})
+    mana = schema_object({key: numeric for key in ("generic", *"WUBRGC")}, ["generic"])
+    conditions = schema_object(
+        {"pieces": pieces, "first_turn": {"type": "integer", "minimum": 1}, "mana": mana}
+    )
+    advice = schema_object({"advice": text, "conditions": conditions})
     references = [
-        obj(
+        schema_object(
             {
                 "card": {"type": "integer", "enum": [int(gid)]},
                 "rule": {"type": "integer", "enum": [r["rule"] for r in printed["rules"]]},
             }
         )
-        for gid, printed in context["prints"].items()
+        for gid, printed in prints.items()
     ]
-    return obj(
+    evidence = {
+        "type": "array",
+        "minItems": 1,
+        "items": references[0] if len(references) == 1 else {"anyOf": references},
+    }
+    return advice, evidence
+
+
+def _role_format(context):
+    advice, evidence = advice_fields(context["prints"])
+    return schema_object(
         {
             "card": {"type": "integer", "enum": [context["card"]]},
-            "role": text,
+            "role": {"type": "string", "minLength": 1},
             "play": advice,
             "hold": advice,
             "avoid": advice,
-            "evidence": {
-                "type": "array",
-                "minItems": 1,
-                "items": references[0] if len(references) == 1 else {"anyOf": references},
-            },
+            "evidence": evidence,
         }
     )
 
@@ -278,6 +287,15 @@ def study_card(book, gid, model, directory, *, allowed):
         _SYSTEM, json.dumps(prompt, sort_keys=True), allowed=allowed, response_format=_role_format(context)
     )
     duration = round(time.monotonic() - started, 2)
+    refs = printed_evidence(row, context["prints"])
+    row = _validated_row({**row, "evidence": refs}, book, context)
+    if not allowed() or not _checked(book, ids):
+        raise ValueError("The deck or card sources changed during the study")
+    write_local_result(path, row, model, duration)
+    return row, False
+
+
+def printed_evidence(row, prints):
     if not isinstance(row, dict) or not isinstance(row.get("evidence"), list):
         raise ValueError("The model supplied no usable printed evidence")
     refs = []
@@ -287,15 +305,16 @@ def study_card(book, gid, model, directory, *, allowed):
         card, number = ref["card"], ref["rule"]
         if type(card) is not int or type(number) is not int:
             raise ValueError("The local model returned a nonnumeric card or rule reference")
-        if str(card) not in context["prints"]:
+        if str(card) not in prints:
             raise ValueError("The local model cited a print outside this card study")
-        source = context["prints"][str(card)]
+        source = prints[str(card)]
         if not 1 <= number <= len(source["rules"]):
             raise ValueError("Printed rule reference is out of range")
         refs.append({**ref, "source": source["source"], "quote": source["rules"][number - 1]["quote"]})
-    row = _validated_row({**row, "evidence": refs}, book, context)
-    if not allowed() or not _checked(book, ids):
-        raise ValueError("The deck or card sources changed during the study")
+    return refs
+
+
+def write_local_result(path, row, model, duration):
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, delete=False) as output:
         temporary = Path(output.name)
@@ -315,7 +334,6 @@ def study_card(book, gid, model, directory, *, allowed):
             os.replace(temporary, path)
         finally:
             temporary.unlink(missing_ok=True)
-    return row, False
 
 
 def card_detail(book, gid, row=None, *, metrics=None, model_digest=None):
