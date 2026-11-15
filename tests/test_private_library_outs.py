@@ -1117,6 +1117,9 @@ def test_every_mode_requires_a_complete_damage_fact_and_only_one_mode_can_apply(
     spell = card(24, "Example", "Sorcery", text)
     target = dict(card(23, "Test Bear", "Creature — Bear", "Haste"), toughness=4)
     assert _answers_creature(spell, target) is True
+    assert _answers_creature(dict(spell, type_line="Sorcery — Lesson"), target) is True
+    assert _answers_creature(dict(spell, type_line="Sorcery — Lesson", linked_face_ids=[7]), target) is None
+    assert _answers_creature(dict(spell, type_line="Kindred Sorcery — Goblin"), target) is None
     assert _answers_creature(spell, dict(target, toughness=5)) is False
     assert (
         _answers_creature(dict(spell, oracle_text=text.replace("Choose one", "Choose two")), target) is None

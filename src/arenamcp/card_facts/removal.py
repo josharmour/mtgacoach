@@ -147,6 +147,9 @@ _LIBRARY_NONREMOVAL = frozenset(
 # Library-only. These complete lines affect the source, its controller's own
 # cards or a player. They do not certify that the creature is safe on the board.
 # Keep every line anchored so additional modes or effects stay unclassified.
+# Lesson is a spell subtype with no intrinsic effect on damage. Other
+# subtypes and additional faces still need their own source review.
+_DAMAGE_SPELL_TYPES = {"Instant", "Sorcery", "Instant — Lesson", "Sorcery — Lesson"}
 _MANA = r"(?:\{(?:[0-9]+|[WUBRGC]|(?:o(?:[0-9]+|[WUBRGC]))+)\})+"
 _SELF_PUMP = r"[Tt]his creature gets \+[0-9]+/\+[0-9]+ until end of turn\."
 _LIBRARY_CREATURE_LINE = re.compile(
@@ -181,7 +184,7 @@ def reviewed_library_nonremoval(card):
     text = card["oracle_text"]
     if card["type_line"].split(" — ")[0] in ("Creature", "Legendary Creature"):
         return bool(text) and all(_LIBRARY_CREATURE_LINE.fullmatch(line) for line in text.splitlines())
-    if card["type_line"] in ("Instant", "Sorcery"):
+    if card["type_line"] in _DAMAGE_SPELL_TYPES:
         return bool(
             re.fullmatch(
                 rf"(?:{re.escape(card['name'])}|This spell) deals [1-9][0-9]? damage to each opponent\.", text
@@ -224,7 +227,7 @@ def printed_removal_effects(card, *, local_creature=False, local_basic=False):
     effects = _PRINTED_REMOVAL.get(digest)
     if effects:
         return effects
-    if card["type_line"] not in ("Instant", "Sorcery"):
+    if card["type_line"] not in _DAMAGE_SPELL_TYPES:
         return None
     text = card["oracle_text"]
     match = _REMOVAL.fullmatch(text)
