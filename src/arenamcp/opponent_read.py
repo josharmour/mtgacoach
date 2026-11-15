@@ -179,13 +179,16 @@ class OpponentRead:
             ((key, value) for key, value in evidence.items() if value[3] is not None),
             key=lambda item: (-item[1][0], item[0]),
         )
-        observed = ordered[:2]
         # In Brawl the opening command-zone print can explain why two much
         # later spells belong together. Retain its observed rules, even after
         # the card moves. A sighting alone doesn't establish commander status.
-        command = next((row for row in ordered if row[0] in command_times), None)
-        if command is not None and command not in observed:
-            observed.append(command)
+        command = [row for row in ordered if row[0] in command_times]
+        # A second real card can occupy the same command zone. Favor cards
+        # actually visible in this snapshot before previously seen cards.
+        command.sort(key=lambda row: not (row[0] in current and current[row[0]][2] == "command"))
+        others = [row for row in ordered if row[0] not in command_times]
+        selected = {key for key, _ in command[:2] + others[:2]}
+        observed = [row for row in ordered if row[0] in selected]
         if observed:
             references, rules = [], []
             for (gid, digest), (when, _, zone, (name, text)) in observed:

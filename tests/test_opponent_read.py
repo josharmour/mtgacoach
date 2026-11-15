@@ -389,6 +389,33 @@ def test_command_zone_source_survives_new_public_reveals_within_same_game():
     private = native(90104, "Private commander canary", "Trample", "hand", 1)
     assert not OpponentRead().plan_block(private)
 
+    reader = OpponentRead()
+    ally = native(90105, "Example Companion", "Reach", "command", 1)
+    both = {**opener, "zones": {"command": opener["zones"]["command"] + ally["zones"]["command"]}}
+    reader.plan_block(both)
+    reader.plan_block(second)
+    paired = next(iter(cast_read(reader, third).values()))
+    assert {r["grp_id"] for r in paired["evidence"] if r["observed_zone"] == "command"} == {90101, 90105}
+    assert len(paired["evidence"]) == 4
+    assert "commander" not in paired["text"].lower()
+
+    old_pair = native(90106, "Example A", "Reach", "command", 2)
+    old_pair["zones"]["command"].extend(
+        native(90107, "Example B", "Lifelink", "command", 2)["zones"]["command"]
+    )
+    reader.plan_block(old_pair)
+    returned_pair = {
+        **both,
+        "commentary_source_sequence": 5,
+        "zones": {
+            "command": both["zones"]["command"],
+            "graveyard": old_pair["zones"]["command"],
+        },
+    }
+    capped = next(iter(cast_read(reader, returned_pair).values()))
+    assert [r["grp_id"] for r in capped["evidence"] if r["observed_zone"] == "command"] == [90101, 90105]
+    assert {r["grp_id"] for r in capped["evidence"]} == {90101, 90102, 90103, 90105}
+
     # An earlier ordinary sighting and a subsequent command sighting are two
     # distinct facts, even when a planning worker receives them out of order.
     for chronological in (True, False):
