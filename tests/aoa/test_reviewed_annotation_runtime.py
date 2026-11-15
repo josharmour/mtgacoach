@@ -97,8 +97,8 @@ def test_same_name_rebalanced_print_supplies_no_ordinary_winota_claim():
 
     from arenamcp.card_facts.reviewed_notes import corpus
 
-    source = corpus()[0][71283]
-    card = dict(dataclasses.asdict(source), grp_id=71283)
+    printed = corpus()[0][71283]
+    card = dict(dataclasses.asdict(printed), grp_id=71283)
     assert reviewed_print(card)
     assert not reviewed_print(dict(card, grp_id=96294))
     assert not reviewed_print(
