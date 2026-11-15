@@ -63,6 +63,11 @@ class DeckCardStudyDialog(QDialog):
         self.build.setToolTip("Prepare play, hold and avoid guidance on this device between matches.")
         self.build.setEnabled(False)
         models.addWidget(self.build)
+        self.save_review = QPushButton("Save local review copy")
+        self.save_review.setToolTip("Save the complete, source-checked study on this device for review.")
+        self.save_review.hide()
+        self.save_review.clicked.connect(lambda: self.request("save_review"))
+        models.addWidget(self.save_review)
         layout.addLayout(models)
         self.pass_button = QPushButton("Study remaining cards")
         self.pass_button.setEnabled(False)
@@ -106,6 +111,7 @@ class DeckCardStudyDialog(QDialog):
         )
 
     def model_changed(self):
+        self.save_review.hide()
         if self.view.currentData() == "report":
             self.read()
 
@@ -115,6 +121,7 @@ class DeckCardStudyDialog(QDialog):
         selected = self.view.currentData()
         cards = selected == "cards"
         self.build.setVisible(selected != "report")
+        self.save_review.hide()
         self.topic.blockSignals(True)
         self.topic.clear()
         self.topic.setVisible(selected in ("sequencing", "switches"))
@@ -239,6 +246,9 @@ class DeckCardStudyDialog(QDialog):
             or result.get("card") != self.cards.currentData()
         ):
             return
+        self.save_review.setVisible(
+            self.view.currentData() == "report" and result.get("review_ready") is True
+        )
         operation, self.operation = self.operation, ""
         self.cancel_button.hide()
         if self.running_pass and "error" in result:

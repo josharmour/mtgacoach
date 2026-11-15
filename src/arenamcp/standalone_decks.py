@@ -379,14 +379,23 @@ class _DeckLibraryMixin:
                     "unresolved": unresolved_card_count(book),
                 }
             if scope == "report":
-                if request.get("operation") != "read":
+                if request.get("operation") not in ("read", "save_review"):
                     raise ValueError("Study coverage is read-only")
-                from arenamcp.deck_local_report import local_report
+                from arenamcp.deck_local_report import study_report
 
                 return {
                     **reply,
-                    "detail": local_report(
-                        book, record.game_state(), directory.parent, request.get("model_digest")
+                    **study_report(
+                        book,
+                        record.game_state(),
+                        directory.parent,
+                        request.get("model_digest"),
+                        save_review=request.get("operation") == "save_review",
+                        current_selection=lambda: bool(
+                            (latest := (getattr(self, "_deck_library", {}) or {}).get(deck_id))
+                            and latest.complete
+                            and latest.identity() == identity
+                        ),
                     ),
                 }
             if request.get("operation") == "read":

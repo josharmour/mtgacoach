@@ -349,7 +349,7 @@ def _read_rows(folder, digest, book, expected, *, diagnostic=False):
         if not isinstance(metrics, dict) or (metrics.get("thinking_mode") == "disabled") != diagnostic:
             return {}, None
         if saved["input"] == folder.name and saved["model"] == digest:
-            return _validate(saved["row"], book, expected), saved.get("metrics", {})
+            return _validate(saved["row"], book, expected), {**metrics, "input_sha256": folder.name}
     except (OSError, ValueError, KeyError, TypeError):
         pass
     return {}, None
@@ -371,20 +371,25 @@ def _read_topic(paths, digest, book, key, *, diagnostic=False):
     return {}, None
 
 
-def topic_coverage(book, context, scope, directory, digest):
+def retained_chapter(book, context, scope, directory, digest):
     legacy, _, folders = topic_files(directory, scope, context)
     _, _, previous = topic_files(directory, scope, context, _PREVIOUS_TOPIC_SYSTEM)
     rows, metrics = _read_rows(legacy, digest, book, TOPICS[scope])
     if rows:
-        return list(rows), [metrics]
-    hits = []
+        return rows, [metrics]
+    hits = {}
     usage = []
     for key, folder in folders.items():
         rows, metrics = _read_topic((folder, previous[key]), digest, book, key)
         if rows:
-            hits.append(key)
+            hits.update(rows)
             usage.append(metrics)
     return hits, usage
+
+
+def topic_coverage(book, context, scope, directory, digest):
+    rows, usage = retained_chapter(book, context, scope, directory, digest)
+    return list(rows), usage
 
 
 def deck_guidance(book, state, scope, directory, *, model=None, allowed=None, topic=None):
