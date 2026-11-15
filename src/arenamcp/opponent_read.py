@@ -103,7 +103,7 @@ def _inferences(seen, opponent):
     seen = {
         name: sight for name, sight in seen.items() if annotation_digest(records[name]) == approved.get(name)
     }
-    links, plans = {}, {}
+    observed_pairs, plans, possible_partners = {}, {}, {}
 
     def fact(text, names):
         return {
@@ -133,6 +133,7 @@ def _inferences(seen, opponent):
             names = sorted((name, partner)) if partner in seen else [name]
             pair = sorted((record["rules_hash"][:12], records[partner]["rules_hash"][:12]))
             key = "state:opponent_read:pair:" + ":".join(pair)
+            links = observed_pairs if partner in seen else possible_partners
             if key in links:
                 continue
             if partner in seen:
@@ -147,4 +148,6 @@ def _inferences(seen, opponent):
             plans[key] = fact(
                 f"Inference from {name}: the opponent may build around this effect. {claim['text']}", [name]
             )
-    return links | plans
+    # The booth and game plan have bounded space. Prefer two observed pieces
+    # and a threat actually seen before suggesting an unseen partner.
+    return observed_pairs | plans | possible_partners

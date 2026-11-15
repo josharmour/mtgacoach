@@ -195,3 +195,29 @@ def test_vito_targets_while_priest_drains_each_opponent_per_gain():
     # A conflicting printed version has no standing as a source.
     state["zones"]["battlefield"] = [{**permanent(71909), "oracle_text": "Different rules"}]
     assert not cast_read(OpponentRead(), state)
+
+
+def test_confirmed_pair_and_seen_threat_precede_unseen_partners():
+    from dataclasses import asdict
+
+    from arenamcp.card_facts.reviewed_notes import corpus
+
+    state = captured(328)
+    for gid in (73310, 81841, 94046):
+        state["zones"]["battlefield"].append(
+            {
+                **asdict(corpus()[0][gid]),
+                "grp_id": gid,
+                "instance_id": gid + 100,
+                "owner_seat_id": 2,
+                "controller_seat_id": 2,
+                "object_kind": "CARD",
+            }
+        )
+    read = OpponentRead()
+    facts = list(cast_read(read, state).values())
+    assert {e["name"] for e in facts[0]["evidence"]} == {"Ball Lightning", "Minsc & Boo, Timeless Heroes"}
+    assert len(facts[-1]["evidence"]) == 1 and "no confirmed sighting" in facts[-1]["text"]
+    block = read.plan_block(state)
+    assert "Both Ball Lightning" in block and "each opponent 1 life" in block
+    assert "Lunar Convocation is a possible partner" not in block
