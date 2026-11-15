@@ -19,6 +19,8 @@ def board_observation(*, opponent=True, lands=False):
     public = copy.deepcopy(obs.public_state)
     public["zones"]["battlefield"] = [card(20, "Creature A", "")]
     if opponent:
+        # The analyst can discuss an actual missing blocker; a shared creature board alone is silent.
+        public["zones"]["battlefield"][0]["type_line"] = "Land"
         public["zones"]["battlefield"].append({**card(21, "Creature B", ""), "controller_seat_id": 2})
     if lands:
         public["zones"]["battlefield"] = [

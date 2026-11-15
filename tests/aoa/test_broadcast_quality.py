@@ -125,8 +125,8 @@ def test_fallback_develops_different_position_topics_then_stays_quiet():
             break
         insights.append(insight)
         obs = replace(obs, recent_analysis=tuple(text for text, scope in insights))
-    assert len(insights) == 2  # Combat exposure and resource capacity, not paraphrases.
-    assert len({text for text, _ in insights}) == 2
+    assert len(insights) == 1  # The actual land imbalance supplies the only new consequence.
+    assert insights[0][1] == "strategy:land_counts"
     changed = copy.deepcopy(state)
     changed["zones"]["battlefield"] = [c for c in board if c["instance_id"] != 21]
     next_point = strategic_observation(replace(obs, public_state=changed), obs.events[0])
@@ -173,3 +173,20 @@ def test_generated_excitement_survives_real_worker_transport(request, style, exp
         assert result["utterances"][0]["excitement"] == expected
     finally:
         client.close()
+
+
+def test_generative_fallback_leaves_analyst_to_the_writer():
+    # Heard at 21:06 on Nov 14: a routine cast with creatures on either side
+    # repeatedly filled the second voice even when no model line was available.
+    obs = observation()
+    board = [card(20, "First threat", ""), {**card(21, "Second threat", ""), "controller_seat_id": 2}]
+    state = copy.deepcopy(obs.public_state)
+    state["zones"]["battlefield"] = board
+    obs = replace(obs, public_state=state)
+    config = CommentaryConfig(mode="commentary", speakers=2, generative=True)
+    assert strategic_observation(obs, obs.events[0]) is None
+    assert [u.role for u in deterministic(obs, config)] == ["play_by_play"]
+    # Stronger grounds can inform the model; they still aren't authored speech.
+    board[0]["oracle_text"] = "Prowess"
+    assert strategic_observation(obs, obs.events[0])
+    assert [u.role for u in deterministic(obs, config)] == ["play_by_play"]

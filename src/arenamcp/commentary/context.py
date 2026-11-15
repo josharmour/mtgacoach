@@ -117,7 +117,13 @@ def compact_context(system, context):
     permanents = [k for k in facts if k.startswith("state:permanent:")]
     focal = [k for k in permanents if f"card:{facts[k].get('grp_id')}" in related]
     actor = facts.get(ranked[0], {}).get("seat") if ranked else None
-    # Editorial questions select evidence, never become audit evidence themselves.
+    # Highlight related public evidence without prescribing the analyst's answer.
+    # The same open brief applies to casts, combat, trades and other new plays.
+    if ranked:
+        result["editorial_question"] = {
+            "question": "What changed for either player, and which cards or choices make that matter?",
+            "check_these_refs": [],
+        }
     # Connect a new payoff to a public enabler, or an answer to the opposing
     # engine it might interrupt. A matching card is not an observed target.
     entry_suppression = any(
@@ -133,8 +139,7 @@ def compact_context(system, context):
                 continue
             partner = facts[key]
             partner_rule = facts.get(f"card:{partner.get('grp_id')}", {}).get("rules") or ""
-            question = None
-            if (
+            related_pair = (
                 not entry_suppression
                 and actor in (1, 2)
                 and partner.get("controller_seat_id") == actor
@@ -144,18 +149,15 @@ def compact_context(system, context):
                     partner_rule,
                     re.I,
                 )
-            ):
-                question = "Why might blocking alone no longer stabilize the race? One short takeaway; skip the trigger recap."
-            elif (
+            ) or (
                 partner.get("controller_seat_id") != actor
                 and "exile target nonland permanent" in rule.lower()
                 and "don't cause abilities to trigger" in partner_rule.lower()
-            ):
-                question = "Which ongoing restriction might this answer disrupt? Check costs and conditions. No target is known."
-            if question:
+            )
+            if related_pair:
                 refs = [focal_key, f"card:{focal_card['grp_id']}", key, f"card:{partner['grp_id']}"]
                 order += refs
-                result["editorial_question"] = {"question": question, "check_these_refs": refs}
+                result["editorial_question"]["check_these_refs"] = refs
                 event = facts[ranked[0]]
                 name = (event.get("data") or {}).get("name")
                 who = event.get("player")
@@ -211,7 +213,7 @@ def compact_context(system, context):
         or not ranked
         or ranked[0] not in result["new_events"]
     ):
-        result.pop("editorial_question")
+        result["editorial_question"]["check_these_refs"] = []
         result.pop("partner_call", None)
     for key in ("heard", "earlier_points", "in_flight"):
         result.setdefault(key, [])

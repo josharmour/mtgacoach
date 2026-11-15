@@ -174,7 +174,8 @@ def test_karn_and_unattributed_objects_do_not_supply_an_unconditional_lifegain_e
     for c in public["zones"]["battlefield"]:
         ctx["facts"][f"state:permanent:{c['instance_id']}"] = c
         ctx["facts"][f"card:{c['grp_id']}"] = {"rules": c.get("oracle_text")}
-    assert "editorial_question" not in compact_context("", ctx)
+    angle = compact_context("", ctx)["editorial_question"]
+    assert angle["check_these_refs"] == [] and "What changed" in angle["question"]
     for c in public["zones"]["battlefield"]:
         if c.get("name") == "Lunar Convocation":
             c.pop("instance_id")

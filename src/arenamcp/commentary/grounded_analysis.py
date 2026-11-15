@@ -21,7 +21,8 @@ def _cards(observation):
 
 def _pair(first, text, observation, config, *, position=False, snapshot=False, scope=""):
     if (
-        config.speakers != 2
+        config.generative
+        or config.speakers != 2
         or not text
         or text in observation.recent_commentary
         or text in observation.recent_analysis

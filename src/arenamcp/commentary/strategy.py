@@ -146,13 +146,6 @@ def strategic_observation(observation, event, *, private=False):
             ]
             for s in seats
         }
-        if all(creatures.values()):
-            found = position(
-                "Both sides have creatures committed; an attack could open a return attack, so the race depends on blocks as well as life totals.",
-                "strategy:creature_presence",
-            )
-            if found:
-                return found
         for s in seats:
             other = next(v for v in seats if v != s)
             if creatures[s] and not creatures[other]:
