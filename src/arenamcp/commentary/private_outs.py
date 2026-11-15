@@ -11,7 +11,7 @@ import re
 from collections import Counter
 
 from arenamcp.ability_synthesizer import Damage
-from arenamcp.card_db import is_unknown_card_name
+from arenamcp.card_db import get_card_database, is_unknown_card_name
 from arenamcp.card_facts.removal import printed_removal_effects, supported_public_creature
 from arenamcp.card_facts.source_identity import legacy_lookup_hash
 from arenamcp.combat_keywords import has_combat_keyword
@@ -142,6 +142,27 @@ def _answers_creature(card, threat, *, local_creature=False, local_basic=False):
     return None if None in results else False
 
 
+def _verified_native_abilities(card):
+    """Every native ability must resolve to a line of the already-qualified print."""
+    ids = card.get("ability_grp_ids")
+    if ids is None or ids == []:
+        return True
+    if not isinstance(ids, (tuple, list)) or any(type(i) is not int or i <= 0 for i in ids):
+        return False
+    lines = {line.strip() for line in card["oracle_text"].splitlines()}
+    try:
+        lookup = get_card_database().get_ability_text
+        for identity in ids:
+            text = lookup(identity)
+            if not isinstance(text, str) or not text.strip():
+                return False
+            if text.strip() not in lines and not (_mana_land(card) and _BASIC_MANA.fullmatch(text.strip())):
+                return False
+    except (OSError, ValueError, LookupError, RuntimeError):
+        return False
+    return True
+
+
 def _public_removal_threat(snapshot):
     zones = snapshot.get("zones") or {}
     if (
@@ -166,6 +187,7 @@ def _public_removal_threat(snapshot):
             or card.get("face_down")
             or not _named_source(card)
             or not _simple_text(card)
+            or not _verified_native_abilities(card)
         ):
             return None
         if any(

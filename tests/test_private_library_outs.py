@@ -897,3 +897,21 @@ def test_current_positive_proof_of_empty_library_is_distinct_from_unavailable():
     assert "0-card library" in private_removal_line(fact, s)[1]
     game.log_summarized_at_gsid = 3
     assert project(s, game) is None
+
+
+@pytest.mark.parametrize(
+    "resolved, admitted", [(None, False), ("Hexproof", False), ("Ward {2}", False), ("Flying", True)]
+)
+def test_private_outs_require_resolved_printed_abilities_even_without_arena_data(
+    monkeypatch, resolved, admitted
+):
+    from types import SimpleNamespace
+    from arenamcp.commentary import private_outs
+
+    s = meloku_board()
+    target = s["zones"]["battlefield"][0]
+    target["ability_grp_ids"] = [987654]
+    monkeypatch.setattr(
+        private_outs, "get_card_database", lambda: SimpleNamespace(get_ability_text=lambda _: resolved)
+    )
+    assert (private_outs._public_removal_threat(s) is target) == admitted
