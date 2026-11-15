@@ -2319,6 +2319,16 @@ def _assess(state: dict) -> BoardAssessment | None:
         flags.append(
             f"OPPONENT HAS LETHAL ON BOARD ({our_life - their_lives[0]} through our best blocks vs {our_life} life)"
         )
+    # A hard cutoff leaves the greedy deployment in lookahead. Its loss cannot
+    # force an attack while the current turn still offers plays to compare.
+    unchecked_defenses = bool(
+        search is not None
+        and search.truncated
+        and model.our_attack_pending
+        and our_power
+        and lookahead
+        and lookahead[0].castable
+    )
     if dead_in is not None and dead_in <= 2 and not alternate_loss:
         saved = their_clock is not None and dead_in > their_clock
         # Casts the search can't value may be the play that saves us (for their next attack,
@@ -2326,7 +2336,11 @@ def _assess(state: dict) -> BoardAssessment | None:
         # resolves before their attack.
         names = unmodelled_first if dead_in == 1 else unmodelled
         unsure = (f" (not modelled: {', '.join(names)})" if names else "") + pending_note
-        if dead_in == 1:
+        if dead_in == 1 and unchecked_defenses:
+            flags.append(
+                f"The greedy line dies next attack. Search stopped before comparing all available plays{unsure}."
+            )
+        elif dead_in == 1:
             plays = "our best modelled plays" if names else "our best castable plays"
             flags.append(f"DEAD NEXT ATTACK even after {plays}{unsure}")
         else:
@@ -2370,6 +2384,7 @@ def _assess(state: dict) -> BoardAssessment | None:
     all_in = bool(
         opp_lethal_on_board
         and dead_first
+        and not unchecked_defenses
         and not lethal_now
         and our_power > 0
         and (through >= our_life + 2 or evasive + drained >= our_life)

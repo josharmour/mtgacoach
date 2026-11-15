@@ -84,3 +84,30 @@ def test_the_losing_attack_guard_keeps_the_attack_a_lethal_sneak_follows(monkeyp
     monkeypatch.setattr(sneak, "sneak_main_hold", lethal_hold)
     assert losing_attackers(lyra_board(), [368], strategy_text=STRATEGY) == {}
     assert calls == [True]
+
+
+def test_interrupted_search_keeps_unchecked_defenses_and_proven_sneak_lethal_separate(monkeypatch):
+    from tests.bug_180436_states import attack_state
+
+    from arenamcp import board_assessment, line_search
+
+    original = line_search.search_lines
+
+    def cutoff(model, **kwargs):
+        return original(model, **kwargs, hard_ms=0, soft_ms=0)
+
+    monkeypatch.setattr(line_search, "search_lines", cutoff)
+    monkeypatch.setattr(board_assessment, "_CACHE", board_assessment._CACHE.copy())
+    board_assessment._CACHE.clear()
+    state = _declare_step()
+    result = assess(state)
+    assert result.line_search.truncated and result.dead_in_greedy == 1 and result.lookahead[0].castable
+    assert not result.all_in
+    assert any("greedy line dies next attack" in flag for flag in result.flags)
+    assert not any(flag.startswith(("ALL-IN", "DEAD NEXT ATTACK")) for flag in result.flags)
+    action = _BridgeSubmitMixin._all_in_attack_action(None, state, [])
+    assert action and "Sneak line is lethal" in action.reasoning
+    assert len(action.attacker_names) == len(state["decision_context"]["legal_attacker_ids"])
+
+    forced = assess(attack_state(3))
+    assert forced.line_search.truncated and not forced.lookahead[0].castable and forced.all_in
