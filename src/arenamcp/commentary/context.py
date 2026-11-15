@@ -117,6 +117,11 @@ def compact_context(system, context):
     # Editorial questions select evidence, never become audit evidence themselves.
     # Connect a new payoff to a public enabler, or an answer to the opposing
     # engine it might interrupt. A matching card is not an observed target.
+    entry_suppression = any(
+        "don't cause abilities"
+        in (facts.get(f"card:{facts[k].get('grp_id')}", {}).get("rules") or "").lower().replace("’", "'")
+        for k in permanents
+    )
     for focal_key in focal[:1]:
         focal_card = facts[focal_key]
         rule = facts.get(f"card:{focal_card.get('grp_id')}", {}).get("rules") or ""
@@ -127,7 +132,9 @@ def compact_context(system, context):
             partner_rule = facts.get(f"card:{partner.get('grp_id')}", {}).get("rules") or ""
             question = None
             if (
-                partner.get("controller_seat_id") == actor
+                not entry_suppression
+                and actor in (1, 2)
+                and partner.get("controller_seat_id") == actor
                 and "if you gained life this turn" in rule.lower()
                 and re.search(
                     r"whenever (?:another|a) creature you control enters, you gain 1 life\.",

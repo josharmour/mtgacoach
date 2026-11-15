@@ -141,7 +141,11 @@ def test_replay_fallback_explains_pressure_without_declaring_a_trigger():
     o = report("193910")
     event = next(e for e in o.events if e.kind == "action_observed")
     point, scope = strategic_observation(o, event)
-    assert "Lunar Convocation" in point and "could" in point and "without attacking" in point
+    assert (
+        point.startswith("If Case of the Uneaten Feast gains life,")
+        and "Lunar Convocation could" in point
+        and "without attacking" in point
+    )
     assert scope == "cards:332,334"
     public = copy.deepcopy(o.public_state)
     for card in public["zones"]["battlefield"]:
@@ -149,3 +153,35 @@ def test_replay_fallback_explains_pressure_without_declaring_a_trigger():
             card["controller_seat_id"] = 3 - event.seat
     changed = strategic_observation(replace(o, public_state=public), event)
     assert not changed or "Lunar Convocation" not in changed[0]
+
+
+def test_karn_and_unattributed_objects_do_not_supply_an_unconditional_lifegain_engine():
+    from arenamcp.commentary.strategy import strategic_observation
+    from arenamcp.commentary.context import compact_context
+
+    a = report("193910")
+    event = next(e for e in a.events if e.kind == "action_observed")
+    b = report("195635")
+    karn = next(c for c in b.public_state["zones"]["battlefield"] if c["name"] == "Karn, Argent Defender")
+    public = copy.deepcopy(a.public_state)
+    public["zones"]["battlefield"].append(karn)
+    point, _ = strategic_observation(replace(a, public_state=public), event)
+    assert point.startswith("If Case of the Uneaten Feast gains life,")
+    ctx = {
+        "facts": {"event:1": {"kind": "cast", "seat": 2, "data": {"grp_id": 91759}}},
+        "new_events": ["event:1"],
+    }
+    for c in public["zones"]["battlefield"]:
+        ctx["facts"][f"state:permanent:{c['instance_id']}"] = c
+        ctx["facts"][f"card:{c['grp_id']}"] = {"rules": c.get("oracle_text")}
+    assert "editorial_question" not in compact_context("", ctx)
+    for c in public["zones"]["battlefield"]:
+        if c.get("name") == "Lunar Convocation":
+            c.pop("instance_id")
+    changed = strategic_observation(replace(a, public_state=public), event)
+    assert not changed or "Lunar Convocation" not in changed[0]
+
+
+@pytest.mark.parametrize("value", ["N/A.", "To be written.", "Omitted."])
+def test_cached_placeholder_rejected_at_speech_boundary(value):
+    assert not speakable_overview(value)

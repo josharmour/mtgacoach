@@ -188,6 +188,32 @@ class HeadlessBooth:
                 output = super().generate(selected)
                 validate_output(output, selected, selected["allowed_roles"])
                 turns = output.get("turns") if isinstance(output, dict) else None
+                # For a paired tactical angle, anchor a simple cast call to the
+                # observed action. Do this before the native audit: it audits the
+                # exact words of both speakers. Questions and other events keep
+                # the model's original handoff. Never rescue a rejected verdict.
+                if selected.get("editorial_question") and len(turns) == 2:
+                    lead, reply = turns
+                    if (
+                        lead["role"] == "play_by_play"
+                        and reply["role"] == "color_analyst"
+                        and "?" not in lead["text"]
+                        and len(lead["refs"]) == 1
+                    ):
+                        ref = lead["refs"][0]
+                        fact = selected["facts"].get(ref, {})
+                        if (
+                            ref in selected["new_events"]
+                            and fact.get("kind") == "cast"
+                            and fact.get("data", {}).get("name")
+                            and fact.get("player")
+                        ):
+                            actor = fact["player"]
+                            lead["text"] = (
+                                f"{actor} {'cast' if actor == 'You' else 'casts'} {fact['data']['name']}."
+                            )
+                            validate_output(output, selected, selected["allowed_roles"])
+
                 if isinstance(turns, list) and len(turns) > config.speakers:
                     raise ModelError("too_many_lines")
                 return output

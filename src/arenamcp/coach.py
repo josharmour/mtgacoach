@@ -98,14 +98,6 @@ _PLAYBOOK_AUDIT_INSTRUCTIONS = (
     "\nANALYSIS NOTES:\n"
 )
 
-# Spoken summaries that are placeholders, not a summary (18:48:59 on
-# 2026-10-06 spoke "(Summary omitted in final field placement)").
-_PLACEHOLDER_SUMMARY_RE = re.compile(
-    r"^\W*$|^\(.*\)$|\b(omitted|placeholder|see above|to be (?:written|added)|n/?a|tbd|lorem ipsum)\b",
-    re.IGNORECASE,
-)
-
-
 # Model settings for the two deck-playbook passes. Discovery is where the
 # strategic reasoning happens, so it keeps full thinking at the template
 # default (no effort cap); compiling the audited JSON runs at low effort.
@@ -1188,7 +1180,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
 
         data = playbook.data
         summary = data.get("spoken_summary")
-        if speakable_overview(summary) and not _PLACEHOLDER_SUMMARY_RE.search(summary):
+        if speakable_overview(summary):
             return
         # The archetype is a label; the primary plan must supply a whole sentence.
         # Never make a truncated fragment look complete by appending punctuation.
@@ -1198,7 +1190,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         parts = [
             part
             for part in (label + ".", sentence[0].strip() if sentence else "")
-            if speakable_overview(part) and not _PLACEHOLDER_SUMMARY_RE.search(part)
+            if speakable_overview(part)
         ]
         replacement = " ".join(parts)
         if speakable_overview(replacement):

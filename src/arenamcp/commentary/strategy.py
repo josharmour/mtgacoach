@@ -28,7 +28,13 @@ def strategic_observation(observation, event, *, private=False):
     def candidate(text, cards):
         if text in observation.recent_commentary or text in observation.recent_analysis:
             return None
-        ids = sorted({c.get("instance_id") for c in cards if type(c.get("instance_id")) is int})
+        if seat not in (1, 2) or any(
+            type(c.get("instance_id")) is not int or c["instance_id"] <= 0 for c in cards
+        ):
+            return None
+        ids = sorted({c["instance_id"] for c in cards})
+        if len(ids) != len(cards):
+            return None
         return (text, "cards:" + ",".join(map(str, ids))) if ids else None
 
     # Exact printed conditions on two known permanents controlled by the same
@@ -46,7 +52,7 @@ def strategic_observation(observation, event, *, private=False):
             ):
                 continue
             found = candidate(
-                f"{enabler['name']} could turn a creature entering into end-step pressure from {payoff['name']}, even without attacking.",
+                f"If {enabler['name']} gains life, {payoff['name']} could pressure the opponent at the end step without attacking.",
                 [enabler, payoff],
             )
             if found:
