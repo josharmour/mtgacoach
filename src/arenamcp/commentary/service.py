@@ -9,6 +9,7 @@ import queue
 import threading
 import time
 from collections import deque
+from copy import deepcopy
 from dataclasses import replace
 
 from .budget import BudgetExceeded, CommentaryBudget
@@ -53,7 +54,7 @@ class CommentaryService:
         self.openings = {}
         # Remembers only fully heard saved overviews across matches in this session.
         self.heard_overviews = deque(maxlen=32)
-        self.grounded_ids = set()
+        self.grounded_ids = {}
         self.suppressed_opening_epoch = None
         self._lock = threading.Lock()
 
@@ -126,12 +127,19 @@ class CommentaryService:
                     if item.role == "color_analyst":
                         self.heard_analysis.append(item.text)
                     if item.role == "play_by_play" and len(item.evidence_ids) == 1:
-                        self.heard_event_calls.append((item.epoch, item.evidence_ids[0], item.text))
+                        self.heard_event_calls.append(
+                            (
+                                item.epoch,
+                                item.evidence_ids[0],
+                                item.text,
+                                self.grounded_ids.get(uid),
+                            )
+                        )
                     if public:
                         logger.info("Commentary spoken role=%s text=%s", item.role, item.text)
                     if uid in self.grounded_ids:
                         self.last_grounded = (item.epoch, time.monotonic())
-                self.grounded_ids.discard(uid)
+                self.grounded_ids.pop(uid, None)
                 if item:
                     for eid in item.evidence_ids:
                         opening = self.openings.get(eid)
@@ -167,8 +175,20 @@ class CommentaryService:
         with self._lock:
             return tuple(
                 (event_id, text)
-                for heard_epoch, event_id, text in self.heard_event_calls
+                for heard_epoch, event_id, text, _source in self.heard_event_calls
                 if epoch == heard_epoch and event_id in casts
+            )
+
+    def _heard_public_calls(self, epoch, events):
+        # The same journal ID alone cannot authorize changed payloads, or a
+        # second event after a reconnection/epoch reset. Only a completed
+        # grounded public line about this exact immutable observation counts.
+        current = {e.event_id: e for e in events if e.is_public_analyst_lead}
+        with self._lock:
+            return tuple(
+                (eid, text)
+                for heard_epoch, eid, text, source in self.heard_event_calls
+                if heard_epoch == epoch and eid in current and source == current[eid]
             )
 
     def _opening_available(self, event, epoch, now):
@@ -321,7 +341,14 @@ class CommentaryService:
             for item in lines:
                 self.inflight[item.utterance_id] = item.expires_at + 30
                 self.proposals[item.utterance_id] = item
-                self.grounded_ids.add(item.utterance_id)
+                self.grounded_ids[item.utterance_id] = next(
+                    (
+                        deepcopy(event)
+                        for event in available
+                        if event.is_public_analyst_lead and item.evidence_ids == (event.event_id,)
+                    ),
+                    None,
+                )
         for item in lines:
             self._emit_proposal(item, observation, config)
         self.status("grounded", reason=reason)
@@ -426,6 +453,7 @@ class CommentaryService:
                     recent_commentary=tuple(self.heard),
                     recent_analysis=tuple(self.heard_analysis),
                     heard_cast_calls=self._heard_cast_calls(observation.epoch, selected),
+                    heard_public_calls=self._heard_public_calls(observation.epoch, selected),
                 )
                 # Expire missing delivery acknowledgments; no unbounded speech backlog.
                 with self._lock:

@@ -199,6 +199,14 @@ def compact_context(system, context, *, reply_system=None):
             # spell is still on the stack. No board interaction is presumed.
             result["partner_call"] = {"role": "play_by_play", "text": heard, "refs": [ref]}
             result["partner_call_heard"] = True
+        elif event.get("kind") in {"attack_declared", "life_change", "outcome"} and event.get("source") in {
+            "observed_GRE",
+            "public_GRE_annotation",
+        }:
+            heard = context.get("heard_public_calls", {}).get(ref)
+            if isinstance(heard, str) and heard and len(heard.encode()) <= 240:
+                result["partner_call"] = {"role": "play_by_play", "text": heard, "refs": [ref]}
+                result["partner_call_heard"] = True
     # Carry reviewed relationship possibilities and threat descriptions while
     # the originating play is present in the new event batch.
     event_kinds = {

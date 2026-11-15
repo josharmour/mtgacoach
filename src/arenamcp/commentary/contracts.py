@@ -53,6 +53,10 @@ class Evidence:
     phase: str | None = None
     active_player: int | None = None
 
+    @property
+    def is_public_analyst_lead(self):
+        return self.visibility == "public" and self.kind in {"combat", "life_change", "outcome"}
+
     def __post_init__(self) -> None:
         if self.kind not in {
             "action_submitted",
@@ -94,6 +98,7 @@ class Observation:
     recent_analysis: tuple[str, ...] = ()
     protocol_version: int = PROTOCOL_VERSION
     heard_cast_calls: tuple[tuple[str, str], ...] = ()
+    heard_public_calls: tuple[tuple[str, str], ...] = ()
 
     def __post_init__(self) -> None:
         if self.protocol_version != PROTOCOL_VERSION:
@@ -115,7 +120,8 @@ class Observation:
         data["events"] = tuple(Evidence(**event) for event in data.get("events", ()))
         data["recent_commentary"] = tuple(data.get("recent_commentary", ()))
         data["recent_analysis"] = tuple(data.get("recent_analysis", ()))
-        data["heard_cast_calls"] = tuple(tuple(pair) for pair in data.get("heard_cast_calls", ()))
+        for key in ("heard_cast_calls", "heard_public_calls"):
+            data[key] = tuple(tuple(pair) for pair in data.get(key, ()))
         return cls(**data)
 
 
