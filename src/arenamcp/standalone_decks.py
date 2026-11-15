@@ -355,18 +355,30 @@ class _DeckLibraryMixin:
         plans = directory.parent / "local_deck_guidance"
         scope = request.get("scope", "cards")
         try:
-            if scope != "cards" and scope not in TOPICS:
+            if scope not in ("cards", "report") and scope not in TOPICS:
                 raise ValueError("Unknown deck study topic")
             if request.get("operation") == "list":
                 try:
-                    models = list(installed_models())
+                    weights = installed_models()
                 except (OSError, ValueError, TypeError):
-                    models = []
+                    weights = {}
                 return {
                     **reply,
                     "cards": card_menu(book),
-                    "models": models,
+                    "models": list(weights),
+                    "model_digests": weights,
                     "unresolved": unresolved_card_count(book),
+                }
+            if scope == "report":
+                if request.get("operation") != "read":
+                    raise ValueError("Study coverage is read-only")
+                from arenamcp.deck_local_report import local_report
+
+                return {
+                    **reply,
+                    "detail": local_report(
+                        book, record.game_state(), directory.parent, request.get("model_digest")
+                    ),
                 }
             if request.get("operation") == "read":
                 if scope in TOPICS:

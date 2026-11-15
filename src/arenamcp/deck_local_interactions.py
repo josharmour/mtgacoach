@@ -216,6 +216,44 @@ def _describe(parts, book, digest, edge_count):
     return "\n".join(lines)
 
 
+def interaction_coverage(book, context, directory, digest):
+    edges, printed = _reviewed_relationships(book.catalog)
+    groups = _clusters(edges)
+    parts, usage, known = [], [], set()
+    complete_groups = 0
+    for nodes, links in groups:
+        job = _job(context, "cluster", nodes, links, set())
+        found = _part(book, job, links, set(), directory, digest, None, None)
+        if found:
+            part, metrics, _ = found
+            parts.append(part)
+            usage.append(metrics)
+            complete_groups += 1
+            known.update(_signature(entry) for entry in part["interactions"])
+    discovery = False
+    if complete_groups == len(groups):
+        job = _job(context, "discovery", sorted(book.catalog), [], known)
+        found = _part(book, job, [], known, directory, digest, None, None)
+        if found:
+            part, metrics, _ = found
+            parts.append(part)
+            usage.append(metrics)
+            discovery = True
+    entries = [entry for part in parts for entry in part["interactions"]]
+    covered = {(edge["source"], edge["target"], edge["role"]) for entry in entries for edge in entry["links"]}
+    return {
+        "reviewed_prints": printed,
+        "links": len(edges),
+        "covered_links": len(covered),
+        "minor_links": sum(len(p["minor_links"]) for p in parts),
+        "groups": len(groups),
+        "complete_groups": complete_groups,
+        "discovery": discovery,
+        "synergies": sum(e["kind"] == "synergy" for e in entries),
+        "combos": sum(e["kind"] == "combo" for e in entries),
+    }, usage
+
+
 def study_interactions(book, context, directory, *, model=None, allowed=None):
     edges, _ = _reviewed_relationships(book.catalog)
     groups = _clusters(edges)

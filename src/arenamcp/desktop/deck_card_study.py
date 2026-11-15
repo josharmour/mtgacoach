@@ -35,6 +35,7 @@ class DeckCardStudyDialog(QDialog):
         self.view.setAccessibleName("Deck study topic")
         for label, key in (
             ("Individual cards", "cards"),
+            ("Study coverage", "report"),
             ("Synergies and combos", "interactions"),
             ("Sequencing and recovery", "sequencing"),
             ("Opponent threat classes", "switches"),
@@ -80,6 +81,7 @@ class DeckCardStudyDialog(QDialog):
         layout.addWidget(self.progress)
         self.view.currentIndexChanged.connect(self.change_topic)
         self.topic.currentIndexChanged.connect(self.read)
+        self.models.currentIndexChanged.connect(self.model_changed)
         self.cards.currentIndexChanged.connect(self.read)
         self.build.clicked.connect(self.generate)
         session.deckCardStudyChanged.connect(self.received)
@@ -95,6 +97,7 @@ class DeckCardStudyDialog(QDialog):
                 "identity": self.identity,
                 "card": self.cards.currentData(),
                 "model": self.models.currentText(),
+                "model_digest": self.models.currentData(),
                 "scope": self.view.currentData(),
                 "topic": self.topic.currentData(),
                 "token": self.token,
@@ -102,11 +105,16 @@ class DeckCardStudyDialog(QDialog):
             }
         )
 
+    def model_changed(self):
+        if self.view.currentData() == "report":
+            self.read()
+
     def change_topic(self):
         from arenamcp.deck_local_guidance import TOPICS
 
         selected = self.view.currentData()
         cards = selected == "cards"
+        self.build.setVisible(selected != "report")
         self.topic.blockSignals(True)
         self.topic.clear()
         self.topic.setVisible(selected in ("sequencing", "switches"))
@@ -274,7 +282,11 @@ class DeckCardStudyDialog(QDialog):
             for entry in result["cards"]:
                 self.cards.addItem(entry["name"], entry["card"])
             self.cards.blockSignals(False)
-            self.models.addItems(result["models"])
+            self.models.blockSignals(True)
+            self.models.clear()
+            for name in result["models"]:
+                self.models.addItem(name, (result.get("model_digests") or {}).get(name))
+            self.models.blockSignals(False)
             if result.get("unresolved"):
                 self.progress.setText(
                     f"{self.cards.count()} known nonland cards. "

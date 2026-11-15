@@ -159,10 +159,33 @@ def _read_rows(folder, digest, book, expected):
     try:
         saved = json.loads(path.read_text(encoding="utf-8"))
         if saved["input"] == folder.name and saved["model"] == digest:
-            return _validate(saved["row"], book, expected)
+            return _validate(saved["row"], book, expected), saved.get("metrics", {})
     except (OSError, ValueError, KeyError, TypeError):
         pass
-    return {}
+    return {}, None
+
+
+def topic_files(directory, scope, context):
+    topics = TOPICS[scope]
+    legacy = _topic_folder(directory, 1, _SYSTEM, scope, context)
+    jobs = {key: {**context, "topics": [key]} for key in topics}
+    folders = {key: _topic_folder(directory, 2, _TOPIC_SYSTEM, scope, job) for key, job in jobs.items()}
+    return legacy, jobs, folders
+
+
+def topic_coverage(book, context, scope, directory, digest):
+    legacy, _, folders = topic_files(directory, scope, context)
+    rows, metrics = _read_rows(legacy, digest, book, TOPICS[scope])
+    if rows:
+        return list(rows), [metrics]
+    hits = []
+    usage = []
+    for key, folder in folders.items():
+        rows, metrics = _read_rows(folder, digest, book, [key])
+        if rows:
+            hits.append(key)
+            usage.append(metrics)
+    return hits, usage
 
 
 def deck_guidance(book, state, scope, directory, *, model=None, allowed=None, topic=None):
@@ -174,10 +197,7 @@ def deck_guidance(book, state, scope, directory, *, model=None, allowed=None, to
     topics = TOPICS[scope]
     if topic is not None and topic not in topics:
         raise ValueError("Unknown topic in this deck study")
-    # Existing complete sets must pass the original four-row validator.
-    legacy = _topic_folder(directory, 1, _SYSTEM, scope, context)
-    jobs = {key: {**context, "topics": [key]} for key in topics}
-    folders = {key: _topic_folder(directory, 2, _TOPIC_SYSTEM, scope, job) for key, job in jobs.items()}
+    legacy, jobs, folders = topic_files(directory, scope, context)
     if model is not None:
         if (
             not allowed()
@@ -195,12 +215,13 @@ def deck_guidance(book, state, scope, directory, *, model=None, allowed=None, to
         digests = sorted(available, key=available.get, reverse=True)
     best_rows, digest_for_best = {}, None
     for digest in digests:
-        rows = _read_rows(legacy, digest, book, topics)
+        rows, _ = _read_rows(legacy, digest, book, topics)
         if rows:
             return _detail(rows, book, scope, digest, topic), True
         reused = True
         for key in topics:
-            rows.update(_read_rows(folders[key], digest, book, [key]))
+            saved, _ = _read_rows(folders[key], digest, book, [key])
+            rows.update(saved)
             if key in rows or model is None or (topic is not None and topic != key):
                 continue
             if not allowed() or not _checked(book, book.catalog):
