@@ -113,3 +113,18 @@ def test_prompt_is_deterministic_and_preserves_source_text():
     assert "additional cards" in prompt
     with pytest.raises(ValueError):
         build_layer_prompt("Absent", SOURCES)
+
+
+def test_prompt_explicit_envelope_and_evidence_scope():
+    import json
+
+    prompt = build_layer_prompt("Griselbrand", SOURCES)
+    envelope = next(line for line in prompt.splitlines() if line.startswith('{"threat":'))
+    assert json.loads(envelope) == {
+        "threat": {"version": 1, "plan": [], "clock": [], "answers": []},
+        "relationships": {"version": 1, "links": []},
+    }
+    assert "claim is an object, never a string" in prompt
+    assert "Every threat claim may cite ONLY the focal card" in prompt
+    assert "do not infer missing power, toughness" in prompt
+    assert "without Markdown fences" in prompt

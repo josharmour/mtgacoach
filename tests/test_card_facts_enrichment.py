@@ -198,3 +198,16 @@ def test_model_cannot_hide_unvalidated_fields_in_claim():
 def test_nested_or_oversized_answer_returns_bounded_sanitized_failure(response):
     result = enrich_record(record(), PRINTED, backend=Backend(response))
     assert result.record is None and result.calls == 1 and result.problems
+
+
+def test_observed_annotation_shape_failure_remains_rejected_without_retry():
+    # Shape-only reproduction of the rejected live response, not a repaired answer.
+    malformed = {
+        "threat": {"plan": [], "clock": [], "answers": []},
+        "relationships": [{"card": "Other", "role": "enabler", "claim": "flat string"}],
+    }
+    backend = Backend(response="```json\n" + json.dumps(malformed) + "\n```")
+    result = enrich_record(record(), PRINTED, backend=backend)
+    assert result.record is None
+    assert result.problems == ("annotation answer contains unsupported model fields",)
+    assert result.calls == 1 and len(backend.calls) == 1

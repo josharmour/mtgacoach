@@ -123,11 +123,25 @@ def build_layer_prompt(card_name: str, sources: Mapping[str, str]) -> str:
     ):
         raise ValueError("printed source text required")
     return """Describe only the supplied card rules, not win rates or metagame claims.
-Return JSON with threat and relationships. Each is version 1.
+Return exactly one JSON object, without Markdown fences or commentary.
+Use this EXACT top-level and layer shape, including both numeric version keys:
+{"threat":{"version":1,"plan":[],"clock":[],"answers":[]},"relationships":{"version":1,"links":[]}}
+Both threat and relationships are OBJECTS, never arrays. Fill only the lists.
+Do not omit version, rename fields, add metadata, or flatten nested claim objects.
 threat has plan, clock, answers lists of claims. Each claim is
 {"text":"one checkable sentence","origin":"model","evidence":[{"card":"exact name","quote":"exact rules excerpt"}]}.
-relationships has links: [{"card":"other supplied card","role":"enabler|payoff|combo_piece","claim":<claim>}].
+relationships.links contains objects with exactly card, role, and claim:
+{"card":"other supplied card","role":"enabler","claim":{"text":"one checkable sentence","origin":"model","evidence":[{"card":"focal name","quote":"exact focal rules excerpt"},{"card":"other supplied card","quote":"exact other rules excerpt"}]}}
+Allowed role values are enabler, payoff, combo_piece. origin and evidence belong
+INSIDE the claim object, not beside it; claim is an object, never a string.
 Role describes the focal card's role with the other card. Cite BOTH cards.
+Every threat claim may cite ONLY the focal card. Other-card interactions belong
+in relationships, not threat.answers. If an answer or clock cannot be supported
+by focal rules alone, leave that list empty. Clock claims require a quantified
+pace supported by focal text; otherwise clock must be empty. Keywords alone
+are not a clock. Do not invent a clock from keywords.
+Only the supplied rules text is available: do not infer missing power, toughness,
+mana value or card type. Do not assert unsupported outcomes from partial data.
 Keep all costs, prerequisites, timing and uncertainty explicit. Do not imply
 that two pieces complete a combo requiring additional cards. Use empty lists
 when the supplied rules do not support a statement. Do not label claims derived.
