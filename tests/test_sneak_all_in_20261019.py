@@ -109,5 +109,49 @@ def test_interrupted_search_keeps_unchecked_defenses_and_proven_sneak_lethal_sep
     assert action and "Sneak line is lethal" in action.reasoning
     assert len(action.attacker_names) == len(state["decision_context"]["legal_attacker_ids"])
 
+    # Sneak can cost less than an ordinary commander cast. With four of the
+    # original five Plains untapped the greedy cast list is genuinely empty.
+    state["hand"] = []
+    land = next(
+        c
+        for c in state["battlefield"]
+        if c["name"] == "Plains"
+        and not c.get("is_tapped")
+        and c["controller_seat_id"] == state["local_seat_id"]
+    )
+    land["is_tapped"] = True
+    alternate = assess(state)
+    assert alternate.line_search.truncated and not alternate.lookahead[0].castable
+    assert not alternate.all_in and sneak.payable_sneak_casts(state)
+    action = _BridgeSubmitMixin._all_in_attack_action(None, state, [])
+    assert action and "Sneak line is lethal" in action.reasoning
+
+    # Two untapped Plains and a mana creature with defender still pay {2}{W}.
+    # The strict blanket declaration cannot prove this less common payment.
+    for other_land in [
+        c
+        for c in state["battlefield"]
+        if c["name"] == "Plains"
+        and not c.get("is_tapped")
+        and c["controller_seat_id"] == state["local_seat_id"]
+    ][:2]:
+        other_land["is_tapped"] = True
+    state["battlefield"].append(
+        {
+            "name": "Mana Defender",
+            "instance_id": 900001,
+            "controller_seat_id": state["local_seat_id"],
+            "type_line": "Creature",
+            "power": 0,
+            "toughness": 1,
+            "is_tapped": False,
+            "has_summoning_sickness": False,
+            "oracle_text": "Defender\n{T}: Add {W}.",
+        }
+    )
+    assert not sneak.payable_sneak_casts(state)
+    assert not assess(state).all_in
+    assert _BridgeSubmitMixin._all_in_attack_action(None, state, []) is None
+
     forced = assess(attack_state(3))
     assert forced.line_search.truncated and not forced.lookahead[0].castable and forced.all_in

@@ -2321,14 +2321,13 @@ def _assess(state: dict) -> BoardAssessment | None:
         )
     # A hard cutoff leaves the greedy deployment in lookahead. Its loss cannot
     # force an attack while the current turn still offers plays to compare.
-    unchecked_defenses = bool(
-        search is not None
-        and search.truncated
-        and model.our_attack_pending
-        and our_power
-        and lookahead
-        and lookahead[0].castable
-    )
+    unchecked_defenses = False
+    if search is not None and search.truncated and model.our_attack_pending and our_power and dead_in == 1:
+        from arenamcp.sneak import sneak_casts
+
+        # Greedy does not evaluate Sneak. An incomplete search cannot rule out
+        # alternate payments, including mana from a creature we keep home.
+        unchecked_defenses = bool((lookahead and lookahead[0].castable) or sneak_casts(state))
     if dead_in is not None and dead_in <= 2 and not alternate_loss:
         saved = their_clock is not None and dead_in > their_clock
         # Casts the search can't value may be the play that saves us (for their next attack,
@@ -2338,7 +2337,7 @@ def _assess(state: dict) -> BoardAssessment | None:
         unsure = (f" (not modelled: {', '.join(names)})" if names else "") + pending_note
         if dead_in == 1 and unchecked_defenses:
             flags.append(
-                f"The greedy line dies next attack. Search stopped before comparing all available plays{unsure}."
+                f"The greedy line dies next attack. Search stopped before ruling out other plays{unsure}."
             )
         elif dead_in == 1:
             plays = "our best modelled plays" if names else "our best castable plays"
