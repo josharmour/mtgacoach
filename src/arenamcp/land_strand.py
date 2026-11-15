@@ -81,6 +81,8 @@ def _typed_board(board, external=()):
     # after a sacrifice/drop so an enabling permanent is not left behind.
     types = set()
     for card in [*board, *external]:
+        if card.get("is_phased_out"):
+            continue
         for line in _rules(card).splitlines():
             grant = re.fullmatch(
                 r"Each land is a (Plains|Island|Swamp|Mountain|Forest) in addition to its other land types\.",
@@ -374,6 +376,16 @@ def _mana_clause(line, card):
 
 def _has_unpriced_payoff(card, state):
     """Require a full account of every line before removing a land from a menu."""
+    primary_types = str(card.get("type_line") or "").split("—")[0].casefold().split()
+    if set(primary_types) - {"basic", "legendary", "snow", "land"}:
+        return True  # Creatures cannot freely tap on entry; other card types have distinct board roles.
+    if "legendary" in primary_types and any(
+        c.get("name") == card.get("name")
+        and c.get("instance_id") != card.get("instance_id")
+        and c.get("controller_seat_id", c.get("owner_seat_id")) == _local_seat(state)
+        for c in state.get("battlefield") or []
+    ):
+        return True
     text = _rules(card).strip()
     if not text:
         return not (basic_types(card) and "basic" in str(card.get("type_line") or "").lower())
@@ -461,6 +473,21 @@ def _spells(state):
     return [(name, cost) for name, card in spells if (cost := _cost(card, 0)) is not None]
 
 
+def _land_event_payoff(state):
+    land_kind = r"(?:land|Plains|Island|Swamp|Mountain|Forest)"
+    for card in state.get("battlefield") or []:
+        if card.get("is_phased_out"):
+            continue
+        for line in _rules(card).splitlines():
+            if re.search(
+                rf"\b(?:when|whenever)\b[^.]*?(?:(?:an?|another|one or more|each) (?:other |basic |nonbasic |snow )?{land_kind}\b|you sacrifice (?:one|two|an?|another))",
+                line,
+                re.I,
+            ):
+                return True
+    return False
+
+
 def land_choices(decision, state):
     """Mana-only forecasts for each offered land; unknown lines remain legal."""
     if len(decision.options) > 128 or decision.request_type not in {"ActionsAvailable", "Search", "SelectN"}:
@@ -503,7 +530,7 @@ def land_choices(decision, state):
     base_colors = {
         c for source in base for output in source for c, n in zip(COLORS, output, strict=True) if n
     }
-    uncertain_effect = any(
+    uncertain_effect = _land_event_payoff(state) or any(
         re.search(
             r"spells?[^.]*cost[^.]*\b(?:less|more)\b|lands?[^.]*enter[^.]*tapped|"
             r"(?:additional|twice|double)[^.]*mana|mana[^.]*instead|nonbasic lands are",
@@ -837,7 +864,7 @@ def guard_land_sacrifice(decision, state, chosen, *, lethal=False):
         if c.get("controller_seat_id", c.get("owner_seat_id")) == local
     ]
     sources, certain = _sources(board, state, now=False)
-    if not certain:
+    if not certain or _land_event_payoff(state):
         return chosen, ""
     horizon = _capacity(sources) + 2
     needed = {

@@ -306,3 +306,29 @@ def test_unknown_board_land_type_grant_is_not_applied_unconditionally():
     )
     board["battlefield"].append(dict(conditional, owner_seat_id=2, controller_seat_id=2))
     assert filter_land_choices(req, board)[0] is req
+
+
+def test_unique_land_and_creature_lands_retain_distinct_payoffs():
+    request, board = drop()
+    green = board["hand"][1]
+    green["type_line"] = "Legendary Land"
+    board["battlefield"].append(dict(green, instance_id=11))
+    assert filter_land_choices(request, board)[0] is request
+    board["battlefield"].pop()
+    green["type_line"] = "Land Creature — Forest Dryad"
+    assert filter_land_choices(request, board)[0] is request
+
+
+def test_land_type_trigger_can_make_the_other_land_drop_lethal():
+    request, board = drop()
+    board["battlefield"].append(
+        card(
+            12,
+            "Trigger",
+            "Enchantment",
+            "Whenever a Mountain you control enters, this enchantment deals 3 damage to each opponent.",
+        )
+    )
+    board["hand"][0]["type_line"] = "Basic Land — Mountain"
+    board["players"][1]["life_total"] = 3
+    assert filter_land_choices(request, board)[0] is request
