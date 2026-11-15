@@ -5628,6 +5628,7 @@ class AutopilotEngine(
         # snapshot (OptionalAction -> Search is a common ETB transition).
         # Keep the planner's context aligned with its actual typed option set.
         game_state = dict(caught_up)
+        game_state.pop("_native_sole_pass_request", None)
         sole_pass = native_sole_pass_request(poll)
         enrich_snapshot_from_pending_response(game_state, poll, bridge_connected=True)
         self._progress_game_state = game_state
@@ -5797,9 +5798,13 @@ class AutopilotEngine(
                 # chose the revealed Plains and every answer was refused.
                 option_ids = []
             else:
-                planner_state = {**game_state, "_native_sole_pass_request": sole_pass}
-                option_ids = self._planner.plan_decision_options(decision, planner_state)
+                # Planning and terminal checks must observe the same state.
+                # The witness belongs only to this call and its original poll.
+                if sole_pass is not None:
+                    game_state["_native_sole_pass_request"] = sole_pass
+                option_ids = self._planner.plan_decision_options(decision, game_state)
         finally:
+            game_state.pop("_native_sole_pass_request", None)
             if callable(set_cancel):
                 set_cancel(None)
             unwatch()
