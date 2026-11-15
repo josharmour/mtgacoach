@@ -413,6 +413,17 @@ def omits_on_hit_counter_cost(text, evidence):
         re.I,
     ):
         return False
+    # An analyst may contrast two cited attackers. Keep a claim explicitly
+    # about a different card's printed, no-payment trigger in the semantic audit.
+    for key, item in evidence.items():
+        name = item.get("name")
+        if not key.startswith("card:") or not isinstance(name, str) or not name:
+            continue
+        if re.match(re.escape(name) + r" can destroy an artifact on hit(?:[,.!]|$)", text, re.I) and (
+            f"Whenever {name} deals combat damage to a player, you may destroy target artifact that player controls."
+            in (item.get("rules") or "").splitlines()
+        ):
+            return False
     # Never infer payment from words elsewhere in the sentence. A longer
     # explicitly conditional explanation can omit this ambiguous shorthand.
     return any(

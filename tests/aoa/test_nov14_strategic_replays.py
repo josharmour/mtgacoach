@@ -290,3 +290,19 @@ def test_counter_payment_through_native_audit(line, allowed):
     lines, _ = booth.generate(o)
     assert calls == [False, True]
     assert (line in [item.text for item in lines]) is allowed
+
+
+def test_compared_attackers_have_separate_on_hit_abilities():
+    from arenamcp.commentary.context import omits_on_hit_counter_cost
+
+    refs = {
+        "card:1": {"name": "Leatherhead, Swamp Stalker", "rules": COST_RULE},
+        "card:2": {
+            "name": "Caustic Wasps",
+            "rules": "Whenever Caustic Wasps deals combat damage to a player, you may destroy target artifact that player controls.",
+        },
+    }
+    assert not omits_on_hit_counter_cost(
+        "Caustic Wasps can destroy an artifact on hit, unlike the other threat.", refs
+    )
+    assert omits_on_hit_counter_cost("Leatherhead destroys artifacts on hit, like Caustic Wasps.", refs)
