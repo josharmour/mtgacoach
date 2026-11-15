@@ -871,6 +871,11 @@ class _BridgeSubmitMixin:
                 return None
         ctx = game_state.get("decision_context") or {}
         legal = {int(i) for i in ctx.get("legal_attacker_ids") or [] if i}
+        if sneak is None:
+            from arenamcp.combat_targets import all_out_declaration_allowed
+
+            if not all_out_declaration_allowed(game_state, len(legal)):
+                return None
         # Ledger #208 (2026-10-20 18:14:25, Brawl Leonardo): '#N' labels numbered copies by
         # sorted instance ID while combat_identity numbers them in board order, so "Hare
         # Apparent #1" named a copy the menu did not offer, the whole 21-creature declaration

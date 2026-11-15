@@ -1,6 +1,59 @@
 """Legal combat recipients shared by the planner and bridge submission."""
 
+import re
 from typing import Any
+
+
+def attack_request_needs_validation(request: dict, *, require_fields: bool = False) -> bool:
+    """The GRE has a joint constraint, or the bridge omits its required evidence."""
+    groups = (
+        (("hasRequirements", "HasRequirements"), False),
+        (("hasRestrictions", "HasRestrictions"), False),
+        (("manaCost", "ManaCost", "manaRequirements", "ManaRequirements"), []),
+        (("attackWarnings", "AttackWarnings"), []),
+    )
+    if not isinstance(request, dict):
+        return True
+    for names, empty in groups:
+        values = [request[key] for key in names if key in request]
+        if (require_fields and not values) or any(type(v) is not type(empty) or v != empty for v in values):
+            return True
+    return False
+
+
+_ATTACK_CAP = re.compile(
+    r"(?:no more than|only) (?P<count>\w+) creatures? (?:can|may) attack\b(?P<scope>[^.\n]*)", re.I
+)
+_CAP_NUMBERS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5}
+
+
+def all_out_declaration_allowed(state: dict, count: int) -> bool:
+    """Individually offered attackers can still violate a limit on the whole declaration."""
+    context = state.get("decision_context") or {}
+    if context.get("attack_declaration_needs_validation") or attack_request_needs_validation(context):
+        return False
+    local = state.get("local_seat_id") or next(
+        (p.get("seat_id") for p in state.get("players") or [] if p.get("is_local")), None
+    )
+    for card in state.get("battlefield") or []:
+        if not isinstance(card, dict) or card.get("is_phased_out") or card.get("face_down"):
+            continue
+        text = re.sub(r"<[^>]*>", "", str(card.get("oracle_text") or "")).lower()
+        for cap in _ATTACK_CAP.finditer(text):
+            scope = cap["scope"].strip()
+            if scope.startswith("this planeswalker"):
+                continue  # this override sends attackers to the opponent player
+            if (
+                local is not None
+                and scope.startswith("you")
+                and (card.get("controller_seat_id") or card.get("owner_seat_id")) == local
+            ):
+                continue
+            number = cap["count"]
+            maximum = int(number) if number.isdecimal() else _CAP_NUMBERS.get(number)
+            if maximum is None or count > maximum:
+                return False
+    return True
 
 
 def merge_declare_attackers(req: dict[str, Any]) -> list[Any]:

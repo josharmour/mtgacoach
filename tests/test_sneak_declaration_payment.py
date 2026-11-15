@@ -282,3 +282,179 @@ def test_legacy_ids_cannot_confirm_player_recipient_with_alternate_visible(kind)
         for iid in ctx["legal_attacker_ids"]
     ]
     assert _declare(state)
+
+
+@pytest.mark.parametrize(
+    "effect",
+    [
+        "No more than one creature can attack each combat.",
+        "No more than two creatures can attack you each combat.",
+    ],
+)
+def test_individually_legal_attackers_do_not_override_a_joint_attack_limit(effect):
+    from tests.bug_180436_states import attack_state
+
+    from arenamcp.combat_targets import all_out_declaration_allowed
+
+    for state in (_state(), attack_state(3)):
+        opponent = next(p["seat_id"] for p in state["players"] if not p.get("is_local"))
+        state["battlefield"].append(
+            {
+                "instance_id": 891111,
+                "type_line": "Artifact",
+                "controller_seat_id": opponent,
+                "oracle_text": effect,
+            }
+        )
+        assert all_out_declaration_allowed(state, 1)
+        assert not all_out_declaration_allowed(state, 3)
+        assert _declare(state) is None
+    state = _state()
+    state["battlefield"].append(
+        {
+            "instance_id": 891111,
+            "type_line": "Artifact",
+            "controller_seat_id": state["local_seat_id"],
+            "oracle_text": "No more than two creatures can attack you each combat.",
+        }
+    )
+    assert _declare(state)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("hasRestrictions", True),
+        ("hasRequirements", True),
+        ("AttackWarnings", [{"type": "AttackWarningType_CannotBeAttackedByMoreThanOne"}]),
+        ("attackWarnings", [{"type": "AttackWarningType_UnpayableEffectCost"}]),
+        ("manaCost", [{"count": 1}]),
+        ("hasRestrictions", False),
+    ],
+)
+def test_gre_log_and_windows_bridge_preserve_joint_declaration_evidence(field, value):
+    from arenamcp.gamestate import GameState
+    from arenamcp.gamestate_decisions import _handle_decision_message
+    from arenamcp.gre_bridge import _apply_bridge_attackers
+
+    state = _state()
+    legal = state["decision_context"]["legal_attacker_ids"]
+    rows = [
+        {
+            "attackerInstanceId": i,
+            "legalDamageRecipients": [{"type": "DamageRecType_Player", "playerSystemSeatId": 2}],
+        }
+        for i in legal
+    ]
+    request = {"qualifiedAttackers": rows, field: value}
+    parsed = GameState()
+    _handle_decision_message(parsed, "GREMessageType_DeclareAttackersReq", {"declareAttackersReq": request})
+    state["decision_context"] = parsed.decision_context
+    assert bool(_declare(state)) == (value is False)
+    state["decision_context"] = {}
+    _apply_bridge_attackers(state, {"request_type": "DeclareAttackersRequest", "request_payload": request})
+    assert bool(_declare(state)) == (value is False)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("HasRestrictions", True),
+        ("HasRequirements", True),
+        ("ManaRequirements", [{"count_": 1}]),
+        ("AttackWarnings", [{"Type": {"e": "UnpayableEffectCost", "v": 4}}]),
+        ("AttackWarnings", {"$n": 1, "$items": []}),
+        ("AttackWarnings", {"$n": False, "$items": []}),
+        ("ManaRequirements", {"$n": 0, "$items": [], "$error": "partial"}),
+        ("ManaRequirements", []),
+        ("HasRestrictions", False),
+    ],
+)
+def test_macos_native_shaper_preserves_an_attack_limit_without_an_extra_call(field, value):
+    from tests.test_mac_bridge_adapter import MSG, FakeGame, adapter_for, enum, listing
+
+    from arenamcp.gre_bridge import _apply_bridge_attackers
+
+    state = _state()
+    native_recipient = {
+        "$c": MSG + "DamageRecipient",
+        "$h": 31,
+        "type_": enum("Player", 1),
+        "playerSystemSeatId_": 2,
+    }
+    offered = [
+        {
+            "$c": MSG + "Attacker",
+            "$h": i,
+            "attackerInstanceId_": i,
+            "legalDamageRecipients_": listing(native_recipient),
+        }
+        for i in state["decision_context"]["legal_attacker_ids"]
+    ]
+    game = FakeGame(
+        {
+            "$c": "GreClient.Rules.DeclareAttackerRequest",
+            "$h": 5,
+            "QualifiedAttackers": listing(*offered),
+            field: listing(*value) if isinstance(value, list) else value,
+        }
+    )
+    response = adapter_for(game).handle({"action": "get_pending_actions"})
+    assert bool(response.get("attack_declaration_needs_validation")) == bool(value)
+    _apply_bridge_attackers(state, response)
+    assert bool(_declare(state)) == (not bool(value))
+
+
+@pytest.mark.parametrize(
+    "facts,allowed",
+    [
+        ({}, False),
+        ({"hasRestrictions": False}, False),
+        ({"hasRestrictions": False, "hasRequirements": False, "attackWarnings": [], "manaCost": []}, True),
+        (
+            {
+                "hasRestrictions": False,
+                "hasRequirements": False,
+                "attackWarnings": [],
+                "manaRequirements": [{"count": 1}],
+            },
+            False,
+        ),
+    ],
+)
+def test_windows_bridge_with_individual_offers_needs_explicit_joint_evidence(monkeypatch, facts, allowed):
+    import sys
+
+    from arenamcp.gre_bridge import _apply_bridge_attackers
+
+    state = _state()
+    ids = state["decision_context"]["legal_attacker_ids"]
+    rows = [
+        {"attackerInstanceId": i, "legalDamageRecipients": [{"type": "Player", "playerSystemSeatId": 2}]}
+        for i in ids
+    ]
+    poll = {
+        "request_type": "DeclareAttackersRequest",
+        "attackers": rows,
+        "request_payload": {
+            "requestType": "DeclareAttackers",
+            "requestClass": "DeclareAttackerRequest",
+            **facts,
+        },
+    }
+    with monkeypatch.context() as patch:
+        patch.setattr(sys, "platform", "win32")
+        _apply_bridge_attackers(state, poll)
+    assert bool(_declare(state)) == allowed
+
+
+def test_empty_windows_attack_poll_cannot_force_a_previous_menu(monkeypatch):
+    import sys
+
+    from arenamcp.gre_bridge import _apply_bridge_attackers
+
+    state = _state()
+    with monkeypatch.context() as patch:
+        patch.setattr(sys, "platform", "win32")
+        _apply_bridge_attackers(state, {"request_type": "DeclareAttackersRequest"})
+    assert _declare(state) is None

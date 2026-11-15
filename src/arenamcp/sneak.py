@@ -537,11 +537,14 @@ def _declared_sneak_floor(state, opponent, attackers, blockers) -> int | None:
     """Minimum player damage from *other* attackers after an unblocked one is returned."""
     from arenamcp.combat_keywords import has_combat_keyword
     from arenamcp.combat_solver import _resolve_attacker
+    from arenamcp.combat_targets import all_out_declaration_allowed
     from arenamcp.concede import _MULTI_BLOCK
 
     context = state.get("decision_context") or {}
     legal = context.get("legal_attacker_ids")
     ids = {a["instance_id"] for a in attackers}
+    if not all_out_declaration_allowed(state, len(ids)):
+        return None
     if (
         not isinstance(legal, list)
         or len(legal) != len(ids)
@@ -561,7 +564,7 @@ def _declared_sneak_floor(state, opponent, attackers, blockers) -> int | None:
             recipients = row.get("legalDamageRecipients")
             if not isinstance(recipients, list) or not any(
                 isinstance(r, dict)
-                and r.get("type") in (None, "DamageRecType_Player")
+                and r.get("type") in (None, "Player", "DamageRecType_Player")
                 and type(r.get("playerSystemSeatId")) is int
                 and r["playerSystemSeatId"] == opponent
                 and all(

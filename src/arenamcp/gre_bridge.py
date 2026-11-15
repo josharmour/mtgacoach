@@ -2583,10 +2583,22 @@ def _apply_bridge_attackers(snapshot: dict[str, Any], poll: dict[str, Any]) -> N
     if "DeclareAttack" not in request:
         return
     payload = poll.get("request_payload") or {}
+    import sys
+
+    from arenamcp.combat_targets import attack_request_needs_validation, merge_declare_attackers
+
+    # Older Windows bridge payloads omit the readonly joint flags/collections.
+    # Keep the refusal even if this poll also lost the individual attacker menu.
+    marker = poll.get("attack_declaration_needs_validation")
+    if marker or attack_request_needs_validation(
+        payload, require_fields=sys.platform == "win32" and marker is not False
+    ):
+        snapshot["decision_context"] = {
+            **(snapshot.get("decision_context") or {}),
+            "attack_declaration_needs_validation": True,
+        }
     raw_attackers = poll.get("attackers")
     if raw_attackers is None and isinstance(payload, dict):
-        from arenamcp.combat_targets import merge_declare_attackers
-
         raw_attackers = merge_declare_attackers(payload) or None
     if not isinstance(raw_attackers, list):
         return

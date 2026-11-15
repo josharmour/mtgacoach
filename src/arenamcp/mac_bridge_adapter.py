@@ -2226,6 +2226,23 @@ class MacBridgeAdapter:
 
     def _shape_DeclareAttackerRequest(self, request: dict, getters: dict, response: dict) -> None:
         attackers = []
+        # These are fields already present on the ordinary DeclareAttackerRequest
+        # snapshot. Keep the constraint even when the individual offers are complete.
+        joint_flags = [field(request, name, False) for name in ("HasRequirements", "HasRestrictions")]
+        missing = object()
+        lists = [field(request, name, missing) for name in ("AttackWarnings", "ManaRequirements")]
+        if any(value is not False for value in joint_flags) or any(
+            value is not missing
+            and (
+                not isinstance(value, dict)
+                or set(value) - {"$items", "$n", "$c", "$h"}
+                or value.get("$items") != []
+                or type(value.get("$n")) is not int
+                or value["$n"] != 0
+            )
+            for value in lists
+        ):
+            response["attack_declaration_needs_validation"] = True
         # QualifiedAttackers is the legal menu; Attackers holds the mutable
         # declaration used by UpdateAttacker/SubmitAttackers. The two can be
         # separate objects, so the menu's selected recipient may remain null
