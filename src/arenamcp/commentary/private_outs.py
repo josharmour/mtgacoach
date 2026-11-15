@@ -95,7 +95,7 @@ def _named_source(card):
     )
 
 
-def _answers_creature(card, threat, *, local_creature=False, local_basic=False):
+def _answers_creature(card, threat, *, local_creature=False, local_basic=False, local_plains=None):
     """True, False or unknown: can this card directly remove this public creature?"""
     if not isinstance(card, dict) or not _named_source(card):
         return None
@@ -123,12 +123,21 @@ def _answers_creature(card, threat, *, local_creature=False, local_basic=False):
             and "Legendary" in types
         ):
             results.append(False)
-        elif effect.target.endswith(("with mana value 2 or less", "with mana value 3 or less")):
+        elif effect.target.endswith(("with mana value 2 or less", "with mana value 3 or less")) or (
+            effect.target == "creature with mana value up to local Plains count"
+        ):
             # Restrict this comparison to a complete, simple, single-face
             # printed cost. Missing, nonstandard, or ambiguous costs abstain.
-            limit = 2 if effect.target.endswith("2 or less") else 3
+            if effect.target.endswith("local Plains count"):
+                limit = local_plains
+            else:
+                limit = 2 if effect.target.endswith("2 or less") else 3
             cost = threat.get("mana_cost")
-            if isinstance(cost, str) and re.fullmatch(r"(?:\{(?:[0-9]+|[WUBRGC])\})+", cost):
+            if (
+                limit is not None
+                and isinstance(cost, str)
+                and re.fullmatch(r"(?:\{(?:[0-9]+|[WUBRGC])\})+", cost)
+            ):
                 results.append(mana_cost_to_cmc(cost) <= limit)
             else:
                 results.append(None)
@@ -279,11 +288,12 @@ def private_removal_fact(snapshot, game, *, allow_private, card_lookup):
     battlefield = {c.get("instance_id"): c for c in rows}
     if len(battlefield) != len(rows):
         return None
-    counts = game.commentary_library_counts(
+    census = game.commentary_removal_census(
         match, number, seat, state_id, allow_private=allow_private, battlefield=battlefield
     )
-    if counts is None:
+    if census is None:
         return None
+    counts, local_plains = census
     qualified = Counter()
     complete = True
     ours = [c for c in rows if c["controller_seat_id"] == seat]
@@ -291,7 +301,9 @@ def private_removal_fact(snapshot, game, *, allow_private, card_lookup):
     local_basic = any(_BASIC.fullmatch(c["type_line"]) for c in ours)
     for gid, count in counts.items():
         card = card_lookup(gid)
-        answers = _answers_creature(card, threat, local_creature=local_creature, local_basic=local_basic)
+        answers = _answers_creature(
+            card, threat, local_creature=local_creature, local_basic=local_basic, local_plains=local_plains
+        )
         if answers is True:
             qualified[card["name"]] += count
         elif answers is None:

@@ -443,7 +443,7 @@ def test_continuous_effect_rejects_candidate_except_with_proven_current_applicab
     )
     g = Mock()
     assert not project(s, g)
-    g.commentary_library_counts.assert_not_called()
+    g.commentary_removal_census.assert_not_called()
 
 
 def test_burn_only_when_shown_effective_toughness_is_within_printed_amount():
@@ -1166,3 +1166,78 @@ def test_whole_print_exile_in_the_private_library_census():
         )
         is None
     )
+
+
+def test_plains_bound_exile_follows_current_control_and_subtype():
+    game, snapshot = opened(), board()
+    text = (
+        "Exile target creature with mana value less than or equal to the number of Plains you control. "
+        "Its controller gains 3 life."
+    )
+    spell = card(17, "Measured exile", "Sorcery", text)
+    lookup = {**CARDS, 17: spell}
+
+    def fact():
+        return private_removal_fact(snapshot, game, allow_private=True, card_lookup=lookup.get)
+
+    assert fact()["direct_removal_total"] == 6
+    row = dict(
+        card(251, "Test dual", "Land — Plains Island", "{T}: Add {W} or {U}."),
+        instance_id=801,
+        controller_seat_id=2,
+        owner_seat_id=2,
+        is_tapped=True,
+    )
+    raw = {
+        "instanceId": 801,
+        "grpId": 251,
+        "zoneId": 28,
+        "controllerSeatId": 2,
+        "ownerSeatId": 2,
+        "type": "GameObjectType_Card",
+        "visibility": "Visibility_Public",
+        "isTapped": True,
+        "cardTypes": ["CardType_Land"],
+        "subtypes": ["SubType_Plains", "SubType_Island"],
+    }
+    snapshot["zones"]["battlefield"].append(row)
+
+    def advance(state_id):
+        game.update_from_message(
+            {
+                "type": "GameStateType_Diff",
+                "gameStateId": state_id,
+                "prevGameStateId": state_id - 1,
+                "zones": [{"zoneId": 28, "type": "ZoneType_Battlefield", "objectInstanceIds": [800, 801]}],
+                "gameObjects": [raw],
+            }
+        )
+        snapshot["_log_game_state_id"] = state_id
+
+    advance(3)
+    assert fact()["direct_removal_total"] == 6
+    row["controller_seat_id"] = raw["controllerSeatId"] = 1
+    advance(4)
+    assert fact()["answers"][spell["name"]] == 2
+    assert fact()["direct_removal_total"] == 8
+    target = snapshot["zones"]["battlefield"][0]
+    target["mana_cost"] = "{1}{B}"
+    assert fact()["direct_removal_total"] == 6
+    target["mana_cost"] = ""
+    assert "direct_removal_total" not in fact()
+    target["mana_cost"] = "{1}"
+    sparse = {"instanceId": 801, "zoneId": 28, "isTapped": True}
+    full_land, raw = raw, sparse
+    advance(5)
+    assert fact()["answers"][spell["name"]] == 2
+    raw = full_land
+    del raw["subtypes"]
+    advance(6)
+    assert "direct_removal_total" not in fact()
+    raw["subtypes"] = ["SubType_Island"]
+    advance(7)
+    assert "direct_removal_total" not in fact()
+    row["type_line"] = "Land — Island"
+    assert fact()["direct_removal_total"] == 6
+    lookup[17] = dict(spell, oracle_text=text + " Draw a card.")
+    assert "direct_removal_total" not in fact()

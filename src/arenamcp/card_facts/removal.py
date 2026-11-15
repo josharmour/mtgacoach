@@ -233,6 +233,11 @@ def printed_removal_effects(card, *, local_creature=False, local_basic=False):
         "until this enchantment leaves the battlefield."
     ):
         return (Exile("nonland permanent"),)
+    if card["type_line"] == "Sorcery" and text == (
+        "Exile target creature with mana value less than or equal to the number of Plains you control. "
+        "Its controller gains 3 life."
+    ):
+        return (Exile("creature with mana value up to local Plains count"),)
     if card["type_line"] not in _DAMAGE_SPELL_TYPES:
         return None
     # The optional land search happens after exile. Its controller cannot

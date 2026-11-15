@@ -2211,6 +2211,13 @@ class GameState(_GameStateAnnotationsMixin):
 
     def commentary_library_counts(self, match_id, game_number, seat, state_id, *, allow_private, battlefield):
         """Copy current proven grp-id counts for local commentary only, never to a shared snapshot."""
+        census = self.commentary_removal_census(
+            match_id, game_number, seat, state_id, allow_private=allow_private, battlefield=battlefield
+        )
+        return census[0] if census is not None else None
+
+    def commentary_removal_census(self, match_id, game_number, seat, state_id, *, allow_private, battlefield):
+        """Return the private inventory and a verified local Plains count from one GRE frame."""
         from arenamcp.combat_keywords import printed_combat_keywords
 
         with self._state_lock:
@@ -2252,6 +2259,7 @@ class GameState(_GameStateAnnotationsMixin):
                 return None
             if any(source in members and target in members for source, target in self._attachments.values()):
                 return None
+            local_plains = 0
             for obj in objects:
                 row = battlefield[obj.instance_id]
                 if (row.get("grp_id"), row.get("controller_seat_id")) != (obj.grp_id, obj.controller_seat_id):
@@ -2291,11 +2299,23 @@ class GameState(_GameStateAnnotationsMixin):
                 printed_types = row["type_line"].split(" — ")[0].split()
                 if any(str(t).removeprefix("CardType_") not in printed_types for t in obj.card_types):
                     return None
+                if obj.controller_seat_id == seat and local_plains is not None:
+                    raw_land = any(str(t).removeprefix("CardType_") == "Land" for t in obj.card_types)
+                    printed_subtypes = row["type_line"].partition(" — ")[2].split()
+                    if raw_land != ("Land" in printed_types):
+                        local_plains = None
+                    elif raw_land:
+                        # Cross-check live subtypes with the qualified print. A missing
+                        # or conflicting subtype should only withhold this conditional out.
+                        if set(obj.subtypes) != set(printed_subtypes):
+                            local_plains = None
+                        elif "Plains" in obj.subtypes:
+                            local_plains += 1
                 if {"Legendary", "SuperType_Legendary"}.intersection(
                     obj.super_types or ()
                 ) and "Legendary" not in printed_types:
                     return None
-            return dict(proof.remaining)
+            return dict(proof.remaining), local_plains
 
     def _apply_deleted_instance_ids(self, message: dict) -> None:
         """Forget the objects a GameStateMessage lists in ``diffDeletedInstanceIds``.
@@ -2696,6 +2716,8 @@ class GameState(_GameStateAnnotationsMixin):
             for st in _ensure_list(obj_data["subtypes"]):
                 clean_subtype = st.replace("SubType_", "") if isinstance(st, str) else str(st)
                 subtypes.append(clean_subtype)
+        elif full_info:
+            subtypes = []  # protobuf omits an empty repeated field
 
         # Parse GRE object kind (Card, Token, Ability, Emblem, MDFC, etc.)
         if "type" in obj_data:
