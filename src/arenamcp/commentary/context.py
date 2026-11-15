@@ -137,7 +137,9 @@ def deck_overview(coach, snapshot):
     ):
         return None
     summary = book.data.get("spoken_summary")
-    if not isinstance(summary, str) or not summary.strip() or len(summary) > 500:
+    from .overview_quality import speakable_overview
+
+    if not speakable_overview(summary):
         return None
     return {"identity": book.identity, "summary": summary.strip()}
 

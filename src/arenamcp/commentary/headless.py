@@ -434,8 +434,10 @@ def deterministic(observation, config):
         import re
         from dataclasses import replace
 
+        from .overview_quality import speakable_overview
+
         summary = overview.payload.get("summary", "")
-        if not isinstance(summary, str) or not summary.strip() or len(summary) > 500:
+        if not speakable_overview(summary):
             return []
         sentences = re.split(r"(?<=[.!?])\s+", summary.strip(), maxsplit=1)
         first = Utterance(
