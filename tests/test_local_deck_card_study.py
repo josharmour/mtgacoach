@@ -199,7 +199,11 @@ def test_local_stream_contract_has_a_fixed_transport_and_explicit_terminal_reaso
                 {
                     "model": model.name,
                     "done": False,
-                    "message": {"thinking": "private thinking", "content": '{"ok":true}'},
+                    "message": {
+                        "role": "assistant",
+                        "thinking": "private thinking",
+                        "content": '{"ok":true}',
+                    },
                 }
             )
             + "\n"
@@ -281,3 +285,66 @@ def test_local_writer_constrains_every_numeric_card_and_rule_reference(sample, t
     ):
         assert not validator.is_valid({**valid, "evidence": [ref]})
     assert not validator.is_valid({**valid, "card": 1002})
+
+
+def test_reuse_reports_the_requested_model_and_its_metrics(sample, tmp_path, monkeypatch):
+    state, book, _ = sample
+    owner = _DeckLibraryMixin()
+    owner._deck_library = {
+        "d": SimpleNamespace(complete=True, identity=lambda: book.identity, game_state=lambda: state)
+    }
+    owner._coach = SimpleNamespace(_cached_playbook=lambda identity, state: book)
+    owner._study_outside_match = lambda: True
+    models = {}
+    for name, tokens in (("a", 101), ("b", 202)):
+        writer = backend(book)
+        writer.digest = name * 64
+        writer.complete.return_value["role"] = f"Fixture role {name}"
+        writer.last_metrics = {"generated_tokens": tokens}
+        models[name] = writer
+    monkeypatch.setattr("arenamcp.local_study_model.LocalStudyModel", models.__getitem__)
+    monkeypatch.setattr("arenamcp.logging_config.LOG_DIR", tmp_path)
+    request = {"operation": "build", "card": 1001, "deck_id": "d", "identity": book.identity}
+    for name, reused, tokens in (("a", False, 101), ("b", False, 202), ("a", True, 101)):
+        reply = owner.deck_card_study({**request, "model": name})
+        assert reply["reused"] is reused
+        assert f"Fixture role {name}" in reply["detail"]
+        assert f"{tokens} generated tokens" in reply["detail"]
+        assert name * 12 in reply["detail"]
+    assert all(writer.complete.call_count == 1 for writer in models.values())
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"role": "tool"},
+        {"role": "user"},
+        {"role": "system"},
+        {},
+        {"role": "assistant", "tool_calls": [{"function": {}}]},
+    ],
+)
+def test_stream_requires_assistant_output_without_tools(monkeypatch, extra):
+    import io
+
+    import arenamcp.local_study_model as local
+
+    m = LocalStudyModel.__new__(LocalStudyModel)
+    m.name, m.digest, m.thinks = "fixture", "a" * 64, False
+    monkeypatch.setattr(local, "installed_models", lambda: {m.name: m.digest})
+    stream = io.BytesIO(
+        json.dumps(
+            {
+                "model": m.name,
+                "done": True,
+                "done_reason": "stop",
+                "message": {**extra, "content": '{"ok":true}'},
+            }
+        ).encode()
+    )
+    stream.status = 200
+    conn = Mock()
+    conn.getresponse.return_value = stream
+    monkeypatch.setattr(local.http.client, "HTTPConnection", Mock(return_value=conn))
+    with pytest.raises(ValueError, match="output channel"):
+        m.complete("system", "user", allowed=lambda: True)

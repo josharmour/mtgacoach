@@ -147,13 +147,19 @@ def _cached(path, book, context):
     return _validated_row(raw["row"], book, context), raw.get("metrics", {})
 
 
-def read_card(book, gid, directory):
+def read_card(book, gid, directory, *, model_digest=None):
     context = _context(book, gid)
     folder = _directory(directory, context)
+    if model_digest is not None:
+        if not re.fullmatch(r"(?:sha256:)?[a-f0-9]{64}", model_digest):
+            raise ValueError("Missing local model identity")
+        path = folder / (model_digest.removeprefix("sha256:") + ".json")
+        row, metrics = _cached(path, book, context)
+        return card_detail(book, gid, row, metrics=metrics, model_digest=path.stem)
     for path in sorted(folder.glob("*.json"), key=lambda p: p.stat().st_mtime_ns, reverse=True):
         try:
             row, metrics = _cached(path, book, context)
-            return card_detail(book, gid, row, metrics=metrics)
+            return card_detail(book, gid, row, metrics=metrics, model_digest=path.stem)
         except (OSError, ValueError, KeyError, TypeError):
             continue
     return card_detail(book, gid)
@@ -240,7 +246,7 @@ def study_card(book, gid, model, directory, *, allowed):
     return row, False
 
 
-def card_detail(book, gid, row=None, *, metrics=None):
+def card_detail(book, gid, row=None, *, metrics=None, model_digest=None):
     context = _context(book, gid)
     if not _checked(book, [int(i) for i in context["prints"]]):
         raise ValueError("The current Arena prints could not be matched to the saved strategy")
@@ -256,6 +262,8 @@ def card_detail(book, gid, row=None, *, metrics=None):
             "Saved deck study" if admitted else "Local model advice · awaiting review",
             selected["role"],
         ]
+        if not admitted and model_digest:
+            lines.append(f"Local model weights • {model_digest[:12]}")
         for action in ("play", "hold", "avoid"):
             entry = selected[action]
             lines.extend([f"{action.title()} • {entry['advice']}", _conditions(entry["conditions"], book)])

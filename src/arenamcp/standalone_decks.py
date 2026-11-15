@@ -372,7 +372,11 @@ class _DeckLibraryMixin:
                     return {**reply, "detail": card_detail(book, gid), "reused": True}
                 model = LocalStudyModel(request.get("model"))
                 _row, reused = study_card(book, gid, model, directory, allowed=allowed)
-                return {**reply, "detail": read_card(book, gid, directory), "reused": reused}
+                return {
+                    **reply,
+                    "detail": read_card(book, gid, directory, model_digest=model.digest),
+                    "reused": reused,
+                }
             finally:
                 lock.release()
         except (OSError, ValueError, TypeError, KeyError) as error:

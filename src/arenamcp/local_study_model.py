@@ -139,7 +139,20 @@ class LocalStudyModel:
                 chunk = json.loads(line)
                 if chunk.get("error") or chunk.get("model") != self.name:
                     raise ValueError("The local model response could not be verified")
-                parts.append((chunk.get("message") or {}).get("content", ""))
+                message = chunk.get("message", {})
+                if not isinstance(message, dict) or message.get("tool_calls") or message.get("tool_name"):
+                    raise ValueError("Unexpected local model output channel")
+                role, content = message.get("role"), message.get("content", "")
+                if (
+                    role not in (None, "", "assistant")
+                    or not isinstance(content, str)
+                    or (
+                        role != "assistant"
+                        and (content or message.get("thinking") or chunk.get("done") is not True)
+                    )
+                ):
+                    raise ValueError("Unexpected local model output channel")
+                parts.append(content)
                 if chunk.get("done") is True:
                     reason = chunk.get("done_reason")
                     self.last_metrics.update(
