@@ -150,6 +150,43 @@ def _guidance_input(book, state, scope):
     }
 
 
+_ABSTENTION = re.compile(r"\b(?:do not|don't|cannot|can't|never|avoid)\s+(?:immediately\s+)?$", re.I)
+
+
+def _available_acceleration(row, book, cost):
+    """Count only established, explicitly usable, source-bound mana permanents."""
+    from arenamcp.rules_engine import _normalize_mana_symbols
+
+    advice = row["advice"]
+    pieces = {p["card"]: p["zone"] for p in row["conditions"]["pieces"]}
+    produced = Counter()
+    for gid in {ref["card"] for ref in row["evidence"]}:
+        card = book.catalog[gid]
+        types = card.get("type_line", "").lower().split("—")[0].split()
+        if (
+            pieces.get(gid) != "battlefield"
+            or "land" in types
+            or not {"artifact", "creature"}.intersection(types)
+        ):
+            continue
+        source = card.get("oracle_text") or ""
+        # Whole print equality excludes conditional/restricted mana and extra
+        # activation costs. Each distinct named source may tap once.
+        printed = re.fullmatch(r"\{T\}: Add ((?:\{[WUBRGC]\})+)\.", _normalize_mana_symbols(source))
+        if not printed or not any(ref["card"] == gid and ref["quote"] == source for ref in row["evidence"]):
+            continue
+        name = re.escape(card["name"])
+        ready = rf"\b(?:with (?:an? )?untapped {name}(?!\w)|if {name} is untapped\b)"
+        if "creature" in types:
+            if row["conditions"]["first_turn"] < 2:
+                continue
+            ready += r" and you have controlled it (?:continuously )?since (?:the start of your turn|your turn began)"
+        if re.search(ready, advice, re.I):
+            produced.update(re.findall(r"\{([WUBRGC])\}", printed[1]))
+    matched = sum(min(count, cost.get(color, 0)) for color, count in produced.items())
+    return matched + min(cost.get("generic", 0), sum(produced.values()) - matched)
+
+
 def _ground_chapter_action(row, book):
     advice = row["advice"].replace("−", "-").replace("’", "'")
     conditions = row["conditions"]
@@ -168,18 +205,23 @@ def _ground_chapter_action(row, book):
         if named and book.catalog[gid]["name"].casefold() != max(named, key=len).casefold():
             raise ValueError("The named card and its printed ID disagree")
     for sentence in re.split(r"[.!?;]", advice):
-        if re.search(
+        explicit = re.search(
             r"\b(?:cast|casting) (?:a |an )?(?:\w+ ){0,3}spell (?:that |to )?"
-            r"(?:benefits? from|triggers?) (?:\w+ ){0,2}landfall\b",
+            r"(?P<relation>benefits? from|triggers?) (?:\w+ ){0,2}landfall\b",
             sentence,
             re.I,
-        ) and not re.search(
-            r"\b(?:play(?:ing)? (?:a |the |your )?land|land (?:you control )?enters|"
-            r"put\w* [^.;]{0,30}land [^.;]{0,25}onto the battlefield)\b",
-            sentence,
-            re.I,
-        ):
-            raise ValueError("Casting a spell alone does not trigger landfall")
+        )
+        if explicit and not _ABSTENTION.search(sentence[: explicit.start()]):
+            # A later land play can benefit a creature already cast. It does
+            # not turn casting the preceding spell into a separate landfall.
+            land_entry = re.search(
+                r"\b(?:play(?:ing)? (?:a |the |your )?land|land (?:you control )?enters|"
+                r"put\w* [^.;]{0,30}land [^.;]{0,25}onto the battlefield)\b",
+                sentence,
+                re.I,
+            )
+            if explicit["relation"].lower().startswith("trigger") or not land_entry:
+                raise ValueError("Casting a spell alone does not trigger landfall")
 
     for gid in book.commanders:
         card = book.catalog[gid]
@@ -189,8 +231,13 @@ def _ground_chapter_action(row, book):
             names.append(r"(?:your|the) commander")
         subject = rf"(?:{'|'.join(names)})(?![\w'-])"
         named_cast = rf"\b(?:recast|cast|deploy)(?:ing)?\s+{subject}"
-        cast_clause = re.search(r"[^.!?;]*?" + named_cast + r"[^.!?;]*", advice, re.IGNORECASE)
-        if cast_clause:
+        for verb in re.finditer(named_cast, advice, re.IGNORECASE):
+            prefix = advice[: verb.start()]
+            if _ABSTENTION.search(prefix):
+                continue
+            left = re.split(r"[.!?;]", prefix)[-1]
+            right = re.split(r"[.!?;]", advice[verb.start() :], maxsplit=1)[0]
+            cast_clause = left + right
             policy = deployment_context(card, gid)
             cost = policy["base_payment"]
             if pieces.get(gid) != "command":
@@ -201,20 +248,25 @@ def _ground_chapter_action(row, book):
                 raise ValueError("Chapter cannot certify this commander's printed casting cost")
             mana = conditions["mana"]
             turns = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7}
-            stated = re.findall(r"\bturn[ -](\d+|one|two|three|four|five|six|seven)\b", cast_clause[0], re.I)
-            if any((int(t) if t.isdigit() else turns[t.lower()]) < sum(cost.values()) for t in stated):
+            stated = re.findall(r"\bturn[ -](\d+|one|two|three|four|five|six|seven)\b", cast_clause, re.I)
+            earliest = max(1, sum(cost.values()) - _available_acceleration(row, book, cost))
+            if any((int(t) if t.isdigit() else turns[t.lower()]) < earliest for t in stated):
                 raise ValueError("Chapter states an unsupported early commander deployment")
             if (
                 any(mana.get(k, 0) < n for k, n in cost.items() if k != "generic")
                 or sum(mana.values()) < sum(cost.values())
-                or conditions["first_turn"] < max(1, sum(cost.values()))
+                or conditions["first_turn"] < earliest
                 or not re.search(r"\b(?:commander|command.zone) tax\b", advice, re.I)
             ):
                 raise ValueError(
                     "Chapter commander deployment must cover printed mana, timing and current commander tax"
                 )
         named_ability = rf"(?<!\w)(?:{re.escape(card['name'])}|{re.escape(name)})'s\s+\[?([+-]\d+|0)\]?"
-        for cost in re.findall(named_ability, advice, re.I):
+        for ability in re.finditer(named_ability, advice, re.I):
+            action = re.search(r"\b(?:use|activate|using|activating)\s+$", advice[: ability.start()], re.I)
+            if action and _ABSTENTION.search(advice[: action.start()]):
+                continue
+            cost = ability[1]
             if pieces.get(gid) != "battlefield" or not any(
                 ref["card"] == gid
                 and re.match(rf"^\[?{re.escape(cost)}\]?\s*:", ref["quote"].replace("−", "-"))

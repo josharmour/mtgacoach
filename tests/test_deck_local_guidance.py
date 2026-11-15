@@ -511,3 +511,121 @@ def test_revalidate_earlier_single_topic_source_before_reuse(deck, tmp_path):
     old_file.write_text(json.dumps(row))
     assert not topic_coverage(current, context, "sequencing", tmp_path, m.digest)[0]
     assert "No local study" in deck_guidance(book, state, "sequencing", tmp_path)[0]
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        None,
+        "in_hand",
+        "missing_untapped",
+        "conditional",
+        "land",
+        "creature",
+        "established_creature",
+        "wrong_color",
+        "missing_mana",
+        "two_turns_early",
+        "tax",
+        "duplicate",
+        "no_granted_mana",
+    ],
+)
+def test_early_commander_requires_current_payable_mana_and_proven_acceleration(deck, tmp_path, fault):
+    state, book, native = deck
+    model = writer()
+    original = model.complete.side_effect
+    source = native[1002]
+    source.name = "Fixture Rock"
+    source.type_line = {
+        "land": "Artifact Land",
+        "creature": "Artifact Creature",
+        "established_creature": "Creature — Elf Druid",
+    }.get(fault, "Artifact")
+    source.oracle_text = "{oT}: Add {oC}."
+    if fault == "conditional":
+        source.oracle_text += " Spend this mana only to cast artifact spells."
+    if fault == "wrong_color":
+        native[1001].mana_cost = "{G}{G}{G}{G}{G}"
+
+    def respond(*args, **kwargs):
+        answer = original(*args, **kwargs)
+        row = answer["topics"]["sequencing"]
+        t = 3 if fault == "two_turns_early" else 4
+        row["conditions"].update(
+            first_turn=t,
+            pieces=[
+                {"card": 1001, "zone": "command"},
+                {"card": 1002, "zone": "hand" if fault == "in_hand" else "battlefield"},
+            ],
+            mana={
+                "generic": 0 if fault in {"missing_mana", "wrong_color"} else 3,
+                "G": 5 if fault == "wrong_color" else 2,
+            },
+        )
+        row["evidence"] = [
+            {"card": 1001, "rule": 1},
+            {"card": 1002, "rule": 2 if fault == "no_granted_mana" else 1},
+        ]
+        if fault == "duplicate":
+            row["conditions"]["pieces"].append({"card": 1002, "zone": "battlefield"})
+        prerequisite = "with an untapped Fixture Rock" if fault != "missing_untapped" else "with Fixture Rock"
+        if fault == "established_creature":
+            prerequisite = (
+                "if Fixture Rock is untapped and you have controlled it since the start of your turn"
+            )
+        tax = "including the current commander tax" if fault != "tax" else ""
+        row["advice"] = (
+            f"On turn {t}, {prerequisite}, cast the commander when you can pay its full cost {tax}."
+        )
+        return answer
+
+    model.complete.side_effect = respond
+
+    def run():
+        return deck_guidance(
+            book, state, "sequencing", tmp_path, model=model, allowed=lambda: True, topic="sequencing"
+        )
+
+    if fault in {None, "established_creature"}:
+        assert "Partial study" in run()[0]
+    else:
+        with pytest.raises(ValueError):
+            run()
+
+
+@pytest.mark.parametrize(
+    ("advice", "admit"),
+    [
+        ("Do not cast your commander on turn one. Hold your mana for later.", True),
+        ("Do not cast a green spell to trigger landfall. Wait until a land enters.", True),
+        ("Don't cast the commander on turn one; cast the commander on turn one anyway.", False),
+        (
+            "Cast a green spell to trigger landfall, then play a land to trigger landfall a second time.",
+            False,
+        ),
+        ("Cast a green spell, then play a land to trigger landfall.", True),
+    ],
+)
+def test_chapter_distinguishes_abstention_and_independent_land_entries(deck, tmp_path, advice, admit):
+    state, book, _ = deck
+    model = writer()
+    original = model.complete.side_effect
+
+    def respond(*args, **kwargs):
+        reply = original(*args, **kwargs)
+        reply["topics"]["sequencing"]["advice"] = advice
+        return reply
+
+    model.complete.side_effect = respond
+
+    def run():
+        return deck_guidance(
+            book, state, "sequencing", tmp_path, model=model, allowed=lambda: True, topic="sequencing"
+        )
+
+    if admit:
+        assert "Partial study" in run()[0]
+    else:
+        with pytest.raises(ValueError):
+            run()
