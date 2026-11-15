@@ -73,3 +73,28 @@ def test_key_order_is_not_a_distinct_bundle(metrics):
     a = bundle("a", "a")
     b = dict(reversed(list(a.items())))
     assert metrics.summarize([a, b])["duplicate_bundles_ignored"] == 1
+
+
+def test_actual_shadow_abstentions_do_not_count_as_compared_choices(metrics):
+    item = bundle("a", "a")
+    first = item["packet"]["decisions"][0]["trace"]["planner_certain"]
+    first.pop("proposed")
+    first.pop("model")
+    first.pop("agreement", None)
+    first["abstention"] = "unmodelled_options"
+    result = metrics.summarize([item, copy.deepcopy(item), bundle("b", "other")])
+    assert result["matches_with_shadow_checks"] == 2
+    assert result["shadow_matches"] == 1
+    assert result["abstentions_by_type"] == {"ActionsAvailable": {"unmodelled_options": 1}}
+    assert result["agreement_by_type"]["ActionsAvailable"]["agreement_rate"] == 0
+    first["proposed"] = ["a"]
+    with pytest.raises(ValueError, match="inconsistent"):
+        metrics.summarize([item])
+
+
+@pytest.mark.parametrize("invalid", [None, "", "unknown_reason"])
+def test_unknown_abstention_cannot_advance_the_agreement_gate(metrics, invalid):
+    item = bundle("a", "a")
+    item["packet"]["decisions"][0]["trace"]["planner_certain"]["abstention"] = invalid
+    with pytest.raises(ValueError, match="inconsistent"):
+        metrics.summarize([item])

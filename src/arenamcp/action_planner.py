@@ -10964,6 +10964,14 @@ class ActionPlanner(_ActionLegalityMixin):
             }
             self._last_decision_trace["planner_certain"] = observation
             logger.info("planner-certain shadow: %s", json.dumps(observation, sort_keys=True))
+        elif certainty_mode == "shadow" and decision.request_type == "ActionsAvailable":
+            # Persist actual observed coverage even when the guard abstains.
+            # Only proposals with a later model choice can count toward agreement.
+            self._last_decision_trace["planner_certain"] = {
+                "mode": "shadow",
+                "decision_type": decision.request_type,
+                "abstention": "unmodelled_options" if unmodelled else "certainty_conditions_unmet",
+            }
         logger.info(
             "typed-decision choice %s: %s", chosen, self._last_decision_reasoning or "reason not supplied"
         )

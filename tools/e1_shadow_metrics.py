@@ -11,6 +11,8 @@ from upgrade_metrics import is_match_bundle, iter_bundle_paths, load_bundle, sum
 
 def summarize(bundles):
     matches, shadow_matches = set(), set()
+    observed_matches = set()
+    abstentions = defaultdict(Counter)
     types = defaultdict(Counter)
     singletons = Counter()
     calls = 0
@@ -45,10 +47,26 @@ def summarize(bundles):
             if row.get("chosen_options") and len(pending.get("options") or []) == 1 and "llm_usage" in trace:
                 singletons[pending.get("request_type") or "unknown"] += 1
             event = trace.get("planner_certain") or {}
-            if event.get("mode") != "shadow" or not event.get("proposed") or not event.get("model"):
+            if event.get("mode") != "shadow":
+                continue
+            kind = event.get("decision_type") or pending.get("request_type") or "unknown"
+            if "abstention" in event:
+                if (
+                    event["abstention"] not in ("unmodelled_options", "certainty_conditions_unmet")
+                    or "proposed" in event
+                    or "model" in event
+                    or "agreement" in event
+                    or kind != "ActionsAvailable"
+                ):
+                    raise ValueError("inconsistent E1 abstention trace")
+                observed_matches.add(match)
+                abstentions[kind][event["abstention"]] += 1
+                continue
+            if not event.get("proposed") or not event.get("model"):
                 continue
             shadow_matches.add(match)
-            bucket = types[event.get("decision_type") or pending.get("request_type") or "unknown"]
+            observed_matches.add(match)
+            bucket = types[kind]
             bucket["observations"] += 1
             bucket["agreements"] += event["proposed"] == event["model"]
     return {
@@ -58,6 +76,8 @@ def summarize(bundles):
         "recorded_calls_per_match": calls / len(matches) if matches else None,
         "raw_singleton_model_answers_by_type": dict(singletons),
         "shadow_matches": len(shadow_matches),
+        "matches_with_shadow_checks": len(observed_matches),
+        "abstentions_by_type": {k: dict(v) for k, v in abstentions.items()},
         "minimum_match_gate_met": len(shadow_matches) >= 20,
         "agreement_by_type": {
             key: {**value, "agreement_rate": value["agreements"] / value["observations"]}

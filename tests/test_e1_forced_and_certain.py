@@ -251,3 +251,30 @@ def test_proven_mandatory_nonpass_action_keeps_existing_fast_path(kind):
     planner = _planner(_Model(_reply("x", "choose")))
     decision = replace(menu(kind), options=(DecisionOption("x", "Cast creature"),))
     assert planner._single_option_answer(decision) == ["x"]
+
+
+@pytest.mark.parametrize(
+    ("mode", "unmodelled", "reason"),
+    [
+        ("shadow", {}, "certainty_conditions_unmet"),
+        ("shadow", {"other": "missing effect"}, "unmodelled_options"),
+        ("off", {}, None),
+    ],
+)
+def test_completed_shadow_call_records_abstention_without_changing_choice(
+    monkeypatch, mode, unmodelled, reason
+):
+    model = _Model(_reply("pass", "hold"))
+    planner = _planner(model)
+    decision = replace(menu(), options=(DecisionOption("pass", "Pass"), DecisionOption("other", "other")))
+    monkeypatch.setenv("ARENAMCP_PLANNER_CERTAIN", mode)
+    monkeypatch.setattr(planner, "_line_prompt_context", lambda *args: (None, "", unmodelled))
+    assert planner._llm_decision_options(decision, _our_main()) == ["pass"]
+    if reason is None:
+        assert "planner_certain" not in planner._last_decision_trace
+        return
+    assert planner._last_decision_trace["planner_certain"] == {
+        "mode": "shadow",
+        "decision_type": "ActionsAvailable",
+        "abstention": reason,
+    }
