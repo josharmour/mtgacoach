@@ -242,3 +242,83 @@ def project_annotation_facts(
                 partner,
             )
     return result
+
+
+def public_event_print(observation, event):
+    from arenamcp.card_facts.reviewed_notes import corpus, reviewed_print
+
+    local = observation.public_state.get("local_seat_id")
+    if (
+        type(local) is not int
+        or local not in (1, 2)
+        or type(event.seat) is not int
+        or event.seat not in (1, 2)
+        or event.visibility != "public"
+        or event.kind not in {"action_observed", "spell_resolved", "permanent_entered", "land_drop"}
+        or type(event.payload.get("grp_id")) is not int
+        or event.payload["grp_id"] not in corpus()[0]
+    ):
+        return None
+    entry = event.kind != "action_observed"
+    if entry and event.payload.get("to_zone") != "battlefield":
+        return None
+    zones = observation.public_state.get("zones", {})
+    candidates = [
+        card
+        for zone in (("battlefield",) if entry else ("stack", "battlefield", "graveyard", "exile"))
+        for card in zones.get(zone, ())
+        if card.get("instance_id") == event.payload.get("instance_id")
+    ]
+    if len(candidates) != 1 or type(candidates[0].get("instance_id")) is not int:
+        return None
+    focal = candidates[0]
+    if (
+        not reviewed_print(focal)
+        or focal["name"] != event.payload.get("name")
+        or focal["grp_id"] != event.payload["grp_id"]
+        or focal.get("controller_seat_id") != event.seat
+    ):
+        return None
+    return focal
+
+
+def observed_annotations(observation, event, played=()):
+    """Project public print evidence with an epoch-scoped public cast history."""
+    from arenamcp.card_facts.reviewed_notes import corpus, reviewed_print
+
+    local = observation.public_state.get("local_seat_id")
+    focal = public_event_print(observation, event)
+    if focal is None:
+        return {}
+    entry = event.kind != "action_observed"
+    zones = observation.public_state["zones"]
+    epoch = observation.epoch
+    partners = (
+        tuple(
+            KnownCard(card["name"], zone, event.seat, match_id=epoch.match_id, game_number=epoch.game_number)
+            for zone in ("battlefield", "graveyard")
+            for card in zones.get(zone, ())
+            if card.get("controller_seat_id") == event.seat
+            and reviewed_print(card)
+            and card.get("instance_id") != focal["instance_id"]
+        )
+        if entry
+        else ()
+    )
+    _, records, sources, pins = corpus()
+    return project_annotation_facts(
+        AnnotationEvent(
+            event.event_id,
+            "permanent_entered" if entry else "spell_cast",
+            focal["name"],
+            event.seat,
+            match_id=epoch.match_id,
+            game_number=epoch.game_number,
+        ),
+        local_seat=local,
+        allow_private=False,
+        known_cards=partners + tuple(c for c in played if c.controller == event.seat),
+        records=records,
+        printed=sources,
+        reviewed_digests=pins,
+    )

@@ -97,6 +97,7 @@ def compact_context(system, context):
         "life_change": 8,
         "cast": 10,
         "resolved": 9,
+        "permanent_entered": 9,
         "counter": 15,
         "spell_cast": 10,
         "spell_resolved": 7,
@@ -175,6 +176,37 @@ def compact_context(system, context):
                         "refs": [ranked[0]],
                     }
                 break
+    # Carry reviewed relationship possibilities and threat descriptions while
+    # the originating play is present in the new event batch.
+    event_kinds = {
+        "cast": "spell_cast",
+        "resolved": "permanent_entered",
+        "permanent_entered": "permanent_entered",
+        "land_drop": "permanent_entered",
+    }
+    event_prints = {
+        (
+            event_kinds.get(facts[k].get("kind")),
+            facts[k].get("seat"),
+            (facts[k].get("data") or {}).get("instance_id"),
+        )
+        for k in ranked[:2]
+    }
+    annotations = [
+        k
+        for k, f in facts.items()
+        if k.startswith("state:annotation:")
+        and (f.get("event_kind"), f.get("controller"), f.get("instance_id")) in event_prints
+    ]
+    annotations.sort(key=lambda k: facts[k].get("kind") != "card_relationship")
+    # Reviewed links are the strongest evidence for an entry. Reserve room
+    # for one while allowing the focal rules and established engines to fit.
+    order = (
+        ranked[:2]
+        + [k for k in annotations if facts[k]["kind"] == "card_relationship"]
+        + order[len(ranked[:2]) :]
+    )
+    order += [k for k in annotations if facts[k]["kind"] != "card_relationship"]
     order += related
     order += focal
     others = [k for k in permanents if k not in focal]

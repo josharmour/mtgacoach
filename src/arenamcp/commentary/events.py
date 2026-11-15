@@ -23,6 +23,10 @@ def journal_event(game, event):
     origin = (
         str(getattr(getattr(source_zone, "zone_type", None), "value", "")).replace("ZoneType_", "").lower()
     )
+    destination = game.zones.get(event.get("to_zone"))
+    destination_type = getattr(getattr(destination, "zone_type", None), "value", None)
+    if kind is None and origin and origin != "battlefield" and destination_type == "ZoneType_Battlefield":
+        kind = "permanent_entered"
     if kind is None and (category in {"Mill", "Countered", "Counterspell"} or origin == "battlefield"):
         kind = "outcome"
     if kind is None:
@@ -34,7 +38,6 @@ def journal_event(game, event):
         return
     visible = _public_card(obj.to_dict())
     payload = {"instance_id": obj.instance_id}
-    destination = game.zones.get(event.get("to_zone"))
     zone_type = (
         str(getattr(getattr(destination, "zone_type", None), "value", event.get("to_zone", "")))
         .replace("ZoneType_", "")

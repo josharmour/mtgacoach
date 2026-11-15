@@ -1,0 +1,323 @@
+[
+  {
+    "grp_ids": [
+      88930
+    ],
+    "printed": {
+      "name": "Case of the Uneaten Feast",
+      "mana_cost": "{W}",
+      "type_line": "Enchantment — Case",
+      "oracle_text": "Whenever a creature you control enters, you gain 1 life.\nTo solve — You've gained 5 or more life this turn. <i>(If unsolved, solve at the beginning of your end step.)</i>\nSolved — Sacrifice this Case: Creature cards in your graveyard gain \"You may cast this card from your graveyard\" until end of turn."
+    },
+    "record": {
+      "name": "Case of the Uneaten Feast",
+      "rules_hash": "0510c2ddca46bf473ad6feb41a48659e94ad6a9b4927545e586ab83e5277463f",
+      "threat": {
+        "version": 1,
+        "plan": [],
+        "clock": [],
+        "answers": []
+      },
+      "relationships": {
+        "version": 1,
+        "links": [
+          {
+            "card": "Lunar Convocation",
+            "role": "enabler",
+            "claim": {
+              "text": "If one player controls both enchantments, a creature entering under that player’s control can trigger the Case to gain 1 life. That gain can help satisfy Lunar Convocation’s end-step conditions. The Bat also requires that player to lose life that turn.",
+              "origin": "model",
+              "evidence": [
+                {
+                  "card": "Case of the Uneaten Feast",
+                  "quote": "Whenever a creature you control enters, you gain 1 life.\nTo solve — You've gained 5 or more life this turn. <i>(If unsolved, solve at the beginning of your end step.)</i>\nSolved — Sacrifice this Case: Creature cards in your graveyard gain \"You may cast this card from your graveyard\" until end of turn."
+                },
+                {
+                  "card": "Lunar Convocation",
+                  "quote": "At the beginning of your end step, if you gained life this turn, each opponent loses 1 life.\nAt the beginning of your end step, if you gained and lost life this turn, create a 1/1 black Bat creature token with flying.\n{o1oB}, Pay 2 life: Draw a card."
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "narrative_provenance": {
+        "source_text_sha256": {
+          "Case of the Uneaten Feast": "4df90e2600e601d009eeee8024a5eb43bd2ec5192784563ba7a8417c213beca9",
+          "Lunar Convocation": "71864bfbdcc7037796cbfbd252f0f9de6a048c64c1957566c1564315502e952f"
+        }
+      }
+    }
+  },
+  {
+    "grp_ids": [
+      44125,
+      86644
+    ],
+    "printed": {
+      "name": "Griselbrand",
+      "mana_cost": "{4}{B}{B}{B}{B}",
+      "type_line": "Legendary Creature — Demon",
+      "oracle_text": "Flying\nLifelink\nPay 7 life: Draw seven cards."
+    },
+    "record": {
+      "name": "Griselbrand",
+      "rules_hash": "57a043b00153261cbe8c208bab4c91a02bdb2f72d2b1116a6d11c31ecdee6f90",
+      "threat": {
+        "version": 1,
+        "plan": [
+          {
+            "text": "Griselbrand’s controller can pay 7 life to draw seven cards. Its flying and lifelink also let it gain life for its controller when it deals combat damage.",
+            "origin": "model",
+            "evidence": [
+              {
+                "card": "Griselbrand",
+                "quote": "Flying\nLifelink\nPay 7 life: Draw seven cards."
+              }
+            ]
+          }
+        ],
+        "clock": [],
+        "answers": []
+      },
+      "relationships": {
+        "version": 1,
+        "links": [
+          {
+            "card": "Sheoldred, the Apocalypse",
+            "role": "enabler",
+            "claim": {
+              "text": "If one player controls both permanents, paying 7 life to draw seven cards with Griselbrand can trigger Sheoldred’s life gain once for each card that player draws. The activation cost is paid before those triggers can gain life.",
+              "origin": "model",
+              "evidence": [
+                {
+                  "card": "Griselbrand",
+                  "quote": "Flying\nLifelink\nPay 7 life: Draw seven cards."
+                },
+                {
+                  "card": "Sheoldred, the Apocalypse",
+                  "quote": "Deathtouch\nWhenever you draw a card, you gain 2 life.\nWhenever an opponent draws a card, they lose 2 life."
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "narrative_provenance": {
+        "source_text_sha256": {
+          "Griselbrand": "9d9a883a38044880795a786430640c5919ff3be5f5a332ad0232fb832d89a152",
+          "Sheoldred, the Apocalypse": "9b94bf655673f4135b06827f26d106aea852cb338d0e9bdfc9ecc9bc29dee437"
+        }
+      }
+    }
+  },
+  {
+    "grp_ids": [
+      91759
+    ],
+    "printed": {
+      "name": "Lunar Convocation",
+      "mana_cost": "{W}{B}",
+      "type_line": "Enchantment",
+      "oracle_text": "At the beginning of your end step, if you gained life this turn, each opponent loses 1 life.\nAt the beginning of your end step, if you gained and lost life this turn, create a 1/1 black Bat creature token with flying.\n{o1oB}, Pay 2 life: Draw a card."
+    },
+    "record": {
+      "name": "Lunar Convocation",
+      "rules_hash": "d9a3cec1e2765221d9c7d24a3a0fb56f6ab34f687a28176e5af7b6cce83ccf8f",
+      "threat": {
+        "version": 1,
+        "plan": [
+          {
+            "text": "At the beginning of its controller’s end step, if that player gained life this turn, each opponent loses 1 life. If its controller both gained and lost life this turn, a separate end-step ability can create a flying 1/1 Bat.",
+            "origin": "model",
+            "evidence": [
+              {
+                "card": "Lunar Convocation",
+                "quote": "At the beginning of your end step, if you gained life this turn, each opponent loses 1 life.\nAt the beginning of your end step, if you gained and lost life this turn, create a 1/1 black Bat creature token with flying.\n{o1oB}, Pay 2 life: Draw a card."
+              }
+            ]
+          }
+        ],
+        "clock": [],
+        "answers": []
+      },
+      "relationships": {
+        "version": 1,
+        "links": [
+          {
+            "card": "Case of the Uneaten Feast",
+            "role": "payoff",
+            "claim": {
+              "text": "If one player controls both enchantments, a creature entering under that player’s control can trigger the Case to gain 1 life. That gain can help satisfy Lunar Convocation’s end-step conditions. The Bat also requires that player to lose life that turn.",
+              "origin": "model",
+              "evidence": [
+                {
+                  "card": "Lunar Convocation",
+                  "quote": "At the beginning of your end step, if you gained life this turn, each opponent loses 1 life.\nAt the beginning of your end step, if you gained and lost life this turn, create a 1/1 black Bat creature token with flying.\n{o1oB}, Pay 2 life: Draw a card."
+                },
+                {
+                  "card": "Case of the Uneaten Feast",
+                  "quote": "Whenever a creature you control enters, you gain 1 life.\nTo solve — You've gained 5 or more life this turn. <i>(If unsolved, solve at the beginning of your end step.)</i>\nSolved — Sacrifice this Case: Creature cards in your graveyard gain \"You may cast this card from your graveyard\" until end of turn."
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "narrative_provenance": {
+        "source_text_sha256": {
+          "Lunar Convocation": "71864bfbdcc7037796cbfbd252f0f9de6a048c64c1957566c1564315502e952f",
+          "Case of the Uneaten Feast": "4df90e2600e601d009eeee8024a5eb43bd2ec5192784563ba7a8417c213beca9"
+        }
+      }
+    }
+  },
+  {
+    "grp_ids": [
+      82159,
+      82347,
+      82352,
+      84002,
+      106941
+    ],
+    "printed": {
+      "name": "Sheoldred, the Apocalypse",
+      "mana_cost": "{2}{B}{B}",
+      "type_line": "Legendary Creature — Phyrexian Praetor",
+      "oracle_text": "Deathtouch\nWhenever you draw a card, you gain 2 life.\nWhenever an opponent draws a card, they lose 2 life."
+    },
+    "record": {
+      "name": "Sheoldred, the Apocalypse",
+      "rules_hash": "da50c012ea7badceb73539c4ac79a825f1b09cc2f6fc87d9fcb1a89f254e5e93",
+      "threat": {
+        "version": 1,
+        "plan": [
+          {
+            "text": "Each card Sheoldred’s controller draws triggers a gain of 2 life for that player. Each card an opponent of that controller draws triggers a loss of 2 life for the player who drew it.",
+            "origin": "model",
+            "evidence": [
+              {
+                "card": "Sheoldred, the Apocalypse",
+                "quote": "Deathtouch\nWhenever you draw a card, you gain 2 life.\nWhenever an opponent draws a card, they lose 2 life."
+              }
+            ]
+          }
+        ],
+        "clock": [],
+        "answers": []
+      },
+      "relationships": {
+        "version": 1,
+        "links": [
+          {
+            "card": "Griselbrand",
+            "role": "payoff",
+            "claim": {
+              "text": "If one player controls both permanents, paying 7 life to draw seven cards with Griselbrand can trigger Sheoldred’s life gain once for each card that player draws. The activation cost is paid before those triggers can gain life.",
+              "origin": "model",
+              "evidence": [
+                {
+                  "card": "Sheoldred, the Apocalypse",
+                  "quote": "Deathtouch\nWhenever you draw a card, you gain 2 life.\nWhenever an opponent draws a card, they lose 2 life."
+                },
+                {
+                  "card": "Griselbrand",
+                  "quote": "Flying\nLifelink\nPay 7 life: Draw seven cards."
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "narrative_provenance": {
+        "source_text_sha256": {
+          "Sheoldred, the Apocalypse": "9b94bf655673f4135b06827f26d106aea852cb338d0e9bdfc9ecc9bc29dee437",
+          "Griselbrand": "9d9a883a38044880795a786430640c5919ff3be5f5a332ad0232fb832d89a152"
+        }
+      }
+    }
+  },
+  {
+    "grp_ids": [
+      70584
+    ],
+    "printed": {
+      "name": "Thassa's Oracle",
+      "mana_cost": "{U}{U}",
+      "type_line": "Creature — Merfolk Wizard",
+      "oracle_text": "When this creature enters, look at the top X cards of your library, where X is your devotion to blue. Put up to one of them on top of your library and the rest on the bottom of your library in a random order. If X is greater than or equal to the number of cards in your library, you win the game."
+    },
+    "record": {
+      "name": "Thassa's Oracle",
+      "rules_hash": "a1a052ddc89c42b118233c9c7fca92c66e40a634cae47fa271e1431f35eb23d7",
+      "threat": {
+        "version": 1,
+        "plan": [
+          {
+            "text": "Thassa’s Oracle can win the game for its controller if, when its enters-the-battlefield ability resolves, that player’s devotion to blue is at least the number of cards in their library.",
+            "origin": "model",
+            "evidence": [
+              {
+                "card": "Thassa's Oracle",
+                "quote": "When this creature enters, look at the top X cards of your library, where X is your devotion to blue. Put up to one of them on top of your library and the rest on the bottom of your library in a random order. If X is greater than or equal to the number of cards in your library, you win the game."
+              }
+            ]
+          }
+        ],
+        "clock": [],
+        "answers": []
+      },
+      "relationships": {
+        "version": 1,
+        "links": []
+      },
+      "narrative_provenance": {
+        "source_text_sha256": {
+          "Thassa's Oracle": "0ca64b18556b9ed8565637bd61cf01c8abae0780fa86c24681ef7569df0b9d76"
+        }
+      }
+    }
+  },
+  {
+    "grp_ids": [
+      71283,
+      96248
+    ],
+    "printed": {
+      "name": "Winota, Joiner of Forces",
+      "mana_cost": "{2}{R}{W}",
+      "type_line": "Legendary Creature — Human Warrior",
+      "oracle_text": "Whenever a non-Human creature you control attacks, look at the top six cards of your library. You may put a Human creature card from among them onto the battlefield tapped and attacking. It gains indestructible until end of turn. Put the rest of the cards on the bottom of your library in a random order."
+    },
+    "record": {
+      "name": "Winota, Joiner of Forces",
+      "rules_hash": "fb0051d451969ca5eb2de56d9d09bafb7aac8246e69e702b93bea6666e5d9fed",
+      "threat": {
+        "version": 1,
+        "plan": [
+          {
+            "text": "Each non-Human creature Winota’s controller declares as an attacker triggers a look at the top six cards of that player’s library. They may put a Human creature card from among them onto the battlefield tapped and attacking. That Human gains indestructible until end of turn.",
+            "origin": "model",
+            "evidence": [
+              {
+                "card": "Winota, Joiner of Forces",
+                "quote": "Whenever a non-Human creature you control attacks, look at the top six cards of your library. You may put a Human creature card from among them onto the battlefield tapped and attacking. It gains indestructible until end of turn. Put the rest of the cards on the bottom of your library in a random order."
+              }
+            ]
+          }
+        ],
+        "clock": [],
+        "answers": []
+      },
+      "relationships": {
+        "version": 1,
+        "links": []
+      },
+      "narrative_provenance": {
+        "source_text_sha256": {
+          "Winota, Joiner of Forces": "f557c8c17ff4b30f53344d4184faaf264020a65082825d0f13f126cf94cbaa0c"
+        }
+      }
+    }
+  }
+]

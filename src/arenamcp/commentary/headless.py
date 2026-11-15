@@ -73,6 +73,8 @@ class HeadlessBooth:
         self.length_drops = []
         self.audit_scopes = {}
         self.event_sources = {}
+        self.played_prints = {}
+        self.annotation_epoch = None
         self.already_called = ()
         self.recent_analysis = ()
         self.deck_plan = None
@@ -226,6 +228,7 @@ class HeadlessBooth:
             def _state_facts(self, snap):
                 facts = super()._state_facts(snap)
                 facts.update(owner.permanents)
+                facts.update(owner.annotation_facts)
                 board = facts.get("state:board", {})
                 # Keep both battlefields affordable even when graveyards and
                 # repeated identity metadata would crowd them out of the prompt.
@@ -384,15 +387,67 @@ class HeadlessBooth:
                 self.permanents[f"state:permanent:{card['instance_id']}"] = fact
             if len(self.permanents) == 24:
                 break
+        from .card_annotations import KnownCard, observed_annotations, public_event_print
+
+        self.annotation_facts = {}
+        relationship_events = set()
+        annotated_events = set()
+        epoch = (observation.epoch, observation.public_state.get("local_seat_id"))
+        if self.annotation_epoch != epoch:
+            self.played_prints.clear()
+            self.annotation_epoch = epoch
+        for event_index, event in enumerate(observation.events):
+            played = tuple(c for seq, c in self.played_prints.values() if seq < event.source_sequence)
+            if event.kind == "action_observed":
+                card = public_event_print(observation, event)
+                if card:
+                    # Bounded by reviewed print names and two seats.
+                    self.played_prints.setdefault(
+                        (event.seat, card["name"]),
+                        (
+                            event.source_sequence,
+                            KnownCard(
+                                card["name"],
+                                "played",
+                                event.seat,
+                                match_id=observation.epoch.match_id,
+                                game_number=observation.epoch.game_number,
+                            ),
+                        ),
+                    )
+            for i, fact in enumerate(observed_annotations(observation, event, played).values()):
+                # Both native and desktop delivery bind these notes to this
+                # snapshot. A resolved-entry partner can subsequently leave.
+                key = f"state:annotation:{event_index}:{i}"
+                annotated_events.add(event.event_id)
+                if fact["kind"] == "card_relationship":
+                    relationship_events.add(event.event_id)
+                self.annotation_facts[key] = {
+                    "source": fact["source"],
+                    "print": fact["rules_hash"],
+                    "card": fact["card"],
+                    "kind": fact["kind"],
+                    "event_kind": fact["event_kind"],
+                    "text": fact["text"],
+                    "controller": fact["controller"],
+                    "instance_id": event.payload.get("instance_id"),
+                    **({"observed_partner": fact["observed_partner"]} if "observed_partner" in fact else {}),
+                }
+                if len(self.annotation_facts) >= 12:
+                    break
+            if len(self.annotation_facts) >= 12:
+                break
         snapshot = self._snapshot(observation)
         self.story.update(snapshot)
         self.booth.update_read(self.story.read(snapshot))
         self.booth.observe(snapshot)
         mapping = {"action_observed": "cast", "spell_resolved": "resolve", "combat": "attack_declared"}
         for evidence in observation.events:
-            if evidence.kind == "outcome" or (
+            if evidence.kind in {"outcome", "permanent_entered"} or (
                 evidence.kind == "hand_changed" and self.settings.private_information
             ):
+                if evidence.kind == "permanent_entered" and evidence.event_id not in annotated_events:
+                    continue
                 # These factual observations have no native AOA detector type.
                 # Keep their original time and public/private provenance.
                 with self.booth.lock:
@@ -408,9 +463,13 @@ class HeadlessBooth:
                         "temporal_context": "Observed event; may precede the current phase.",
                         "play_id": None,
                         "source": "public_GRE_annotation"
-                        if evidence.kind == "outcome"
+                        if evidence.visibility == "public"
                         else "visible_owner_GRE",
-                        "salience": 3 if evidence.kind == "outcome" else 1,
+                        "salience": 3
+                        if evidence.kind == "outcome"
+                        else 2
+                        if evidence.event_id in relationship_events
+                        else 1,
                         "excitement": event_excitement(evidence),
                         "received": evidence.received_at or observation.arrived_at,
                     }
@@ -430,7 +489,9 @@ class HeadlessBooth:
                     evidence.seat,
                     evidence.payload,
                     evidence.received_at or observation.arrived_at,
-                    2 if kind in {"game_end", "attack_declared"} else 1,
+                    2
+                    if kind in {"game_end", "attack_declared"} or evidence.event_id in relationship_events
+                    else 1,
                 ),
                 snapshot,
             )

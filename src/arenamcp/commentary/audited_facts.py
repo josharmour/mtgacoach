@@ -155,6 +155,13 @@ def binding(scope, tracked, sources, observation, text):
             if "hypothetical_arithmetic" in fact:
                 keys.add("life")
             continue
+        if (
+            key.startswith("state:annotation:")
+            and key in deps
+            and fact.get("source") == "reviewed_card_facts"
+        ):
+            snapshot = True
+            continue
         if key in {"state:turn", "state:game_read", "private:deck_plan"} and key in deps:
             snapshot = True
             continue

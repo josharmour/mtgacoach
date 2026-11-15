@@ -58,6 +58,7 @@ class Evidence:
             "action_submitted",
             "action_observed",
             "spell_resolved",
+            "permanent_entered",
             "combat",
             "game_end",
             "game_start",
