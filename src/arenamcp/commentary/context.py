@@ -404,6 +404,19 @@ def omits_on_hit_counter_cost(text, evidence):
     This veto covers the observed shorthand. The semantic audit still checks
     controller, timing, payment and target restrictions for the whole exchange.
     """
+    # An analyst may contrast two cited attackers. Keep a claim explicitly
+    # about a different card's printed, no-payment trigger in the semantic audit.
+    for key, item in evidence.items():
+        name = item.get("name")
+        if not key.startswith("card:") or not isinstance(name, str) or not name:
+            continue
+        if (
+            f"Whenever {name} deals combat damage to a player, you may destroy target artifact that player controls."
+            in (item.get("rules") or "").splitlines()
+        ):
+            text = re.sub(
+                "^" + re.escape(name) + r" can destroy an artifact on hit(?=[,.!]|$)", "", text, flags=re.I
+            )
     if not re.search(r"\b(?:on (?:a )?hit|when (?:it|she|he) (?:hits|connects)|on contact)\b", text, re.I):
         return False
     if not re.search(
@@ -413,17 +426,6 @@ def omits_on_hit_counter_cost(text, evidence):
         re.I,
     ):
         return False
-    # An analyst may contrast two cited attackers. Keep a claim explicitly
-    # about a different card's printed, no-payment trigger in the semantic audit.
-    for key, item in evidence.items():
-        name = item.get("name")
-        if not key.startswith("card:") or not isinstance(name, str) or not name:
-            continue
-        if re.match(re.escape(name) + r" can destroy an artifact on hit(?:[,.!]|$)", text, re.I) and (
-            f"Whenever {name} deals combat damage to a player, you may destroy target artifact that player controls."
-            in (item.get("rules") or "").splitlines()
-        ):
-            return False
     # Never infer payment from words elsewhere in the sentence. A longer
     # explicitly conditional explanation can omit this ambiguous shorthand.
     return any(

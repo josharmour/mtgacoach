@@ -306,3 +306,6 @@ def test_compared_attackers_have_separate_on_hit_abilities():
         "Caustic Wasps can destroy an artifact on hit, unlike the other threat.", refs
     )
     assert omits_on_hit_counter_cost("Leatherhead destroys artifacts on hit, like Caustic Wasps.", refs)
+    assert omits_on_hit_counter_cost(
+        "Caustic Wasps can destroy an artifact on hit, and Leatherhead destroys artifacts on hit.", refs
+    )
