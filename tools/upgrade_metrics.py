@@ -36,11 +36,13 @@ import ast
 import gzip
 import hashlib
 import json
+import math
 import os
 import re
 import sys
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
+from statistics import median
 
 DEFAULT_BUNDLES_DIR = os.path.expanduser("~/.arenamcp/match_bundles")
 
@@ -683,8 +685,8 @@ def summarize_bundle(bundle):
         "decisions_with_unmodelled": 0,
         "chosen_unmodelled": 0,
         "unmodelled_cards": Counter(),
-        # inference per call class: {class: {calls,input,cached,think,sec}}
-        "call_classes": defaultdict(lambda: {"calls": 0, "input": 0, "cached": 0, "think": 0, "sec": 0.0}),
+        "requests": [],
+        "call_classes": defaultdict(_inference_bucket),
         # coach-log counters
         "plans_formed": 0,
         "path_corrected": 0,
@@ -704,12 +706,25 @@ def summarize_bundle(bundle):
     for line in coach_lines:
         metrics = parse_request_metrics(line)
         if metrics is not None:
-            bucket = out["call_classes"][metrics.get("call_class")]
-            bucket["calls"] += 1
-            bucket["input"] += metrics.get("input_tokens") or 0
-            bucket["cached"] += metrics.get("cached_input_tokens") or 0
-            bucket["think"] += metrics.get("reasoning_tokens") or 0
-            bucket["sec"] += (metrics.get("total_ms") or 0) / 1000.0
+            # Overlapping archive tails can contain the same timestamped request.
+            # Without an identifying timestamp/receipt, count independent observations.
+            identified = (
+                COACH_TS_RE.match(line) or metrics.get("response_id") or metrics.get("request_started_unix_s")
+            )
+            receipt = hashlib.sha256(line.encode()).digest() if identified else None
+            record = {
+                k: metrics.get(k)
+                for k in (
+                    "call_class",
+                    "input_tokens",
+                    "cached_input_tokens",
+                    "ttft_ms",
+                    "reasoning_tokens",
+                    "total_ms",
+                )
+            }
+            out["requests"].append((receipt, record))
+            _record_request(out["call_classes"][record["call_class"] or "unknown"], record)
         if PLAN_FORMED_RE.search(line):
             out["plans_formed"] += 1
         if PATH_CORRECTED_RE.search(line):
@@ -771,11 +786,6 @@ def _merge(dst, src):
     dst["unmodelled_cards"].update(src["unmodelled_cards"])
     dst["big_prompts"].extend(src["big_prompts"])
     dst["keeps"].extend(src["keeps"])
-    for cls, bucket in src["call_classes"].items():
-        agg = dst["call_classes"][cls]
-        for field in ("calls", "input", "cached", "think"):
-            agg[field] += bucket[field]
-        agg["sec"] += bucket["sec"]
     t1_dst, t1_src = dst["t1"], src["t1"]
     t1_dst["events"].extend(t1_src["events"])
     t1_dst["unanswered_by_type"].update(t1_src["unanswered_by_type"])
@@ -888,8 +898,40 @@ def aggregate_t1(match_folds):
     }
 
 
+def _inference_bucket():
+    return {
+        "calls": 0,
+        "input": 0,
+        "cached": 0,
+        "think": 0,
+        "sec": 0.0,
+        "cache_reports": 0,
+        "cache_reported_input": 0,
+        "first_token_ms": [],
+    }
+
+
+def _record_request(bucket, metrics):
+    bucket["calls"] += 1
+    tokens, cached = metrics["input_tokens"], metrics["cached_input_tokens"]
+    if type(tokens) is int and tokens >= 0:
+        bucket["input"] += tokens
+        if type(cached) is int and 0 <= cached <= tokens:
+            bucket["cached"] += cached
+            bucket["cache_reports"] += 1
+            bucket["cache_reported_input"] += tokens
+    ttft = metrics["ttft_ms"]
+    if type(ttft) in (int, float) and math.isfinite(ttft) and ttft >= 0:
+        bucket["first_token_ms"].append(ttft)
+    bucket["think"] += metrics["reasoning_tokens"] or 0
+    bucket["sec"] += (metrics["total_ms"] or 0) / 1000.0
+
+
 def aggregate(summaries):
     """Roll per-bundle summaries up into the report structure."""
+    per_class = defaultdict(_inference_bucket)
+    totals = _inference_bucket()
+    seen_receipts = set()
     matches = {}  # match_id -> folded totals (a match may span several games)
 
     for summary in summaries:
@@ -905,9 +947,6 @@ def aggregate(summaries):
                 "decisions_with_unmodelled": 0,
                 "chosen_unmodelled": 0,
                 "unmodelled_cards": Counter(),
-                "call_classes": defaultdict(
-                    lambda: {"calls": 0, "input": 0, "cached": 0, "think": 0, "sec": 0.0}
-                ),
                 "plans_formed": 0,
                 "path_corrected": 0,
                 "big_prompts": [],
@@ -923,6 +962,13 @@ def aggregate(summaries):
             },
         )
         _merge(fold, summary)
+        for receipt, metrics in summary["requests"]:
+            if receipt is not None:
+                if receipt in seen_receipts:
+                    continue
+                seen_receipts.add(receipt)
+            _record_request(per_class[metrics["call_class"] or "unknown"], metrics)
+            _record_request(totals, metrics)
         fold["_latest"] = summary  # last game carries the match result
 
     n_matches = len(matches)
@@ -942,21 +988,16 @@ def aggregate(summaries):
         elif latest["result"] == "loss":
             side["losses"] += 1
 
-    per_class = {}
-    totals = {"calls": 0, "input": 0, "cached": 0, "think": 0, "sec": 0.0}
-    for match_fold in matches.values():
-        for cls, bucket in match_fold["call_classes"].items():
-            agg = per_class.setdefault(cls, {"calls": 0, "input": 0, "cached": 0, "think": 0, "sec": 0.0})
-            for field in ("calls", "input", "cached", "think"):
-                agg[field] += bucket[field]
-            agg["sec"] += bucket["sec"]
-    for agg in per_class.values():
-        for field in totals:
-            totals[field] += agg[field]
     for agg in list(per_class.values()) + [totals]:
         agg["calls_per_match"] = agg["calls"] / n_matches if n_matches else 0.0
         agg["input_per_call"] = agg["input"] / agg["calls"] if agg["calls"] else 0.0
-        agg["cached_per_call"] = agg["cached"] / agg["calls"] if agg["calls"] else 0.0
+        agg["cached_per_call"] = agg["cached"] / agg["cache_reports"] if agg["cache_reports"] else None
+        known_input = agg["cache_reported_input"]
+        agg["cache_share"] = agg["cached"] / known_input if known_input else None
+        ttft = sorted(agg.pop("first_token_ms"))
+        agg["ttft_reports"] = len(ttft)
+        agg["median_ttft_ms"] = median(ttft) if ttft else None
+        agg["p90_ttft_ms"] = ttft[math.ceil(0.9 * len(ttft)) - 1] if ttft else None
         agg["think_per_call"] = agg["think"] / agg["calls"] if agg["calls"] else 0.0
         agg["sec_per_call"] = agg["sec"] / agg["calls"] if agg["calls"] else 0.0
 
@@ -1059,16 +1100,20 @@ def render_report(agg):
     out.append("Inference per call class:")
     out.append(
         f"{'call_class':<28}{'calls/m':>9}{'in_tok/call':>13}"
-        f"{'cached/call':>13}{'think/call':>12}{'s/call':>8}"
+        f"{'cached/call':>13}{'think/call':>12}{'s/call':>8}{'cache share':>13}{'reports/calls':>16}{'TTFT p50/p90 ms':>20}{'TTFT reports':>14}"
     )
     order = sorted(agg["inference_per_class"].items(), key=lambda kv: -kv[1]["calls"]) + [
         ("<ALL>", agg["inference_totals"])
     ]
     for cls, row in order:
+        cached = f"{row['cached_per_call']:.0f}" if row["cached_per_call"] is not None else "n/a"
+        share = f"{row['cache_share']:.1%}" if row["cache_share"] is not None else "n/a"
+        receipts = f"{row['cache_reports']}/{row['calls']}"
+        timings = f"{row['median_ttft_ms']:.0f}/{row['p90_ttft_ms']:.0f}" if row["ttft_reports"] else "n/a"
         out.append(
             f"{cls:<28}{row['calls_per_match']:>9.1f}"
-            f"{row['input_per_call']:>13.0f}{row['cached_per_call']:>13.0f}"
-            f"{row['think_per_call']:>12.1f}{row['sec_per_call']:>8.2f}"
+            f"{row['input_per_call']:>13.0f}{cached:>13}"
+            f"{row['think_per_call']:>12.1f}{row['sec_per_call']:>8.2f}{share:>13}{receipts:>16}{timings:>20}{row['ttft_reports']:>14}"
         )
     out.append(f"Input tokens per match: {agg['input_tokens_per_match']:.0f}")
 

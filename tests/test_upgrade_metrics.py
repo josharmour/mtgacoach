@@ -179,12 +179,13 @@ def test_aggregate_all_nine_metrics(bundles_dir):
     assert (on["matches"], on["wins"], on["losses"]) == (1, 1, 0)
     assert (off["matches"], off["wins"], off["losses"]) == (1, 0, 1)
 
-    # 2. inference per call class (+ cached tokens reported even when absent)
+    # 2. inference per call class, with cache ratios over observed requests
     inf = report["inference_per_class"]
     dec = inf["decision.typed"]
     assert dec["calls"] == 2 and dec["calls_per_match"] == pytest.approx(1.0)
     assert dec["input_per_call"] == pytest.approx(2000.0)
-    assert dec["cached_per_call"] == pytest.approx(375.0)  # (0+750)/2
+    assert dec["cached_per_call"] == pytest.approx(750.0)
+    assert dec["cache_reports"] == 1 and dec["cache_share"] == pytest.approx(750 / 3000)
     assert dec["think_per_call"] == pytest.approx(37.5)
     assert dec["sec_per_call"] == pytest.approx(1.5)
     plan = inf["background.game_plan"]
@@ -650,3 +651,30 @@ def test_cancellation_report_does_not_advertise_unproven_waste():
     assert "cancel marks" in text
     assert "wasting" not in text
     assert "cancelled_planning_calls" not in agg["t1"]
+
+
+def test_cache_timing_distinguishes_missing_and_zero_and_counts_overlapping_receipts_once():
+    def line(timestamp, **metrics):
+        return f"2026-01-01 19:00:{timestamp}.000 [PROXY] Request metrics: {metrics!r}"
+
+    a = line("00", call_class="decision", input_tokens=1000, cached_input_tokens=None, ttft_ms=700)
+    b = line("01", call_class="decision", input_tokens=200, cached_input_tokens=0, ttft_ms=0)
+    c = line("02", call_class="decision", input_tokens=300, cached_input_tokens=250, ttft_ms=1100)
+    d = line("03", call_class="plan", input_tokens=300, cached_input_tokens=301, ttft_ms=-5)
+    no_receipt = _metrics_line("legacy", 500, cached=None)
+
+    def bundle(m, rows):
+        return um.summarize_bundle({"match_id": m, "coach_log": {"lines": rows}})
+
+    report = um.aggregate([bundle("one", [a, b, no_receipt]), bundle("two", [b, c, d, no_receipt])])
+    dec = report["inference_per_class"]["decision"]
+    assert (dec["calls"], dec["cache_reports"], dec["cache_share"], dec["cached_per_call"]) == (
+        3,
+        2,
+        0.5,
+        125,
+    )
+    assert (dec["ttft_reports"], dec["median_ttft_ms"], dec["p90_ttft_ms"]) == (3, 700, 1100)
+    plan = report["inference_per_class"]["plan"]
+    assert plan["cache_share"] is None and plan["cached_per_call"] is None and plan["median_ttft_ms"] is None
+    assert report["inference_per_class"]["legacy"]["calls"] == 2
