@@ -47,16 +47,27 @@ def generated_or_changed_print(card):
     ) or any(card.get(key) not in (None, 0, card.get("grp_id")) for key in ("original_grp_id", "base_grp_id"))
 
 
+def _face_down(card: Mapping[str, Any]) -> bool:
+    return bool(
+        card.get("face_down")
+        or card.get("isFacedown")
+        or card.get("face_down_reason")
+        or card.get("grp_id") == 3
+    )
+
+
 def card_identity_visible(card: Mapping[str, Any], zone: str) -> bool:
+    if _face_down(card) or card.get("identity_known") is False:
+        return False
     visibility = card.get("visibility")
     return visibility in ("public", "Public", "Visibility_Public") or (zone != "exile" and visibility is None)
 
 
 def _public_card(card: Mapping[str, Any], zone: str = "") -> dict[str, Any]:
     result = _scalars(card, _CARD_FIELDS)
-    hidden = bool(card.get("face_down") or card.get("isFacedown") or card.get("grp_id") == 3)
+    hidden = _face_down(card)
     result["face_down"] = hidden
-    if hidden or not card_identity_visible(card, zone):
+    if not card_identity_visible(card, zone):
         result["name"] = "Face-down card" if hidden else "Unknown card"
         # Private printed characteristics must not reveal a face-down card.
         result.pop("power", None)

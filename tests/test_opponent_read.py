@@ -158,3 +158,12 @@ def test_exile_identity_requires_public_visibility_in_both_plan_and_booth(visibi
     state["zones"]["exile"] = [{**card, "visibility": visibility}]
     assert bool(OpponentRead().plan_block(state)) == expected
     assert bool(cast_read(OpponentRead(), state)) == expected
+
+
+@pytest.mark.parametrize("hidden", [{"identity_known": False}, {"face_down_reason": 8}, {"isFacedown": True}])
+def test_hidden_evidence_wins_over_public_visibility(hidden):
+    state = captured(328)
+    card = state["zones"]["battlefield"].pop()
+    state["zones"]["exile"] = [{**card, "visibility": "Visibility_Public", **hidden}]
+    assert not OpponentRead().plan_block(state)
+    assert not cast_read(OpponentRead(), state)

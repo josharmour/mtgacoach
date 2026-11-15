@@ -76,8 +76,6 @@ class OpponentRead:
                     or type(card.get("controller_seat_id")) is not int
                     or card["controller_seat_id"] != opponent
                     or not card_identity_visible(card, zone)
-                    or card.get("face_down")
-                    or card.get("isFacedown")
                     or card.get("object_kind") != "CARD"
                     or generated_or_changed_print(card)
                 ):
