@@ -77,6 +77,77 @@ def response(context, audit, supported=True, count=2):
     }
 
 
+@pytest.mark.parametrize("reason,audit_deferred", [("superseded", False), ("output_budget", True)])
+def test_native_deferral_can_retry_same_fresh_cast_without_transport_backoff(source, reason, audit_deferred):
+    from arenamcp.commentary.budget import BudgetExceeded
+
+    obs = observation()
+    now = [obs.arrived_at]
+    attempts = []
+    deferred = [True]
+
+    def rpc(system, context, audit):
+        attempts.append((audit, tuple(context.get("new_events", ()))))
+        if deferred[0] and audit == audit_deferred:
+            raise BudgetExceeded(reason)
+        return response(context, audit)
+
+    booth = HeadlessBooth(CommentaryConfig(mode="commentary", generative=True), rpc, lambda: now[0])
+    first, status = booth.generate(obs)
+    assert not first and status["state"] == status["reason"] == reason
+    assert booth.booth.failures == 0 and booth.booth.backoff_until == 0
+    now[0] += 5
+    deferred[0] = False
+    lines, status = booth.generate(obs)
+    assert status["state"] == "ready" and len(lines) == 2 and lines[1].anchor_uid == lines[0].uid
+    assert [events for audit, events in attempts if not audit] == [attempts[0][1]] * 2
+    assert [audit for audit, _ in attempts][-2:] == [False, True]
+    for line in lines:
+        booth.delivered(line.uid, "finished")
+    calls = len(attempts)
+    assert booth.generate(obs)[1]["reason"] == "no_native_work" and len(attempts) == calls
+
+
+@pytest.mark.parametrize("control", ["expired", "absent", "changed_evidence"])
+def test_native_deferred_cast_requires_same_selected_fresh_evidence(source, control):
+    from arenamcp.commentary.budget import BudgetExceeded
+
+    obs = observation()
+    now, calls = [obs.arrived_at], []
+
+    def rpc(system, context, audit):
+        calls.append(audit)
+        raise BudgetExceeded("superseded")
+
+    booth = HeadlessBooth(CommentaryConfig(mode="commentary", generative=True), rpc, lambda: now[0])
+    booth.generate(obs)
+    if control == "expired":
+        now[0] += 31
+    elif control == "absent":
+        obs = replace(obs, events=())
+    else:
+        obs = replace(obs, events=(replace(obs.events[0], source_sequence=123),))
+    lines, status = booth.generate(obs)
+    assert not lines and calls == [False] and status["reason"] == "no_native_work"
+
+
+def test_real_failure_keeps_native_backoff_and_no_work_poll_has_current_reason(source):
+    from arenamcp.commentary.budget import BudgetExceeded
+
+    obs = observation()
+    calls = []
+
+    def rpc(system, context, audit):
+        calls.append(audit)
+        raise BudgetExceeded("request_timeout")
+
+    booth = HeadlessBooth(CommentaryConfig(mode="commentary", generative=True), rpc, lambda: obs.arrived_at)
+    _, status = booth.generate(obs)
+    assert status["reason"] == "request_timeout" and booth.booth.failures == 1
+    _, status = booth.generate(obs)
+    assert status["state"] == "waiting" and status["reason"] == "native_backoff" and calls == [False]
+
+
 @pytest.mark.parametrize("persona", PERSONAS)
 def test_native_personas_audit_anchor_and_heard_ledger(source, persona):
     requests = []

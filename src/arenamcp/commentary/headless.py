@@ -10,6 +10,9 @@ from types import SimpleNamespace
 
 from arenamcp.player_names import actor_name
 
+# These are Coach scheduler decisions. Transport failures keep native backoff.
+_ADMISSION_DEFERRALS = frozenset({"superseded", "dropped", "input_budget", "output_budget"})
+
 # The native booth still performs its structural, reference, numerical,
 # causality and freshness validation. This compact transport prompt leaves
 # room for facts inside Coach's stricter 6,000-token upper bound.
@@ -72,6 +75,7 @@ class HeadlessBooth:
         self.cards = {}
         self.calls = 0
         self.failure_reason = None
+        self.deferred_public_events = {}
         self.length_drops = []
         self.audit_scopes = {}
         self.event_sources = {}
@@ -144,6 +148,11 @@ class HeadlessBooth:
                     owner.failure_reason = (
                         str(error) if isinstance(error, BudgetExceeded) else type(error).__name__
                     )
+                    if isinstance(error, BudgetExceeded) and owner.failure_reason in _ADMISSION_DEFERRALS:
+                        # Native code treats ordinary exceptions as a broken
+                        # client, clears all pending plays and backs off up to
+                        # 30s. Coach already enforces spacing and all budgets.
+                        raise ModelError(owner.failure_reason) from None
                     raise
 
             def generate(self, context):
@@ -530,6 +539,7 @@ class HeadlessBooth:
                 if record["id"] == event_id:
                     # Never stamp a delayed event with the current phase/turn.
                     record["turn"] = evidence.turn_number
+                    record["received"] = evidence.received_at or observation.arrived_at
                     record["phase"] = evidence.phase
                     record["active_player"] = (
                         actor_name(observation.public_state, evidence.active_player)
@@ -548,11 +558,48 @@ class HeadlessBooth:
         self.calls = 0
         self.failure_reason = None
         self.length_drops = []
+        from .timeline import event_lifetime
+
+        # Native event ingestion deduplicates a repeated snapshot. A deferred
+        # public play can still be the service's fresh candidate after the
+        # gameplay lane clears. Reuse its original native event and timestamp
+        # only for the same observation, when no newer native work is waiting.
+        deferred, self.deferred_public_events = self.deferred_public_events, {}
+        restored = False
+        if not self.booth.pending:
+            for evidence in observation.events:
+                key = (observation.epoch, observation.snapshot_id, evidence.event_id)
+                previous = deferred.get(key)
+                if previous and previous[0] == evidence:
+                    record = previous[1]
+                    if 0 <= self.now() - record["received"] < event_lifetime(evidence.kind):
+                        self.booth.pending.append(record)
+                        self.booth.batch_since = self.now()
+                        restored = True
+        bounds_errors = self.booth.counts["context_bounds"]
         work = self.booth.take_work()
         if work:
             self.booth.process(work)
+            if self.failure_reason in _ADMISSION_DEFERRALS:
+                for record in work.events:
+                    evidence = self.event_sources.get(record["id"])
+                    if evidence and evidence.visibility == "public":
+                        key = (observation.epoch, observation.snapshot_id, evidence.event_id)
+                        self.deferred_public_events[key] = (evidence, record)
+        elif restored:
+            # A blocked native poll may leave pending untouched. Do not let
+            # restored records escape this exact candidate/snapshot check.
+            self.booth.pending.clear()
+            self.booth.batch_since = None
         output, self.queue.outgoing = self.queue.outgoing, []
         status = self.booth.status()
+        if not work and bounds_errors == self.booth.counts["context_bounds"]:
+            # Native status is persistent: the previous exchange's error alone
+            # is not a diagnosis for a poll that made no request.
+            status["state"] = "waiting"
+            status["reason"] = (
+                "native_backoff" if self.now() < self.booth.backoff_until else "no_native_work"
+            )
         if self.length_drops:
             status["length_dropped_roles"] = list(self.length_drops)
         if self.failure_reason:
