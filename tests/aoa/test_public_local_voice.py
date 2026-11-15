@@ -224,3 +224,31 @@ def test_worker_stop_drops_stale_chunks_and_recovers(qapp, monkeypatch, tmp_path
     stream.shutdown()
     assert wrapper.state() == wrapper.ProcessState.NotRunning
     qapp.processEvents()
+
+
+def test_private_projection_never_writes_the_line_to_the_engine_log(booth, caplog):
+    control, _, _, service, _ = booth
+    caplog.set_level("INFO", logger="arenamcp.commentary.service")
+    item = replace(line(control), text="Synthetic hidden library entry.")
+    service.proposals[item.utterance_id] = item
+    service._emit_proposal(item, control.observation, replace(control.config, private_information=True))
+    service.delivery(item.utterance_id, "finished")
+    assert item.text not in caplog.text
+    public = replace(item, utterance_id="public-trace", text="Public combat finished.")
+    service.proposals[public.utterance_id] = public
+    service._emit_proposal(public, control.observation, control.config)
+    service.delivery(public.utterance_id, "finished")
+    assert public.text in caplog.text
+
+
+@pytest.mark.parametrize("provider", ["kokoro", "chatterbox"])
+def test_public_mode_discards_late_private_proposals_for_every_voice(booth, provider):
+    control, tts, settings, _, sent = booth
+    settings.update(tts_provider=provider, commentary_public_voice="kokoro")
+    spoken = Mock()
+    control.spoken = spoken
+    item = replace(line(control), text="Synthetic private draw.")
+    control.proposal(item.to_wire(), public_only=False)
+    assert sent[-1]["state"] == "superseded"
+    spoken.assert_not_called()
+    tts._public_voice.speak.assert_not_called()

@@ -317,7 +317,7 @@ def test_settings_echo_does_not_interrupt_a_running_introduction(qapp, monkeypat
         obs = c.adapter.observe(snapshot(), True)
         lines = deterministic(obs, c.config)
         for line in lines:
-            c.proposal(line.to_wire())
+            c.proposal(line.to_wire(), public_only=True)
         c.configure(c.config.to_wire())
         assert c.observation is not None and not tts.stop_speech.called
         for line in lines:

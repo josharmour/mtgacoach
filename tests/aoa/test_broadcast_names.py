@@ -122,7 +122,7 @@ def test_desktop_pronounces_names_for_both_voice_engines_but_keeps_display(qapp,
         c.observe(state)
         first = deterministic(replace(obs, events=(replace(obs.events[0], seat=2),)), c.config)[0]
         first = replace(first, snapshot_id=c.observation.snapshot_id)
-        c.proposal(first.to_wire())
+        c.proposal(first.to_wire(), public_only=True)
         assert spoken.call_args.args[0] == "mrpickle802 casts Opt."
         assert tts.request_speech.call_args.kwargs["text"] == "Mister pickle eight oh two casts Opt."
         assert tts.request_speech.call_args.kwargs["speed"] == 1.5

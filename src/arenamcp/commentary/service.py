@@ -45,6 +45,7 @@ class CommentaryService:
         self.pending_epoch = None
         self.fallback_events = set()
         self.proposals = {}
+        self.public_proposals = set()
         self.heard = deque(maxlen=24)
         self.heard_analysis = deque(maxlen=16)
         self.heard_event_calls = deque(maxlen=24)
@@ -65,6 +66,7 @@ class CommentaryService:
             with self._lock:
                 self.inflight.clear()
                 self.proposals.clear()
+                self.public_proposals.clear()
                 self.heard.clear()
                 self.heard_analysis.clear()
                 self.heard_event_calls.clear()
@@ -114,13 +116,16 @@ class CommentaryService:
             with self._lock:
                 self.inflight.pop(uid, None)
                 item = self.proposals.pop(uid, None)
+                public = uid in self.public_proposals
+                self.public_proposals.discard(uid)
                 if item and state == "finished":
                     self.heard.append(item.text)
                     if item.role == "color_analyst":
                         self.heard_analysis.append(item.text)
                     if item.role == "play_by_play" and len(item.evidence_ids) == 1:
                         self.heard_event_calls.append((item.epoch, item.evidence_ids[0], item.text))
-                    logger.info("Commentary spoken role=%s text=%s", item.role, item.text)
+                    if public:
+                        logger.info("Commentary spoken role=%s text=%s", item.role, item.text)
                     if uid in self.grounded_ids:
                         self.last_grounded = (item.epoch, time.monotonic())
                 self.grounded_ids.discard(uid)
@@ -146,7 +151,7 @@ class CommentaryService:
                         item.role,
                         state,
                         reason or "unspecified",
-                        list(item.evidence_ids),
+                        list(item.evidence_ids) if public else "withheld",
                     )
             try:
                 self.deliveries.put_nowait((uid, state))
@@ -327,6 +332,9 @@ class CommentaryService:
             and not observation.private_state
             and all(event.visibility == "public" for event in observation.events)
         )
+        with self._lock:
+            if public_only and self.proposals.get(item.utterance_id) is item:
+                self.public_proposals.add(item.utterance_id)
         self.emit({"type": "commentary_proposal", "utterance": item.to_wire(), "public_only": public_only})
 
     def _fallback(self, observation, config, reason):
@@ -370,6 +378,7 @@ class CommentaryService:
                     self.heard_analysis.clear()
                     self.heard_event_calls.clear()
                     self.proposals.clear()
+                    self.public_proposals.clear()
                     self.openings.clear()
                     self.grounded_ids.clear()
                 for event in observation.events:
@@ -412,6 +421,7 @@ class CommentaryService:
                     self.proposals = {
                         uid: item for uid, item in self.proposals.items() if uid in self.inflight
                     }
+                    self.public_proposals.intersection_update(self.proposals)
                     speaking = bool(self.inflight)
                 if not observation.events or speaking:
                     self.status(

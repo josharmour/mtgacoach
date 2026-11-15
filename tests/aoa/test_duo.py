@@ -111,8 +111,8 @@ def test_generated_exchange_uses_distinct_voices_and_depends_on_delivery(qapp, m
     first, second = paired(obs, c.config)
     if end == "expired":
         second = replace(second, expires_at=time.monotonic() - 1)
-    c.proposal(first.to_wire())
-    c.proposal(second.to_wire())
+    c.proposal(first.to_wire(), public_only=True)
+    c.proposal(second.to_wire(), public_only=True)
     assert tts.request_speech.call_count == 1
     assert tts.request_speech.call_args.kwargs["voice_id"] == "server_default"
     assert tts.request_speech.call_args.kwargs["speed"] == 1.5
@@ -165,15 +165,15 @@ def test_missing_catalog_recovers_without_silently_using_one_voice(qapp, monkeyp
     state, obs = observed()
     c.observe(state)
     first, second = paired(obs, c.config)
-    c.proposal(first.to_wire())
+    c.proposal(first.to_wire(), public_only=True)
     assert not tts.request_speech.called
     assert sent[-1]["state"] == "failed"
     settings["_commentary_voice_catalog"] = CATALOG
     # A new exchange can recover after discovery; the failed one is not replayed.
     first = replace(first, utterance_id="recovered")
     second = replace(second, utterance_id="recovered:analyst", anchor_id=first.utterance_id)
-    c.proposal(first.to_wire())
-    c.proposal(second.to_wire())
+    c.proposal(first.to_wire(), public_only=True)
+    c.proposal(second.to_wire(), public_only=True)
     tts.speechStatus.emit(first.utterance_id, "started")
     tts.speechStatus.emit(first.utterance_id, "finished")
     assert [call.kwargs["voice_id"] for call in tts.request_speech.call_args_list] == [

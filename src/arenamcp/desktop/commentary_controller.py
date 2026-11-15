@@ -48,6 +48,7 @@ class CommentaryController(QObject):
         self.preview_settings = {}
         self.engine_ids = set()
         self.commentary_ids = set()
+        self.private_commentary_ids = set()
         self.arbiter = SpeechArbiter(
             start=self._start, stop=lambda: tts.stop_speech(), status=self._status, valid=self._valid
         )
@@ -149,6 +150,11 @@ class CommentaryController(QObject):
             return item.provider != qwen_public.PROVIDER or qwen_public.selected(
                 self.preview_settings[item.utterance_id]
             )
+        if item.utterance_id in self.private_commentary_ids and (
+            not self.config.private_information
+            or get_settings().get("commentary_private_information") is not True
+        ):
+            return False
         if item.provider == qwen_public.PROVIDER and (
             self.config.private_information or not qwen_public.selected(get_settings())
         ):
@@ -170,13 +176,18 @@ class CommentaryController(QObject):
         if item.utterance_id in self.arbiter._states:
             return
         settings = get_settings()
+        if public_only is not True:
+            if (
+                not self.config.private_information
+                or settings.get("commentary_private_information") is not True
+            ):
+                self.commentary_ids.add(item.utterance_id)
+                self._status(item.utterance_id, "superseded")
+                return
+            self.private_commentary_ids.add(item.utterance_id)
         provider = str(settings.get("tts_provider") or "kokoro")
         try:
             if not self.config.private_information and qwen_public.selected(settings):
-                if public_only is not True:
-                    self.commentary_ids.add(item.utterance_id)
-                    self._status(item.utterance_id, "superseded")
-                    return
                 provider, pair = qwen_public.PROVIDER, qwen_public.PAIR
             else:
                 pair = voice_pair(settings, self._catalog(settings))
@@ -436,6 +447,7 @@ class CommentaryController(QObject):
                     self.tts.release_public_voice()
             self.engine_ids.discard(uid)
             self.commentary_ids.discard(uid)
+            self.private_commentary_ids.discard(uid)
 
     def stop(self, reason="user_stop"):
         had_active = self.arbiter.active is not None

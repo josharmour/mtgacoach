@@ -47,7 +47,7 @@ def test_ordered_workflow_protected_and_essential_preempts(controller):
     c, tts, sent, state = controller
     c.configure(CommentaryConfig(mode="actions").to_wire())
     c.speech({"text": "Deck review.", "speech_id": "workflow"})
-    c.proposal(line(c).to_wire())
+    c.proposal(line(c).to_wire(), public_only=True)
     assert tts.request_speech.call_count == 1
     c.speech({"text": "Manual intervention needed.", "speech_category": "essential"})
     assert tts.stop_speech.call_count == 1
@@ -59,7 +59,7 @@ def test_native_excitement_is_forwarded_to_speech(controller):
     c, tts, _, state = controller
     c.configure(CommentaryConfig(mode="commentary", persona="hype").to_wire())
     c.observe(state)
-    c.proposal(replace(line(c), excitement="electric", salience=3).to_wire())
+    c.proposal(replace(line(c), excitement="electric", salience=3).to_wire(), public_only=True)
     assert tts.request_speech.call_args.kwargs["excitement"] == "electric"
     assert tts.request_speech.call_args.kwargs["energy"] == 0.8
 
@@ -68,9 +68,9 @@ def test_reply_requires_finished_anchor_and_duplicate_is_not_reacknowledged(cont
     c, tts, sent, state = controller
     first = line(c)
     reply = replace(first, utterance_id="reply", anchor_id=first.utterance_id, role="color_analyst")
-    c.proposal(first.to_wire())
-    c.proposal(reply.to_wire())
-    c.proposal(first.to_wire())
+    c.proposal(first.to_wire(), public_only=True)
+    c.proposal(reply.to_wire(), public_only=True)
+    c.proposal(first.to_wire(), public_only=True)
     assert tts.request_speech.call_count == 1
     tts.speechStatus.emit(first.utterance_id, "started")
     tts.speechStatus.emit(first.utterance_id, "finished")
@@ -89,7 +89,7 @@ def test_reply_requires_finished_anchor_and_duplicate_is_not_reacknowledged(cont
 def test_expired_facts_after_render_and_new_epoch_never_play(controller):
     c, tts, sent, state = controller
     first = line(c)
-    c.proposal(first.to_wire())
+    c.proposal(first.to_wire(), public_only=True)
     valid = tts.request_speech.call_args.kwargs["valid"]
     state["game_number"] = 2
     c.observe(state)
@@ -136,7 +136,7 @@ def test_preview_bypasses_mute_without_enabling_normal_speech_or_saving(controll
     tts.speechStatus.emit(uid, "started")
     tts.speechStatus.emit(uid, "finished")
     assert not c.preview_settings and c.arbiter.muted
-    c.proposal(line(c).to_wire())
+    c.proposal(line(c).to_wire(), public_only=True)
     assert tts.request_speech.call_count == 1
 
 
@@ -151,7 +151,7 @@ def test_server_default_ignores_old_pair_and_alerts_use_selected_engine(controll
             "commentary_chatterbox_analyst": "atlas",
         },
     )
-    c.proposal(line(c).to_wire())
+    c.proposal(line(c).to_wire(), public_only=True)
     assert tts.request_speech.call_args.kwargs["voice_id"] == "server_default"
     c.speech({"text": "Please intervene.", "speech_category": "essential"})
     assert tts.request_speech.call_args.kwargs["provider"] == "chatterbox_remote"
@@ -173,7 +173,7 @@ def test_shared_speed_applies_to_advice_narration_and_preview(controller, monkey
     c, tts, sent, state = controller
     settings = {"tts_provider": provider, "speech_speed": 1.5, "voice_speed": 1.0, "chatterbox_speed": 0.8}
     monkeypatch.setattr(commentary_controller, "get_settings", lambda: settings)
-    c.proposal(line(c).to_wire())
+    c.proposal(line(c).to_wire(), public_only=True)
     assert tts.request_speech.call_args.kwargs["speed"] == 1.5
     c.configure(CommentaryConfig(mode="actions").to_wire())
     c.speech({"text": "Play Forest.", "speed": 0.8})
@@ -228,7 +228,7 @@ def test_uncategorized_guidance_cannot_bypass_announcers(controller):
 def test_event_call_survives_board_change_but_not_new_game(controller):
     c, tts, sent, state = controller
     first = replace(line(c), event_bound=True)
-    c.proposal(first.to_wire())
+    c.proposal(first.to_wire(), public_only=True)
     valid = tts.request_speech.call_args.kwargs["valid"]
     state["turn_info"] = {"turn_number": 2}
     c.observe(state)
