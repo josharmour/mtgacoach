@@ -2939,7 +2939,9 @@ def analyze_draft_pool() -> dict[str, Any]:
     from arenamcp.card_facts.limited_roles import reviewed_event_set, with_role
 
     role_set = reviewed_event_set(draft_state.event_name, draft_state.set_code)
-    pool_cards = [with_role(card, role_set) for card in limited_pool_cards(pool_grp_ids, draft_state.set_code)]
+    pool_cards = [
+        with_role(card, role_set) for card in limited_pool_cards(pool_grp_ids, draft_state.set_code)
+    ]
 
     from arenamcp.limited_deck import fallback_deck
 
