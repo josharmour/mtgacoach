@@ -24,11 +24,22 @@ def sample(monkeypatch):
     return state, book, native
 
 
+def model_row(book, gid):
+    row = card_rule(gid, book.catalog)
+    row["evidence"] = [{"card": gid, "rule": 1}]
+    if gid in book.commanders:
+        row["action_rules"] = {name: list(row["evidence"]) for name in ("play", "hold", "avoid")}
+        row["play"]["conditions"] = {
+            "pieces": [{"card": gid, "zone": "command"}],
+            "mana": {"generic": 3, "G": 2},
+            "first_turn": 5,
+        }
+    return row
+
+
 def backend(book):
     model = Mock(digest="b" * 64)
-    row = card_rule(1001, book.catalog)
-    row["evidence"] = [{"card": 1001, "rule": 1}]
-    model.complete.return_value = row
+    model.complete.return_value = model_row(book, 1001)
     return model
 
 
@@ -410,7 +421,7 @@ def test_full_nonland_pass_resumes_exact_model_caches_and_withholds_changed_prin
 
     def complete(system, prompt, **kwargs):
         gid = json.loads(prompt)["card"]
-        return {**card_rule(gid, book.catalog), "evidence": [{"card": gid, "rule": 1}]}
+        return model_row(book, gid)
 
     writer.complete.side_effect = complete
     monkeypatch.setattr("arenamcp.local_study_model.LocalStudyModel", lambda name: writer)
@@ -549,3 +560,98 @@ def test_walker_authoring_receives_the_same_timing_constraint_as_admission(sampl
     )
     role, reused = study_card(book, gid, writer, tmp_path, allowed=lambda: True)
     assert not reused and "later turn" in role["play"]["advice"]
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        None,
+        "hand_cast",
+        "hand_hold",
+        "early_without_ramp",
+        "missing_pip",
+        "wrong_source",
+        "unbound_cost",
+        "invented_checked_fields",
+        "unlisted_exception",
+    ],
+)
+def test_commander_deployment_and_independent_resources_are_proven(sample, monkeypatch, tmp_path, fault):
+    _, book, _ = sample
+    gid = 1001
+    card = book.catalog[gid]
+    card.update(
+        name="Fixture Ember Magistrate",
+        mana_cost="{3}{G}{G}",
+        type_line="Legendary Planeswalker — Fixture",
+        oracle_text="+1: Scry 1.\n−2: Sacrifice a creature. Draw a card.",
+    )
+    if fault == "unlisted_exception":
+        book.catalog[1002]["oracle_text"] = (
+            "You may activate loyalty abilities of planeswalkers you control twice each turn."
+        )
+    native_catalog(monkeypatch, book.catalog)
+    writer = backend(book)
+    row = writer.complete.return_value
+    row["evidence"].append({"card": gid, "rule": 2})
+    row["action_rules"]["avoid"] = [{"card": gid, "rule": 2}]
+    row["avoid"]["advice"] = "Keep another creature available if you intend to use the sacrifice ability."
+    if fault == "hand_cast":
+        row["play"]["conditions"]["pieces"][0]["zone"] = "hand"
+    if fault == "hand_hold":
+        row["hold"]["conditions"]["pieces"][0]["zone"] = "hand"
+    if fault == "early_without_ramp":
+        row["play"]["conditions"]["first_turn"] = 3
+    if fault == "missing_pip":
+        row["play"]["conditions"]["mana"] = {"generic": 5}
+    if fault == "wrong_source":
+        row["action_rules"]["avoid"] = [{"card": 1002, "rule": 1}]
+    if fault == "unbound_cost":
+        row["action_rules"]["avoid"] = [{"card": gid, "rule": 1}]
+    if fault == "invented_checked_fields":
+        row["commander_conditions"] = {"play": {"payable": True}}
+    if fault == "unlisted_exception":
+        row["avoid"]["advice"] = "Use +1 then −2 in the same turn."
+    if fault:
+        with pytest.raises(ValueError):
+            study_card(book, gid, writer, tmp_path, allowed=lambda: True)
+        assert not list(tmp_path.rglob("*.json"))
+        return
+    result, _ = study_card(book, gid, writer, tmp_path, allowed=lambda: True)
+    policy = json.loads(writer.complete.call_args.args[1])["commander_deployment"]
+    assert policy["base_payment"] == {"generic": 3, "G": 2}
+    certified = result["commander_conditions"]
+    assert certified["play"]["command_zone_payment"] == {
+        "card": gid,
+        "printed_cost": "{3}{G}{G}",
+        "generic_per_prior_command_cast": 2,
+        "prior_casts": "read_from_current_game",
+    }
+    assert certified["avoid"]["independent_battlefield_resources"] == [
+        {
+            "card": gid,
+            "rule": 2,
+            "kind": "creature",
+            "zone": "battlefield",
+            "controller": "self",
+            "minimum": 1,
+            "exclude_source_instance": True,
+        }
+    ]
+    detail = read_card(book, gid, tmp_path)
+    assert "current tax" in detail and "another creature you control" in detail
+    assert "commander_conditions" not in writer.complete.return_value and "study" not in book.data
+
+
+def test_unmodeled_variable_commander_payment_is_reported_before_inference(sample, monkeypatch, tmp_path):
+    from arenamcp.deck_card_study import prepare_card_pass
+
+    _, book, _ = sample
+    book.catalog[1001]["mana_cost"] = "{X}{G}"
+    native_catalog(monkeypatch, book.catalog)
+    m = backend(book)
+    report = prepare_card_pass(book, tmp_path, m.digest)
+    assert report["unsupported_payment"] == 1 and not report["pending"] and not report["withheld"]
+    with pytest.raises(ValueError, match="ordinary payment"):
+        study_card(book, 1001, m, tmp_path, allowed=lambda: True)
+    m.complete.assert_not_called()

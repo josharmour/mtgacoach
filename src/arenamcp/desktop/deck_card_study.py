@@ -210,7 +210,8 @@ class DeckCardStudyDialog(QDialog):
             self.progress.setText(
                 f"{report['cached']} local roles awaiting review, {report['admitted']} saved study roles "
                 f"across {report['nonlands']} known nonland cards. {report['unresolved']} deck prints have unresolved "
-                f"types. {report['withheld']} withheld on print checks. {len(report['pending'])} still to study. "
+                f"types. {report['withheld']} withheld on print checks. "
+                f"{report['unsupported_payment']} unsupported commander payments. {len(report['pending'])} still to study. "
                 f"Cached roles used {', '.join(measures)}."
             )
         elif "cards" in result:

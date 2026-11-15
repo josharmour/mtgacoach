@@ -17,7 +17,8 @@ from arenamcp.deck_study import (
     study_source,
     validate_card_rule,
 )
-from arenamcp.loyalty_timing import LOYALTY_TIMING, additional_activation, walkers_in
+from arenamcp.local_commander_study import commander_conditions, deployment_context, explain_conditions
+from arenamcp.loyalty_timing import LOYALTY_TIMING, walkers_in
 
 _SYSTEM = """Write a descriptive strategic hypothesis for the focal card in this deck.
 All card properties and interactions must follow from the numbered printed rules supplied.
@@ -64,7 +65,9 @@ def _context(book, gid):
         ids.update((source, target))
     neighborhood = [book.catalog[i] for i in ids]
     timing = {}
-    if walkers_in(neighborhood) and not additional_activation(neighborhood):
+    if gid in book.commanders:
+        timing["commander_deployment"] = deployment_context(book.catalog[gid], gid)
+    if walkers_in(neighborhood):
         timing["loyalty_timing"] = LOYALTY_TIMING
     # The same study can be reused only when every input shown to the writer
     # is identical, including commander designation, local plan and partners.
@@ -154,6 +157,11 @@ def _role_format(context):
             "hold": advice,
             "avoid": advice,
             "evidence": evidence,
+            **(
+                {"action_rules": schema_object({action: evidence for action in ("play", "hold", "avoid")})}
+                if "commander_deployment" in context
+                else {}
+            ),
         }
     )
 
@@ -186,6 +194,7 @@ def prepare_card_pass(book, directory, digest):
         "unresolved": unresolved_card_count(book),
         "pending": jobs,
         "withheld": 0,
+        "unsupported_payment": 0,
         "cached": 0,
         "admitted": len(admitted),
         "seconds": 0.0,
@@ -206,6 +215,9 @@ def prepare_card_pass(book, directory, digest):
                 raise ValueError("Changed print")
         except (ValueError, KeyError, TypeError):
             report["withheld"] += 1
+            continue
+        if "commander_deployment" in context and context["commander_deployment"]["base_payment"] is None:
+            report["unsupported_payment"] += 1
             continue
         path = _directory(directory, context) / (digest.removeprefix("sha256:") + ".json")
         try:
@@ -251,21 +263,27 @@ def _validated_row(row, book, context):
 
     cards = {int(gid): book.catalog[int(gid)] for gid in context["prints"]}
     prose = []
-    if validate_card_rule(row, cards, prose) != context["card"]:
+    base = row
+    if "commander_deployment" in context:
+        base = {k: v for k, v in row.items() if k not in ("action_rules", "commander_conditions")}
+    if validate_card_rule(base, cards, prose) != context["card"]:
         raise ValueError("The study selected another card")
     walkers = walkers_in(cards.values())
-    if (
-        walkers
-        and not additional_activation(cards.values())
-        and any(conflicting_loyalty_sequence(s, walkers) for s in prose)
-    ):
+    if walkers and any(conflicting_loyalty_sequence(s, walkers) for s in prose):
         raise ValueError("The study uses two loyalty abilities in one turn")
+    if "commander_deployment" in context:
+        requirements = commander_conditions(row, context)
+        if "commander_conditions" in row and row["commander_conditions"] != requirements:
+            raise ValueError("Stored commander prerequisites differ from its printed sources")
+        row = {**row, "commander_conditions": requirements}
     return row
 
 
 def study_card(book, gid, model, directory, *, allowed):
     context = _context(book, gid)
     ids = [int(i) for i in context["prints"]]
+    if "commander_deployment" in context and context["commander_deployment"]["base_payment"] is None:
+        raise ValueError("The commander study cannot certify an ordinary payment for this printed cost")
     if not allowed() or not _checked(book, ids):
         raise ValueError("The local card sources or deck are unavailable")
     if not isinstance(model.digest, str) or not re.fullmatch(r"(?:sha256:)?[a-f0-9]{64}", model.digest):
@@ -287,6 +305,8 @@ def study_card(book, gid, model, directory, *, allowed):
         _SYSTEM, json.dumps(prompt, sort_keys=True), allowed=allowed, response_format=_role_format(context)
     )
     duration = round(time.monotonic() - started, 2)
+    if isinstance(row, dict) and "commander_conditions" in row:
+        raise ValueError("Commander prerequisites must come from the checked print")
     refs = printed_evidence(row, context["prints"])
     row = _validated_row({**row, "evidence": refs}, book, context)
     if not allowed() or not _checked(book, ids):
@@ -357,6 +377,8 @@ def card_detail(book, gid, row=None, *, metrics=None, model_digest=None):
         for action in ("play", "hold", "avoid"):
             entry = selected[action]
             lines.extend([f"{action.title()} • {entry['advice']}", _conditions(entry["conditions"], book)])
+            if not admitted and "commander_conditions" in selected:
+                lines.extend(explain_conditions(selected["commander_conditions"][action]))
         lines += ["", "Cited printed rules", *_refs(selected["evidence"], book)]
     if (
         selected
