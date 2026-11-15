@@ -42,7 +42,12 @@ def add(g, iid, name, *, kind="Mill", source=0, destination=1, hidden=False, vis
         "visibility": visibility,
     }
     g.game_objects[iid] = SimpleNamespace(
-        instance_id=iid, grp_id=iid, controller_seat_id=2, owner_seat_id=2, to_dict=lambda: row
+        instance_id=iid,
+        grp_id=iid,
+        zone_id=destination,
+        controller_seat_id=2,
+        owner_seat_id=2,
+        to_dict=lambda: row,
     )
     journal_event(
         g,
@@ -410,3 +415,52 @@ def test_exile_journal_binds_identity_to_current_public_visibility(visibility, s
     g = game()
     add(g, 72, "Example card", kind="Exile", source=2, destination=4, visibility=visibility)
     assert ("Example card" in str(g._commentary_journal)) == shown
+
+
+def test_exile_receipt_cannot_reuse_public_origin_or_stale_nested_identity():
+    g = game()
+    add(g, 72, "Old public identity", kind="Exile", source=2, destination=4, visibility="Visibility_Public")
+    g._commentary_journal.clear()
+    journal_event(
+        g,
+        {
+            "type": "zone_transfer",
+            "category": "Exile",
+            "instance_id": 73,
+            "orig_instance_id": 72,
+            "from_zone": 2,
+            "to_zone": 4,
+            "card": "Old public identity",
+        },
+    )
+    assert "Old public identity" not in str(g._commentary_journal)
+    g.game_objects[72].zone_id = 2
+    journal_event(
+        g,
+        {
+            "type": "zone_transfer",
+            "category": "Exile",
+            "instance_id": 72,
+            "from_zone": 2,
+            "to_zone": 4,
+            "card": "Old public identity",
+        },
+    )
+    assert "Old public identity" not in str(g._commentary_journal)
+    payload = g._commentary_journal[-1]["payload"]
+    payload.update(
+        name="Private canary", grp_id=72, cards=[{"instance_id": 72, "grp_id": 72, "name": "Private canary"}]
+    )
+    assert "Private canary" not in str(observation(g).events)
+
+
+def test_replayed_exile_event_only_names_the_exact_current_revealed_card():
+    from arenamcp.commentary.events import _exile_event_payload
+
+    known = {"instance_id": 13, "grp_id": 42, "name": "Visible print", "visibility": "public"}
+    row = {"instance_id": 13, "grp_id": 42, "name": "Discarded older name"}
+    payload = dict(row, to_zone="exile", cards=[row, dict(row, instance_id=14)])
+    view = SimpleNamespace(public_state={"zones": {"exile": [known]}})
+    value = _exile_event_payload(payload, view)
+    assert value["name"] == "Visible print" and len(value["cards"]) == 1
+    assert "Discarded" not in str(value)

@@ -43,10 +43,15 @@ def journal_event(game, event):
         .lower()
     )
     visible = _public_card(obj.to_dict(), zone_type)
+    if zone_type == "exile" and (
+        obj.instance_id != event.get("instance_id") or getattr(obj, "zone_id", None) != event.get("to_zone")
+    ):
+        # An origin object may still carry its old public visibility after a zone transfer.
+        visible = {}
     if zone_type in {"battlefield", "graveyard", "exile", "hand", "library"}:
         payload["to_zone"] = zone_type
-    if not visible.get("face_down") and visible.get("name") != "Unknown card":
-        name = event.get("card")
+    if visible and not visible.get("face_down") and visible.get("name") != "Unknown card":
+        name = visible.get("name") if zone_type == "exile" else event.get("card")
         if isinstance(name, str) and not name.startswith(("Card#", "Unknown")):
             payload["name"] = name[:200]
         if type(obj.grp_id) is int:
@@ -62,11 +67,16 @@ def journal_event(game, event):
         payload.update(
             category=category, from_zone=origin, count=1, source_id=event.get("source_id", 0), cards=[]
         )
-        if payload.get("name") and zone_type in {"graveyard", "exile"}:
+        if (payload.get("name") and zone_type == "graveyard") or (
+            payload.get("grp_id") and zone_type == "exile"
+        ):
             # Parser objects carry ids/types, not database-enriched names/rules.
             # The existing public annotation supplies the observed card name.
             card = {k: visible[k] for k in ("grp_id", "type_line", "mana_cost") if k in visible}
-            card["name"] = payload["name"]
+            if "name" in payload:
+                card["name"] = payload["name"]
+            if zone_type == "exile":
+                card["instance_id"] = obj.instance_id
             card.setdefault("type_line", " ".join(visible.get("card_types", ())))
             payload["cards"] = [card]
         # Same GRE message/seat/cause is one burst: do not narrate twenty mills separately.
@@ -119,6 +129,38 @@ def state_fingerprint(observation):
         "private": observation.private_state,
     }
     return hashlib.sha256(json.dumps(body, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:24]
+
+
+def _exile_event_payload(payload, observation):
+    """Resolve old and current journal entries using only the present, revealed exile instance."""
+    known = {}
+    for card in observation.public_state["zones"]["exile"]:
+        iid = card.get("instance_id")
+        if type(iid) is int and iid > 0:
+            known[iid] = None if iid in known else card
+
+    def public_identity(row):
+        if (
+            not isinstance(row, dict)
+            or type(row.get("instance_id")) is not int
+            or type(row.get("grp_id")) is not int
+        ):
+            return {}
+        card = known.get(row["instance_id"])
+        if not card or card.get("visibility") != "public" or card.get("grp_id") != row["grp_id"]:
+            return {}
+        return {
+            key: card[key]
+            for key in ("instance_id", "grp_id", "name", "mana_cost", "type_line")
+            if key in card
+        }
+
+    result = {key: payload[key] for key in ("category", "from_zone", "to_zone", "count") if key in payload}
+    result.update(public_identity(payload))
+    result["cards"] = [
+        identity for row in (payload.get("cards") or [])[:12] if (identity := public_identity(row))
+    ]
+    return result
 
 
 class ObservationAdapter:
@@ -241,7 +283,9 @@ class ObservationAdapter:
             ):
                 continue
             payload = dict(record["payload"])
-            if record["kind"] == "outcome":
+            if payload.get("to_zone") == "exile":
+                payload = _exile_event_payload(payload, current)
+            elif record["kind"] == "outcome":
                 public_cards = {
                     c.get("grp_id"): c
                     for rows in current.public_state["zones"].values()
