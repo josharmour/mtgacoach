@@ -93,6 +93,7 @@ class Observation:
     recent_commentary: tuple[str, ...] = ()
     recent_analysis: tuple[str, ...] = ()
     protocol_version: int = PROTOCOL_VERSION
+    heard_cast_calls: tuple[tuple[str, str], ...] = ()
 
     def __post_init__(self) -> None:
         if self.protocol_version != PROTOCOL_VERSION:
@@ -114,6 +115,7 @@ class Observation:
         data["events"] = tuple(Evidence(**event) for event in data.get("events", ()))
         data["recent_commentary"] = tuple(data.get("recent_commentary", ()))
         data["recent_analysis"] = tuple(data.get("recent_analysis", ()))
+        data["heard_cast_calls"] = tuple(tuple(pair) for pair in data.get("heard_cast_calls", ()))
         return cls(**data)
 
 

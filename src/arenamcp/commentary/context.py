@@ -176,6 +176,29 @@ def compact_context(system, context, *, reply_system=None):
                         "refs": [ranked[0]],
                     }
                 break
+    if ranked and set(result.get("allowed_roles", ())) == {"play_by_play", "color_analyst"}:
+        ref = ranked[0]
+        event = facts[ref]
+        heard = context.get("heard_cast_calls", {}).get(ref)
+        who = event.get("player")
+        data = event.get("data") or {}
+        name = data.get("name")
+        live_call = f"{who} {'cast' if who == 'You' else 'casts'} {name}"
+        if (
+            heard
+            and event.get("kind") == "cast"
+            and event.get("source") == "observed_GRE"
+            and event.get("seat") in (1, 2)
+            and who
+            and name
+            and type(data.get("grp_id")) is int
+            and data["grp_id"] > 0
+            and heard in {live_call + ".", live_call + "!", f"{who} cast {name}."}
+        ):
+            # A completed, event-bound public call can hand off even while a
+            # spell is still on the stack. No board interaction is presumed.
+            result["partner_call"] = {"role": "play_by_play", "text": heard, "refs": [ref]}
+            result["partner_call_heard"] = True
     # Carry reviewed relationship possibilities and threat descriptions while
     # the originating play is present in the new event batch.
     event_kinds = {
@@ -267,6 +290,7 @@ def compact_context(system, context, *, reply_system=None):
         or ranked[0] not in result["new_events"]
     ):
         result["editorial_question"]["check_these_refs"] = []
+        result.pop("partner_call_heard", None)
         if result.pop("partner_call", None) and preamble != system:
             # Without the handoff, generation uses the longer two-speaker prompt.
             return compact_context(system, context)

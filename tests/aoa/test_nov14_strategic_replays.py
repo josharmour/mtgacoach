@@ -28,6 +28,123 @@ def report(stamp):
 
 
 @pytest.mark.usefixtures("source")
+@pytest.mark.parametrize(
+    "mode", ["heard", "pass", "interrupted", "same_words_other_cast", "other_game", "uncited"]
+)
+def test_heard_public_cast_hands_off_to_writer_while_spell_is_still_on_stack(mode, request):
+    import sys
+    import threading
+
+    from arenamcp.commentary.client import CommentaryClient
+    from arenamcp.commentary.contracts import Observation, Utterance
+    from arenamcp.commentary.service import CommentaryService
+
+    # Nov 14 19:39, native public cast seq 326, before the Case entered at
+    # 328 or Lunar was cast at 335. Keep only this public spell's identity.
+    state = json.loads((Path(__file__).parent / "fixtures/public_20261114_193910.json").read_bytes())
+    card = next(c for c in state["zones"]["battlefield"] if c["instance_id"] == 332)
+    state["zones"] = {"stack": [card], "battlefield": []}
+    state["turn"] = {"turn_number": 7, "phase": "Phase_Main2", "active_player": 2}
+    state["commentary_source_sequence"] = 326
+    state["commentary_events"] = [
+        dict(
+            state["commentary_events"][0],
+            id=21,
+            seq=326,
+            payload={"instance_id": 332, "grp_id": 88930, "name": "Case of the Uneaten Feast"},
+            received_at=time.monotonic(),
+        )
+    ]
+    emitted = []
+    service = CommentaryService(settings=lambda: {}, backend=lambda: None, emit=emitted.append)
+    config = CommentaryConfig(mode="commentary", speakers=2, generative=True)
+    service.config, service.latest = config, state
+    obs = service.adapter.observe(state)
+    event = next(e for e in obs.events if e.kind == "action_observed")
+    obs = replace(obs, events=(event,))
+    service._grounded(obs, config, "analysis_waits_for_gameplay")
+    lead = next(e["utterance"] for e in emitted if e["type"] == "commentary_proposal")
+    service.delivery(lead["utterance_id"], "started")
+    assert not service._heard_cast_calls(obs.epoch, obs.events)
+    service.delivery(lead["utterance_id"], "superseded" if mode == "interrupted" else "finished")
+    if mode == "same_words_other_cast":
+        obs = replace(obs, events=(replace(event, event_id="another-play"),))
+    if mode == "other_game":
+        obs = replace(obs, epoch=replace(obs.epoch, game_number=2))
+    if mode == "uncited":
+        other = replace(event, event_id="second-cast", payload=dict(name="Opt", grp_id=1, instance_id=999))
+        obs = replace(obs, events=(event, other))
+    obs = Observation.from_wire(
+        replace(
+            obs,
+            heard_cast_calls=service._heard_cast_calls(obs.epoch, obs.events),
+            recent_commentary=(lead["text"],),
+        ).to_wire()
+    )
+    requests = []
+
+    def rpc(system, ctx, audit):
+        requests.append((ctx, audit))
+        if audit:
+            return {
+                "checks": [
+                    {
+                        "index": 0,
+                        "supported": True,
+                        "unsupported_claim": "",
+                        "adds_insight": True,
+                        "scope": "snapshot",
+                    }
+                ]
+            }
+        if mode == "uncited":
+            return {
+                "turns": [
+                    {
+                        "role": "color_analyst",
+                        "text": "The second spell could buy time.",
+                        "refs": [ctx["new_events"][1]],
+                    }
+                ]
+            }
+        if mode != "heard":
+            return {"turns": []}
+        return {
+            "turns": [
+                {
+                    "role": "color_analyst",
+                    "text": "The Case could buy time as more creatures enter.",
+                    "refs": [ctx["new_events"][0], "card:88930"],
+                }
+            ]
+        }
+
+    client = CommentaryClient()
+    try:
+        config = replace(config, python=sys.executable, aoa_source=request.getfixturevalue("source"))
+        result = client.generate(obs, config, rpc, threading.Event())
+        lines = [Utterance.from_wire(item) for item in result["utterances"]]
+    finally:
+        client.close()
+    assert [audit for _, audit in requests] == ([False, True] if mode == "heard" else [False])
+    ctx = requests[0][0]
+    if mode in {"heard", "pass", "uncited"}:
+        assert ctx["partner_call_heard"] and ctx["partner_call"]["text"] == lead["text"]
+        assert ctx["allowed_roles"] == ["color_analyst"] and ctx["editorial_question"]["question"]
+        assert not ctx["editorial_question"]["check_these_refs"]  # no preselected rule pair
+    else:
+        assert "partner_call" not in ctx
+    if mode == "heard":
+        assert [line["role"] for line in requests[1][0]["lines"]] == ["color_analyst"]
+    if mode == "uncited":
+        assert result["status"]["state"] == "missing_cast_reference"
+    assert [line.role for line in lines] == (["color_analyst"] if mode == "heard" else [])
+    assert not any(line.anchor_id for line in lines)
+    if lines:
+        assert lines[0].evidence_ids == (event.event_id,) and lines[0].snapshot_id == obs.snapshot_id
+
+
+@pytest.mark.usefixtures("source")
 @pytest.mark.parametrize("stamp,name", [("193910", "Lunar Convocation"), ("195635", "Seam Rip")])
 def test_dense_report_board_supplies_event_rules_and_both_players_permanents(stamp, name):
     o = report(stamp)

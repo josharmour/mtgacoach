@@ -202,6 +202,14 @@ class HeadlessBooth:
                 add_damage_arithmetic(context["facts"])
                 context["already_called"] = list(owner.already_called)
                 context["recent_analysis"] = list(owner.recent_analysis)
+                context["heard_cast_calls"] = {
+                    ref: owner.heard_cast_calls[evidence.event_id]
+                    for ref in context["new_events"]
+                    if (evidence := owner.event_sources.get(ref))
+                    and evidence.kind == "action_observed"
+                    and evidence.visibility == "public"
+                    and evidence.event_id in owner.heard_cast_calls
+                }
                 selected = compact_context(SYSTEM, context, reply_system=REPLY)
                 self.analysis_memory = selected["recent_analysis"]
                 lead = selected.get("partner_call")
@@ -220,12 +228,18 @@ class HeadlessBooth:
                         type(t) is not dict or t.get("role") != "color_analyst" for t in turns
                     ):
                         raise ModelError("role_or_fields")
-                    if turns and lead["text"] not in selected["already_called"]:
+                    if (
+                        turns
+                        and not selected.get("partner_call_heard")
+                        and lead["text"] not in selected["already_called"]
+                    ):
                         output = {"turns": [lead, *turns]}
                 else:
                     output = super().generate(selected)
                 validate_output(output, selected, selected["allowed_roles"])
                 turns = output["turns"]
+                if turns and selected.get("partner_call_heard") and lead["refs"][0] not in turns[0]["refs"]:
+                    raise ModelError("missing_cast_reference")
                 if isinstance(turns, list) and len(turns) > config.speakers:
                     raise ModelError("too_many_lines")
                 return output
@@ -382,6 +396,7 @@ class HeadlessBooth:
         from .delivery import event_excitement
 
         self.already_called = observation.recent_commentary
+        self.heard_cast_calls = dict(observation.heard_cast_calls)
         self.recent_analysis = observation.recent_analysis
         self.deck_plan = (
             observation.private_state.get("deck_overview") if self.settings.private_information else None
@@ -597,9 +612,7 @@ class HeadlessBooth:
             # Native status is persistent: the previous exchange's error alone
             # is not a diagnosis for a poll that made no request.
             status["state"] = "waiting"
-            status["reason"] = (
-                "native_backoff" if self.now() < self.booth.backoff_until else "no_native_work"
-            )
+            status["reason"] = "native_backoff" if self.now() < self.booth.backoff_until else "no_native_work"
         if self.length_drops:
             status["length_dropped_roles"] = list(self.length_drops)
         if self.failure_reason:

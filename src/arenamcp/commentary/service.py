@@ -47,6 +47,7 @@ class CommentaryService:
         self.proposals = {}
         self.heard = deque(maxlen=24)
         self.heard_analysis = deque(maxlen=16)
+        self.heard_event_calls = deque(maxlen=24)
         self.openings = {}
         # Remembers only fully heard saved overviews across matches in this session.
         self.heard_overviews = deque(maxlen=32)
@@ -66,6 +67,7 @@ class CommentaryService:
                 self.proposals.clear()
                 self.heard.clear()
                 self.heard_analysis.clear()
+                self.heard_event_calls.clear()
                 self.grounded_ids.clear()
             self.emit({"type": "commentary_clear"})
         self.wake.set()
@@ -116,6 +118,8 @@ class CommentaryService:
                     self.heard.append(item.text)
                     if item.role == "color_analyst":
                         self.heard_analysis.append(item.text)
+                    if item.role == "play_by_play" and len(item.evidence_ids) == 1:
+                        self.heard_event_calls.append((item.epoch, item.evidence_ids[0], item.text))
                     logger.info("Commentary spoken role=%s text=%s", item.role, item.text)
                     if uid in self.grounded_ids:
                         self.last_grounded = (item.epoch, time.monotonic())
@@ -149,6 +153,15 @@ class CommentaryService:
             except queue.Full:
                 self.cancelled.set()
             self.wake.set()
+
+    def _heard_cast_calls(self, epoch, events):
+        casts = {e.event_id for e in events if e.kind == "action_observed" and e.visibility == "public"}
+        with self._lock:
+            return tuple(
+                (event_id, text)
+                for heard_epoch, event_id, text in self.heard_event_calls
+                if epoch == heard_epoch and event_id in casts
+            )
 
     def _opening_available(self, event, epoch, now):
         if event.kind == "game_start" and (
@@ -345,6 +358,7 @@ class CommentaryService:
                     self.fallback_events = set()
                     self.heard.clear()
                     self.heard_analysis.clear()
+                    self.heard_event_calls.clear()
                     self.proposals.clear()
                     self.openings.clear()
                     self.grounded_ids.clear()
@@ -372,14 +386,15 @@ class CommentaryService:
                 candidates = attach_rationales(
                     self.pending_events.values(), snapshot, config.private_information, now
                 )
+                selected = select_events(
+                    (e for e in candidates if self._opening_available(e, observation.epoch, now)), observation
+                )
                 observation = replace(
                     observation,
-                    events=select_events(
-                        (e for e in candidates if self._opening_available(e, observation.epoch, now)),
-                        observation,
-                    ),
+                    events=selected,
                     recent_commentary=tuple(self.heard),
                     recent_analysis=tuple(self.heard_analysis),
+                    heard_cast_calls=self._heard_cast_calls(observation.epoch, selected),
                 )
                 # Expire missing delivery acknowledgments; no unbounded speech backlog.
                 with self._lock:
