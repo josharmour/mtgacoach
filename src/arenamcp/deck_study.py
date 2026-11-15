@@ -93,7 +93,7 @@ def _faces(card):
     return faces
 
 
-def current_study_sources_match(catalog):
+def current_study_sources_match(catalog, *, allow_legacy_face_projection=False):
     """Read exact prints from the initialized Arena database without starting a lookup service."""
     from arenamcp.card_db import MTGADatabaseAdapter, initialized_card_database
 
@@ -111,6 +111,21 @@ def current_study_sources_match(catalog):
         printed = {
             key: value for key, value in vars(current).items() if key in saved or value not in ("", [], None)
         }
+        if (
+            allow_legacy_face_projection
+            and "linked_face_ids" not in saved
+            and "linked_faces" not in saved
+            and printed.get("linked_face_ids")
+        ):
+            # Old playbooks stored the full ordered native faces, including
+            # each Arena ID, before also storing the redundant ID vector.
+            saved_faces = saved.get("related_faces")
+            if not isinstance(saved_faces, list) or any(type(face) is not dict for face in saved_faces):
+                return False
+            ids = [face.get("grp_id") for face in saved_faces]
+            if ids != printed["linked_face_ids"] or any(type(i) is not int for i in ids):
+                return False
+            saved = {**saved, "linked_face_ids": ids}
         if study_source(printed) != study_source(saved):
             return False
     return True

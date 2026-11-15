@@ -33,7 +33,10 @@ _VERSION = 2
 
 
 def _checked(book, gids):
-    return current_study_sources_match({gid: book.catalog[gid] for gid in gids})
+    return current_study_sources_match(
+        {gid: book.catalog[gid] for gid in gids},
+        allow_legacy_face_projection="study" not in book.data and not getattr(book, "study_withheld", False),
+    )
 
 
 def card_menu(book):

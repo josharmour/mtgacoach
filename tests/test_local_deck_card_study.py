@@ -461,3 +461,35 @@ def test_full_nonland_pass_resumes_exact_model_caches_and_withholds_changed_prin
     assert not dialog.running_pass and "weights changed" in dialog.detail.toPlainText()
     assert writer.complete.call_count == 2
     dialog.close()
+
+
+@pytest.mark.parametrize(
+    "fault", [None, "missing", "reordered", "native_drift", "explicit_empty", "withheld_v3", "typed_v3"]
+)
+def test_v2_print_equivalence_requires_all_ordered_native_face_ids_and_full_prints(sample, fault):
+    from arenamcp.card_db import MTGADatabaseAdapter, initialized_card_database
+    from arenamcp.deck_card_study import _checked
+    from arenamcp.deck_study import current_study_sources_match
+
+    _, book, native = sample
+    native[1001].linked_face_ids = [2001, 2002]
+    for gid in native[1001].linked_face_ids:
+        native[gid] = SimpleNamespace(
+            **{**vars(native[1001]), "grp_id": gid, "name": f"Reversible fixture {gid}"}
+        )
+    adapter = MTGADatabaseAdapter(initialized_card_database().get_raw_mtgadb())
+    book.catalog[1001]["related_faces"] = adapter.get_card_by_arena_id(1001).related_faces
+    if fault == "missing":
+        book.catalog[1001]["related_faces"].pop()
+    if fault == "reordered":
+        book.catalog[1001]["related_faces"].reverse()
+    if fault == "native_drift":
+        native[2002].mana_cost = "{7}"
+    if fault == "explicit_empty":
+        book.catalog[1001]["linked_face_ids"] = []
+    if fault == "withheld_v3":
+        book.study_withheld = True
+    if fault == "typed_v3":
+        book.data["study"] = {"version": 1}
+    assert not current_study_sources_match({1001: book.catalog[1001]})
+    assert _checked(book, [1001]) is (fault is None)
