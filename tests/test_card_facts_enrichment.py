@@ -175,3 +175,26 @@ def test_catalog_provenance_is_separate_and_inputs_not_mutated():
     assert catalog["completeness"] == "source_asserted_unverified"
     assert catalog["recipes"] == []
     assert source == before
+
+
+@pytest.mark.parametrize(
+    "layer,field", [("relationships", "catalog"), ("relationships", "source"), ("threat", "provenance")]
+)
+def test_model_cannot_forge_provenance_or_unknown_layer_fields(layer, field):
+    a = answer()
+    a[layer][field] = {"origin": "spellbook", "recipes": ["invented"]}
+    result = enrich_record(record(), PRINTED, backend=Backend(json.dumps(a)))
+    assert result.record is None and result.calls == 1
+
+
+def test_model_cannot_hide_unvalidated_fields_in_claim():
+    a = answer()
+    a["threat"]["plan"][0]["compiled_by"] = "trusted"
+    result = enrich_record(record(), PRINTED, backend=Backend(json.dumps(a)))
+    assert result.record is None
+
+
+@pytest.mark.parametrize("response", ["{" + '"nested":' + "[" * 1200 + "0" + "]" * 1200 + "}", "x" * 100001])
+def test_nested_or_oversized_answer_returns_bounded_sanitized_failure(response):
+    result = enrich_record(record(), PRINTED, backend=Backend(response))
+    assert result.record is None and result.calls == 1 and result.problems

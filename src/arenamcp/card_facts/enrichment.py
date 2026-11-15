@@ -28,6 +28,32 @@ class EnrichmentResult:
     review_required: bool = True
 
 
+def _model_shape(data: dict) -> bool:
+    """Only model fields may cross the trust boundary; provenance is ours."""
+
+    def claim(value):
+        if not isinstance(value, dict) or set(value) != {"text", "origin", "evidence"}:
+            return False
+        evidence = value["evidence"]
+        return isinstance(evidence, list) and all(
+            isinstance(item, dict) and set(item) == {"card", "quote"} for item in evidence
+        )
+
+    threat, relationships = data["threat"], data["relationships"]
+    if not isinstance(threat, dict) or set(threat) != {"version", "plan", "clock", "answers"}:
+        return False
+    if not isinstance(relationships, dict) or set(relationships) != {"version", "links"}:
+        return False
+    for key in ("plan", "clock", "answers"):
+        if not isinstance(threat[key], list) or not all(claim(item) for item in threat[key]):
+            return False
+    links = relationships["links"]
+    return isinstance(links, list) and all(
+        isinstance(link, dict) and set(link) == {"card", "role", "claim"} and claim(link["claim"])
+        for link in links
+    )
+
+
 def enrich_record(
     record: CardFacts,
     printed: PrintedCard,
@@ -81,9 +107,16 @@ def enrich_record(
     except Exception:
         # Do not echo provider exceptions: they can contain credentials/URLs.
         return EnrichmentResult(None, ("annotation backend failed",), calls=1)
-    data = extract_json_object(answer) if isinstance(answer, str) else None
+    if not isinstance(answer, str) or len(answer) > 100_000:
+        return EnrichmentResult(None, ("annotation answer exceeds supported text bound",), calls=1)
+    try:
+        data = extract_json_object(answer)
+    except (RecursionError, ValueError, TypeError):
+        return EnrichmentResult(None, ("annotation answer could not be parsed safely",), calls=1)
     if not isinstance(data, dict) or set(data) != {"threat", "relationships"}:
         return EnrichmentResult(None, ("annotation answer must contain only both requested layers",), calls=1)
+    if not _model_shape(data):
+        return EnrichmentResult(None, ("annotation answer contains unsupported model fields",), calls=1)
     if any(
         not isinstance(data[key], dict)
         or type(data[key].get("version")) is not int
