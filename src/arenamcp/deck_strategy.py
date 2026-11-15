@@ -12,7 +12,7 @@ import json
 import re
 from collections import Counter
 from collections.abc import Collection
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from arenamcp.loyalty_timing import (
     LOYALTY_TIMING,
@@ -283,6 +283,7 @@ class DeckPlaybook:
     commanders: list[int]
     identity: str = ""
     saved_strategy_sha256: str = ""
+    study_withheld: bool = False
 
     @classmethod
     def parse(cls, response: str, catalog: dict[int, dict], commanders: list[int], identity=""):
@@ -643,7 +644,9 @@ class DeckPlaybook:
         return "\n".join(lines)
 
     def export(self, *, include_study: bool = True) -> dict:
-        data = self.data if include_study else {key: value for key, value in self.data.items() if key != "study"}
+        data = (
+            self.data if include_study else {key: value for key, value in self.data.items() if key != "study"}
+        )
         return {
             "version": self.version if include_study else LEGACY_PLAYBOOK_VERSION,
             "identity": self.identity,
@@ -651,6 +654,21 @@ class DeckPlaybook:
             "catalog": self.catalog,
             "commanders": self.commanders,
         }
+
+    def with_current_study(self, study):
+        from arenamcp.deck_study import current_study_sources_match, validate_study
+
+        try:
+            if current_study_sources_match(self.catalog):
+                validate_study(study, self.catalog)
+                if self.data.get("study") is study:
+                    return self
+                return replace(self, data={**self.data, "study": study})
+        except (ValueError, TypeError, KeyError, OSError):
+            # The validated legacy playbook remains available without inference.
+            pass
+        data = {key: value for key, value in self.data.items() if key != "study"}
+        return replace(self, data=data, study_withheld=True)
 
     @classmethod
     def restore(cls, saved: dict, state: dict):
@@ -668,7 +686,9 @@ class DeckPlaybook:
         expected = set(state.get("deck_cards") or []) | set(commander_ids(state))
         if not expected or set(catalog) != expected:
             raise ValueError("Saved playbook catalog differs from the current deck")
-        return cls.parse(json.dumps(saved["data"]), catalog, commander_ids(state), saved["identity"])
+        legacy = {key: value for key, value in data.items() if key != "study"}
+        book = cls.parse(json.dumps(legacy), catalog, commander_ids(state), saved["identity"])
+        return book.with_current_study(data["study"]) if "study" in data else book
 
 
 DECISION_KINDS = {

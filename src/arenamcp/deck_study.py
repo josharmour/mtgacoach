@@ -45,9 +45,7 @@ def study_source(card):
     )
     faces = _faces(card)
     if faces is None or any(
-        not isinstance(face.get("name"), str)
-        or is_unknown_card_name(face["name"])
-        or not isinstance(face.get("oracle_text"), str)
+        not isinstance(face.get("oracle_text"), str)
         or not isinstance(face.get("mana_cost"), str)
         or _type_parts(face.get("type_line")) is None
         for face in faces
@@ -65,11 +63,7 @@ def _type_parts(line):
 
 
 def _faces(card):
-    if (
-        not isinstance(card, dict)
-        or not isinstance(card.get("name"), str)
-        or is_unknown_card_name(card["name"])
-    ):
+    if not isinstance(card, dict):
         return None
     faces = [card]
     for key in ("related_faces", "card_faces"):
@@ -77,9 +71,49 @@ def _faces(card):
         if type(extra) is not list or any(type(face) is not dict for face in extra):
             return None
         faces.extend(extra)
-    if (card.get("linked_face_ids") or card.get("linked_faces")) and len(faces) == 1:
+    for key in ("linked_face_ids", "linked_faces"):
+        linked = card.get(key, [])
+        if not isinstance(linked, list):
+            return None
+        if linked:
+            # The native adapter drops unresolved rows from related_faces, but
+            # retains all declared IDs. An unrelated or partial face list
+            # cannot establish that every face is a land.
+            resolved = [face.get("grp_id") for face in card.get("related_faces", [])]
+            if (
+                any(type(gid) is not int or gid <= 4 for gid in (*linked, *resolved))
+                or len(set(linked)) != len(linked)
+                or sorted(linked) != sorted(resolved)
+            ):
+                return None
+    if any(
+        not isinstance(face.get("name"), str) or is_unknown_card_name(face["name"].strip()) for face in faces
+    ):
         return None
     return faces
+
+
+def current_study_sources_match(catalog):
+    """Read exact prints from the initialized Arena database without starting a lookup service."""
+    from arenamcp.card_db import MTGADatabaseAdapter, initialized_card_database
+
+    database = initialized_card_database()
+    native = database.get_raw_mtgadb() if database is not None else None
+    if native is None or not native.available:
+        return False
+    adapter = MTGADatabaseAdapter(native)
+    for gid, saved in catalog.items():
+        current = adapter.get_card_by_arena_id(gid)
+        if current is None or type(current.arena_id) is not int or current.arena_id != gid:
+            return False
+        # Older projections omit empty optional fields. Preserve substantive
+        # native fields even when the saved study failed to supply them.
+        printed = {
+            key: value for key, value in vars(current).items() if key in saved or value not in ("", [], None)
+        }
+        if study_source(printed) != study_source(saved):
+            return False
+    return True
 
 
 def _land(card):

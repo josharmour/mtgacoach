@@ -114,6 +114,8 @@ def report_html(report: dict[str, Any], name: str = "") -> str:
             )
         if coverage["unresolved_types"]:
             counts += f" {coverage['unresolved_types']} prints have unresolved types."
+        if coverage.get("withheld"):
+            counts += " The saved study could not be verified against the current Arena prints."
         parts.append(_section("STUDY COVERAGE", theme.span(counts)))
     phases = report.get("phases") or {}
     if phases:

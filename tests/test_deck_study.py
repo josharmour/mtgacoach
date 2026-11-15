@@ -15,6 +15,19 @@ from arenamcp.desktop.decks_tab import report_html
 from arenamcp.standalone_diagnostics import _DiagnosticsMixin
 
 
+def native_catalog(monkeypatch, catalog):
+    from arenamcp.card_db import create_card_database, set_card_database
+
+    cards = {
+        gid: SimpleNamespace(**{"colors": "", "oracle_text": "", "grp_id": gid, **fields})
+        for gid, fields in catalog.items()
+    }
+    database = create_card_database(mtga_db=SimpleNamespace(available=True, get_card=cards.get))
+    monkeypatch.setattr("arenamcp.card_db._card_db", None)
+    set_card_database(database)
+    return cards
+
+
 def evidence(gid, catalog):
     card = catalog[gid]
     return {"card": gid, "source": study_source(card), "rule": 1, "quote": oracle_rules(card)[0]}
@@ -46,6 +59,7 @@ def study(*rules):
 
 def test_owner_strategy_restores_and_reports_coverage_without_generation(monkeypatch, tmp_path):
     state, catalog, response = deck_case()
+    native_catalog(monkeypatch, catalog)
     monkeypatch.setattr("arenamcp.logging_config.LOG_DIR", tmp_path)
     monkeypatch.setattr("arenamcp.match_context._local_card", lambda gid, epoch: catalog[gid])
     loader = CoachEngine(backend=Mock())
@@ -76,6 +90,92 @@ def test_owner_strategy_restores_and_reports_coverage_without_generation(monkeyp
             DeckPlaybook.restore(payload, state)
 
 
+@pytest.mark.parametrize("store", ["owner", "cache", "memory", "checkpoint"])
+def test_changed_or_unavailable_source_withholds_study_without_losing_it(monkeypatch, tmp_path, store):
+    state, catalog, response = deck_case()
+    native = native_catalog(monkeypatch, catalog)
+    monkeypatch.setattr("arenamcp.logging_config.LOG_DIR", tmp_path)
+    backend = Mock()
+    coach = CoachEngine(backend=backend)
+    identity = deck_identity(state)
+    response["study"] = study(card_rule(1001, catalog))
+    book = DeckPlaybook.parse(json.dumps(response), catalog, commander_ids(state), identity)
+    checkpoint = book.export()
+    if store == "owner":
+        coach.save_deck_strategy(book)
+    elif store == "cache":
+        coach._store_playbook(book)
+        coach = CoachEngine(backend=backend)
+    elif store == "memory":
+        coach._playbook_cache[identity] = book
+
+    def read():
+        return (
+            DeckPlaybook.restore(checkpoint, state)
+            if store == "checkpoint"
+            else coach.prepare_playbook(state)
+        )
+
+    # The group ID and all static deck identifiers stay identical. The saved
+    # catalog is internally consistent but a same-ID Arena rebalancing changed it.
+    old_rules = native[1001].oracle_text
+    native[1001].oracle_text = "Vigilance"
+    for _ in range(2):
+        result = read()
+        assert result.version == 2 and result.study_withheld
+        assert "study" not in result.data and "could not be verified" in report_html(playbook_report(result))
+        coach.save_deck_strategy(result)
+    native[1001].oracle_text = old_rules
+    old_land = native.pop(1002)
+    assert read().study_withheld  # an uncited land's current type is unknown
+    native[1002] = old_land
+    native[1002].grp_id = 1003
+    assert read().study_withheld  # a lookup returning a different print cannot bind by name
+    native[1002].grp_id = 1002
+    assert read().data == response and not read().study_withheld
+    assert not backend.mock_calls
+
+
+def test_legacy_and_uninitialized_sources_do_not_start_lookups(monkeypatch):
+    state, catalog, response = deck_case()
+    monkeypatch.setattr("arenamcp.card_db._card_db", None)
+    monkeypatch.setattr("arenamcp.card_db.get_card_database", lambda: pytest.fail("started database access"))
+    identity = deck_identity(state)
+    legacy = DeckPlaybook.parse(json.dumps(response), catalog, commander_ids(state), identity).export()
+    assert not DeckPlaybook.restore(legacy, state).study_withheld
+    response["study"] = study(card_rule(1001, catalog))
+    saved = DeckPlaybook.parse(json.dumps(response), catalog, commander_ids(state), identity).export()
+    assert DeckPlaybook.restore(saved, state).study_withheld
+
+
+@pytest.mark.parametrize(
+    "declared, resolved",
+    [
+        ([701, 702], [701]),
+        ([701, 702], [701, 703]),
+        ([701, 702], [701, 701]),
+        ([701, 701], [701, 701]),
+        ([True], [True]),
+        ([701], ["701"]),
+    ],
+)
+def test_native_linked_faces_must_match_complete_print_set(declared, resolved):
+    _, catalog, _ = deck_case()
+    land = catalog[1002]
+    changed = {
+        **land,
+        "linked_face_ids": declared,
+        "related_faces": [{**land, "grp_id": g} for g in resolved],
+    }
+    catalog = {**catalog, 1002: changed}
+    doc = study(card_rule(1001, catalog))
+    assert coverage({}, catalog)["unresolved_types"] == 1
+    with pytest.raises(ValueError, match="unresolved"):
+        validate_study(doc, catalog)
+    changed.update(linked_face_ids=[701, 702], related_faces=[{**land, "grp_id": g} for g in [702, 701]])
+    assert validate_study(doc, catalog)["structured_cards"] == 1
+
+
 def test_missing_rule_duplicate_or_unverifiable_card():
     _, catalog, _ = deck_case()
     row = card_rule(1001, catalog)
@@ -85,6 +185,7 @@ def test_missing_rule_duplicate_or_unverifiable_card():
     for key, value in (
         ("type_line", "N/A"),
         ("name", 1002),
+        ("name", "Unknown_(1002)"),
         ("linked_face_ids", [23]),
         ("related_faces", {"bad": True}),
         ("type_line", "1,2"),

@@ -39,7 +39,7 @@ def is_bogus_type_line(type_line: str | None) -> bool:
 def is_unknown_card_name(name: str | None) -> bool:
     """Match lookup sentinels, not real names such as Unknown Shores."""
     return not name or bool(
-        re.fullmatch(r"Unknown(?: Card)?(?:[_ ]#?\d+|#\d+|\s*\(\d+\))?", name, re.IGNORECASE)
+        re.fullmatch(r"Unknown(?: Card)?(?:[_ ]#?\d+|#\d+|_?\s*\(\d+\))?", name, re.IGNORECASE)
     )
 
 

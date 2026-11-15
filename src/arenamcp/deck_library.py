@@ -304,7 +304,10 @@ def playbook_report(playbook: Any) -> dict[str, Any]:
 
     data = playbook.data
     return {
-        "study_coverage": coverage(data, playbook.catalog),
+        "study_coverage": {
+            **coverage(data, playbook.catalog),
+            "withheld": getattr(playbook, "study_withheld", False),
+        },
         "archetype": data.get("archetype", ""),
         "summary": data.get("spoken_summary", ""),
         "primary_plan": data.get("primary_plan", ""),

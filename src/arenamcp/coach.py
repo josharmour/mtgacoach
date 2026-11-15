@@ -1088,6 +1088,9 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
 
     def save_deck_strategy(self, playbook) -> None:
         """Keep the Decks window's validated strategy until the player replaces it."""
+        if playbook.study_withheld:
+            # A temporarily unavailable source must not erase the owner's study.
+            return
         path = self._saved_strategy_path(playbook.identity)
         if path is None:
             raise ValueError("Cannot save a strategy without an exact deck identity")
@@ -1124,6 +1127,8 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         with self._deck_analysis_lock:
             cached = self._playbook_cache.get(identity)
         if cached is not None:
+            if "study" in cached.data:
+                return cached.with_current_study(cached.data["study"])
             return cached
         path = self._playbook_cache_path(identity)
         if path is None or not path.exists():
@@ -1146,8 +1151,9 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         except Exception as error:
             logger.info("Ignoring cached deck playbook %s: %s", path.name, error)
             return None
-        with self._deck_analysis_lock:
-            self._playbook_cache[identity] = playbook
+        if not playbook.study_withheld:
+            with self._deck_analysis_lock:
+                self._playbook_cache[identity] = playbook
         return playbook
 
     def _store_playbook(self, playbook) -> None:
