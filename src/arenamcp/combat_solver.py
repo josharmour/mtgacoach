@@ -99,9 +99,9 @@ def _text(c: dict) -> str:
     return (c.get("oracle_text") or "").lower()
 
 
-def _has(card: dict, keyword: str) -> bool:
-    """Check for a keyword ability on a creature, case-insensitive."""
-    return has_combat_keyword(card, keyword)
+# The canonical keyword function already has this exact calling convention.
+# Keep the private alias without a forwarding call in every combat operation.
+_has = has_combat_keyword
 
 
 def _pt(card: dict) -> tuple[int, int]:
@@ -485,13 +485,12 @@ def _players_key(card: dict) -> tuple | None:
 
 
 def _controller_key(card: dict) -> object:
+    value = card.get("_source_controller_seat_id") or card.get("controller_seat_id")
+    if value:
+        return value
     raw = card.get("_card")
-    inner = raw if isinstance(raw, dict) else {}
-    for obj in (card, inner):
-        for name in ("_source_controller_seat_id", "controller_seat_id"):
-            value = obj.get(name)
-            if value:
-                return value
+    if isinstance(raw, dict):
+        return raw.get("_source_controller_seat_id") or raw.get("controller_seat_id") or None
     return None
 
 
@@ -506,23 +505,41 @@ def _fight_key(card: dict) -> tuple | None:
     # ``_card`` falls back to the top-level body, so its fields must be keyed
     # from the top level too.
     inner = raw if isinstance(raw, dict) and raw and raw is not card else None
-    counters = _counters_key(card)
+    counters = () if card.get("counters") is None else _counters_key(card)
     if counters is None:
         return None
+    # Reuse the same backing dictionary while reading the cache inputs.
+    backing = raw if isinstance(raw, dict) else None
+    colors = None
+    for color_field in ("_source_colors", "modified_colors", "colors"):
+        value = card.get(color_field)
+        if value is None and backing is not None:
+            value = backing.get(color_field)
+        if value is not None:
+            colors = tuple(str(color) for color in value)
+            break
+    players = card.get("protection_from_players")
+    if players is None and backing is not None:
+        players = backing.get("protection_from_players")
+    players = None if not players else tuple(str(player) for player in players)
+    controller = card.get("_source_controller_seat_id") or card.get("controller_seat_id")
+    if not controller and backing is not None:
+        controller = backing.get("_source_controller_seat_id") or backing.get("controller_seat_id")
+    controller = controller or None
     parts = [
         card.get("instance_id"),
         card.get("name"),
         card.get("power"),
         card.get("toughness"),
         card.get("oracle_text"),
-        _tuple_field(card, "keywords"),
-        _tuple_field(card, "ability_grp_ids"),
-        _tuple_field(card, "granted_abilities"),
+        (None if (value := card.get("keywords")) is None else tuple(value)),
+        (None if (value := card.get("ability_grp_ids")) is None else tuple(value)),
+        (None if (value := card.get("granted_abilities")) is None else tuple(value)),
         bool(card.get("_protection_future")),
-        _colors_key(card),
+        colors,
         bool(card.get("damage_cant_be_prevented")),
-        _players_key(card),
-        _controller_key(card),
+        players,
+        controller,
         counters,
         card.get("_combat_damage", 0),
         bool(card.get("_track_combat_damage")),
@@ -530,7 +547,7 @@ def _fight_key(card: dict) -> tuple | None:
         card.get("_counter_shift", 0),
     ]
     if inner is not None:
-        inner_counters = _counters_key(inner)
+        inner_counters = () if inner.get("counters") is None else _counters_key(inner)
         if inner_counters is None:
             return None
         parts.extend(
@@ -538,17 +555,17 @@ def _fight_key(card: dict) -> tuple | None:
                 inner.get("oracle_text"),
                 inner.get("power"),
                 inner.get("toughness"),
-                _tuple_field(inner, "keywords"),
-                _tuple_field(inner, "ability_grp_ids"),
-                _tuple_field(inner, "granted_abilities"),
-                _tuple_field(inner, "removed_abilities"),
+                (None if (value := inner.get("keywords")) is None else tuple(value)),
+                (None if (value := inner.get("ability_grp_ids")) is None else tuple(value)),
+                (None if (value := inner.get("granted_abilities")) is None else tuple(value)),
+                (None if (value := inner.get("removed_abilities")) is None else tuple(value)),
                 inner_counters,
                 bool(inner.get("damage_cant_be_prevented")),
                 inner.get("_combat_damage", 0),
             )
         )
     else:
-        parts.append(_tuple_field(card, "removed_abilities"))
+        parts.append(None if (value := card.get("removed_abilities")) is None else tuple(value))
     return tuple(parts)
 
 
@@ -1092,6 +1109,57 @@ def optimal_blocks(
     )
 
 
+_ASSIGNMENT_CACHE: OrderedDict[tuple, tuple] = OrderedDict()
+_ASSIGNMENT_LOCK = threading.Lock()
+_ASSIGNMENT_ROW_LIMIT = 32768
+_ASSIGNMENT_COMPILE_LIMIT = 2048
+_assignment_row_count = 0
+
+
+def _assignment_rows(options: tuple[tuple[int | None, ...], ...]) -> tuple:
+    """Bounded, card-independent geometry in the original product/touch order."""
+    global _assignment_row_count
+    with _ASSIGNMENT_LOCK:
+        found = _ASSIGNMENT_CACHE.get(options)
+        if found is not None:
+            _ASSIGNMENT_CACHE.move_to_end(options)
+            return found
+    rows = []
+    for choice in product(*options):
+        groups = {}
+        for b_idx, a_idx in enumerate(choice):
+            if a_idx is not None:
+                groups.setdefault(a_idx, []).append(b_idx)
+        rows.append(
+            (
+                choice,
+                tuple(
+                    (a_idx, tuple(indices), (a_idx << len(options)) | sum(1 << b for b in indices))
+                    for a_idx, indices in groups.items()
+                ),
+            )
+        )
+    result = tuple(rows)
+    with _ASSIGNMENT_LOCK:
+        found = _ASSIGNMENT_CACHE.get(options)
+        if found is not None:
+            return found
+        _ASSIGNMENT_CACHE[options] = result
+        _assignment_row_count += len(result)
+        while _assignment_row_count > _ASSIGNMENT_ROW_LIMIT or len(_ASSIGNMENT_CACHE) > 128:
+            _, evicted = _ASSIGNMENT_CACHE.popitem(last=False)
+            _assignment_row_count -= len(evicted)
+    return result
+
+
+@dataclass(frozen=True)
+class _BlockAssignments:
+    """Internal result for callers that independently resolve the selected fights."""
+
+    assignments: dict[int, int]
+    evaluated: int
+
+
 def _search_blocks(
     attackers: list[dict],
     blockers: list[dict],
@@ -1106,7 +1174,9 @@ def _search_blocks(
     symmetric: bool = False,
     deadline_s: float | None = None,
     caller: str = "",
-) -> BlockPlan | None:
+    _fight_keys: dict[int, tuple | None] | None = None,
+    _only_assignments: bool = False,
+) -> BlockPlan | _BlockAssignments | None:
     """Enumerate legal block assignments and pick the best.
 
     ``symmetric``: past ``max_options`` assignments, enumerate one assignment
@@ -1119,6 +1189,10 @@ def _search_blocks(
     ``deadline_s`` (default ``BLOCK_DEADLINE_S``): past it the search stops
     with its best plan so far, or the greedy plan when that scores better, and
     logs it once (``caller`` names the asker; ledger #192).
+
+    `_fight_keys` is an internal caller-owned cache valid only while all body
+    dictionaries remain unchanged. The board assessment shares it across this
+    search and its immediate winner resolution, never across combat calls.
 
     `blocker_allowed_attackers` maps a blocker's instance_id to the set
     of attacker instance_ids it is allowed to block (from the GRE
@@ -1159,8 +1233,15 @@ def _search_blocks(
         blocker_options.append(opts)
 
     choices: Iterable[tuple] = ()
+    compiled_rows = n_options <= min(max_options, BIG_BLOCK_SEARCH, _ASSIGNMENT_COMPILE_LIMIT)
+    geometry_seconds = 0.0
     if n_options <= max_options:
-        choices = product(*blocker_options)
+        if compiled_rows:
+            geometry_started = time.monotonic()
+            choices = _assignment_rows(tuple(tuple(opts) for opts in blocker_options))
+            geometry_seconds = time.monotonic() - geometry_started
+        else:
+            choices = product(*blocker_options)
         if n_options > BIG_BLOCK_SEARCH:
             # A big board under the cap (ledger #192, 2026-10-19 15:52:14: Myrel alone into 17
             # blockers, 2^17 fights of up to 17 blockers each, 19 s on the coaching thread): one
@@ -1218,7 +1299,7 @@ def _search_blocks(
 
     # Content keys for the bodies this search resolves, built once per body:
     # the same attacker/blocker recurs in hundreds of fights (``_fight_key_cached``).
-    keys: dict[int, tuple | None] = {}
+    keys: dict[int, tuple | None] = {} if _fight_keys is None else _fight_keys
     # Material and death-trigger swings of those same bodies, likewise once each.
     mats: dict[int, int] = {}
     swings: dict[int, tuple[int, int]] = {}
@@ -1242,7 +1323,9 @@ def _search_blocks(
     raw_best: float | None = None  # the same search with no trick priced
     raw_choice: tuple = ()
     evaluated = 0
-    started = time.monotonic()
+    # Geometry construction replaces work formerly done inside the timed loop.
+    # Charge it to the same deadline, including cold-cache compilation.
+    started = time.monotonic() - geometry_seconds
     seen = 0
     cut = False
     # Per-choice scratch: which blockers each attacker got this assignment.
@@ -1253,39 +1336,49 @@ def _search_blocks(
     offsets = [a_idx << n_blockers for a_idx in range(n_attackers)]
     bits = [1 << b_idx for b_idx in range(n_blockers)]
     fights_get = fights.get
-    hit = defender.hit
+    poison_limit = 10 - defender.poison
+    library = defender.library
     clock = time.monotonic
-    for choice in choices:
+    life_scores: dict[int, float] = {}
+    life_score_for = life_scores.get
+    for selection in choices:
+        choice = selection[0] if compiled_rows else selection
         # Wall-clock backstop (ledger #192): the canonical enumeration keeps big boards fast;
         # distinct bodies by the dozen still could not be searched to the end in time.
         seen += 1
         if seen % 256 == 0 and best_score is not None and clock() - started > deadline_s:
             cut = True
             break
-        # choice[b] is either None or an attacker index
-        n_touched = 0
-        for b_idx, atk_idx in enumerate(choice):
-            if atk_idx is None:
-                continue
-            blks = buckets[atk_idx]
-            if not blks:
-                touched[n_touched] = atk_idx
-                n_touched += 1
-            blks.append(b_idx)
-            masks[atk_idx] |= bits[b_idx]
+        if compiled_rows:
+            groups = selection[1]
+            n_touched = len(groups)
+        else:
+            # choice[b] is either None or an attacker index
+            n_touched = 0
+            for b_idx, atk_idx in enumerate(choice):
+                if atk_idx is None:
+                    continue
+                blks = buckets[atk_idx]
+                if not blks:
+                    touched[n_touched] = atk_idx
+                    n_touched += 1
+                blks.append(b_idx)
+                masks[atk_idx] |= bits[b_idx]
         # Menace check — attackers with menace need >=2 blockers or none.
         if any_menace:
             illegal = False
             for i in range(n_touched):
-                a_idx = touched[i]
-                if menace[a_idx] and len(buckets[a_idx]) == 1:
+                a_idx = groups[i][0] if compiled_rows else touched[i]
+                indices = groups[i][1] if compiled_rows else buckets[a_idx]
+                if menace[a_idx] and len(indices) == 1:
                     illegal = True
                     break
             if illegal:
-                for i in range(n_touched):
-                    a_idx = touched[i]
-                    buckets[a_idx].clear()
-                    masks[a_idx] = 0
+                if not compiled_rows:
+                    for i in range(n_touched):
+                        a_idx = touched[i]
+                        buckets[a_idx].clear()
+                        masks[a_idx] = 0
                 continue
 
         evaluated += 1
@@ -1299,22 +1392,43 @@ def _search_blocks(
         blowout = 0
         death_blocking = death_attacking = blocker_gain = first_gain = 0
         lost_ids: set[int] | None = set() if recovery_credit is not None else None
-        for i in range(n_touched):
-            a_idx = touched[i]
-            blks = buckets[a_idx]
-            key = offsets[a_idx] | masks[a_idx]
+        assignments = (
+            groups
+            if compiled_rows
+            else (
+                (touched[i], buckets[touched[i]], offsets[touched[i]] | masks[touched[i]])
+                for i in range(n_touched)
+            )
+        )
+        for a_idx, blks, key in assignments:
             fight = fights_get(key)
             if fight is None:
-                fight = fight_of(a_idx, [blockers[b] for b in blks])
+                resolved = fight_of(a_idx, [blockers[b] for b in blks])
+                plain = unblocked[a_idx]
+                fight = (
+                    resolved[0] - plain[0],
+                    resolved[1],
+                    resolved[2],
+                    resolved[3],
+                    resolved[4],
+                    resolved[5],
+                    resolved[6],
+                    resolved[7] - plain[7],
+                    resolved[8] - plain[8],
+                    resolved[9] - plain[9],
+                    resolved[10],
+                    resolved[11] - plain[11],
+                    resolved[12],
+                )
                 fights[key] = fight
-            blks.clear()
-            masks[a_idx] = 0
-            plain = unblocked[a_idx]
-            total_damage += fight[0] - plain[0]
-            first_damage += fight[11] - plain[11]
-            poison += fight[7] - plain[7]
-            mill += fight[8] - plain[8]
-            loses += fight[9] - plain[9]
+            if not compiled_rows:
+                blks.clear()
+                masks[a_idx] = 0
+            total_damage += fight[0]
+            first_damage += fight[11]
+            poison += fight[7]
+            mill += fight[8]
+            loses += fight[9]
             atk_killed_material += fight[1]
             blocker_lost_material += fight[2]
             blowout += fight[4]
@@ -1326,35 +1440,61 @@ def _search_blocks(
                 lost_ids.update(fight[3])
 
         player_loses = loses > 0
-        remaining = defender.hit(poison, mill)
+        draw_loses = (library is not None and mill >= library) if poison or mill else library == 0
         if first_damage - first_gain >= your_life:
             blocker_gain = first_gain  # a later damage step cannot rescue a dead player
-        player_loses |= defending_player and remaining.lost
-        score = _block_score(
-            total_damage,
-            atk_killed_material,
-            blocker_lost_material,
-            your_life,
-            death_loss=-death_blocking,
-            life_gained=blocker_gain,
-            their_gain=death_attacking,
-            player_loses=player_loses or (defending_player and remaining.draw_loses),
-        )
+        player_loses |= defending_player and poison >= poison_limit
+        # Inline _block_score's unchanged arithmetic in the assignment hot loop.
+        # Winner reconstruction still uses the shared scorer as a cross-check.
+        if player_loses or (defending_player and draw_loses):
+            score = -1_000_000.0
+        else:
+            lost = total_damage - death_blocking - blocker_gain
+            life_score = life_score_for(lost)
+            if life_score is None:
+                life_after = your_life - lost
+                life_score = (
+                    -1000.0 if life_after <= 0 else -lost * (20.0 / (life_after if life_after >= 1 else 1))
+                )
+                life_scores[lost] = life_score
+            score = (
+                life_score
+                + (atk_killed_material - blocker_lost_material)
+                - DEATH_LIFE_WEIGHT * death_attacking
+            )
         if (
             recovery_credit is not None
-            and not remaining.draw_loses
+            and not draw_loses
             and not player_loses
             and total_damage - death_blocking - blocker_gain < your_life
         ):
             score += recovery_credit(frozenset(lost_ids))
-        if raw_best is None or score > raw_best:
-            raw_best = score
-            raw_choice = choice
-        score -= trick_p * blowout
-        if best_score is None or score > best_score:
+        if trick_p:
+            if raw_best is None or score > raw_best:
+                raw_best = score
+                raw_choice = choice
+            score -= trick_p * blowout
+            if best_score is None or score > best_score:
+                best_score = score
+                best_choice = choice
+        elif best_score is None or score > best_score:
+            # Without priced tricks the raw and adjusted rankings are identical.
             best_score = score
-            best_choice = choice
+            best_choice = raw_choice = choice
 
+    # Board assessment resolves these fights itself. Avoid constructing a full
+    # explanation/score/outcome object that this internal caller never reads.
+    # A deadline cut still needs the original greedy comparison; callbacks keep
+    # their original rebuild call sequence regardless of the requested mode.
+    if _only_assignments and not cut and recovery_credit is None:
+        return _BlockAssignments(
+            assignments={
+                int(blockers[b].get("instance_id") or 0): int(attackers[a].get("instance_id") or 0)
+                for b, a in enumerate(best_choice)
+                if a is not None
+            },
+            evaluated=evaluated,
+        )
     # Rebuild the winner in full (plan, kills, explanation) once.
     plan = _rebuild_block_plan(
         attackers,
@@ -1663,7 +1803,7 @@ def _block_score(
         # Normalize around 20 remaining life = one material point per life.
         # The old factor of 5 priced a 24 -> 14 hit at just 3.57, cheaper
         # than losing ANY mana creature regardless of the hit's magnitude.
-        life_score = -lost * (20.0 / max(1, life_after))
+        life_score = -lost * (20.0 / (life_after if life_after >= 1 else 1))
 
     material_score = attackers_killed_material - blockers_lost_material
     return life_score + material_score - DEATH_LIFE_WEIGHT * their_gain

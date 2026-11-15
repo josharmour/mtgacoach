@@ -1789,8 +1789,6 @@ def test_chrome_mox_imprint_cost_paid_from_record(monkeypatch):
     """standalone.log:2104931 'can't value: Chrome Mox (its triggered ability)' — the
     AddMana + Exile record makes the rock's cast pay its imprint: one nonartifact,
     nonland hand card is consumed on the cast; the rock itself is unchanged."""
-    import dataclasses
-
     from arenamcp import line_search_moves as lsm
     from arenamcp.ability_synthesizer import record_cast_text
     from arenamcp.card_facts.schema import card_facts_from_dict
@@ -1801,7 +1799,8 @@ def test_chrome_mox_imprint_cost_paid_from_record(monkeypatch):
     baseline = _a1_variants(source)
     baseline_reason = lsm.unmodelled_effect(dict(_CHROME_MOX_CARD))
     assert baseline_reason == "its triggered ability"
-    assert baseline["Chrome Mox"][1] is not None and baseline["Chrome Mox"][1].rock
+    # No-record unknown imprint must not masquerade as an evaluated mana rock.
+    assert baseline["Chrome Mox"] == ((), None)
 
     _with_records(monkeypatch, [(_CHROME_MOX_CARD, _CHROME_MOX_RECORD)])
     after = _a1_variants(source)
@@ -1813,18 +1812,9 @@ def test_chrome_mox_imprint_cost_paid_from_record(monkeypatch):
     assert plain.consume_spec == ("", frozenset({"nonartifact", "nonland"}))
     assert plain.mana_value == 0  # {0}: no discount to fold
 
-    # Variant is eq=False: compare field dicts, not identities.
-    def unimprinted(variants):
-        return [
-            dataclasses.asdict(
-                dataclasses.replace(v, consumes=0, consume_spec=("", frozenset()), imprint_rock=False)
-            )
-            for v in variants
-        ]
-
-    assert unimprinted([v for v in after["Chrome Mox"][0] if v.imprint_rock]) == unimprinted(
-        baseline["Chrome Mox"][0]
-    )
+    # The paid record-backed cast preserves the real spell's zero mana cost;
+    # there is no longer an unsafe free-mana baseline to compare flags against.
+    assert plain.mana_value == 0 and plain.consume_spec[1] == frozenset({"nonartifact", "nonland"})
     assert any(not v.rock and not v.consumes for v in after["Chrome Mox"][0])
     assert not after["Chrome Mox"][1].rock  # baseline declines optional imprint
     assert all(not v.ephemeral for v in after["Chrome Mox"][0])
