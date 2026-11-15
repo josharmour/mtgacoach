@@ -402,3 +402,112 @@ def test_no_thinking_diagnostic_is_isolated_and_cannot_complete_a_normal_chapter
     assert (
         topic_coverage(current, context, "sequencing", tmp_path, model.digest)[1][0]["thinking_mode"] == "low"
     )
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        None,
+        "undeclared_id",
+        "print_mismatch",
+        "landfall_with_land",
+        "hand",
+        "early",
+        "stated_turn",
+        "zero_mana",
+        "colored_payment",
+        "tax",
+        "landfall",
+        "different_ability",
+        "loyalty_in_hand",
+        "valid_loyalty",
+    ],
+)
+def test_selected_chapter_refuses_unsupported_prints_and_explicit_actions(deck, tmp_path, fault):
+    state, book, native = deck
+    m = writer()
+    original = m.complete.side_effect
+    name = book.catalog[1001]["name"]
+    if fault in {"different_ability", "loyalty_in_hand", "valid_loyalty"}:
+        native[1001].oracle_text = "[+1]: Draw a card.\n[-2]: Create a token."
+        native[1001].type_line = "Legendary Planeswalker — Fixture"
+
+    def respond(*args, **kwargs):
+        answer = original(*args, **kwargs)
+        row = answer["topics"]["sequencing"]
+        row["advice"] = (
+            f"Cast {name} from command when its printed cost and current commander tax can be paid."
+        )
+        terms = row["conditions"]
+        terms.update(pieces=[{"card": 1001, "zone": "command"}], mana={"generic": 3, "G": 2}, first_turn=5)
+        if fault == "undeclared_id":
+            row["advice"] += " Then use a different print (1002)."
+        elif fault == "print_mismatch":
+            row["advice"] = f"Use {native[1002].name} (1001)."
+        elif fault == "landfall_with_land":
+            row["advice"] = "Cast a green spell that benefits from landfall, then play a land."
+        elif fault == "hand":
+            terms["pieces"][0]["zone"] = "hand"
+        elif fault == "early":
+            terms["first_turn"] = 1
+        elif fault == "stated_turn":
+            row["advice"] = "On turn one, " + row["advice"]
+        elif fault == "zero_mana":
+            terms["mana"] = {"generic": 0}
+        elif fault == "colored_payment":
+            terms["mana"] = {"generic": 5}
+        elif fault == "tax":
+            row["advice"] = "Cast your commander immediately."
+        elif fault == "landfall":
+            row["advice"] = "Cast a green spell that benefits from landfall triggers."
+        elif fault in {"different_ability", "loyalty_in_hand", "valid_loyalty"}:
+            row["advice"] = f"Use {name}'s -2 ability to create a token."
+            terms["pieces"][0]["zone"] = "hand" if fault == "loyalty_in_hand" else "battlefield"
+            row["evidence"][0]["rule"] = 1 if fault == "different_ability" else 2
+        return answer
+
+    m.complete.side_effect = respond
+    if fault in {None, "valid_loyalty", "landfall_with_land"}:
+        assert (
+            "Partial study"
+            in deck_guidance(
+                book, state, "sequencing", tmp_path, model=m, allowed=lambda: True, topic="sequencing"
+            )[0]
+        )
+    else:
+        with pytest.raises(
+            ValueError, match="uncited print|commander deployment|landfall|loyalty activation|printed ID"
+        ):
+            deck_guidance(
+                book, state, "sequencing", tmp_path, model=m, allowed=lambda: True, topic="sequencing"
+            )
+        assert not list(tmp_path.rglob("*.json"))
+
+
+def test_revalidate_earlier_single_topic_source_before_reuse(deck, tmp_path):
+    from arenamcp.deck_local_guidance import (
+        _PREVIOUS_TOPIC_SYSTEM,
+        _guidance_input,
+        topic_coverage,
+        topic_files,
+    )
+
+    state, book, _ = deck
+    m = writer()
+    deck_guidance(book, state, "sequencing", tmp_path, model=m, allowed=lambda: True, topic="mana")
+    current, context = _guidance_input(book, state, "sequencing")
+    _, _, old = topic_files(tmp_path, "sequencing", context, _PREVIOUS_TOPIC_SYSTEM)
+    new = next(tmp_path.rglob("*.json"))
+    row = json.loads(new.read_text())
+    new.unlink()
+    old["mana"].mkdir()
+    old_file = old["mana"] / new.name
+    row["input"] = old_file.parent.name
+    old_file.write_text(json.dumps(row))
+    assert topic_coverage(current, context, "sequencing", tmp_path, m.digest)[0] == ["mana"]
+    assert deck_guidance(book, state, "sequencing", tmp_path, model=m, allowed=lambda: True, topic="mana")[1]
+    assert m.complete.call_count == 1
+    row["row"]["mana"]["advice"] = "Deploy your commander on turn one."
+    old_file.write_text(json.dumps(row))
+    assert not topic_coverage(current, context, "sequencing", tmp_path, m.digest)[0]
+    assert "No local study" in deck_guidance(book, state, "sequencing", tmp_path)[0]

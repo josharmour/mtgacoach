@@ -23,6 +23,7 @@ from arenamcp.deck_card_study import (
 )
 from arenamcp.deck_strategy import deck_identity, oracle_rules
 from arenamcp.deck_study import _conditions, _evidence, _object, _text, study_source
+from arenamcp.local_commander_study import deployment_context
 from arenamcp.loyalty_timing import (
     LOYALTY_TIMING,
     conflicting_loyalty_sequence,
@@ -149,6 +150,81 @@ def _guidance_input(book, state, scope):
     }
 
 
+def _ground_chapter_action(row, book):
+    advice = row["advice"].replace("−", "-").replace("’", "'")
+    conditions = row["conditions"]
+    pieces = {p["card"]: p["zone"] for p in conditions["pieces"]}
+    cited = {r["card"] for r in row["evidence"]}
+    for label in re.finditer(r"\((\d{3,})\)", advice):
+        gid = int(label[1])
+        if gid not in cited:
+            raise ValueError("Chapter prose names an uncited print ID")
+        preceding = advice[: label.start()].rstrip()
+        named = [
+            card["name"]
+            for card in book.catalog.values()
+            if re.search(rf"(?<!\w){re.escape(card['name'])}$", preceding, re.I)
+        ]
+        if named and book.catalog[gid]["name"].casefold() != max(named, key=len).casefold():
+            raise ValueError("The named card and its printed ID disagree")
+    for sentence in re.split(r"[.!?;]", advice):
+        if re.search(
+            r"\b(?:cast|casting) (?:a |an )?(?:\w+ ){0,3}spell (?:that |to )?"
+            r"(?:benefits? from|triggers?) (?:\w+ ){0,2}landfall\b",
+            sentence,
+            re.I,
+        ) and not re.search(
+            r"\b(?:play(?:ing)? (?:a |the |your )?land|land (?:you control )?enters|"
+            r"put\w* [^.;]{0,30}land [^.;]{0,25}onto the battlefield)\b",
+            sentence,
+            re.I,
+        ):
+            raise ValueError("Casting a spell alone does not trigger landfall")
+
+    for gid in book.commanders:
+        card = book.catalog[gid]
+        name = card["name"].split(",")[0]
+        names = [re.escape(n) for n in {name, card["name"]} if n]
+        if len(book.commanders) == 1:
+            names.append(r"(?:your|the) commander")
+        subject = rf"(?:{'|'.join(names)})(?![\w'-])"
+        named_cast = rf"\b(?:recast|cast|deploy)(?:ing)?\s+{subject}"
+        cast_clause = re.search(r"[^.!?;]*?" + named_cast + r"[^.!?;]*", advice, re.IGNORECASE)
+        if cast_clause:
+            policy = deployment_context(card, gid)
+            cost = policy["base_payment"]
+            if pieces.get(gid) != "command":
+                raise ValueError(
+                    "An ordinary commander deployment requires the designated command-zone piece"
+                )
+            if cost is None or policy["mandatory_cast_rules"] or policy["unsupported_cast_rules"]:
+                raise ValueError("Chapter cannot certify this commander's printed casting cost")
+            mana = conditions["mana"]
+            turns = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7}
+            stated = re.findall(r"\bturn[ -](\d+|one|two|three|four|five|six|seven)\b", cast_clause[0], re.I)
+            if any((int(t) if t.isdigit() else turns[t.lower()]) < sum(cost.values()) for t in stated):
+                raise ValueError("Chapter states an unsupported early commander deployment")
+            if (
+                any(mana.get(k, 0) < n for k, n in cost.items() if k != "generic")
+                or sum(mana.values()) < sum(cost.values())
+                or conditions["first_turn"] < max(1, sum(cost.values()))
+                or not re.search(r"\b(?:commander|command.zone) tax\b", advice, re.I)
+            ):
+                raise ValueError(
+                    "Chapter commander deployment must cover printed mana, timing and current commander tax"
+                )
+        named_ability = rf"(?<!\w)(?:{re.escape(card['name'])}|{re.escape(name)})'s\s+\[?([+-]\d+|0)\]?"
+        for cost in re.findall(named_ability, advice, re.I):
+            if pieces.get(gid) != "battlefield" or not any(
+                ref["card"] == gid
+                and re.match(rf"^\[?{re.escape(cost)}\]?\s*:", ref["quote"].replace("−", "-"))
+                for ref in row["evidence"]
+            ):
+                raise ValueError(
+                    "The named loyalty activation needs its battlefield source and exact printed ability"
+                )
+
+
 def _validate(rows, book, expected):
     _object(rows, expected)
     walkers = walkers_in(book.catalog.values())
@@ -157,6 +233,7 @@ def _validate(rows, book, expected):
         _text(row["advice"])
         ids = _conditions(row["conditions"], book.catalog)
         _evidence(row["evidence"], ids, book.catalog)
+        _ground_chapter_action(row, book)
         # The submitted list does not prove an extra-activation enabler is in
         # play. Describe alternatives or distinct turns in these offline notes.
         if walkers and conflicting_loyalty_sequence(row["advice"], walkers):
@@ -188,9 +265,22 @@ def _detail(rows, book, scope, digest, focus=None):
     return "\n".join(lines)
 
 
-_TOPIC_SYSTEM = (
+_PREVIOUS_TOPIC_SYSTEM = (
     _SYSTEM
     + "\nStudy only the single named topic in this request. Answer in one short actionable paragraph with the minimum sufficient pieces and printed references."
+)
+
+
+_TOPIC_SYSTEM = (
+    _PREVIOUS_TOPIC_SYSTEM
+    + """
+Make one choice at one decision point, with its actual preconditions. Name only necessary cards and cite
+the exact printed ability responsible for each claimed effect. Put IDs in evidence and pieces. Use the
+actual zone of every piece when that choice begins. For ordinary command-zone casting give the printed
+payment, realistic turn and current commander tax. An activation needs its permanent on the battlefield.
+A spell in hand does not provide an active permanent effect. Distinguish playing a land from casting
+a spell, conditional additional value from an alternative effect, and conditional selection from finding
+a guaranteed card. Write at most three short sentences."""
 )
 
 
@@ -213,23 +303,32 @@ def _read_rows(folder, digest, book, expected, *, diagnostic=False):
     return {}, None
 
 
-def topic_files(directory, scope, context):
+def topic_files(directory, scope, context, system=_TOPIC_SYSTEM):
     topics = TOPICS[scope]
     legacy = _topic_folder(directory, 1, _SYSTEM, scope, context)
     jobs = {key: {**context, "topics": [key]} for key in topics}
-    folders = {key: _topic_folder(directory, 2, _TOPIC_SYSTEM, scope, job) for key, job in jobs.items()}
+    folders = {key: _topic_folder(directory, 2, system, scope, job) for key, job in jobs.items()}
     return legacy, jobs, folders
+
+
+def _read_topic(paths, digest, book, key, *, diagnostic=False):
+    for path in paths:
+        rows, metrics = _read_rows(path, digest, book, [key], diagnostic=diagnostic)
+        if rows:
+            return rows, metrics
+    return {}, None
 
 
 def topic_coverage(book, context, scope, directory, digest):
     legacy, _, folders = topic_files(directory, scope, context)
+    _, _, previous = topic_files(directory, scope, context, _PREVIOUS_TOPIC_SYSTEM)
     rows, metrics = _read_rows(legacy, digest, book, TOPICS[scope])
     if rows:
         return list(rows), [metrics]
     hits = []
     usage = []
     for key, folder in folders.items():
-        rows, metrics = _read_rows(folder, digest, book, [key])
+        rows, metrics = _read_topic((folder, previous[key]), digest, book, key)
         if rows:
             hits.append(key)
             usage.append(metrics)
@@ -252,6 +351,7 @@ def deck_guidance(book, state, scope, directory, *, model=None, allowed=None, to
     if topic is not None and topic not in topics:
         raise ValueError("Unknown topic in this deck study")
     legacy, jobs, folders = topic_files(directory, scope, context)
+    _, _, previous = topic_files(directory, scope, context, _PREVIOUS_TOPIC_SYSTEM)
     if model is not None:
         if (
             not allowed()
@@ -262,7 +362,7 @@ def deck_guidance(book, state, scope, directory, *, model=None, allowed=None, to
         digests = [model.digest.removeprefix("sha256:")]
     else:
         available = {}
-        for folder in (legacy, *folders.values()):
+        for folder in (legacy, *folders.values(), *previous.values()):
             for p in folder.glob("*.json"):
                 if re.fullmatch("[a-f0-9]{64}", p.stem):
                     available[p.stem] = max(available.get(p.stem, 0), p.stat().st_mtime_ns)
@@ -276,7 +376,7 @@ def deck_guidance(book, state, scope, directory, *, model=None, allowed=None, to
         for key in topics:
             if diagnostic and key != topic:
                 continue
-            saved, _ = _read_rows(folders[key], digest, book, [key], diagnostic=diagnostic)
+            saved, _ = _read_topic((folders[key], previous[key]), digest, book, key, diagnostic=diagnostic)
             rows.update(saved)
             if key in rows or model is None or (topic is not None and topic != key):
                 continue
