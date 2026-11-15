@@ -76,6 +76,16 @@ def _public_card(card: Mapping[str, Any], zone: str = "") -> dict[str, Any]:
         if zone == "exile":
             result["visibility"] = "public"
         result.update(_scalars(card, _IDENTITY_FIELDS))
+        if isinstance(card.get("public_native_print"), str) and not generated_or_changed_print(card):
+            from arenamcp.card_facts.source_identity import legacy_lookup_hash
+
+            digest = legacy_lookup_hash(card)
+            if (
+                digest
+                and type(card.get("grp_id")) is int
+                and card["public_native_print"] == f"{card['grp_id']}:{digest}"
+            ):
+                result["public_native_print"] = card["public_native_print"]
         result.update(_scalars(card, ("object_kind",)))
         if generated_or_changed_print(card):
             result["generated"] = True

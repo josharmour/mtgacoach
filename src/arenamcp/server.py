@@ -2411,6 +2411,9 @@ def get_game_state() -> dict[str, Any]:
     # Death triggers on any permanent (Vein Ripper): each creature's life swing
     # when it dies, read by the combat solver (ledger #184).
     annotate_death_swings(response.get("battlefield"))
+    from arenamcp.opponent_read import mark_public_native_prints
+
+    mark_public_native_prints(response)
     return response
 
 

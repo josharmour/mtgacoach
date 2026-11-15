@@ -221,3 +221,77 @@ def test_confirmed_pair_and_seen_threat_precede_unseen_partners():
     block = read.plan_block(state)
     assert "Both Ball Lightning" in block and "each opponent 1 life" in block
     assert "Lunar Convocation is a possible partner" not in block
+
+
+def test_native_public_rules_follow_two_observed_prints_without_scripted_inference(monkeypatch):
+    from types import SimpleNamespace
+
+    from arenamcp.opponent_read import mark_public_native_prints
+
+    source = json.loads((Path(__file__).parent / "aoa/fixtures/public_20261114_193910.json").read_text())
+    ids = (93636, 91652)
+    cards = {
+        card["grp_id"]: {**card, "owner_seat_id": 2, "object_kind": "CARD"}
+        for card in source["zones"]["battlefield"]
+        if card.get("grp_id") in ids
+    }
+    prints = {
+        g: SimpleNamespace(**{**card, "is_token": False, "linked_face_ids": []}) for g, card in cards.items()
+    }
+    db = SimpleNamespace(
+        get_raw_mtgadb=lambda: SimpleNamespace(
+            cached_cards=lambda gids: {g: prints[g] for g in gids if g in prints}
+        )
+    )
+    monkeypatch.setattr("arenamcp.card_db.initialized_card_database", lambda: db)
+    reader = OpponentRead()
+
+    def view(seq, members, zone="battlefield"):
+        state = captured(327)
+        state["commentary_source_sequence"] = seq
+        state["zones"] = {zone: members}
+        mark_public_native_prints(state)
+        return state
+
+    first = view(1, [cards[ids[0]].copy()])
+    one = reader.plan_block(first)
+    assert cards[ids[0]]["name"] in one and cards[ids[1]]["name"] not in one
+    second = view(2, [cards[ids[1]].copy()])
+    (fact,) = cast_read(reader, second).values()
+    assert fact["kind"] == "opponent_revealed_rules"
+    assert [r["grp_id"] for r in fact["evidence"]] == list(reversed(ids))
+    assert all(r["observed_zone"] == "battlefield" for r in fact["evidence"])
+    assert reader.plan_block(first) == one
+    assert "What plan, if any" in reader.plan_block(second)
+    assert not OpponentRead().plan_block(view(3, [cards[ids[1]].copy()], "hand"))
+    for changes in (
+        {"oracle_text": "PRIVATE_CANARY"},
+        {"is_copy": True},
+        {"face_down": True},
+        {"identity_known": False},
+        {"owner_seat_id": 1},
+        {"grp_id": -1},
+        {"object_kind": "ABILITY"},
+        {"controller_seat_id": True},
+    ):
+        modified = {**cards[ids[0]], **changes, "public_native_print": "PRIVATE_CANARY"}
+        state = view(1, [modified])
+        assert not cast_read(OpponentRead(), state)
+        assert "PRIVATE_CANARY" not in OpponentRead().plan_block(state)
+    stale = first["zones"]["battlefield"][0].copy()
+    stale["grp_id"] = ids[1]
+    first["zones"]["battlefield"] = [stale]
+    assert not cast_read(OpponentRead(), first)
+
+
+def test_cold_or_busy_native_catalog_abstains():
+    from threading import Lock
+
+    from arenamcp.mtgadb import MTGADatabase
+
+    db = object.__new__(MTGADatabase)
+    db._conn_lock = Lock()
+    db._card_cache = {22: "already read"}
+    assert db.cached_cards({11, 22}) == {22: "already read"}
+    with db._conn_lock:
+        assert not db.cached_cards({22})

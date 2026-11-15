@@ -366,6 +366,15 @@ class MTGADatabase:
             return f"{types} — {subtypes}"
         return types or subtypes or ""
 
+    def cached_cards(self, grp_ids: set[int]) -> dict[int, MTGACard]:
+        """Read native prints already resolved by Arena's normal lookups without waiting for SQLite."""
+        if not self._conn_lock.acquire(blocking=False):
+            return {}
+        try:
+            return {gid: self._card_cache[gid] for gid in grp_ids if gid in self._card_cache}
+        finally:
+            self._conn_lock.release()
+
     def get_card(self, grp_id: int) -> MTGACard | None:
         """Look up a card by GrpId (arena_id).
 
