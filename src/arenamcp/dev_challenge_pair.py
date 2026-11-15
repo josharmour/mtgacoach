@@ -8,7 +8,7 @@ from enum import StrEnum
 from pathlib import Path
 
 from arenamcp.dev_challenge_identity import EnrolledPair, IdentityUnavailable, load_enrollment
-from arenamcp.mac_bridge_adapter import AdapterError, H, _Ops, enum_name, field, guid, handle, items
+from arenamcp.mac_bridge_adapter import AdapterError, H, _Ops, field, guid, handle, items
 
 
 class PairStatus(StrEnum):
@@ -152,6 +152,19 @@ def _valid_id(value):
         return False
 
 
+_CHALLENGE_STATES = ("None", "Setup", "Starting", "WaitingForMatch", "InGame", "Removed")
+_INVITE_STATES = ("None", "Sent", "Accepted", "Rejected", "Cancelled")
+
+
+def _native_state(node, names):
+    if not isinstance(node, dict):
+        return None
+    index = node.get("v")
+    if type(index) is int and 0 <= index < len(names) and node.get("e") == names[index]:
+        return names[index]
+    return None
+
+
 def _people(row):
     members = _entries(row, "ChallengePlayers")
     invites = _entries(row, "Invites")
@@ -182,7 +195,7 @@ def _people(row):
             recipient,
             identity(field(invite, "Sender")),
             identity(field(invite, "Recipient")),
-            enum_name(field(invite, "Status")),
+            _native_state(field(invite, "Status"), _INVITE_STATES),
         )
         for recipient, invite in invites
     ]
@@ -230,7 +243,10 @@ def classify(pair, name, local_id, friends, active, incoming, deck_found):
         or not _valid_id(field(row, "ChallengeId"))
     ):
         raise PairUnavailable(PairStatus.ACTIVE_ROLE)
-    if enum_name(field(row, "Status")) != "Setup":
+    # The unified challenge blade accepts an incoming native room in None;
+    # Setup is the owner’s open lobby. Both still need a strictly Sent invite.
+    states = {"Setup"} if active is not None else {"None", "Setup"}
+    if _native_state(field(row, "Status"), _CHALLENGE_STATES) not in states:
         raise PairUnavailable(PairStatus.STATUS)
     members, invitations = _people(row)
     local, peer = (local_id, pair.local), (peer_id, pair.peer)

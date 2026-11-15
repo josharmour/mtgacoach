@@ -445,3 +445,29 @@ def test_enrollment_cli_is_private_exclusive_and_leaves_older_profile_intact(
         identity.main(argv)
     stdout, stderr = capsys.readouterr()
     assert all(x not in stdout + stderr for x in (one, two, third, p.local, p.peer, str(keyfile), str(out)))
+
+
+@pytest.mark.parametrize(
+    ("state", "eligible"),
+    [("None", True), ("Setup", True), ("Starting", False), ("WaitingForMatch", False), ("Removed", False)],
+)
+def test_incoming_native_state_matches_the_supported_pending_ui(setup, state, eligible):
+    pair, friends, room = setup
+    room["Status"] = {"e": state, "v": gate._CHALLENGE_STATES.index(state)}
+    if eligible:
+        assert (
+            gate.classify(pair, pair.local, "a", friends, None, seq([room]), True) == gate.PairStatus.INVITED
+        )
+    else:
+        with pytest.raises(gate.PairUnavailable):
+            gate.classify(pair, pair.local, "a", friends, None, seq([room]), True)
+
+
+@pytest.mark.parametrize(
+    "value", [{"e": "Sent", "v": 3}, {"e": "Sent", "v": True}, "Sent", {"e": "Unknown", "v": 1}]
+)
+def test_conflicting_or_untyped_invitation_status_never_claims_readiness(setup, value):
+    pair, friends, room = setup
+    room["Invites"]["entries"]["$items"][0]["value"]["Status"] = value
+    with pytest.raises(gate.PairUnavailable):
+        gate.classify(pair, pair.local, "a", friends, None, seq([room]), True)
