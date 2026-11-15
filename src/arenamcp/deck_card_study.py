@@ -212,8 +212,8 @@ def prepare_card_pass(book, directory, digest):
     }
     for card in menu:
         gid = card["card"]
-        if gid in admitted:
-            continue
+        # Saved playbook roles have separate provenance. A complete local review
+        # also needs this role from the selected on-device weights.
         try:
             context = _context(book, gid)
             if not _checked(book, (int(i) for i in context["prints"])):

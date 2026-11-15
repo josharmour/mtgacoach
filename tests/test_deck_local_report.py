@@ -158,9 +158,44 @@ def test_assemble_exact_private_review_copy_only_when_all_local_sections_exist(
         dialog.detail.toPlainText()
     )
     assert not (cache / "local_deck_reviews").exists()
+    import os
+    import tempfile
+    from contextlib import contextmanager
+
+    original_temp = tempfile.NamedTemporaryFile
+    for fault in ("identity", "source"):
+        original_identity = selected.identity
+        original_rules = native[1002].oracle_text
+
+        @contextmanager
+        def altered_after_close(*args, fault=fault, **kwargs):
+            with original_temp(*args, **kwargs) as handle:
+                old_close = handle.close
+
+                def changed_close():
+                    old_close()
+                    if fault == "source":
+                        native[1002].oracle_text = "Changed while the temporary file was being closed."
+                    else:
+                        selected.identity = lambda: "changed identity"
+
+                handle.close = changed_close
+                yield handle
+
+        with monkeypatch.context() as patch:
+            patch.setattr(tempfile, "NamedTemporaryFile", altered_after_close)
+            denied = save()
+        assert not denied["review_ready"] and "changed before saving" in denied["detail"]
+        assert not any(p.is_file() for p in (cache / "local_deck_reviews").rglob("*"))
+        selected.identity, native[1002].oracle_text = original_identity, original_rules
     dialog.save_review.click()
     files = list((cache / "local_deck_reviews").rglob("*.json"))
-    assert len(files) == 1 and files[0].stat().st_mode & 0o077 == 0
+    assert len(files) == 1
+    if os.name == "posix":
+        assert all(
+            p.stat().st_mode & 0o077 == 0
+            for p in (files[0], files[0].parent, files[0].parent.parent, cache / "local_deck_reviews")
+        )
     packet = json.loads(files[0].read_bytes())
     assert packet["status"] == "local_review_candidate" and packet["model_digest"] == weight
     assert packet["deck_identity"] == book.identity and len(packet["jobs"]) == 10
@@ -198,3 +233,20 @@ def test_assemble_exact_private_review_copy_only_when_all_local_sections_exist(
     assert not save()["review_ready"] and len(list((cache / "local_deck_reviews").rglob("*.json"))) == 1
     assert not runner.called
     dialog.close()
+
+
+def test_already_admitted_role_remains_a_local_job_for_selected_weights(deck, tmp_path):
+    from tests.test_deck_study import card_rule, study
+
+    from arenamcp.deck_card_study import prepare_card_pass
+
+    _, book, _ = deck
+    book.data["study"] = study(card_rule(1001, book.catalog))
+    author = backend(book)
+    ready = prepare_card_pass(book, tmp_path, author.digest)
+    assert (ready["admitted"], ready["cached"], ready["pending"]) == (1, 0, [1001])
+    study_card(book, 1001, author, tmp_path, allowed=lambda: True)
+    ready = prepare_card_pass(book, tmp_path, author.digest)
+    assert (ready["admitted"], ready["cached"], ready["pending"]) == (1, 1, [])
+    alternate = prepare_card_pass(book, tmp_path, "a" * 64)
+    assert (alternate["admitted"], alternate["cached"], alternate["pending"]) == (1, 0, [1001])

@@ -96,19 +96,35 @@ def assemble(book, current, context, directory, digest, links, parts, chapters, 
     }
 
 
-def save_review_copy(packet, directory):
+def save_review_copy(packet, directory, *, current, current_selection):
     # The source identity, print catalogue and writer evidence are inside the
     # same private file. Old reviews remain distinguishable after prints change.
     data = json.dumps(packet, sort_keys=True, ensure_ascii=False, allow_nan=False, indent=2).encode()
     checksum = hashlib.sha256(data).hexdigest()
-    folder = Path(directory) / "local_deck_reviews" / packet["deck_identity"] / packet["model_digest"]
-    folder.mkdir(parents=True, exist_ok=True, mode=0o700)
+    root = Path(directory) / "local_deck_reviews"
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if root.is_symlink():
+        raise ValueError("Private review storage must use a local owner directory")
+    if os.name == "posix":
+        root.chmod(0o700)
+    folder = root
+    for component in (packet["deck_identity"], packet["model_digest"]):
+        folder = folder / component
+        folder.mkdir(exist_ok=True, mode=0o700)
+        if folder.is_symlink():
+            raise ValueError("Private review storage must use a local owner directory")
+
     target = folder / (checksum + ".json")
     with tempfile.NamedTemporaryFile(dir=folder, delete=False) as handle:
         temp = Path(handle.name)
         try:
             handle.write(data)
+            handle.flush()
             handle.close()
+            if not _checked(current, current.catalog):
+                raise ValueError("The native prints changed before saving the review copy")
+            if current_selection is None or not current_selection():
+                raise ValueError("The selected deck changed before saving the review copy")
             os.replace(temp, target)
         finally:
             temp.unlink(missing_ok=True)

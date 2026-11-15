@@ -89,9 +89,9 @@ def study_report(book, state, directory, digest, *, save_review=False, current_s
                     f"Explicit thinking requested in {thinking} of {len(jobs)} retained passes. Independent strategic review is pending.",
                 ]
                 if save_review:
-                    if current_selection is not None and not current_selection():
-                        raise ValueError("The selected deck changed before the review copy could be saved")
-                    target = save_review_copy(packet, directory)
+                    target = save_review_copy(
+                        packet, directory, current=current, current_selection=current_selection
+                    )
                     lines.append(f"Saved a private review copy on this device at {target}.")
             except (ValueError, TypeError, KeyError, OSError) as error:
                 ready = False
