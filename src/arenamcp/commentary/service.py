@@ -319,10 +319,11 @@ class CommentaryService:
             single_reply=single_reply,
             schema=json.dumps(response_format, separators=(",", ":")),
         )
+        actual_output = None
         try:
             backend = self.backend()
             # An older/custom backend must not silently ignore admission/cancellation.
-            from arenamcp.backends.proxy import ProxyBackend
+            from arenamcp.backends.proxy import CompletionUsage, ProxyBackend
 
             if not isinstance(backend, ProxyBackend):
                 raise BudgetExceeded("backend_has_no_commentary_admission")
@@ -330,6 +331,7 @@ class CommentaryService:
                 # The single audit shares the author's wire limit. Preserve a
                 # content-free stage marker for latency and truncation checks.
                 logger.info("Commentary single analyst audit requested max_tokens=%d", output)
+            usage = CompletionUsage()
             response = backend.complete(
                 system,
                 user,
@@ -340,6 +342,7 @@ class CommentaryService:
                 raise_on_error=True,
                 response_format=response_format,
                 background=True,
+                completion_usage=usage,
                 call_class="background.commentary",
                 priority=30,
                 cancel_event=self.cancelled,
@@ -350,9 +353,11 @@ class CommentaryService:
                 raise BudgetExceeded("cancelled_or_late")
             if not isinstance(response, str) or not response.strip():
                 raise BudgetExceeded("incomplete_final_response")
-            return parse_completed_json(response)
+            result = parse_completed_json(response)
+            actual_output = usage.output_tokens
+            return result
         finally:
-            self.budget.after_call(exchange)
+            self.budget.after_call(exchange, actual_output=actual_output)
 
     def _grounded(self, observation, config, reason):
         """Narrate observed public facts when optional analysis cannot run."""
@@ -371,6 +376,24 @@ class CommentaryService:
             for e in observation.events
             if e.event_id not in self.fallback_events and self._opening_available(e, observation.epoch, now)
         )
+        # In an analysis-focused duo, repeated routine fallback calls can occupy
+        # the only speech slot while the analyst waits to author or audit a reply.
+        # Pace those leads at the listener's selected rate. Retain the evidence
+        # for model work and let combat, outcomes and urgent life swings through.
+        if (
+            config.generative
+            and config.speakers == 2
+            and config.focus == "analysis"
+            and self.last_grounded[0] == observation.epoch
+            and now - self.last_grounded[1] < 60 / config.exchanges_per_minute
+        ):
+            from .delivery import event_excitement
+
+            available = tuple(
+                e
+                for e in available
+                if not (e.kind in {"action_observed", "life_change"} and event_excitement(e) == "normal")
+            )
         # A stale low-value candidate must not poison every other event in the burst.
         lines = []
         while available:
@@ -650,7 +673,8 @@ class CommentaryService:
                         observation_age=round(time.monotonic() - observation.arrived_at, 3),
                         calls=exchange.calls,
                         input_tokens_bound=exchange.input_tokens,
-                        output_tokens_limit=exchange.output_tokens,
+                        output_tokens_limit=exchange.reserved_output_tokens,
+                        output_tokens_charged=exchange.output_tokens,
                         request_seconds=round(exchange.request_seconds, 3),
                     )
                 except BudgetExceeded as error:

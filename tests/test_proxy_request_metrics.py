@@ -295,3 +295,47 @@ def test_commentary_rejects_ambiguous_inline_reasoning(monkeypatch):
     be, calls, _ = backend(monkeypatch, clock, [stream])
     assert be.complete("audit", "facts", 256, background=True, call_class="background.commentary") == ""
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize(
+    "chunks,expected",
+    [
+        ([chunk("ok", finish="stop"), chunk(usage=NS(completion_tokens=91))], 91),
+        ([chunk("ok", finish="stop", usage=NS(completion_tokens=82))], 82),
+        (
+            [
+                chunk("first", usage=NS(completion_tokens=200)),
+                chunk("end", finish="stop", usage=NS(completion_tokens=1)),
+            ],
+            None,
+        ),
+        (
+            [
+                chunk("first", usage=NS(completion_tokens=10)),
+                chunk("end", finish="stop", usage=NS(completion_tokens=13)),
+            ],
+            13,
+        ),
+        ([chunk("part", usage=NS(completion_tokens=1)), chunk(" end", finish="stop")], None),
+        ([chunk("ok", finish="length", usage=NS(completion_tokens=52))], None),
+        ([chunk("ok", finish="stop", usage=NS(completion_tokens=True))], None),
+        ([chunk("ok", finish="stop", usage=NS(completion_tokens=0))], None),
+        ([chunk("ok", finish="stop", usage=NS(completion_tokens=513))], None),
+        (
+            [
+                chunk(
+                    "ok",
+                    finish="stop",
+                    usage=NS(completion_tokens=9, completion_tokens_details=NS(reasoning_tokens=20)),
+                )
+            ],
+            None,
+        ),
+    ],
+)
+def test_request_local_usage_requires_an_unambiguous_terminal_total(monkeypatch, chunks, expected):
+    clock = FakeClock()
+    be, _, _ = backend(monkeypatch, clock, [FakeStream(clock, [(0.01, c) for c in chunks])])
+    receipt = proxy.CompletionUsage(output_tokens=7)
+    be.complete("s", "u", 512, completion_usage=receipt)
+    assert receipt.output_tokens == expected

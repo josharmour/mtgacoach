@@ -640,3 +640,70 @@ def test_broker_binds_audit_allowance_to_original_heard_reply(
     assert receipts == (
         ["Commentary single analyst audit requested max_tokens=512"] if expected_limit == 512 else []
     )
+
+
+def test_reported_completion_usage_leaves_room_for_an_audited_analyst_reply():
+    from arenamcp.backends.proxy import ProxyBackend
+
+    class MeteredBackend(ProxyBackend):
+        def __init__(self):
+            pass
+
+        def complete(self, *args, **kwargs):
+            kwargs["completion_usage"].output_tokens = 90
+            return '{"turns":[]}'
+
+    backend = MeteredBackend()
+    service = CommentaryService(settings=lambda: {}, backend=lambda: backend, emit=lambda _: None)
+    for _ in range(2):
+        exchange = service.budget.begin()
+        service._backend_request(exchange, "generation", {}, False)
+        service._backend_request(exchange, "audit", {"lines": []}, True)
+        service.budget.finish(exchange, usable=False)
+    assert sum(e.output_tokens for e in service.budget.history) == 360
+    exchange = service.budget.begin()
+    service._backend_request(exchange, "generation", {}, False)
+    assert exchange.calls == 1
+
+
+@pytest.mark.parametrize(
+    "focus,kind,seconds,expected",
+    [
+        ("analysis", "action_observed", 15, False),
+        ("analysis", "action_observed", 31, True),
+        ("calls", "action_observed", 15, True),
+        ("analysis", "combat", 15, True),
+        ("analysis", "life_change", 15, True),
+    ],
+)
+def test_analysis_duo_paces_routine_fallbacks_without_consuming_the_analyst_evidence(
+    focus, kind, seconds, expected
+):
+    import time
+
+    from tests.aoa.test_headless_booth import observation
+
+    obs = observation()
+    source = obs.events[0]
+    if kind != source.kind:
+        payload = {"count": 2} if kind == "combat" else {"to": 2, "delta": -5}
+        source = replace(source, kind=kind, payload=payload)
+        obs = replace(obs, events=(source,))
+    proposals = []
+    service = CommentaryService(settings=lambda: {}, backend=lambda: None, emit=proposals.append)
+    cfg = CommentaryConfig(mode="commentary", generative=True, focus=focus, exchanges_per_minute=2)
+    service.config = cfg
+    service.latest = {
+        "match_id": obs.epoch.match_id,
+        "game_number": obs.epoch.game_number,
+        "local_seat_id": 1,
+        "players": [{"seat_id": 1, "life_total": 2}, {"seat_id": 2, "life_total": 20}],
+    }
+    fresh = service.adapter.project(service.latest)
+    source = replace(source, snapshot_id=fresh.snapshot_id)
+    obs = replace(fresh, events=(source,))
+    service.pending_events[source.event_id] = source
+    service.last_grounded = (obs.epoch, time.monotonic() - seconds)
+    service._fallback(obs, cfg, "output_budget")
+    assert any(m["type"] == "commentary_proposal" for m in proposals) is expected
+    assert service.pending_events[source.event_id] == source

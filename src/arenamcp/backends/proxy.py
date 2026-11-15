@@ -937,6 +937,13 @@ def _close_quietly(stream) -> None:
 
 
 @dataclass
+class CompletionUsage:
+    """Reported output for one successful completion, including reasoning tokens."""
+
+    output_tokens: int | None = None
+
+
+@dataclass
 class _CallContext:
     """Per-call settings shared by complete(), its attempts and its metrics."""
 
@@ -963,6 +970,8 @@ class _CallContext:
     response_id: str | None = None
     content_chars: int = 0
     reasoning_chars: int = 0
+    transport_requests: int = 0
+    completion_usage: CompletionUsage | None = None
     # Background work at low priority can be preempted by vLLM and resume
     # later: no stall limit for it (its budget still applies).
     background: bool = False
@@ -1306,6 +1315,7 @@ class ProxyBackend:
         cancel_event: threading.Event | None = None,
         lane_wait_s: float | None = None,
         selective_thinking: bool = False,
+        completion_usage: CompletionUsage | None = None,
     ) -> str:
         """Get completion from the API endpoint.
 
@@ -1369,6 +1379,8 @@ class ProxyBackend:
         recorded as a backend failure. Use is_backend_unavailable() and
         is_call_cancelled() to recognise them.
         """
+        if completion_usage is not None:
+            completion_usage.output_tokens = None
         thinking_enabled = self.enable_thinking if enable_thinking is None else enable_thinking
         request_started = time.perf_counter()
         # Full deck analysis is off the tactical path and can need longer than
@@ -1385,6 +1397,7 @@ class ProxyBackend:
             max_tokens=max_tokens,
             budget_s=budget,
             handle=_CallHandle(resolved_class, cancel_event),
+            completion_usage=completion_usage,
             first_token_timeout_s=_positive_or_none(first_token_timeout_s),
             background=is_background,
         )
@@ -2020,6 +2033,8 @@ class ProxyBackend:
             remaining = deadline - now
             if remaining <= 0:
                 raise TimeoutError("LLM request time budget exhausted")
+            if call is not None:
+                call.transport_requests += 1
             timeout = remaining
             if ftt is not None and options.get("stream"):
                 first_token_left = ftt - (now - attempt_started)
@@ -2058,6 +2073,8 @@ class ProxyBackend:
             reasoning_chunks: list[str] = []
             served_model = None
             usage = None
+            last_chunk_usage = None
+            largest_output_report = 0
             finish_reason = None
             first_token_at = None
             first_content_at = None
@@ -2076,8 +2093,12 @@ class ProxyBackend:
                     response_id = getattr(chunk, "id", None)
                     if isinstance(response_id, str):
                         call.response_id = response_id
-                if getattr(chunk, "usage", None) is not None:
-                    usage = chunk.usage
+                last_chunk_usage = getattr(chunk, "usage", None)
+                if last_chunk_usage is not None:
+                    usage = last_chunk_usage
+                    reported = _token_count(_field(usage, "completion_tokens"))
+                    if reported is not None:
+                        largest_output_report = max(largest_output_report, reported)
                 if not chunk.choices:
                     continue
                 choice = chunk.choices[0]
@@ -2149,6 +2170,24 @@ class ProxyBackend:
                     logger.warning(
                         "[PROXY] Empty streamed content with no clean final answer — using caller fallback"
                     )
+            # Only a terminal usage report for this one transport can release
+            # its reservation. An earlier chunk may report a partial total.
+            if (
+                call is not None
+                and call.completion_usage is not None
+                and call.transport_requests == 1
+                and content
+                and finish_reason == "stop"
+            ):
+                total = _token_count(_field(last_chunk_usage, "completion_tokens"))
+                reasoning = _field(_field(last_chunk_usage, "completion_tokens_details"), "reasoning_tokens")
+                if (
+                    total is not None
+                    and 0 < total == largest_output_report
+                    and total <= (call.max_tokens or 0)
+                    and (reasoning is None or (type(reasoning) is int and 0 <= reasoning <= total))
+                ):
+                    call.completion_usage.output_tokens = total
             self._record_request_metrics(
                 params,
                 request_started=request_started,

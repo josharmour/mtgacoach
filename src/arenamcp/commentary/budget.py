@@ -58,7 +58,9 @@ class Exchange:
     calls: int = 0
     input_tokens: int = 0
     output_tokens: int = 0
+    reserved_output_tokens: int = 0
     request_seconds: float = 0.0
+    call_output_limit: int = 0
     call_started: float | None = None
     last_call_finished: float | None = None
     closed: bool = False
@@ -125,12 +127,17 @@ class CommentaryBudget:
         exchange.single_reply_audit = single_reply_audit
         exchange.calls += 1
         exchange.input_tokens += tokens
+        exchange.reserved_output_tokens += output
+        exchange.call_output_limit = output
         exchange.output_tokens += output  # reserve even when provider usage is missing
         exchange.call_started = now
         return output, max(0.1, exchange.deadline - now)
 
-    def after_call(self, exchange):
+    def after_call(self, exchange, *, actual_output=None):
         if exchange.call_started is not None:
+            if type(actual_output) is int and 0 < actual_output <= exchange.call_output_limit:
+                exchange.output_tokens -= exchange.call_output_limit - actual_output
+            exchange.call_output_limit = 0
             exchange.last_call_finished = self.clock()
             exchange.request_seconds += max(0, exchange.last_call_finished - exchange.call_started)
             exchange.call_started = None

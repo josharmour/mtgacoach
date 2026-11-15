@@ -86,6 +86,7 @@ def prepare_lead(kind, *, private=False):
         ("life_change", "heard"),
         ("outcome", "heard"),
         ("outcome", "owner"),
+        ("outcome", "reported_usage"),
         ("outcome", "interrupted"),
         ("outcome", "forged"),
         ("outcome", "uncited"),
@@ -156,6 +157,15 @@ def test_grounded_handoff_in_normal_worker(kind, mode, request):
 
     backend = OfflineBackend()
     service.backend = lambda: backend
+    if mode == "reported_usage":
+        # Two previously rejected exchanges used 90 output tokens per call.
+        # Charging their four maxima exhausted the entire rolling 3072-token cap.
+        for _ in range(2):
+            prior = service.budget.begin()
+            for audit in (False, True):
+                service.budget.before_call(prior, "earlier", "facts", audit=audit)
+                service.budget.after_call(prior, actual_output=90)
+            service.budget.finish(prior, usable=False)
     exchange = service.budget.begin()
 
     def rpc(system, ctx, audit):
@@ -179,7 +189,7 @@ def test_grounded_handoff_in_normal_worker(kind, mode, request):
         assert ctx["partner_call_heard"] and ctx["partner_call"]["text"] == lead["text"]
         assert ctx["allowed_roles"] == ["color_analyst"] and ctx["editorial_question"]["question"]
     lines = [Utterance.from_wire(row) for row in result["utterances"]]
-    if mode in {"heard", "owner"}:
+    if mode in {"heard", "owner", "reported_usage"}:
         assert [audit for _, audit in calls] == [False, True]
         assert [line.role for line in lines] == ["color_analyst"]
         assert (
