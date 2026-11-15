@@ -73,6 +73,9 @@ class LocalStudyModel:
             or "completion" not in (meta.get("capabilities") or [])
         ):
             raise ValueError("The selected model has no verified local weights")
+        info = meta.get("model_info") or {}
+        self.context_length = info.get(f"{info.get('general.architecture')}.context_length")
+        self.template_bytes = len((meta.get("template") or "").encode())
         levels = meta.get("thinking") or {}
         supported = levels.get("values", []) if isinstance(levels, dict) else []
         self.thinks = "thinking" in (meta.get("capabilities") or [])
@@ -80,7 +83,17 @@ class LocalStudyModel:
             self.thinks = "low"
         self.last_metrics = {}
 
-    def complete(self, system, prompt, *, allowed, response_format=None, max_tokens=4096, max_seconds=120):
+    def complete(
+        self,
+        system,
+        prompt,
+        *,
+        allowed,
+        response_format=None,
+        max_tokens=4096,
+        max_seconds=120,
+        verify_full_input=False,
+    ):
         if not allowed() or self.digest != installed_models().get(self.name):
             raise ValueError("The deck, match or selected model changed")
         body = {
@@ -90,6 +103,14 @@ class LocalStudyModel:
             "stream": True,
             "options": {"num_predict": max_tokens, "temperature": 0.2},
         }
+        if verify_full_input:
+            # Reserve even one token per input byte, plus template framing and
+            # the entire output allowance. The full-deck writer also verifies
+            # independent in-prompt receipts across the transmitted list.
+            required = len(system.encode()) + len(prompt.encode()) + self.template_bytes + max_tokens + 1024
+            if type(self.context_length) is not int or required > self.context_length:
+                raise ValueError("The installed model cannot verify room for the complete deck study")
+            body["options"]["num_ctx"] = required
         if self.thinks:
             body["think"] = self.thinks
         conn = http.client.HTTPConnection(_HOST, _PORT, timeout=5)
@@ -173,6 +194,13 @@ class LocalStudyModel:
                         raise ValueError("The local card study reached its output token limit")
                     if reason != "stop":
                         raise ValueError("The local model did not confirm complete output")
+                    if verify_full_input:
+                        evaluated = chunk.get("prompt_eval_count")
+                        if (
+                            type(evaluated) is not int
+                            or not 0 < evaluated <= body["options"]["num_ctx"] - max_tokens
+                        ):
+                            raise ValueError("No verifiable complete-deck prompt count from the local model")
                     if self.digest != installed_models().get(self.name):
                         raise ValueError("The selected local model weights changed during the study")
                     if not allowed() or time.monotonic() >= until:

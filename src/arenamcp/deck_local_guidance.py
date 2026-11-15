@@ -3,6 +3,7 @@
 import hashlib
 import json
 import re
+import secrets
 import time
 from collections import Counter
 from dataclasses import replace
@@ -23,7 +24,6 @@ from arenamcp.deck_strategy import deck_identity, oracle_rules
 from arenamcp.deck_study import _conditions, _evidence, _object, _text, study_source
 from arenamcp.loyalty_timing import (
     LOYALTY_TIMING,
-    additional_activation,
     conflicting_loyalty_sequence,
     walkers_in,
 )
@@ -49,7 +49,8 @@ opening-hand advice must respect main-deck copy counts. The commander is designa
 and characteristics are the only evidence for what a card can do.
 For each topic return advice, conditions (pieces with numeric card IDs and zones, mana with generic and optional
 WUBRGC quantities, positive first_turn), and evidence (numeric card and numbered printed rule). Cite all and only
-the necessary pieces. All conditions are hypothetical. Do not invent permissions, extra loyalty uses or exact odds."""
+the necessary pieces. Echo read_receipt as the beginning receipt, each print's receipt in the provided order,
+then the ending receipt. Return topic entries in topics. All conditions are hypothetical. Do not invent permissions, extra loyalty uses or exact odds."""
 
 
 def _guidance_input(book, state, scope):
@@ -96,11 +97,7 @@ def _guidance_input(book, state, scope):
     }
     return book, {
         "topics": list(TOPICS[scope]),
-        **(
-            {"loyalty_timing": LOYALTY_TIMING}
-            if walkers_in(book.catalog.values()) and not additional_activation(book.catalog.values())
-            else {}
-        ),
+        **({"loyalty_timing": LOYALTY_TIMING} if walkers_in(book.catalog.values()) else {}),
         "commanders": sorted(commanders),
         "prints": prints,
     }
@@ -109,13 +106,14 @@ def _guidance_input(book, state, scope):
 def _validate(rows, book, scope):
     _object(rows, TOPICS[scope])
     walkers = walkers_in(book.catalog.values())
-    multiple = additional_activation(book.catalog.values())
     for row in rows.values():
         _object(row, {"advice", "conditions", "evidence"})
         _text(row["advice"])
         ids = _conditions(row["conditions"], book.catalog)
         _evidence(row["evidence"], ids, book.catalog)
-        if walkers and not multiple and conflicting_loyalty_sequence(row["advice"], walkers):
+        # The submitted list does not prove an extra-activation enabler is in
+        # play. Describe alternatives or distinct turns in these offline notes.
+        if walkers and conflicting_loyalty_sequence(row["advice"], walkers):
             raise ValueError("Deck guidance spends loyalty twice in one turn")
     return rows
 
@@ -165,10 +163,40 @@ def deck_guidance(book, state, scope, directory, *, model=None, allowed=None):
 
     advice, evidence = advice_fields(context["prints"])
     row_shape = schema_object({**advice["properties"], "evidence": evidence})
-    shape = schema_object({name: row_shape for name in TOPICS[scope]})
-    prompt = {**context, "prints": list(context["prints"].values())}
+    # Receipts are absent from the response grammar. A silently truncated
+    # prefix/suffix cannot satisfy this request by copying schema constants.
+    prints = list(context["prints"].values())
+    receipts = secrets.SystemRandom().sample(range(10_000_000, 100_000_000), len(prints) + 2)
+    shape = schema_object(
+        {
+            "read_receipt": {
+                "type": "array",
+                "minItems": len(receipts),
+                "maxItems": len(receipts),
+                "items": {"type": "integer"},
+            },
+            "topics": schema_object({name: row_shape for name in TOPICS[scope]}),
+        }
+    )
+    prompt = {
+        "beginning_receipt": receipts[0],
+        **context,
+        "prints": [{**row, "receipt": receipt} for row, receipt in zip(prints, receipts[1:-1], strict=True)],
+        "ending_receipt": receipts[-1],
+    }
     start = time.monotonic()
-    rows = model.complete(_SYSTEM, json.dumps(prompt, sort_keys=True), response_format=shape, allowed=allowed)
+    answer = model.complete(
+        _SYSTEM,
+        json.dumps(prompt, separators=(",", ":")),
+        response_format=shape,
+        allowed=allowed,
+        verify_full_input=True,
+    )
+    _object(answer, {"topics", "read_receipt"})
+    echoed = answer["read_receipt"]
+    if type(echoed) is not list or any(type(v) is not int for v in echoed) or echoed != receipts:
+        raise ValueError("The model did not acknowledge the complete deck input")
+    rows = answer["topics"]
     _object(rows, TOPICS[scope])
     rows = _validate(
         {topic: {**row, "evidence": printed_evidence(row, context["prints"])} for topic, row in rows.items()},

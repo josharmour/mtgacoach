@@ -42,8 +42,18 @@ def writer():
         rows = {topic: deepcopy(row) for topic in topics}
         from jsonschema import Draft202012Validator
 
-        assert Draft202012Validator(kwargs["response_format"]).is_valid(rows)
-        return rows
+        answer = {
+            "topics": rows,
+            "read_receipt": [
+                payload["beginning_receipt"],
+                *(p["receipt"] for p in payload["prints"]),
+                payload["ending_receipt"],
+            ],
+        }
+        assert kwargs["verify_full_input"] and Draft202012Validator(kwargs["response_format"]).is_valid(
+            answer
+        )
+        return answer
 
     model.complete.side_effect = complete
     return model
@@ -119,7 +129,8 @@ def test_guidance_rejects_incomplete_and_misbound_jobs(deck, tmp_path, fault):
     normal = model.complete.side_effect
 
     def complete(*args, **kwargs):
-        rows = normal(*args, **kwargs)
+        answer = normal(*args, **kwargs)
+        rows = answer["topics"]
         row = rows["mana"]
         if fault == "stale_name":
             row["outcome"] = "unrecognized"
@@ -133,7 +144,7 @@ def test_guidance_rejects_incomplete_and_misbound_jobs(deck, tmp_path, fault):
             row["evidence"][0]["rule"] = 999
         elif fault == "changed_print":
             native[1001].oracle_text = "different print"
-        return rows
+        return answer
 
     model.complete.side_effect = complete
     allowed = Mock(side_effect=[True, False]) if fault == "began_match" else lambda: True
@@ -163,3 +174,68 @@ def test_whole_deck_study_uses_only_current_native_rules_even_if_saved_strategy_
     with pytest.raises(ValueError, match="could not be verified"):
         deck_guidance(book, state, "sequencing", tmp_path, model=m, allowed=lambda: True)
     m.complete.assert_not_called()
+
+
+@pytest.mark.parametrize("fault", ["missing_receipt", "reversed_receipts", "bool_receipt", "loyalty"])
+def test_complete_input_and_scoped_loyalty_permissions_are_required(deck, tmp_path, fault):
+    state, book, native = deck
+    native[1001].type_line = "Planeswalker — Signal"
+    native[1001].oracle_text = "+1: Scry 1.\n−2: Draw a card."
+    native[
+        1002
+    ].oracle_text = "You may activate loyalty abilities of planeswalkers you control twice each turn."
+    m = writer()
+    normal = m.complete.side_effect
+
+    def corrupt(*args, **kwargs):
+        answer = normal(*args, **kwargs)
+        if fault == "loyalty":
+            answer["topics"]["fast_combo"]["advice"] = "Use +1 then −2 in the same turn."
+        elif fault == "missing_receipt":
+            answer["read_receipt"].pop()
+        elif fault == "reversed_receipts":
+            answer["read_receipt"].reverse()
+        else:
+            answer["read_receipt"][0] = True
+        return answer
+
+    m.complete.side_effect = corrupt
+    with pytest.raises(ValueError, match="loyalty twice" if fault == "loyalty" else "complete deck input"):
+        deck_guidance(book, state, "switches", tmp_path, model=m, allowed=lambda: True)
+    assert not list(tmp_path.rglob("*.json"))
+
+
+@pytest.mark.parametrize("fault", [None, "capacity", "count"])
+def test_full_deck_transport_reserves_input_and_output_and_requires_provider_receipt(monkeypatch, fault):
+    import io
+
+    import arenamcp.local_study_model as local
+
+    m = local.LocalStudyModel.__new__(local.LocalStudyModel)
+    m.name, m.digest, m.thinks = "test", "a" * 64, False
+    m.context_length = 64 if fault == "capacity" else 8192
+    m.template_bytes = 11
+    monkeypatch.setattr(local, "installed_models", lambda: {m.name: m.digest})
+    conn = Mock()
+    packet = {
+        "model": m.name,
+        "done": True,
+        "done_reason": "stop",
+        "prompt_eval_count": None if fault == "count" else 24,
+        "message": {"role": "assistant", "content": '{"ok":true}'},
+    }
+    stream = io.BytesIO(json.dumps(packet).encode())
+    stream.status = 200
+    conn.getresponse.return_value = stream
+    monkeypatch.setattr(local.http.client, "HTTPConnection", Mock(return_value=conn))
+    if fault:
+        with pytest.raises(ValueError, match="cannot verify room|prompt count"):
+            m.complete("rules", "deck", allowed=lambda: True, verify_full_input=True, max_tokens=128)
+        if fault == "capacity":
+            conn.request.assert_not_called()
+    else:
+        assert m.complete("rules", "deck", allowed=lambda: True, verify_full_input=True, max_tokens=128) == {
+            "ok": True
+        }
+        opts = json.loads(conn.request.call_args.args[2])["options"]
+        assert opts["num_ctx"] >= len(b"rulesdeck") + 128 + 11 and opts["num_predict"] == 128
