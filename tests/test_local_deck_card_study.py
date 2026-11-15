@@ -524,3 +524,28 @@ def test_pass_reports_unknown_card_types_and_unreported_provider_usage(qapp, sam
     )
     assert dialog.progress.isVisible() and not dialog.pass_button.isEnabled()
     dialog.close()
+
+
+def test_walker_authoring_receives_the_same_timing_constraint_as_admission(sample, monkeypatch, tmp_path):
+    from arenamcp.loyalty_timing import LOYALTY_TIMING
+
+    _, book, _ = sample
+    gid = 1001
+    card = book.catalog[gid]
+    card.update(
+        name="Fixture Signal Walker",
+        type_line="Legendary Planeswalker — Signal",
+        oracle_text="+1: Scry 1.\n−2: Draw a card.",
+    )
+    native_catalog(monkeypatch, book.catalog)
+    writer = backend(book)
+    writer.complete.return_value["play"]["advice"] = "Use +1 then −2 in the same turn."
+    with pytest.raises(ValueError, match="two loyalty abilities"):
+        study_card(book, gid, writer, tmp_path, allowed=lambda: True)
+    assert json.loads(writer.complete.call_args.args[1])["loyalty_timing"] == LOYALTY_TIMING
+    assert not list(tmp_path.rglob("*.json"))
+    writer.complete.return_value["play"]["advice"] = (
+        "Use +1, then on a later turn use −2 if the walker remains in play."
+    )
+    role, reused = study_card(book, gid, writer, tmp_path, allowed=lambda: True)
+    assert not reused and "later turn" in role["play"]["advice"]

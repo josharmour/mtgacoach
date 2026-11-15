@@ -17,6 +17,7 @@ from arenamcp.deck_study import (
     study_source,
     validate_card_rule,
 )
+from arenamcp.loyalty_timing import LOYALTY_TIMING, additional_activation, walkers_in
 
 _SYSTEM = """Write a descriptive strategic hypothesis for the focal card in this deck.
 All card properties and interactions must follow from the numbered printed rules supplied.
@@ -61,10 +62,15 @@ def _context(book, gid):
     links = sorted(edge for edge in edges if gid in edge[:2])
     for source, target, _role in links:
         ids.update((source, target))
+    neighborhood = [book.catalog[i] for i in ids]
+    timing = {}
+    if walkers_in(neighborhood) and not additional_activation(neighborhood):
+        timing["loyalty_timing"] = LOYALTY_TIMING
     # The same study can be reused only when every input shown to the writer
     # is identical, including commander designation, local plan and partners.
     return {
         "card": gid,
+        **timing,
         "reviewed_links": links,
         "commanders": list(book.commanders),
         "plan": book.data.get("primary_plan", ""),
@@ -232,7 +238,7 @@ def read_card(book, gid, directory, *, model_digest=None):
 
 
 def _validated_row(row, book, context):
-    from arenamcp.loyalty_timing import additional_activation, conflicting_loyalty_sequence, walkers_in
+    from arenamcp.loyalty_timing import conflicting_loyalty_sequence
 
     cards = {int(gid): book.catalog[int(gid)] for gid in context["prints"]}
     prose = []
