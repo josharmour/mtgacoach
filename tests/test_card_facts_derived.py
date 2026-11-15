@@ -90,3 +90,11 @@ def test_boolean_not_version():
     result = derive_threat(record, printed)
     result["version"] = True
     assert validate_derived_threat(result, record, printed)
+
+
+@pytest.mark.parametrize("field", ["name", "mana_cost", "type_line", "oracle_text"])
+@pytest.mark.parametrize("bad", [None, [], {}, True, 3])
+def test_malformed_printed_hash_fields_fail_closed(field, bad):
+    record, printed = fixture()
+    setattr(printed, field, bad)
+    assert not derive_threat(record, printed)["plan"]

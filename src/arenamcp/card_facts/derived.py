@@ -36,6 +36,11 @@ def derive_threat(record: CardFacts, printed: PrintedCard) -> dict:
     empty = {"version": 1, "plan": [], "clock": [], "answers": []}
     if type(record) is not CardFacts or type(printed) is not PrintedCard:
         return empty
+    if any(
+        type(getattr(printed, field)) is not str
+        for field in ("name", "mana_cost", "type_line", "oracle_text")
+    ):
+        return empty
     if record.confidence != "high" or validate(record, printed):
         return empty
     if record.rules_hash != rules_hash(
