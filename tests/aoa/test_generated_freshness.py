@@ -49,7 +49,7 @@ def test_real_worker_binds_only_audited_position_dependencies(scope):
             ]
         }
 
-    client = CommentaryClient()
+    client = CommentaryClient(audit_replay=True)
     try:
         result = client.generate(obs, config, rpc, threading.Event())
         assert len(result["utterances"]) == 1, result["status"]

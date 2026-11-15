@@ -301,9 +301,15 @@ class CommentaryService:
             if fresh.epoch != expected.epoch:
                 raise BudgetExceeded("facts_changed")
         user = json.dumps(context, ensure_ascii=False, separators=(",", ":"))
-        from .context import audit_format, generation_format, parse_completed_json
+        from .context import audit_format, generation_format, live_speech_format, parse_completed_json
 
-        if audit:
+        if exchange.author_only:
+            if audit:
+                raise BudgetExceeded("call_count_or_deadline")
+            roles = context.get("allowed_roles", ["play_by_play", "color_analyst"])
+            response_format = live_speech_format(roles)
+            single_reply = False
+        elif audit:
             response_format = audit_format(single_reply=exchange.single_reply_audit)
             lines = context.get("lines")
             single_reply = (
@@ -661,7 +667,7 @@ class CommentaryService:
                         self._fallback(observation, config, "analysis_retry_spacing")
                         continue
                     self.client.start(config)
-                    exchange = self.budget.begin(config.exchanges_per_minute)
+                    exchange = self.budget.begin(config.exchanges_per_minute, author_only=True)
                     result = self.client.generate(
                         observation,
                         config,
@@ -744,7 +750,7 @@ class CommentaryService:
 
                         speech_journal.record(
                             item.epoch,
-                            "audited",
+                            "authored",
                             uid=item.utterance_id,
                             attempt=exchange.attempt,
                             text=item.text,

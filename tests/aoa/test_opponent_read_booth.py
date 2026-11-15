@@ -84,7 +84,7 @@ def test_model_can_answer_the_public_opponent_read_through_native_worker(request
             assert ctx["partner_call"]["text"] == lead
         return {"turns": [{"role": "color_analyst", "text": line, "refs": [ctx["new_events"][0], keys[0]]}]}
 
-    client = CommentaryClient()
+    client = CommentaryClient(audit_replay=True)
     config = CommentaryConfig(
         mode="commentary",
         generative=True,

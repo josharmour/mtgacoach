@@ -61,7 +61,7 @@ def main():
                 raise BudgetExceeded(reason if reason in BROKER_REASONS else "admission_or_request_failed")
             return response["result"]
 
-    emit({"type": "ready", "capabilities": ["deterministic", "audited_booth", "delivery"]})
+    emit({"type": "ready", "capabilities": ["deterministic", "live_author", "audited_booth", "delivery"]})
     while True:
         try:
             request = receive()
@@ -93,6 +93,17 @@ def main():
                 if facade is None or configuration != config:
                     facade = HeadlessBooth(config, rpc, time.monotonic)
                     configuration = config
+                if request.get("audit_replay") is not True:
+                    lines, status = facade.generate(observation, live=True)
+                    emit(
+                        {
+                            "type": "result",
+                            "job_id": current_job,
+                            "utterances": [u.to_wire() for u in lines],
+                            "status": status,
+                        }
+                    )
+                    continue
                 native, status = facade.generate(observation)
                 from .audited_facts import binding
                 from .delivery import LEVELS, delivery_level, event_excitement

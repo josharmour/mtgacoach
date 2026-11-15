@@ -197,7 +197,7 @@ def test_audit_failure_and_invalid_claim_never_trigger_extra_model_calls(source)
 
 
 def test_real_worker_audited_protocol_and_cancellation(source):
-    client = CommentaryClient()
+    client = CommentaryClient(audit_replay=True)
     config = CommentaryConfig(mode="commentary", generative=True, python=sys.executable, aoa_source=source)
     calls = []
     try:
@@ -269,7 +269,7 @@ def test_worker_public_strategic_tail_survives_unrelated_private_draw(source):
         )
     ]
     obs = replace(obs, public_state=public)
-    client = CommentaryClient()
+    client = CommentaryClient(audit_replay=True)
     config = CommentaryConfig(mode="commentary", generative=True, python=sys.executable, aoa_source=source)
 
     def rpc(system, context, audit):

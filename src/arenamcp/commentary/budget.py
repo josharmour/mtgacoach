@@ -66,6 +66,7 @@ class Exchange:
     last_call_finished: float | None = None
     closed: bool = False
     usable: bool = True
+    author_only: bool = False
     single_reply_audit: bool = False
     attempt: str = field(default_factory=lambda: uuid.uuid4().hex)
 
@@ -76,7 +77,7 @@ class CommentaryBudget:
         self.history = deque()
         self.active = None
 
-    def begin(self, rate=2):
+    def begin(self, rate=2, *, author_only=False):
         now = self.clock()
         while self.history:
             oldest = self.history[0]
@@ -95,7 +96,7 @@ class CommentaryBudget:
         # Reserve the full deadline so concurrent/unfinished calls cannot oversubscribe occupancy.
         if sum(item.request_seconds for item in self.history) + 6 > 12:
             raise BudgetExceeded("request_time_budget")
-        exchange = Exchange(now, now + 6)
+        exchange = Exchange(now, now + 6, author_only=author_only)
         self.history.append(exchange)
         self.active = exchange
         return exchange
@@ -104,7 +105,7 @@ class CommentaryBudget:
         now = self.clock()
         if exchange is not self.active or exchange.closed or exchange.call_started is not None:
             raise BudgetExceeded("obsolete_exchange")
-        if exchange.calls != int(audit) or now >= exchange.deadline - 0.1:
+        if (audit and exchange.author_only) or exchange.calls != int(audit) or now >= exchange.deadline - 0.1:
             raise BudgetExceeded("call_count_or_deadline")
         # UTF-8 bytes plus message framing are a conservative token upper bound;
         # no gateway-specific tokenizer guess can undercount a dense Unicode prompt.
@@ -117,9 +118,8 @@ class CommentaryBudget:
         generation_limit = 512
         audit_limit = 512 if single_reply_audit else 1024
         output = audit_limit if audit else generation_limit
-        # An accepted generation must still pass its audit before it can air.
-        # Check room for both, but charge only the calls actually attempted.
-        required = audit_limit if audit else generation_limit + audit_limit
+        # Live speech reserves one author call. Audited replays reserve both stages.
+        required = output if audit or exchange.author_only else generation_limit + audit_limit
         if tokens > 6000:
             raise BudgetExceeded("context_budget")
         if sum(item.input_tokens for item in self.history) + tokens > 48000:

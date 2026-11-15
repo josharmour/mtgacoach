@@ -20,7 +20,8 @@ class WorkerUnavailable(RuntimeError):
 
 
 class CommentaryClient:
-    def __init__(self):
+    def __init__(self, *, audit_replay=False):
+        self.audit_replay = audit_replay
         self.process = None
         self.responses = queue.Queue(maxsize=32)
         self._write_lock = threading.Lock()
@@ -110,6 +111,7 @@ class CommentaryClient:
         self.send(
             {
                 "type": "observe",
+                "audit_replay": self.audit_replay,
                 "job_id": job,
                 "observation": observation.to_wire(),
                 "config": config.to_wire(),

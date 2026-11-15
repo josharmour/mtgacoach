@@ -48,6 +48,19 @@ def generation_format(reply=False):
     }
 
 
+def live_speech_format(roles):
+    """The live author's entire deliverable is who speaks and what they say."""
+    shape = generation_format()
+    turns = shape["json_schema"]["schema"]["properties"]["turns"]
+    turns["maxItems"] = len(roles)
+    line = turns["items"]
+    del line["properties"]["refs"]
+    line["required"] = ["role", "text"]
+    line["properties"]["role"]["enum"] = list(roles)
+    line["properties"]["text"] = {"type": "string", "minLength": 1, "maxLength": 600}
+    return shape
+
+
 def request_size(system, context):
     return (
         len(system.encode())

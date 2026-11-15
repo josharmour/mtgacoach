@@ -290,7 +290,7 @@ def test_actual_worker_keeps_outcome_evidence_audit_duo_and_recap_window():
     config = CommentaryConfig(
         mode="commentary", generative=True, python=sys.executable, aoa_source=str(source)
     )
-    client = CommentaryClient()
+    client = CommentaryClient(audit_replay=True)
     try:
         result = client.generate(obs, config, rpc, threading.Event())
         assert calls == [False, True], result["status"]
@@ -298,7 +298,8 @@ def test_actual_worker_keeps_outcome_evidence_audit_duo_and_recap_window():
         first, second = [Utterance.from_wire(u) for u in result["utterances"]]
         assert first.role == "play_by_play" and second.role == "color_analyst"
         assert second.anchor_id == first.utterance_id and first.voice != second.voice
-        assert all(l.event_bound and 10 < l.expires_at - time.monotonic() <= 20 for l in (first, second))
+        # Playback gets its full outcome window once the completed line is available.
+        assert all(l.event_bound and 55 < l.expires_at - time.monotonic() <= 60 for l in (first, second))
         assert all(valid_for(l, replace(obs, snapshot_id="next-phase")) for l in (first, second))
     finally:
         client.close()

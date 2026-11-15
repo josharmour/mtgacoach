@@ -119,7 +119,7 @@ def test_heard_public_cast_hands_off_to_writer_while_spell_is_still_on_stack(mod
             ]
         }
 
-    client = CommentaryClient()
+    client = CommentaryClient(audit_replay=True)
     try:
         config = replace(config, python=sys.executable, aoa_source=request.getfixturevalue("source"))
         result = client.generate(obs, config, rpc, threading.Event())

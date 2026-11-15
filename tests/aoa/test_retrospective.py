@@ -132,7 +132,7 @@ def test_real_worker_scopes_recent_recaps_and_fresh_analysis(scope):
             ]
         }
 
-    client = CommentaryClient()
+    client = CommentaryClient(audit_replay=True)
     try:
         result = client.generate(obs, config, rpc, threading.Event())
         assert len(result["utterances"]) == 2, result["status"]

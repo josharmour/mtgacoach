@@ -94,7 +94,7 @@ def prepare_lead(kind, *, private=False):
         ("outcome", "incomplete_audit"),
     ],
 )
-def test_grounded_handoff_in_normal_worker(kind, mode, request):
+def test_grounded_handoff_in_audited_replay(kind, mode, request):
     service, config, obs, event, lead = prepare_lead(kind, private=mode == "owner")
     uid = lead["utterance_id"]
     service.delivery(uid, "started")
@@ -171,7 +171,7 @@ def test_grounded_handoff_in_normal_worker(kind, mode, request):
     def rpc(system, ctx, audit):
         return service._backend_request(exchange, system, ctx, audit, obs)
 
-    client = CommentaryClient()
+    client = CommentaryClient(audit_replay=True)
     try:
         result = client.generate(
             obs,
