@@ -35,6 +35,7 @@ class DeckCardStudyDialog(QDialog):
         self.view.setAccessibleName("Deck study topic")
         for label, key in (
             ("Individual cards", "cards"),
+            ("Synergies and combos", "interactions"),
             ("Sequencing and recovery", "sequencing"),
             ("Opponent threat classes", "switches"),
         ):
@@ -65,6 +66,10 @@ class DeckCardStudyDialog(QDialog):
         )
         self.pass_button.clicked.connect(self.toggle_pass)
         layout.addWidget(self.pass_button)
+        self.cancel_button = QPushButton("Stop interaction study")
+        self.cancel_button.clicked.connect(self.cancel_interactions)
+        self.cancel_button.hide()
+        layout.addWidget(self.cancel_button)
         self.progress = QLabel()
         self.progress.setWordWrap(True)
         self.progress.hide()
@@ -98,6 +103,12 @@ class DeckCardStudyDialog(QDialog):
         self.pass_button.setVisible(cards)
         self.progress.hide()
         self.build.setText("Study this card" if cards else "Study these topics")
+        if self.view.currentData() == "interactions":
+            self.build.setToolTip(
+                "Study each reviewed group, then search the whole deck for other interactions. Completed passes are saved on this device."
+            )
+        else:
+            self.build.setToolTip("Prepare local guidance between matches.")
         self.read()
 
     def read(self):
@@ -105,7 +116,25 @@ class DeckCardStudyDialog(QDialog):
             self.detail.setPlainText("Reading saved card study…")
             self.request("read")
 
+    def cancel_interactions(self):
+        if self.operation != "build" or self.view.currentData() != "interactions":
+            return
+        self.cancel_button.setEnabled(False)
+        self.session.request_deck_card_study(
+            {
+                "operation": "cancel",
+                "scope": "interactions",
+                "token": self.token,
+                "deck_id": self.deck_id,
+                "identity": self.identity,
+                "card": self.cards.currentData(),
+            }
+        )
+
     def generate(self):
+        if self.view.currentData() == "interactions":
+            self.cancel_button.setEnabled(True)
+            self.cancel_button.show()
         self.build.setEnabled(False)
         self.pass_button.setEnabled(self.running_pass)
         self.view.setEnabled(False)
@@ -138,6 +167,7 @@ class DeckCardStudyDialog(QDialog):
         self.controls()
 
     def closeEvent(self, event):
+        self.cancel_interactions()
         self.stop_pass()
         self.token = ""
         super().closeEvent(event)
@@ -179,6 +209,7 @@ class DeckCardStudyDialog(QDialog):
         ):
             return
         operation, self.operation = self.operation, ""
+        self.cancel_button.hide()
         if self.running_pass and "error" in result:
             self.stop_pass()
             self.progress.setText("Pass stopped. Completed card studies are saved on this device.")

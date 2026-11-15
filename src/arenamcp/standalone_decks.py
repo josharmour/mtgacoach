@@ -329,7 +329,7 @@ class _DeckLibraryMixin:
             completed.get("match_complete") is True and completed.get("match_id") == match_id
         )
 
-    def deck_card_study(self, request):
+    def deck_card_study(self, request, *, cancelled=None):
         """Answer a local Decks window request; no study runs from gameplay or auto-preparation."""
         from arenamcp import logging_config
         from arenamcp.deck_card_study import (
@@ -391,7 +391,12 @@ class _DeckLibraryMixin:
 
                 def allowed():
                     current = (getattr(self, "_deck_library", {}) or {}).get(deck_id)
-                    return bool(current and current.identity() == identity and self._study_outside_match())
+                    return bool(
+                        current
+                        and current.identity() == identity
+                        and self._study_outside_match()
+                        and not (cancelled is not None and cancelled())
+                    )
 
                 if not allowed():
                     raise ValueError("Card studies can run after the match has finished")
@@ -415,6 +420,8 @@ class _DeckLibraryMixin:
             finally:
                 lock.release()
         except (OSError, ValueError, TypeError, KeyError) as error:
+            if cancelled is not None and cancelled():
+                return {**reply, "error": "Interaction study stopped. Completed passes were saved."}
             return {**reply, "error": str(error)}
 
     def analyze_deck_async(self, deck_id: str, *, refresh: bool = False) -> None:

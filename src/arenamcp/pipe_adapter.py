@@ -87,6 +87,7 @@ class PipeAdapter:
         self._stdout_thread: threading.Thread | None = None
         self._running = False
         self._lock = threading.Lock()
+        self._interaction_jobs: dict[tuple[str, str, str], threading.Event] = {}
         # Non-blocking write queue — prevents coaching loop from freezing
         # when the parent process is slow to read stdout
         import queue
@@ -721,7 +722,7 @@ class PipeAdapter:
                     daemon=True,
                 ).start()
             elif action == "deck_card_study":
-                threading.Thread(target=self._handle_deck_card_study, args=(cmd,), daemon=True).start()
+                self._start_deck_card_study(cmd)
             elif action == "analyze_deck":
                 self._handle_analyze_deck(cmd)
             elif action == "analyze_all_decks":
@@ -1168,12 +1169,35 @@ class PipeAdapter:
             logger.warning("Deck bridge command %s failed: %s", method, error)
             self.emit_deck_op({"ok": False, "error": str(error)})
 
-    def _handle_deck_card_study(self, cmd: dict[str, Any]) -> None:
+    def _start_deck_card_study(self, cmd: dict[str, Any]) -> None:
+        stop = None
+        if cmd.get("scope") == "interactions" and cmd.get("operation") in ("build", "cancel"):
+            key = (cmd.get("deck_id"), cmd.get("identity"), cmd.get("token"))
+            if any(not isinstance(v, str) or not v for v in key):
+                return
+            with self._lock:
+                if cmd["operation"] == "cancel":
+                    if job := self._interaction_jobs.get(key):
+                        job.set()
+                    return
+                if key in self._interaction_jobs:
+                    return
+                stop = self._interaction_jobs[key] = threading.Event()
+        threading.Thread(target=self._handle_deck_card_study, args=(cmd, stop), daemon=True).start()
+
+    def _handle_deck_card_study(self, cmd: dict[str, Any], stop: threading.Event | None = None) -> None:
         try:
-            result = self._coach.deck_card_study(cmd)
+            if stop is None:
+                result = self._coach.deck_card_study(cmd)
+            else:
+                result = self._coach.deck_card_study(cmd, cancelled=stop.is_set)
         except Exception:
             result = {k: cmd.get(k) for k in ("token", "deck_id", "identity", "card")}
             result["error"] = "The local card study is unavailable."
+        finally:
+            if stop is not None:
+                with self._lock:
+                    self._interaction_jobs.pop((cmd["deck_id"], cmd["identity"], cmd["token"]), None)
         self._emit({"type": "deck_card_study", **result})
 
     def _handle_list_decks(self) -> None:

@@ -35,6 +35,7 @@ TOPICS = {
         "mana": "Land and colour plan",
         "recovery": "Recovering after disruption",
     },
+    "interactions": {"clusters": "Reviewed links", "discovery": "Other interactions"},
     "switches": {
         "fast_combo": "Against fast combo",
         "wide_board": "Against a wide board",
@@ -136,6 +137,10 @@ def _detail(rows, book, scope, digest):
 
 def deck_guidance(book, state, scope, directory, *, model=None, allowed=None):
     book, context = _guidance_input(book, state, scope)
+    if scope == "interactions":
+        from arenamcp.deck_local_interactions import study_interactions
+
+        return study_interactions(book, context, directory, model=model, allowed=allowed)
     job = json.dumps([1, _SYSTEM, scope, context], sort_keys=True, allow_nan=False)
     folder = Path(directory) / hashlib.sha256(job.encode()).hexdigest()
     if model is None:
@@ -163,6 +168,24 @@ def deck_guidance(book, state, scope, directory, *, model=None, allowed=None):
 
     advice, evidence = advice_fields(context["prints"])
     row_shape = schema_object({**advice["properties"], "evidence": evidence})
+    start = time.monotonic()
+    rows = acknowledged_answer(
+        model, _SYSTEM, context, "topics", schema_object({name: row_shape for name in TOPICS[scope]}), allowed
+    )
+    _object(rows, TOPICS[scope])
+    rows = _validate(
+        {topic: {**row, "evidence": printed_evidence(row, context["prints"])} for topic, row in rows.items()},
+        book,
+        scope,
+    )
+    if not allowed() or not _checked(book, book.catalog):
+        raise ValueError("The deck or current prints changed during the study")
+    path = files[0]
+    write_local_result(path, rows, model, time.monotonic() - start)
+    return _detail(rows, book, scope, path.stem), False
+
+
+def acknowledged_answer(model, system, context, key, result_schema, allowed):
     # Receipts are absent from the response grammar. A silently truncated
     # prefix/suffix cannot satisfy this request by copying schema constants.
     prints = list(context["prints"].values())
@@ -175,7 +198,7 @@ def deck_guidance(book, state, scope, directory, *, model=None, allowed=None):
                 "maxItems": len(receipts),
                 "items": {"type": "integer"},
             },
-            "topics": schema_object({name: row_shape for name in TOPICS[scope]}),
+            key: result_schema,
         }
     )
     prompt = {
@@ -184,27 +207,15 @@ def deck_guidance(book, state, scope, directory, *, model=None, allowed=None):
         "prints": [{**row, "receipt": receipt} for row, receipt in zip(prints, receipts[1:-1], strict=True)],
         "ending_receipt": receipts[-1],
     }
-    start = time.monotonic()
     answer = model.complete(
-        _SYSTEM,
+        system,
         json.dumps(prompt, separators=(",", ":")),
         response_format=shape,
         allowed=allowed,
         verify_full_input=True,
     )
-    _object(answer, {"topics", "read_receipt"})
+    _object(answer, {key, "read_receipt"})
     echoed = answer["read_receipt"]
     if type(echoed) is not list or any(type(v) is not int for v in echoed) or echoed != receipts:
         raise ValueError("The model did not acknowledge the complete deck input")
-    rows = answer["topics"]
-    _object(rows, TOPICS[scope])
-    rows = _validate(
-        {topic: {**row, "evidence": printed_evidence(row, context["prints"])} for topic, row in rows.items()},
-        book,
-        scope,
-    )
-    if not allowed() or not _checked(book, book.catalog):
-        raise ValueError("The deck or current prints changed during the study")
-    path = files[0]
-    write_local_result(path, rows, model, time.monotonic() - start)
-    return _detail(rows, book, scope, path.stem), False
+    return answer[key]

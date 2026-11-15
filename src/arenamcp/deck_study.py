@@ -255,33 +255,10 @@ def validate_card_rule(row, catalog, prose):
     return gid
 
 
-def validate_study(study, catalog):
-    """Reject a partial typed study; legacy playbooks remain valid in their own format."""
-    from arenamcp.loyalty_timing import additional_activation, conflicting_loyalty_sequence, walkers_in
-
-    _object(study, {"version", "cards", "interactions", "minor_links"})
-    if type(study["version"]) is not int or study["version"] != STUDY_VERSION:
-        raise ValueError("Unsupported deck study schema")
-    kinds = {gid: _land(card) for gid, card in catalog.items()}
-    if any(type(gid) is not int or gid <= 0 for gid in catalog):
-        raise ValueError("Deck study needs positive Arena card identifiers")
-    if not kinds or None in kinds.values():
-        raise ValueError("Cannot certify nonland coverage with unresolved printed types")
-    nonlands = {gid for gid, land in kinds.items() if not land}
-    expected, reviewed = _reviewed_relationships(catalog)
-    covered, accounted = set(), set()
-    prose = []
-    for row in _list(study["cards"], "per-card rules"):
-        gid = validate_card_rule(row, catalog, prose)
-        if gid in covered:
-            raise ValueError("Deck study contains a duplicate card rule")
-        covered.add(gid)
-    if nonlands != covered:
-        raise ValueError(f"Deck study is missing {len(nonlands - covered)} nonland card rule(s)")
-
-    ids = set()
+def validate_relationship_coverage(entries, minor, catalog, expected, prose):
+    ids, accounted = set(), set()
     counts = {"synergy": 0, "combo": 0}
-    for entry in _list(study["interactions"], "interactions"):
+    for entry in _list(entries, "interactions"):
         _object(entry, {"id", "kind", "conditions", "outcome", "stops", "evidence", "links"})
         _text(entry["id"])
         kind = entry["kind"]
@@ -303,7 +280,7 @@ def validate_study(study, catalog):
             accounted.add(edge)
 
     in_entries = len(accounted)
-    for item in _list(study["minor_links"], "minor relationships"):
+    for item in _list(minor, "minor relationships"):
         _object(item, {"link", "reason"})
         edge = _link(item["link"], catalog)
         _text(item["reason"])
@@ -315,6 +292,36 @@ def validate_study(study, catalog):
         raise ValueError(
             f"Deck study is missing {len(expected - accounted)} reviewed in-deck relationship(s)"
         )
+    return counts, in_entries
+
+
+def validate_study(study, catalog):
+    """Reject a partial typed study; legacy playbooks remain valid in their own format."""
+    from arenamcp.loyalty_timing import additional_activation, conflicting_loyalty_sequence, walkers_in
+
+    _object(study, {"version", "cards", "interactions", "minor_links"})
+    if type(study["version"]) is not int or study["version"] != STUDY_VERSION:
+        raise ValueError("Unsupported deck study schema")
+    kinds = {gid: _land(card) for gid, card in catalog.items()}
+    if any(type(gid) is not int or gid <= 0 for gid in catalog):
+        raise ValueError("Deck study needs positive Arena card identifiers")
+    if not kinds or None in kinds.values():
+        raise ValueError("Cannot certify nonland coverage with unresolved printed types")
+    nonlands = {gid for gid, land in kinds.items() if not land}
+    expected, reviewed = _reviewed_relationships(catalog)
+    covered = set()
+    prose = []
+    for row in _list(study["cards"], "per-card rules"):
+        gid = validate_card_rule(row, catalog, prose)
+        if gid in covered:
+            raise ValueError("Deck study contains a duplicate card rule")
+        covered.add(gid)
+    if nonlands != covered:
+        raise ValueError(f"Deck study is missing {len(nonlands - covered)} nonland card rule(s)")
+
+    counts, in_entries = validate_relationship_coverage(
+        study["interactions"], study["minor_links"], catalog, expected, prose
+    )
     walkers = walkers_in(catalog.values())
     if (
         walkers
@@ -327,7 +334,7 @@ def validate_study(study, catalog):
         "synergies": counts["synergy"],
         "combos": counts["combo"],
         "links_in_entries": in_entries,
-        "minor_links": len(accounted) - in_entries,
+        "minor_links": len(expected) - in_entries,
         "reviewed_links": len(expected),
         "reviewed_prints": reviewed,
     }
