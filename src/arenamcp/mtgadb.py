@@ -546,6 +546,22 @@ class MTGADatabase:
         with self._conn_lock:
             return self.get_cards_batch(clean_ids)
 
+    def deck_price_prints(self) -> list[tuple[int, str, str]]:
+        """Collect primary, non-token print identities from the installed Arena catalog."""
+        with self._conn_lock:
+            if not self._available or self._conn is None:
+                return []
+            rows = self._conn.execute(
+                """
+                SELECT c.GrpId, COALESCE(plain.Loc, display.Loc), c.Rarity
+                FROM Cards c
+                LEFT JOIN Localizations_enUS plain ON plain.LocId=c.TitleId AND plain.Formatted=0
+                LEFT JOIN Localizations_enUS display ON display.LocId=c.TitleId AND display.Formatted=1
+                WHERE c.IsPrimaryCard=1 AND c.IsToken=0 AND c.Rarity BETWEEN 1 AND 5
+                """
+            )
+            return [(gid, name, self.RARITY_NAMES[rarity]) for gid, name, rarity in rows if name]
+
     def get_rarity_by_name(self, name: str) -> str | None:
         """Look up a card's rarity by English name.
 

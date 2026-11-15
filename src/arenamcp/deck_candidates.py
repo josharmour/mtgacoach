@@ -2,9 +2,17 @@
 
 from __future__ import annotations
 
+import html
+import logging
+import math
+import os
+import pathlib
 import re
+import unicodedata
 from collections import Counter
-from datetime import datetime, timezone
+from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
 
 RARITIES = ("common", "uncommon", "rare", "mythic")
 
@@ -21,7 +29,7 @@ def parse_deck(lines: list[str]) -> Counter:
                 cards[name] += int(count)
             else:
                 raise ValueError(f"Invalid card count: {line}")
-        elif line.strip() and line.strip().lower() not in ("deck", "sideboard"):
+        elif line.strip() and line.strip().lower() not in ("deck", "sideboard", "commander", "companion"):
             raise ValueError(f"Unrecognized deck line: {line}")
     return cards
 
@@ -42,10 +50,15 @@ def compare_collection(
 ) -> dict:
     """Count owned copies across printings; never treat unknown cards as free.
 
-    Main and sideboard need separate copies. Basic lands require no wildcards.
-    Prices are estimates; Arena verifies legal cards and costs during import.
+    Main, sideboard and commander need separate copies. Basic lands require
+    no wildcards. Prices are estimates; Arena verifies legal cards and costs
+    during import.
     """
-    required = parse_deck(deck.get("mainboard", [])) + parse_deck(deck.get("sideboard", []))
+    main, side, commander, companion = _piles(deck, database)
+    for name, count in companion.items():
+        # The designation refers to the same physical copy in the sideboard.
+        side[name] = max(side[name], count)
+    required = main + side + commander
     owned, owned_info = index if index is not None else collection_index(collection, database)
     spend = Counter()
     missing = {}
@@ -63,7 +76,11 @@ def compare_collection(
         # Arena's local database knows the cheapest non-token printing.
         rarity = local_database.get_rarity_by_name(name) if local_database is not None else None
         if rarity not in RARITIES:
-            card = owned_info.get(name) or database.get_card_by_name(name)
+            card = (
+                database.get_card_by_name(name)
+                if isinstance(database, _ArenaPrices)
+                else (owned_info.get(name) or database.get_card_by_name(name))
+            )
             rarity = str(getattr(card, "rarity", "")).lower() if getattr(card, "arena_id", 0) else ""
         if rarity not in RARITIES:
             # A name-only catalog can shadow a later source's Arena printing.
@@ -90,43 +107,354 @@ def compare_collection(
     }
 
 
-def arena_export(deck: dict) -> str:
-    main = parse_deck(deck.get("mainboard", []))
-    side = parse_deck(deck.get("sideboard", []))
-    if sum(main.values()) < 60:
-        raise ValueError(
-            "The source did not return a complete constructed deck (at least 60 main-deck cards)."
-        )
-    text = "Deck\n" + "\n".join(f"{count} {name}" for name, count in main.items())
-    if side:
-        text += "\n\nSideboard\n" + "\n".join(f"{count} {name}" for name, count in side.items())
-    return text
+def split_export(text: str) -> dict:
+    """Read Arena section headers in any order, including Commander-first exports."""
+    headers = {
+        "deck": "mainboard",
+        "commander": "commander",
+        "companion": "companion",
+        "sideboard": "sideboard",
+    }
+    deck = {key: [] for key in headers.values()}
+    pile = "mainboard"
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line.casefold() in headers:
+            pile = headers[line.casefold()]
+        elif line:
+            deck[pile].append(line)
+    return deck
 
 
-def load_candidates(collection: dict, wildcards: dict) -> list[dict]:
-    """Existing public Standard source; no invented win-rate statistics."""
-    from arenamcp.card_db import get_card_database
+def _piles(deck, database=None):
+    piles = []
+    for section in ("mainboard", "sideboard", "commander", "companion"):
+        cards = parse_deck(deck.get(section, []))
+        if isinstance(database, _ArenaPrices):
+            canonical = Counter()
+            for name, quantity in cards.items():
+                canonical[database.canonical(name)] += quantity
+            cards = canonical
+        piles.append(cards)
+    return piles
+
+
+def arena_export(deck: dict, *, format_name: str = "", database=None) -> str:
+    main, side, commander, companion = _piles(deck, database)
+    if sum(main.values()) < 60 and not (commander and sum(main.values()) == 59):
+        raise ValueError("The source did not return a complete constructed deck (at least 60 cards).")
+    if companion and sum(companion.values()) != 1:
+        raise ValueError("An Arena companion designation must contain one card.")
+    if format_name == "brawl" or commander:
+        if sum(commander.values()) != 1 or sum(main.values()) not in (
+            {99} if format_name == "brawl" else {59, 99}
+        ):
+            raise ValueError("A Brawl export requires one commander and its complete main deck.")
+        if main.keys() & commander.keys():
+            raise ValueError("A Brawl commander cannot also appear in the main deck.")
+        if side and side != companion:
+            raise ValueError("Brawl has no sideboard beyond a designated companion.")
+    if format_name == "standard" and commander:
+        raise ValueError("A Standard deck cannot have a commander.")
+    if companion:
+        name = next(iter(companion))
+        side[name] = max(side[name], 1)
+    if sum(side.values()) > 15:
+        raise ValueError("An Arena constructed sideboard may contain at most fifteen cards.")
+    piles = (("Commander", commander), ("Companion", companion), ("Deck", main), ("Sideboard", side))
+    return "\n\n".join(
+        label + "\n" + "\n".join(f"{n} {name}" for name, n in pile.items()) for label, pile in piles if pile
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _DeckPrint:
+    arena_id: int
+    name: str
+    rarity: str
+
+
+def _name_key(name: str) -> str:
+    text = name.casefold().replace("’", "'")
+    return "".join(ch for ch in unicodedata.normalize("NFKD", text) if not unicodedata.combining(ch))
+
+
+class _ArenaPrices:
+    """Offline canonical identities and cheapest printed rarities; ambiguous aliases never match."""
+
+    def __init__(self, rows):
+        self.by_id = {}
+        self.by_name = {}
+        self.aliases = {}
+        for arena_id, localized, rarity in rows:
+            name = html.unescape(re.sub(r"</?nobr>", "", localized, flags=re.I))
+            print_ = _DeckPrint(arena_id, name, rarity)
+            self.by_id[arena_id] = print_
+            previous = self.by_name.get(name)
+            if previous is None or RARITIES.index(rarity) < RARITIES.index(previous.rarity):
+                self.by_name[name] = print_
+            key = _name_key(name)
+            if self.aliases.setdefault(key, name) != name:
+                self.aliases[key] = None
+
+    def get_card_by_arena_id(self, arena_id):
+        return self.by_id.get(arena_id)
+
+    def get_card_by_name(self, name):
+        return self.by_name.get(name) or self.by_name.get(self.aliases.get(_name_key(name)))
+
+    def canonical(self, name):
+        card = self.get_card_by_name(name)
+        return card.name if card else name
+
+
+def pricing_database():
+    """The private collection and any pasted names are resolved entirely on device."""
+    from arenamcp.mtgadb import MTGADatabase
+
+    native = MTGADatabase()
+    try:
+        return _ArenaPrices(native.deck_price_prints())
+    finally:
+        native.close()
+
+
+def load_candidates(
+    collection: dict, wildcards: dict, formats: tuple[str, ...] = ("standard", "brawl")
+) -> list[dict]:
+    """Public MTGGoldfish sources: every listed archetype plus its budget
+    lists, across the formats the coach is used in (ranked Standard and
+    Brawl). Ordered cheapest to craft first; no invented win-rate statistics.
+    """
     from arenamcp.mtggoldfish import MTGGoldfishClient
 
     client = MTGGoldfishClient()
-    database = get_card_database()
+    database = pricing_database()
     index = collection_index(collection, database)
     candidates = []
-    for rank, entry in enumerate(client.get_metagame("standard")[:6], 1):
-        deck = client.get_deck_list(entry["url"])
-        try:
-            exported = arena_export(deck)
-        except ValueError:
+    for fmt in formats:
+        label = FORMATS.get(fmt.lower(), fmt.title())
+        for rank, entry in enumerate(client.get_metagame(fmt), 1):
+            # A single unreachable source page (site blocking, a removed
+            # list) must not blank the whole suggestion table; skip it and
+            # say so in the log.
+            try:
+                deck = client.get_deck_list(entry["url"])
+                exported = arena_export(deck, format_name=fmt.lower(), database=database)
+            except (ValueError, OSError, KeyError) as exc:
+                logger.warning(
+                    "Skipping %s source %r (%s): %s",
+                    label,
+                    entry.get("name"),
+                    entry.get("url"),
+                    exc,
+                )
+                continue
+            budget = bool(entry.get("budget"))
+            candidates.append(
+                {
+                    **entry,
+                    **deck,
+                    "source_rank": rank,
+                    "format": label,
+                    "source": f"MTGGoldfish {label} ({'budget list' if budget else 'paper metagame'})",
+                    "checked_at": deck.get("checked_at") or "unavailable",
+                    "export": exported,
+                    "cost": compare_collection(deck, collection, wildcards, database, index=index),
+                }
+            )
+    candidates.sort(key=cost_order_key)
+    return candidates
+
+
+# The same sample-size floor as the per-deck autopilot results view: a win
+# rate below twenty decided games is noise, not signal, and is never shown.
+ARENA_MIN_GAMES = 20
+
+FORMATS = {"standard": "Standard", "brawl": "Brawl"}
+
+
+def normalize_deck_name(name: str) -> str:
+    """Fold punctuation and case so 'Mono-Blue Flash' matches 'Mono Blue Flash'."""
+    return " ".join(re.findall(r"[^\W_]+", _name_key(name or "")))
+
+
+def _entry_format_labels(entry_formats) -> set[str]:
+    from arenamcp.desktop.performance_tab import _canonical_queue
+
+    return {FORMATS.get(_canonical_queue(queue), "unsupported") for queue in entry_formats or ()}
+
+
+def cost_order_key(candidate: dict) -> tuple:
+    """Cheapest to craft first; decks with unresolvable cards sort last."""
+    cost = candidate.get("cost") or {}
+    unknown = 1 if cost.get("unknown") else 0
+    spend = cost.get("spend") or {}
+    return (unknown, sum(spend.values()), candidate.get("source_rank", 999))
+
+
+def rank_candidates(candidates: list[dict], results: list[dict] | None) -> list[dict]:
+    """Attach the fleet's own autopilot results to matching candidates.
+
+    ``results`` holds per-deck aggregates as published by the per-deck
+    results view (name, games, wins, losses, win_rate, formats). Only decks
+    with at least ARENA_MIN_GAMES decided games and a measured rate carry an
+    ``arena`` entry — a rate is never invented for a deck without data.
+
+    A rate attaches only when the archetype AND format identity are
+    unambiguous: the recorded bucket must have been played in exactly the
+    candidate's format (a Standard archetype never borrows Brawl games or
+    vice versa) and exactly one measured bucket may relate to the candidate
+    by exact normalized name. Anything ambiguous — several same-format buckets with related
+    names, or a bucket whose queue names span more than one format — gets no
+    rate rather than a possibly wrong one.
+    """
+    measured = [
+        e
+        for e in (results or [])
+        if type(e.get("games")) is int and e["games"] >= ARENA_MIN_GAMES and e.get("win_rate") is not None
+    ]
+    ranked = []
+    for candidate in candidates:
+        candidate = {k: v for k, v in candidate.items() if k not in {"arena", "arena_sample"}}
+        name = normalize_deck_name(candidate.get("name", ""))
+        matches = [
+            e
+            for e in measured
+            if name
+            and name == normalize_deck_name(e.get("name", ""))
+            and _entry_format_labels(e.get("formats")) == {candidate.get("format")}
+        ]
+        fleet = [e for e in matches if e.get("sample_source") == "fleet"]
+        if fleet:
+            matches = fleet  # The shared measurement can overlap this machine's games.
+        if len(matches) == 1:
+            match = matches[0]
+            wins, losses, rate = match.get("wins"), match.get("losses"), match["win_rate"]
+            if (
+                type(wins) is int
+                and type(losses) is int
+                and min(wins, losses) >= 0
+                and wins + losses == match["games"]
+                and type(rate) in (int, float)
+                and 0 <= rate <= 1
+                and math.isclose(rate, wins / match["games"], abs_tol=0.00005)
+            ):
+                candidate.update(
+                    arena={"games": match["games"], "win_rate": rate},
+                    arena_sample=match.get("sample_source", ""),
+                )
+        ranked.append(candidate)
+    measured_ranked = [c for c in ranked if c.get("arena")]
+    measured_ranked.sort(key=lambda c: (-c["arena"]["win_rate"], cost_order_key(c)))
+    return measured_ranked + [c for c in ranked if not c.get("arena")]
+
+
+def local_autopilot_results() -> list[dict]:
+    """Per-deck autopilot results from this machine's recorded games.
+
+    Integrates with the per-deck results work (P1): the records are read the
+    same way the Match History tab reads them — the full history, oldest
+    first — and aggregated by P1's ``autopilot_deck_results``, so the rates
+    shown here are exactly the rates the tab publishes for the same decks.
+    Failures are loud: a broken history or a missing aggregator raises, it
+    never silently degrades to "no data".
+    """
+    from arenamcp.desktop.performance_tab import autopilot_deck_results
+    from arenamcp.match_history import MatchHistory
+
+    history = MatchHistory()
+    records = list(reversed(history.get_recent(history.total_games)))
+    return autopilot_deck_results(records)
+
+
+_FLEET_REVIEW_MODULE = None
+
+
+def _load_fleet_review():
+    """Import W1's fleet review tool from this checkout's tools/ directory.
+
+    The fleet's own win-rate table lives in the shared match-bundle corpus
+    that W1 mines; loading it lazily keeps this module independent of the
+    tool until the fleet path is actually used. A missing tool is a broken
+    prerequisite and raises — it never silently degrades to "no data".
+    """
+    global _FLEET_REVIEW_MODULE
+    if _FLEET_REVIEW_MODULE is not None:
+        return _FLEET_REVIEW_MODULE
+    import importlib.util
+
+    if importlib.util.find_spec("arenamcp.fleet_review") is not None:
+        from arenamcp import fleet_review
+
+        _FLEET_REVIEW_MODULE = fleet_review
+        return fleet_review
+
+    root = pathlib.Path(__file__).resolve().parents[2]
+    tool = root / "tools" / "fleet_review.py"
+    if not tool.is_file():
+        raise FileNotFoundError(f"W1 fleet review tool not found: {tool}")
+    spec = importlib.util.spec_from_file_location("arenamcp_fleet_review", tool)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load W1 fleet review tool: {tool}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    _FLEET_REVIEW_MODULE = module
+    return module
+
+
+def fleet_autopilot_results(bundles_dir: str | None = None) -> list[dict]:
+    """Per-archetype autopilot results from the fleet's shared match bundles.
+
+    The actual fleet source is W1's ``tools/fleet_review.py`` mining the
+    explicitly configured shared corpus of uploaded match bundles,
+    folded per match like M1 so a multi-game match counts once. Each row
+    keeps its recorded Arena queue name so consumers can require an
+    unambiguous format match before attaching a rate, and the twenty-game
+    floor applies to decided matches exactly as it does for local results.
+    Failures are loud: a missing tool or corpus directory raises.
+    """
+    from arenamcp.desktop.performance_tab import MIN_GAMES_FOR_WIN_RATE
+
+    directory = bundles_dir or os.environ.get("MTGACOACH_FLEET_BUNDLE_DIR")
+    if not directory:
+        raise FileNotFoundError("no shared fleet corpus configured")
+    fleet_review = _load_fleet_review()
+    if not os.path.isdir(directory):
+        raise FileNotFoundError(f"fleet match-bundle corpus not found: {directory}")
+    # The fleet tool's path order and final game determine the match result.
+    # Fold before filtering. A manual/undecided final game cannot turn a prior
+    # autopilot game into a measured match win.
+    matches = {}
+    for path in fleet_review.iter_bundle_paths(directory):
+        bundle = fleet_review.load_bundle(path)
+        if not fleet_review.is_match_bundle(bundle) or not bundle.get("match_id"):
             continue
-        candidates.append(
+        final = bundle.get("final_state") or {}
+        matches[bundle["match_id"]] = (
+            (bundle.get("settings_subset") or {}).get("autopilot_enabled") is True,
+            final.get("format_name"),
+            fleet_review.archetype_label(bundle),
+            bundle.get("result"),  # The last game alone cannot settle a multi-game match.
+        )
+    buckets = {}
+    for auto, queue, name, outcome in matches.values():
+        if auto and name and name != fleet_review.UNKNOWN:
+            counts = buckets.setdefault((queue or "", name), Counter())
+            if outcome in ("win", "loss"):
+                counts[outcome] += 1
+    entries = []
+    for (queue, name), counts in buckets.items():
+        games = counts["win"] + counts["loss"]
+        entries.append(
             {
-                **entry,
-                **deck,
-                "source_rank": rank,
-                "source": "MTGGoldfish Standard (paper metagame)",
-                "checked_at": datetime.now(timezone.utc).isoformat(),
-                "export": exported,
-                "cost": compare_collection(deck, collection, wildcards, database, index=index),
+                "name": name,
+                "games": games,
+                "wins": counts["win"],
+                "losses": counts["loss"],
+                "formats": [queue] if queue else [],
+                "win_rate": counts["win"] / games if games >= MIN_GAMES_FOR_WIN_RATE else None,
             }
         )
-    return candidates
+    entries.sort(key=lambda e: (-e["games"], e["name"]))
+    return entries

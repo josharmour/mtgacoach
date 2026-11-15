@@ -36,17 +36,42 @@ _USE_TABLES = sys.platform != "darwin"  # QTBUG-149612: Cocoa selected-cell cach
 MIN_GAMES_FOR_WIN_RATE = 20
 
 
+def _canonical_queue(format_name: str) -> str:
+    """Bucket a recorded Arena queue name into one comparable format token.
+
+    Queues that differ in format must never pool their games: the twenty-game
+    floor and the published rate are per format (real case 2026-11-12: one
+    deck with 1 decided Standard Ranked game and 19 Historic Ranked games used
+    to publish a pooled 100% rate that attached to Standard candidates).
+    Unknown queue names stay their own bucket so nothing silently mixes.
+    """
+    folded = " ".join((format_name or "").replace("_", " ").lower().split())
+    if folded in {
+        "ladder",
+        "standard ranked",
+        "traditional standard ranked",
+        "standard ladder",
+        "tradladder",
+    }:
+        return "standard"
+    if folded in {"brawl ladder", "brawl ranked", "competitive brawl"}:
+        return "brawl"
+    return "other:" + folded
+
+
 def autopilot_deck_results(records) -> list[dict]:
     """Aggregate per-deck results for games the autopilot played.
 
     Only records where ``autopilot`` is True count (advisor-mode games are the
     player's own play). Games are grouped by deck identity — falling back to
-    the deck name when a record predates identity tracking — and only decided
-    games (win/loss) are counted. A deck's ``win_rate`` is None until it has
-    at least MIN_GAMES_FOR_WIN_RATE decided games.
+    the deck name when a record predates identity tracking — and by Arena
+    queue bucket, so a deck's twenty-game floor and its published rate are
+    always measured within one format. Only decided games (win/loss) are
+    counted. A bucket's ``win_rate`` is None until it has at least
+    MIN_GAMES_FOR_WIN_RATE decided games.
     """
-    groups: dict[str, dict] = {}
-    legacy_keys: set[str] = set()
+    groups: dict[tuple[str, str], dict] = {}
+    legacy_keys: set[tuple[str, str]] = set()
     for rec in records:
         if getattr(rec, "autopilot", None) is not True:
             continue
@@ -58,49 +83,66 @@ def autopilot_deck_results(records) -> list[dict]:
         key = identity or name
         if not key:
             continue
+        recorded_format = (getattr(rec, "format_name", "") or "").strip()
+        bucket_key = (key, _canonical_queue(recorded_format))
         if not identity:
-            legacy_keys.add(key)
-        group = groups.setdefault(key, {"name": name, "wins": 0, "losses": 0})
+            legacy_keys.add(bucket_key)
+        group = groups.setdefault(bucket_key, {"name": name, "wins": 0, "losses": 0, "formats": set()})
         if name and not group["name"]:
             group["name"] = name
+        if recorded_format:
+            group["formats"].add(recorded_format)
         group["wins" if result == "win" else "losses"] += 1
 
-    entries = []
-    for group in groups.values():
+    paired: list[tuple[tuple[str, str], dict]] = []
+    for bucket_key, group in groups.items():
         games = group["wins"] + group["losses"]
-        entries.append(
-            {
-                "name": group["name"] or "Unnamed deck",
-                "games": games,
-                "wins": group["wins"],
-                "losses": group["losses"],
-                # No percentage below the sample-size floor.
-                "win_rate": (group["wins"] / games) if games >= MIN_GAMES_FOR_WIN_RATE else None,
-            }
+        paired.append(
+            (
+                bucket_key,
+                {
+                    "name": group["name"] or "Unnamed deck",
+                    "games": games,
+                    "wins": group["wins"],
+                    "losses": group["losses"],
+                    # Which Arena queues these games came from (e.g. "Standard
+                    # Ranked", "Brawl Ranked") so consumers can require an
+                    # unambiguous format match before attaching a rate.
+                    "formats": sorted(group["formats"]),
+                    # No percentage below the sample-size floor.
+                    "win_rate": (group["wins"] / games) if games >= MIN_GAMES_FOR_WIN_RATE else None,
+                },
+            )
         )
 
     # Records written before identity tracking carry only a deck name. Fold a
     # legacy bucket into an identified deck when the display name matches
-    # exactly one identified deck, so one deck never shows as two rows — but
-    # never merge two different identities on a name alone.
-    by_name: dict[str, list[dict]] = {}
-    for entry in entries:
-        by_name.setdefault(entry["name"], []).append(entry)
-    for key in legacy_keys:
-        legacy_entry = next((e for e in entries if e["name"] == groups[key]["name"]), None)
-        if legacy_entry is None or len(by_name[legacy_entry["name"]]) < 2:
-            continue  # unique display name: nothing to fold into
-        identified = [e for e in by_name[legacy_entry["name"]] if e is not legacy_entry]
+    # exactly one identified deck IN THE SAME QUEUE BUCKET, so one deck never
+    # shows as two rows — but never merge two different identities on a name
+    # alone and never pool games across queue buckets.
+    by_name_and_queue: dict[tuple[str, str], list[tuple[tuple[str, str], dict]]] = {}
+    for bucket_key, entry in paired:
+        by_name_and_queue.setdefault((entry["name"], bucket_key[1]), []).append((bucket_key, entry))
+    for legacy_key in legacy_keys:
+        legacy_pair = next((p for p in paired if p[0] == legacy_key), None)
+        if legacy_pair is None:
+            continue
+        peers = by_name_and_queue[(legacy_pair[1]["name"], legacy_key[1])]
+        if len(peers) < 2:
+            continue  # unique display name in this queue: nothing to fold into
+        identified = [p for p in peers if p[0] != legacy_key]
         if len(identified) == 1:
-            target = identified[0]
-            target["wins"] += legacy_entry["wins"]
-            target["losses"] += legacy_entry["losses"]
+            target = identified[0][1]
+            target["wins"] += legacy_pair[1]["wins"]
+            target["losses"] += legacy_pair[1]["losses"]
+            target["formats"] = sorted(set(target["formats"]) | set(legacy_pair[1]["formats"]))
             target["games"] = target["wins"] + target["losses"]
             target["win_rate"] = (
                 (target["wins"] / target["games"]) if target["games"] >= MIN_GAMES_FOR_WIN_RATE else None
             )
-            entries.remove(legacy_entry)
+            paired.remove(legacy_pair)
 
+    entries = [entry for _, entry in paired]
     entries.sort(key=lambda e: (-e["games"], e["name"]))
     return entries
 

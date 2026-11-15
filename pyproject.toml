@@ -93,6 +93,9 @@ mtgacoach-desktop = "arenamcp.desktop.app:main"
 [tool.hatch.build.targets.wheel]
 packages = ["src/arenamcp"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"tools/fleet_review.py" = "arenamcp/fleet_review.py"
+
 [tool.hatch.version]
 path = "src/arenamcp/__init__.py"
 

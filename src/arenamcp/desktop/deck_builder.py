@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal
 from PySide6.QtWidgets import (
     QApplication,
@@ -17,9 +19,22 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from arenamcp.deck_candidates import RARITIES, arena_export, compare_collection, load_candidates
+from arenamcp.deck_candidates import (
+    RARITIES,
+    arena_export,
+    compare_collection,
+    cost_order_key,
+    fleet_autopilot_results,
+    load_candidates,
+    local_autopilot_results,
+    pricing_database,
+    rank_candidates,
+    split_export,
+)
 
 from .runtime import open_url
+
+logger = logging.getLogger(__name__)
 
 
 class _Result(QObject):
@@ -34,17 +49,42 @@ class _LoadDecks(QRunnable):
         self.deck = deck
 
     def run(self):
+        warning = ""
         try:
             if self.deck is None:
-                decks = load_candidates(self.collection, self.wildcards)
+                # Rank by results where the coach has them: this machine's
+                # recorded games (P1) plus the fleet's shared match-bundle
+                # corpus (W1). Both sources keep their recorded queue names,
+                # so a rate only attaches on an unambiguous format match.
+                results = []
+                try:
+                    results.extend(dict(row, sample_source="local") for row in local_autopilot_results())
+                except Exception as local_error:
+                    warning = "Local match history unavailable."
+                    logger.warning("local autopilot results unavailable: %s", local_error)
+                try:
+                    results.extend(dict(row, sample_source="fleet") for row in fleet_autopilot_results())
+                except Exception as fleet_error:  # noqa: BLE001 - degraded, not fatal
+                    # A missing fleet corpus must never blank the suggestion
+                    # table: viable candidates still load and rank on this
+                    # machine's measured rates alone. Surface the degraded
+                    # source explicitly instead of inventing fleet data or
+                    # failing silently.
+                    source_note = (
+                        "showing this machine's rates only" if not warning else "no measured rates available"
+                    )
+                    warning = f"{warning} Fleet results unavailable ({fleet_error}); {source_note}.".strip()
+                    logger.warning("fleet autopilot results unavailable: %s", fleet_error)
+                decks = rank_candidates(load_candidates(self.collection, self.wildcards), results)
             else:
-                from arenamcp.card_db import get_card_database
-
-                self.deck["cost"] = compare_collection(
-                    self.deck, self.collection, self.wildcards, get_card_database()
-                )
+                database = pricing_database()
+                self.deck["export"] = arena_export(self.deck, database=database)
+                self.deck["cost"] = compare_collection(self.deck, self.collection, self.wildcards, database)
                 decks = [self.deck]
-            self.result.ready.emit(decks, "" if decks else "No complete decklists available from the source.")
+            message = "" if decks else "No complete decklists available from the source."
+            if warning:
+                message = f"{warning}\n{message}" if message else warning
+            self.result.ready.emit(decks, message)
         except Exception as error:
             self.result.ready.emit([], f"Could not load candidate decks: {error}")
 
@@ -66,9 +106,11 @@ class DeckBuilderDialog(QDialog):
             "Find a deck you can build with your cards or wildcards, then import it into Arena. "
             "Find this again in Decks → Build a stronger deck.\n"
             "Auto-queue is turned off when you enter this workspace; turn it back on when ready to play.\n"
-            "Suggestions: Standard decks from MTGGoldfish, ordered by paper metagame popularity. "
-            "For Arena win rates and other formats, explore Untapped and paste a deck export below. "
-            "Some Untapped statistics require a subscription."
+            "Suggestions: Standard and Brawl decks from MTGGoldfish — every archetype the source "
+            "lists plus its budget lists, ordered cheapest to craft first. Where the coach's own "
+            "autopilot has at least 20 recorded games with a matching deck, its measured Arena win "
+            "rate is shown; decks without data are never given one. "
+            "Other sources can be checked by pasting a deck export below."
         )
         intro.setWordWrap(True)
         layout.addWidget(intro)
@@ -78,17 +120,28 @@ class DeckBuilderDialog(QDialog):
         self.mode = QComboBox()
         self.mode.addItems(["Owned cards only", "Within my wildcard balance", "All candidates"])
         self.mode.currentIndexChanged.connect(self._render)
+        self.order = QComboBox()
+        self.order.setAccessibleName("Deck ordering")
+        self.order.addItems(["Fewest wildcards first", "Highest measured win rate first"])
+        self.order.currentIndexChanged.connect(self._render)
         source = QPushButton("Untapped Arena decks ↗")
         source.clicked.connect(lambda: open_url("https://mtga.untapped.gg/constructed/standard/decks"))
-        for widget in (self.refresh_button, self.mode, source):
+        for widget in (self.refresh_button, self.mode, self.order, source):
             actions.addWidget(widget)
         layout.addLayout(actions)
         self.status = QLabel("Return to Arena's home screen to read your collection and wildcard balances.")
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
-        self.table = QTableWidget(0, 4)
+        self.table = QTableWidget(0, 6)
         self.table.setHorizontalHeaderLabels(
-            ["Deck / source order", "Meta share", "Missing copies", "Wildcard estimate"]
+            [
+                "Deck / source order",
+                "Meta share",
+                "Missing copies",
+                "Wildcard estimate",
+                "Arena autopilot",
+                "Source / retrieved",
+            ]
         )
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
@@ -159,16 +212,27 @@ class DeckBuilderDialog(QDialog):
             self._candidates = candidates
         self._render()
         if self._checking_paste and candidates:
-            self.table.selectRow(len(self._visible) - 1)
+            self.table.selectRow(next(i for i, deck in enumerate(self._visible) if deck is candidates[-1]))
         self._checking_paste = False
         if error:
             self.status.setText(error + " You can still paste a source deck export to check its cost.")
 
     def _render(self):
         mode = self.mode.currentIndex()
-        self._visible = [
+        filtered = [
             d for d in self._candidates if mode == 2 or d["cost"]["owned" if mode == 0 else "affordable"]
         ]
+        if filtered or not self._candidates:
+            self._visible = (
+                sorted(filtered, key=cost_order_key) if self.order.currentIndex() == 0 else filtered
+            )
+            fallback = False
+        else:
+            # Never show an empty table: when no candidate fits the filter,
+            # show every candidate nearest first (fewest wildcards to craft)
+            # and say so, instead of leaving the customer with nothing.
+            self._visible = sorted(self._candidates, key=cost_order_key)
+            fallback = True
         self.table.setRowCount(0)
         for deck in self._visible:
             row = self.table.rowCount()
@@ -180,19 +244,33 @@ class DeckBuilderDialog(QDialog):
             )
             if cost["unknown"]:
                 price += " · unresolved cards"
+            arena = deck.get("arena")
+            unit = {"fleet": "matches", "local": "games"}.get(deck.get("arena_sample"), "results")
+            arena_text = f"{arena['games']} {unit} · {arena['win_rate']:.0%} win rate" if arena else "—"
             for col, text in enumerate(
                 [
                     f"{deck.get('source_rank', '—')}. {deck['name']}",
-                    deck.get("meta_share", "Not supplied"),
+                    deck.get("meta_share") or ("Budget list" if deck.get("budget") else "Not supplied"),
                     str(sum(cost["missing"].values())),
                     price,
+                    arena_text,
+                    deck["source"] + "\n" + (deck.get("checked_at") or "Local entry")[:10],
                 ]
             ):
-                self.table.setItem(row, col, QTableWidgetItem(text))
-        self.status.setText(
-            f"{len(self._visible)} decks match this filter. "
-            "Try All candidates or paste another deck if none fit."
-        )
+                item = QTableWidgetItem(text)
+                item.setToolTip(text)
+                self.table.setItem(row, col, item)
+        self.table.resizeRowsToContents()
+        if fallback:
+            self.status.setText(
+                f"No candidate fits this filter yet — showing all {len(self._visible)} candidates "
+                "nearest first (fewest wildcards to craft)."
+            )
+        else:
+            self.status.setText(
+                f"{len(self._visible)} decks match this filter. "
+                "Try All candidates or paste another deck if none fit."
+            )
         self._select()
 
     def _selected(self):
@@ -203,13 +281,29 @@ class DeckBuilderDialog(QDialog):
         deck = self._selected()
         self.copy_button.setEnabled(deck is not None)
         self.source_button.setEnabled(bool(deck and deck.get("url")))
-        self.details.setText(
-            f"Source: {deck['source']}. Checked: {deck.get('checked_at', 'locally')}. "
-            "Arena verifies format legality and final wildcard cost at import. "
-            + ("Unresolved: " + ", ".join(deck["cost"]["unknown"]) if deck["cost"]["unknown"] else "")
-            if deck
-            else "Select a deck to review its source and cost."
-        )
+        if deck:
+            parts = [
+                f"[{deck.get('format', 'Pasted')}]",
+                f"Source: {deck['source']}.",
+                f"Checked: {deck.get('checked_at', 'locally')}.",
+            ]
+            arena = deck.get("arena")
+            if arena:
+                source, unit = {
+                    "fleet": ("Shared fleet", "matches"),
+                    "local": ("This machine", "games"),
+                }.get(deck.get("arena_sample"), ("Recorded autopilot", "results"))
+                parts.append(
+                    f"{source}: {arena['games']} autopilot {unit} with this archetype, "
+                    f"{arena['win_rate']:.0%} win rate."
+                )
+            parts.append("Arena verifies format legality and final wildcard cost at import.")
+            if deck["cost"]["unknown"]:
+                parts.append("Unresolved: " + ", ".join(deck["cost"]["unknown"]))
+            text = " ".join(parts)
+        else:
+            text = "Select a deck to review its source and cost."
+        self.details.setText(text)
 
     def _check_pasted(self):
         if self._worker is not None:
@@ -217,18 +311,7 @@ class DeckBuilderDialog(QDialog):
         if self._collection is None:
             self.status.setText("Read your collection before checking a deck's cost.")
             return
-        deck = {"mainboard": [], "sideboard": []}
-        pile = "mainboard"
-        for line in self.paste.toPlainText().splitlines():
-            if line.strip().lower() == "sideboard":
-                pile = "sideboard"
-            elif line.strip().lower() in ("commander", "companion"):
-                self.status.setText(
-                    "This checker supports main deck and sideboard exports; commander/companion imports are not supported yet."
-                )
-                return
-            elif line.strip().lower() != "deck" and line.strip():
-                deck[pile].append(line)
+        deck = split_export(self.paste.toPlainText())
         try:
             deck["export"] = arena_export(deck)
         except ValueError as error:
