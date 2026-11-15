@@ -1813,10 +1813,31 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                 else:
                     lines.append("Choose: tap lands that leave best mana open for responses")
             elif dec_type == "distribution":
+                source = decision_context.get("source_card") or "effect"
+                offer = decision_context.get("distribution_offer")
+                if offer:
+                    lower, upper = offer["min"], offer["max"]
+                    amount = str(upper) if lower == upper else f"{lower} to {upper}"
+                    lines.append(
+                        f"Distribute {amount} from {source}. Per positive target: {offer['min_per']} to {offer['max_per']}."
+                    )
+                    board = game_state.get("battlefield") or (game_state.get("zones") or {}).get(
+                        "battlefield", []
+                    )
+                    cards = {c.get("instance_id"): c for c in board}
+                    for iid in offer["ids"]:
+                        card = cards.get(iid) or {}
+                        name = card.get("name") or "Target"
+                        controller = card.get("controller_seat_id")
+                        seat = f", controlled by seat {controller}" if controller in (1, 2) else ""
+                        lines.append(f"  [{iid}] {name}{seat}")
+                else:
+                    total = decision_context.get("total")
+                    amount = str(total) + " " if type(total) is int and total > 0 else ""
+                    lines.append(f"Distribute {amount}from {source}.")
                 lines.append(
-                    f"!!! DECISION: DISTRIBUTE {decision_context.get('total', '?')} from {decision_context.get('source_card', 'effect')} !!!"
+                    "Choose the split using the source effect. Use the offered IDs for same-name targets."
                 )
-                lines.append("Distribute: maximize kills, finish off wounded targets first")
             elif dec_type == "numeric_input":
                 source = decision_context.get("source_card", "effect")
                 lines.append(

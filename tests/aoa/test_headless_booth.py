@@ -386,3 +386,21 @@ def test_length_filter_preserves_native_boundaries_and_malformed_rejection(sourc
     assert isolate_overlength_lines(invalid, spoken_word_count) == (invalid, [])
     oversized = {"turns": [{"role": "color_analyst", "text": "a" * 321, "refs": ["event:x"]}]}
     assert isolate_overlength_lines(oversized, spoken_word_count) == ({"turns": []}, ["color_analyst"])
+
+
+def test_single_mills_stay_in_context_without_requesting_generation(source):
+    from tests.aoa.test_outcomes import add, game, observation
+
+    g = game()
+    add(g, 101, "First card")
+    g._raw_gre_sequence += 1
+    add(g, 102, "Second card")
+    obs = observation(g)
+    only_mills = replace(obs, events=tuple(e for e in obs.events if e.payload.get("category") == "Mill"))
+    config = CommentaryConfig(mode="commentary", generative=True)
+    booth = HeadlessBooth(
+        config, lambda *args: pytest.fail("routine mills requested a model call"), lambda: obs.arrived_at
+    )
+    output, _ = booth.generate(only_mills)
+    assert not output and not booth.booth.pending
+    assert sum(r["data"].get("category") == "Mill" for r in booth.booth.recent) == 2

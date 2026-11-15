@@ -765,6 +765,8 @@ class _ActionLegalityMixin:
             except ValueError:
                 logger.warning(f"Unknown action type: {action_type_str}")
                 return None
+            if action_type == ActionType.DISTRIBUTE and not isinstance(data.get("distribution"), dict):
+                return None
             if action_type == ActionType.DECLARE_BLOCKERS and "blocker_assignments" not in data:
                 return None
 
@@ -779,7 +781,7 @@ class _ActionLegalityMixin:
                 select_card_names=data.get("select_card_names", []),
                 scry_position=data.get("scry_position", ""),
                 numeric_value=data.get("numeric_value", 0),
-                distribution=data.get("distribution", {}),
+                distribution=data.get("distribution"),
                 play_or_draw=data.get("play_or_draw", ""),
                 reasoning=data.get("reasoning", ""),
                 confidence=data.get("confidence", 1.0),

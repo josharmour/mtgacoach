@@ -185,7 +185,7 @@ class GameAction:
     select_card_names: list[str] = field(default_factory=list)
     scry_position: str = ""  # "top" or "bottom"
     numeric_value: int = 0  # For numeric_input (X spells, pay life)
-    distribution: dict[str, int] = field(default_factory=dict)  # target_name -> amount
+    distribution: dict[str, int] | None = None  # target_name -> amount
     play_or_draw: str = ""  # "play" or "draw"
     reasoning: str = ""
     confidence: float = 1.0
@@ -591,7 +591,7 @@ NEVER use action_type=click_button for a card play — that's only for explicit 
 PER-DECISION FIELDS:
 - choose_starting_player: play_or_draw = "play" or "draw".
 - numeric_input: numeric_value within shown min/max.
-- distribute: distribution dict; totals must match.
+- distribute: map each chosen target name (or its offered instance ID for same-name targets) to its amount. Respect the offered limits.
 - assign_damage: order by priority (kill key targets first).
 - search_library / select_counters: use select_card_names.
 - casting_options (CastingTimeOptions window — "Cast normally" vs an

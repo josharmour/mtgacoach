@@ -2231,26 +2231,48 @@ class _BridgeSubmitMixin:
         if "Distribution" not in str(req_class):
             return None
 
-        battlefield = game_state.get("battlefield", []) or []
+        from arenamcp.gre_bridge import distribution_offer
 
-        # The LLM expresses distribution as name → amount. Resolve names
-        # to instance_ids before sending. If we can't resolve everything
-        # we surface manual-required so vision/manual can take over.
+        offer = distribution_offer(pending)
+        if offer is None:
+            return None
+        offered = set(offer["ids"])
+        battlefield = game_state.get("battlefield") or (game_state.get("zones") or {}).get("battlefield", [])
+        candidates = [card for card in battlefield if card.get("instance_id") in offered]
         distributions: dict[int, int] = {}
-        for name, amount in (action.distribution or {}).items():
-            try:
+        if not isinstance(action.distribution, dict):
+            return None
+        for name, amount in action.distribution.items():
+            if isinstance(amount, str) and amount.isascii() and amount.isdecimal() and len(amount) <= 10:
                 amount = int(amount)
-            except (TypeError, ValueError):
-                continue
-            if amount <= 0:
-                continue
-            iid, _ = _match_target_in_battlefield([name], battlefield, lambda _c: True)
-            if not iid:
-                logger.info(f"GRE bridge distribute: can't resolve {name!r}; surfacing manual-required")
+            if type(amount) is not int or not 0 <= amount <= 0xFFFFFFFF or not isinstance(name, str):
                 return None
-            distributions[int(iid)] = amount
+            key = name.strip()
+            if not key:
+                return None
+            if key.isascii() and key.isdecimal() and len(key) <= 10:
+                iid = int(key)
+            else:
+                # Prefer an exact name; retain abbreviated names only when they
+                # identify one offered object. Two selected tokens may share a name.
+                matches = [
+                    c for c in candidates if str(c.get("name") or "").strip().casefold() == key.casefold()
+                ]
+                if not matches:
+                    matches = [
+                        c for c in candidates if _match_target_in_battlefield([key], [c], lambda _: True)[0]
+                    ]
+                if len(matches) != 1:
+                    return None
+                iid = matches[0]["instance_id"]
+            if iid not in offered or iid in distributions:
+                return None
+            distributions[iid] = amount
 
-        if not distributions:
+        if not offer["min"] <= sum(distributions.values()) <= offer["max"] or any(
+            amount > 0 and not offer["min_per"] <= amount <= offer["max_per"]
+            for amount in distributions.values()
+        ):
             return None
 
         if bridge.submit_distribution(distributions):

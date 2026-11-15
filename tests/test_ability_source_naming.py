@@ -9,6 +9,8 @@ resolve — so it rendered as "Card#147886" / "Pay costs for Card#136588"
 permanent is the thing the player recognises.
 """
 
+import pytest
+
 from arenamcp.gamestate import GameObject, GameState
 from arenamcp.gamestate_decisions import _handle_pay_costs
 
@@ -148,3 +150,16 @@ def test_distribution_request_with_an_unknown_source_still_registers():
         gs, "GREMessageType_DistributionReq", {"distributionReq": {"sourceId": 12345, "amount": 2}}
     )
     assert gs.decision_context["source_card"] == "Unknown"
+
+
+@pytest.mark.parametrize("minimum,expected", [(4, 4), (1, 0)])
+def test_distribution_only_reports_a_fixed_total_for_equal_gre_bounds(minimum, expected):
+    from arenamcp.gamestate_decisions import _handle_decision_message
+
+    gs = _state_with_ability()
+    _handle_decision_message(
+        gs,
+        "GREMessageType_DistributionReq",
+        {"distributionReq": {"sourceId": 647, "minAmount": minimum, "maxAmount": 4}},
+    )
+    assert gs.decision_context["total"] == expected

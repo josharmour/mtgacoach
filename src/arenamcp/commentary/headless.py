@@ -421,6 +421,7 @@ class HeadlessBooth:
         from arenaonair.models import Event
 
         from .delivery import event_excitement
+        from .timeline import is_single_mill
 
         self.public_zones = observation.public_state["zones"]
         self.public_events = tuple(e for e in observation.events if e.visibility == "public")
@@ -555,11 +556,13 @@ class HeadlessBooth:
                         "excitement": event_excitement(evidence),
                         "received": evidence.received_at or observation.arrived_at,
                     }
-                    self.booth.pending.append(record)
+                    # A single mill can support later analysis without starting a broadcast.
+                    if not is_single_mill(evidence):
+                        self.booth.pending.append(record)
+                        if self.booth.batch_since is None:
+                            self.booth.batch_since = self.now()
                     self.booth.recent.append(record)
                     self.event_sources[record["id"]] = evidence
-                    if self.booth.batch_since is None:
-                        self.booth.batch_since = self.now()
                 continue
             if evidence.kind in {"action_submitted", "deck_overview", "hand_changed"}:
                 continue

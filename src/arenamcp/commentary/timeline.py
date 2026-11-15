@@ -111,7 +111,20 @@ def event_lifetime(kind):
     return {"deck_overview": 90, "hand_changed": 8, "outcome": 60}.get(kind, 30)
 
 
+def is_single_mill(event):
+    payload = event.payload
+    return (
+        event.kind == "outcome"
+        and payload.get("category") == "Mill"
+        and payload.get("from_zone") == "library"
+        and payload.get("to_zone") == "graveyard"
+        and payload.get("count") == 1
+    )
+
+
 def event_priority(event, observation):
+    if is_single_mill(event):
+        return -1  # Keep as supporting evidence when the current event window has room.
     base = {
         "deck_overview": 100,
         "game_end": 20,

@@ -2492,6 +2492,23 @@ def _get_bridge_request_label(
     )
 
 
+def distribution_offer(poll):
+    """A distribution's positive recipients and amount bounds, as offered by Arena."""
+    targets = poll.get("distribution_target_ids")
+    legal = poll.get("distribution_legal_ids")
+    if not isinstance(targets, list) or not isinstance(legal, list):
+        return None
+    if any(type(iid) is not int or iid <= 0 for iid in (*targets, *legal)):
+        return None
+    bounds = {k: poll.get("distribution_" + k) for k in ("min", "max", "min_per", "max_per")}
+    if any(type(n) is not int or not 0 <= n <= 0xFFFFFFFF for n in bounds.values()):
+        return None
+    if bounds["min"] > bounds["max"] or bounds["min_per"] > bounds["max_per"]:
+        return None
+    allowed = set(legal)
+    return {"ids": [i for i in targets if i in allowed], **bounds}
+
+
 def enrich_snapshot_from_pending_response(
     snapshot: dict[str, Any],
     poll: dict[str, Any] | None,
@@ -2564,6 +2581,9 @@ def enrich_snapshot_from_pending_response(
         decision_type,
     )
 
+    if decision_type == "distribution":
+        # Refresh the offered IDs and limits even when a same-family log context survived.
+        existing_ctx["distribution_offer"] = distribution_offer(poll)
     if existing_ctx:
         snapshot["decision_context"] = existing_ctx
 

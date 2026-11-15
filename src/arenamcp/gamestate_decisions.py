@@ -585,7 +585,8 @@ def _handle_decision_message(game_state: "GameState", msg_type: str, msg: dict) 
 
     elif msg_type == "GREMessageType_DistributionReq":
         req = msg.get("distributionReq", {})
-        total = req.get("amount", req.get("total", req.get("max", 0)))
+        fixed = req.get("maxAmount") if req.get("maxAmount") == req.get("minAmount", 0) else None
+        total = req.get("amount", req.get("total", req.get("max", fixed or 0)))
         source_id = req.get("sourceId", 0)
         source_name = _decision_source_name(game_state, source_id)
         logger.info(f"Captured Decision: Distribute {total} (source: {source_name})")

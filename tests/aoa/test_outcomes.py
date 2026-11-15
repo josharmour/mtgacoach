@@ -360,9 +360,11 @@ def test_real_parser_objects_keep_public_milled_card_names_and_types():
             "to_zone": 1,
         },
     )
-    lines = deterministic(observation(g), CommentaryConfig(mode="commentary", speakers=2))
-    assert len(lines) == 2 and "Known creature" in lines[1].text
-    assert g._commentary_journal[0]["payload"]["cards"][0]["type_line"] == "Creature"
+    obs = observation(g)
+    [mill] = [e for e in obs.events if e.payload.get("category") == "Mill"]
+    [card] = mill.payload["cards"]
+    assert (mill.visibility, card["name"], card["type_line"]) == ("public", "Known creature", "Creature")
+    assert deterministic(replace(obs, events=(mill,)), CommentaryConfig(mode="commentary", speakers=2)) == []
 
 
 def test_coalescing_does_not_mutate_already_published_record():
@@ -482,3 +484,36 @@ def test_replayed_exile_event_only_names_the_exact_current_revealed_card():
     value = _exile_event_payload(payload, view)
     assert value["name"] == "Visible print" and len(value["cards"]) == 1
     assert "Discarded" not in str(value)
+
+
+def test_single_mills_remain_public_context_without_a_standalone_call():
+    g = game()
+    add(g, 101, "First card")
+    g._raw_gre_sequence += 1
+    add(g, 102, "Second card")
+    obs = observation(g)
+    mills = [e for e in obs.events if e.payload.get("category") == "Mill"]
+    assert len(mills) == 2
+    only_mills = replace(obs, events=tuple(mills))
+    config = CommentaryConfig(mode="commentary", generative=True)
+    assert deterministic(only_mills, config) == []
+    cast = replace(mills[0], kind="action_observed", event_id="cast", payload={"name": "Test spell"})
+    assert "Test spell" in deterministic(replace(obs, events=(*mills, cast)), config)[0].text
+
+
+def test_mill_triggers_cannot_fill_the_desktop_window_ahead_of_a_cast():
+    from arenamcp.commentary.timeline import select_events
+
+    g = game()
+    for iid in range(101, 107):
+        g._raw_gre_sequence += 1
+        add(g, iid, f"Card {iid}")
+    obs = observation(g)
+    mills = [e for e in obs.events if e.payload.get("category") == "Mill"]
+    cast = replace(mills[0], kind="action_observed", event_id="cast", payload={"name": "New play"})
+    selected = select_events([*mills, cast], obs, limit=4)
+    assert cast in selected and len(selected) == 4
+    assert (
+        "New play"
+        in deterministic(replace(obs, events=selected), CommentaryConfig(mode="commentary"))[0].text
+    )

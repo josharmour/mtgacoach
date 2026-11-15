@@ -7,7 +7,7 @@ from arenamcp.player_names import actor_name
 
 from .contracts import SpeechCategory, Utterance
 from .delivery import delivery_level, event_excitement
-from .timeline import event_lifetime, event_priority, position_fingerprint
+from .timeline import event_lifetime, event_priority, is_single_mill, position_fingerprint
 
 
 def _label(observation, seat):
@@ -50,7 +50,7 @@ def outcome_exchange(observation, config):
     # as a spoken fallback. Keep the original observation for model generation.
     def announce(event):
         p = event.payload
-        return not (
+        return not is_single_mill(event) and not (
             config.generative
             and p.get("from_zone") == "battlefield"
             and p.get("count") == 1
