@@ -63,19 +63,27 @@ def test_snapshot_restores_the_exact_planner_state(state: dict) -> None:
     assert restored == state
 
 
-def test_snapshot_replays_the_option_layer(state: dict) -> None:
+@pytest.mark.parametrize("transported", [False, True])
+def test_snapshot_replays_the_option_layer(state: dict, transported: bool) -> None:
     """Option facts computed on the restored state match the original's."""
     _, entry = _record(state)
-    restored = game_state_from_snapshot(entry["state_snapshot"])
+    from arenamcp.snapshot_transport import pack_snapshot
+
+    snapshot = entry["state_snapshot"]
+    restored = game_state_from_snapshot(pack_snapshot(snapshot) if transported else snapshot)
     legal = [o["option_id"] for o in entry["pending_decision"]["options"]]
     assert _legal_payable(state, legal) == _legal_payable(restored, legal)
     assert _opponent_tapped_out(state) == _opponent_tapped_out(restored)
 
 
-def test_snapshot_replays_the_line_search(state: dict) -> None:
+@pytest.mark.parametrize("transported", [False, True])
+def test_snapshot_replays_the_line_search(state: dict, transported: bool) -> None:
     """The assessment over the restored state equals the original's."""
     _, entry = _record(state)
-    restored = game_state_from_snapshot(entry["state_snapshot"])
+    from arenamcp.snapshot_transport import pack_snapshot
+
+    snapshot = entry["state_snapshot"]
+    restored = game_state_from_snapshot(pack_snapshot(snapshot) if transported else snapshot)
     from arenamcp import board_assessment as ba
 
     ba._CACHE.clear()

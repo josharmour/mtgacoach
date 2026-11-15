@@ -697,6 +697,16 @@ def build_cases(paths):
             counts["missing_match"] += 1
             continue
         group = hashlib.sha256(str(match).encode()).hexdigest()
+        # Discover identities across the entire restored bundle before testing any
+        # individual case. A malformed table cannot hide evidence for sibling cases.
+        from arenamcp.snapshot_transport import expand_bundle_snapshots
+
+        try:
+            bundle = expand_bundle_snapshots(bundle)
+        except (ValueError, TypeError, RecursionError, OverflowError):
+            counts["invalid_snapshot_encoding"] += 1
+            continue
+        packet = bundle.get("packet") or {}
         identities = discover_identities(bundle)
         for index, decision in enumerate(packet.get("decisions", [])):
             counts["decisions"] += 1

@@ -131,6 +131,10 @@ def game_state_from_snapshot(snapshot: dict[str, Any] | None) -> dict[str, Any]:
     The nested ``zones`` payload is re-aliased to the restored card lists,
     mirroring ``server._build_public_zones``.
     """
+    if isinstance(snapshot, dict) and snapshot.get("version") == 2:
+        from arenamcp.snapshot_transport import unpack_snapshot
+
+        snapshot = unpack_snapshot(snapshot)
     state = copy.deepcopy((snapshot or {}).get("state") or {})
     aliases = state.pop("_zone_aliases", None)
     zones = dict(state.pop("zones", {}) or {})

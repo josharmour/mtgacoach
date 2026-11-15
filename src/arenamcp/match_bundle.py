@@ -49,6 +49,7 @@ PLAYER_LOG_CAP = 6 * 1024 * 1024
 BUG_REPORT_CAP = 1024 * 1024
 MAX_BUG_REPORTS = 5
 FINAL_STATE_CAP = 1024 * 1024
+SNAPSHOT_GZIP_TARGET = 150_000
 GZIP_CAP = 8 * 1024 * 1024
 MAX_ADVICE_ENTRIES = 50
 # How far behind the watcher's offset the Player.log slicer looks for the
@@ -472,7 +473,9 @@ def redact(bundle: Any, names: dict[str, str] | None = None) -> Any:
     inside strings and keys, never structure, and if it ever produced
     unparseable text the value-level copy is returned instead.
     """
-    cleaned = _scrub_values(_scrub_keys(bundle), _name_patterns(names))
+    from arenamcp.snapshot_transport import expand_bundle_snapshots
+
+    cleaned = _scrub_values(_scrub_keys(expand_bundle_snapshots(bundle)), _name_patterns(names))
     text = json.dumps(cleaned, ensure_ascii=False, default=str)
     try:
         return json.loads(_scrub_text(text))
@@ -706,12 +709,54 @@ def _shrink(bundle: dict[str, Any]) -> bool:
     return changed
 
 
+def _gzip_json(value):
+    return gzip.compress(json.dumps(value, ensure_ascii=False, default=str).encode("utf-8"), compresslevel=6)
+
+
+def _encode_snapshots(bundle, native_bytes, compressed):
+    """Keep v1 on the wire unless decision boards exceed the incremental size target."""
+    from arenamcp.snapshot_transport import MAX_JSON_BYTES, expand_bundle_snapshots, pack_snapshot
+
+    packet = bundle.get("packet")
+    if (
+        len(compressed) < SNAPSHOT_GZIP_TARGET
+        or len(native_bytes) > MAX_JSON_BYTES
+        or not isinstance(packet, dict)
+    ):
+        return compressed
+    rows = packet.get("decisions")
+    if not isinstance(rows, list) or not any(isinstance(r, dict) and "state_snapshot" in r for r in rows):
+        return compressed
+    stripped = [
+        {k: v for k, v in row.items() if k != "state_snapshot"} if isinstance(row, dict) else row
+        for row in rows
+    ]
+    scratch = {**bundle, "packet": {**packet, "decisions": stripped}}
+    baseline = len(_gzip_json(scratch))
+    if len(compressed) - baseline < SNAPSHOT_GZIP_TARGET:
+        return compressed
+    try:
+        for row, target in zip(rows, stripped, strict=True):
+            if not isinstance(row, dict) or "state_snapshot" not in row:
+                continue
+            snapshot = row["state_snapshot"]
+            target["state_snapshot"] = pack_snapshot(snapshot)
+        # Apply the same per-snapshot and aggregate limits as replay before
+        # emitting the new format. Preserve the native spelling on refusal.
+        expand_bundle_snapshots(scratch)
+        alternative = _gzip_json(scratch)
+    except (ValueError, TypeError, RecursionError, OverflowError):
+        return compressed
+    if min(len(alternative), len(compressed)) - baseline >= SNAPSHOT_GZIP_TARGET:
+        logger.warning("Decision snapshots exceed the compressed match target; complete replay retained")
+    return alternative if len(alternative) < len(compressed) else compressed
+
+
 def encode_bundle(bundle: dict[str, Any], gzip_cap: int = GZIP_CAP) -> bytes:
-    """Gzip the bundle, shrinking the log sections until it fits *gzip_cap*."""
+    """Gzip the redacted bundle, shrinking the log sections until it fits *gzip_cap*."""
     while True:
-        data = gzip.compress(
-            json.dumps(bundle, ensure_ascii=False, default=str).encode("utf-8"), compresslevel=6
-        )
+        native_bytes = json.dumps(bundle, ensure_ascii=False, default=str).encode("utf-8")
+        data = _encode_snapshots(bundle, native_bytes, gzip.compress(native_bytes, compresslevel=6))
         if len(data) <= gzip_cap or not _shrink(bundle):
             return data
 
