@@ -10127,15 +10127,21 @@ class ActionPlanner(_ActionLegalityMixin):
                 game_state, target_objects.get(self._decision_source_instance(game_state))
             )
         warded_targets = False
+        shared_payment_note = sum(o.payable is True for o in decision.options) > 1
+        if shared_payment_note:
+            lines.insert(
+                lines.index("OPTIONS:"),
+                "Arena's payable tags override estimates from visible lands or commander tax.",
+            )
         for o in decision.options:
             note = ""
             label = o.label
             if o.payable is False:
                 note = "  [cannot auto-pay — do not pick]"
             elif o.payable is True:
-                note = (
-                    "  [Arena confirms payable now] (overrides estimates from visible lands or commander tax)"
-                )
+                note = "  [Arena confirms payable now]"
+                if not shared_payment_note:
+                    note += " (overrides estimates from visible lands or commander tax)"
             if line_source is not None and o.payable is not False:
                 tag = self._line_tag(line_source, o, tag_state, unmodelled)
                 if tag:

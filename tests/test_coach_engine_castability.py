@@ -193,6 +193,28 @@ def test_typed_prompt_uses_current_decision_instead_of_stale_snapshot():
     assert state == previous
 
 
+def test_several_payable_choices_keep_individual_tags_and_share_explanation():
+    class Capture:
+        def complete(self, system, user, **kwargs):
+            self.prompt = user
+            return '{"option_ids": ["idx:0"]}'
+
+    actions = [_cast(instanceId=i, hasAutoTap=i != 103) for i in (101, 102, 103)]
+    actions[2]["manaCost"] = [{"count": 10}]
+    decision = build_pending_decision(
+        {"has_pending": True, "request_type": "ActionsAvailable", "can_pass": True, "actions": actions},
+        resolve_name=lambda gid: "Test Spell",
+    )
+    backend = Capture()
+    state = _state([], hand=[_spell(instance_id=i) for i in (101, 102, 103)])
+    assert ActionPlanner(backend=backend).plan_decision_options(decision, state) == ["idx:0"]
+    assert backend.prompt.count("estimates from visible lands or commander tax") == 1
+    for idx in (0, 1):
+        assert f"- idx:{idx}: Cast Test Spell  [Arena confirms payable now]" in backend.prompt
+    assert decision.find("idx:2").payable is False
+    assert "- idx:2:" not in backend.prompt
+
+
 def test_logged_priority_menu_supplies_payment_when_bridge_snapshot_missing():
     state = _state(None)
     state.update(

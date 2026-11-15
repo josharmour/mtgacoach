@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import re
 from collections import OrderedDict
+from functools import lru_cache
 from threading import Lock
 
 from arenamcp.card_facts.reviewed_notes import corpus, reviewed_print
@@ -69,6 +71,36 @@ def mark_public_native_prints(state):
         digest = legacy_lookup_hash(card)
         if digest:
             card["public_native_print"] = f"{gid}:{digest}"
+
+
+_MANA_ABILITY = re.compile(
+    r"\(?\{o?t\}: add (?:\{o?[wubrgc]\}(?:(?:, |,? or )\{o?[wubrgc]\})*"
+    r"|one mana of any color(?: in your commander's color identity)?)\.\)?",
+    re.I,
+)
+
+
+_MANA_LAND_ENTRY = re.compile(
+    r"this land enters(?: the battlefield)? tapped(?: unless you control (?:"
+    r"(?:two or fewer|two or more) other lands|(?:a|an) (?:plains|island|swamp|mountain|forest)"
+    r" or (?:a |an )?(?:plains|island|swamp|mountain|forest)))?\.",
+    re.I,
+)
+
+
+@lru_cache(maxsize=512)
+def _only_fixes_mana(type_line, rules):
+    """Recognize complete mana-only land text. Other abilities keep their place in the read."""
+    from arenamcp.opening_fetches import FETCH, SHOCK
+
+    if str(type_line or "").lower().partition("—")[0].strip() not in {"land", "legendary land"}:
+        return False
+    if FETCH.fullmatch(rules):
+        return True
+    mana_text = _MANA_LAND_ENTRY.sub("", SHOCK.sub("", rules)).strip()
+    return bool(
+        mana_text and _MANA_ABILITY.search(mana_text) and not _MANA_ABILITY.sub("", mana_text).strip()
+    )
 
 
 class OpponentRead:
@@ -151,7 +183,13 @@ class OpponentRead:
                 rules = " ".join(oracle_lines(card["oracle_text"]))
                 if rules and len(rules) <= 620:
                     current.setdefault(
-                        (card["grp_id"], digest), (seq, card["grp_id"], zone, (card["name"], rules))
+                        (card["grp_id"], digest),
+                        (
+                            seq,
+                            card["grp_id"],
+                            zone,
+                            (card["name"], rules, _only_fixes_mana(card.get("type_line"), rules)),
+                        ),
                     )
         epoch = (match, game, local)
         with self._lock:
@@ -187,11 +225,16 @@ class OpponentRead:
         # actually visible in this snapshot before previously seen cards.
         command.sort(key=lambda row: not (row[0] in current and current[row[0]][2] == "command"))
         others = [row for row in ordered if row[0] not in command_times]
-        selected = {key for key, _ in command[:2] + others[:2]}
+        # Always show the latest reveal. For the companion slot prefer a
+        # strategic ability or spell over a second plain mana source.
+        recent = others[:1]
+        if len(others) > 1:
+            recent.append(next((row for row in others[1:] if not row[1][3][2]), others[1]))
+        selected = {key for key, _ in command[:2] + recent}
         observed = [row for row in ordered if row[0] in selected]
         if observed:
             references, rules = [], []
-            for (gid, digest), (when, _, zone, (name, text)) in observed:
+            for (gid, digest), (when, _, zone, (name, text, _)) in observed:
                 if (gid, digest) in command_times:
                     when, zone = command_times[gid, digest], "command"
                 references.append(

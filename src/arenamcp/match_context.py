@@ -283,13 +283,24 @@ def _rules_order(state: dict, catalog: dict[int, dict], visible: list[int]) -> l
 
 _TUTOR_RE = re.compile(r"search your library for", re.I)
 _LAND_SEARCH_RE = re.compile(
-    r"search your library for (?:a |an |up to \w+ |two |three )?(?:basic )?(?:land|forest|plains|island|swamp|mountain)",
+    r"search your library for (?:an? |up to \w+ |two |three )?(?:basic )?"
+    r"(?:lands?|(?:forest|plains|island|swamp|mountain)(?: or (?:forest|plains|island|swamp|mountain))?)"
+    r"(?: cards?)?(?=\.|, (?:reveal (?:it|them)|put (?:it|them)|shuffle|then shuffle)\b)",
     re.I,
 )
 
 
-def _tutor_in_hand(state: dict) -> bool:
-    """A nonland tutor in our hand can find any library card, so every card's rules matter."""
+_TYPED_SEARCH = re.compile(
+    r"search your library for an? (?:(?:white|blue|black|red|green|colorless) )?"
+    r"(artifact|creature|enchantment|instant|planeswalker|sorcery) card"
+    r"(?: with mana value (?:x|[0-9]+) or less)?(?=\.|, (?:reveal it|put it|shuffle|then shuffle)\b)",
+    re.I,
+)
+
+
+def _tutor_types_in_hand(state: dict) -> set[str] | None:
+    """Known search types, or None when any nonland search has a broader or unknown scope."""
+    types = set()
     local = state.get("local_seat_id") or next(
         (p.get("seat_id") for p in state.get("players", []) if p.get("is_local")), None
     )
@@ -297,9 +308,55 @@ def _tutor_in_hand(state: dict) -> bool:
         if local is not None and card.get("owner_seat_id") not in (None, local):
             continue
         text = str(card.get("oracle_text") or "")
-        if _TUTOR_RE.search(text) and not _LAND_SEARCH_RE.search(text):
-            return True
-    return False
+        for match in _TUTOR_RE.finditer(text):
+            if _LAND_SEARCH_RE.match(text, match.start()):
+                continue
+            typed = _TYPED_SEARCH.match(text, match.start())
+            if typed is None:
+                return None
+            types.add(typed.group(1).lower())
+    if types:
+        # Static abilities can change the types of cards in a library (e.g.
+        # Encroaching Mycosynth). Prefer the unrestricted reference in that case.
+        for permanent in _zone(state, "battlefield"):
+            text = str(permanent.get("oracle_text") or "").lower()
+            if (
+                "cards" in text
+                and ("are" in text or "in addition" in text)
+                and any(word in text for word in (*types, "card type", "permanent type"))
+            ):
+                return None
+    return types
+
+
+def _possible_tutor_type(card: dict, types: set[str]) -> bool:
+    from arenamcp.card_facts.source_identity import single_face_source
+
+    line = str(card.get("type_line") or "").lower().split("—", 1)[0]
+    printed_types = set(line.split())
+    if not single_face_source(card) or not printed_types.intersection(
+        {
+            "land",
+            "artifact",
+            "creature",
+            "enchantment",
+            "instant",
+            "sorcery",
+            "planeswalker",
+            "battle",
+            "kindred",
+            "tribal",
+        }
+    ):
+        return True
+    # A characteristic-defining ability can make a planeswalker a creature
+    # card in the library. Keep its rules whenever they could matter.
+    rules = str(card.get("oracle_text") or "").lower()
+    return (
+        bool(types & printed_types)
+        or not rules
+        or any(word in rules for word in (*types, "card type", "permanent type"))
+    )
 
 
 # Effects whose outcome depends on what is left in the library: searches
@@ -483,7 +540,15 @@ def prepare_match_context(
     if commanders:
         reference.append("COMMANDER REFERENCE (availability and command tax depend on live state)")
         reference.extend(_card_line(catalog[gid], count, gid) for gid, count in sorted(commanders.items()))
-    full_rules = full_rules or _tutor_in_hand(state)
+    tutor_types = _tutor_types_in_hand(state)
+    full_rules = (
+        full_rules
+        or tutor_types is None
+        or (bool(tutor_types) and not (compact_decision and source_ids_complete))
+    )
+    scope = set()
+    if tutor_types and not full_rules:
+        scope = {gid for gid in deck if _possible_tutor_type(catalog[gid], tutor_types)}
     candidate_gids: list[int] = []
     offered = {g for g in reveal if type(g) is int and g in deck}
     if full_rules:
@@ -494,7 +559,7 @@ def prepare_match_context(
         # quoted for this call only, appended after the cards already seen so
         # the stable reference and these per-window lines can be separated
         # without changing a single byte (E2 prefix-cache ordering).
-        candidate_gids = sorted(gid for gid in offered if gid not in quoted)
+        candidate_gids = sorted((offered | scope) - set(quoted) - set(commanders))
         quoted += candidate_gids
     quoted = [gid for gid in quoted if gid not in commanders]
     if quoted:
@@ -504,6 +569,7 @@ def prepare_match_context(
         reference.append(
             "RULES OF THE CARDS SEEN THIS GAME (hand, battlefield, graveyards, exile, stack"
             + (", and the pending decision's candidates" if reveal else "")
+            + (", plus potential " + "/".join(sorted(tutor_types)) + " search targets" if scope else "")
             + "; cost, type and printed stats as listed above; the rest of the library is listed above "
             "by name only: do not invent its rules)"
             if not full_rules
@@ -515,7 +581,7 @@ def prepare_match_context(
             # An eligible past print is already named, with cost, type and
             # stats, in the starting list. Every current zone and option keeps
             # its ordinary rules row. Missing evidence keeps the original bytes.
-            inactive = set(quoted) - offered - set(_visible_grp_ids(state, catalog))
+            inactive = set(quoted) - offered - scope - set(_visible_grp_ids(state, catalog))
             if inactive:
                 from arenamcp.card_facts.prompt_render import compact_history_rules
 

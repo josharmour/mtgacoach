@@ -337,3 +337,62 @@ def test_default_resolver_excludes_network_adapter_and_caches_local_reads(monkey
         assert network_reads == []
     finally:
         match_context._local_card.cache_clear()
+
+
+def test_typed_tutor_keeps_required_prints_and_broad_search_controls():
+    tutor = obj(
+        100,
+        10,
+        oracle_text="Search your library for a green creature card with mana value X or less, put it onto the battlefield, then shuffle.",
+    )
+    deck = list(range(100, 107))
+
+    def lookup(gid):
+        types = {
+            100: "Sorcery",
+            101: "Creature — Elf",
+            102: "Land",
+            103: "Artifact",
+            104: "",
+            105: "Land",
+            106: "Planeswalker",
+        }
+        c = {**card_lookup(gid), "type_line": types[gid]}
+        if gid == 106:
+            c["oracle_text"] = (
+                "As long as Grist isn’t on the battlefield, it’s a 1/1 Insect creature in addition to its other types."
+            )
+        if gid == 105:
+            c["related_faces"] = [{"name": "Other face", "oracle_text": "Flying"}]
+        return c
+
+    def context(battlefield=(), **kw):
+        params = {
+            "card_lookup": lookup,
+            "compact_decision": True,
+            "source_ids_complete": True,
+            "reveal": (103,),
+        }
+        return prepare_match_context(
+            state(deck, hand=[tutor], battlefield=list(battlefield)), **(params | kw)
+        )
+
+    result = context()
+    assert result["deck_rules_grp_ids"] == [100, 101, 103, 104, 105, 106]
+    assert "Card 102" in result["deck_reference"] and "Rules for card 102." not in result["deck_reference"]
+    assert "Rules for card 103." in result["decision_candidate_rules"]
+    assert context(full_rules=True)["deck_rules_grp_ids"] == deck
+    assert context(source_ids_complete=False)["deck_rules_grp_ids"] == deck
+    tutor["oracle_text"] += "\nSearch your library for a card, then shuffle."
+    assert context()["deck_rules_grp_ids"] == deck
+    tutor["oracle_text"] = "Search your library for a land or creature card, then shuffle."
+    assert context()["deck_rules_grp_ids"] == deck
+    tutor["oracle_text"] = "Search your library for a basic land card, a creature card, and an artifact card."
+    assert context()["deck_rules_grp_ids"] == deck
+    tutor["oracle_text"] = "Search your library for an artifact card, reveal it, then shuffle."
+    mycosynth = obj(
+        300,
+        30,
+        oracle_text="The same is true for permanent spells you control and nonland permanent cards you own that aren't on the battlefield. Nonland permanents you control are artifacts in addition to their other types.",
+    )
+    assert context(battlefield=[mycosynth])["deck_rules_grp_ids"] == deck

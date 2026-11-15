@@ -432,3 +432,62 @@ def test_command_zone_source_survives_new_public_reveals_within_same_game():
         later = next(iter(cast_read(reader, {**third, "commentary_source_sequence": 4}).values()))
         late = next(r for r in later["evidence"] if r["grp_id"] == 90101)
         assert (late["observed_zone"], late["source_sequence"]) == ("command", 3)
+
+
+def test_later_mana_land_preserves_an_earlier_public_answer():
+    from arenamcp.card_facts.source_identity import legacy_lookup_hash
+
+    def sight(seq, name, kind, rules, zone="battlefield"):
+        gid = 95000 + seq
+        card = dict(
+            grp_id=gid,
+            name=name,
+            type_line=kind,
+            oracle_text=rules,
+            mana_cost="",
+            instance_id=gid + 10,
+            owner_seat_id=2,
+            controller_seat_id=2,
+            object_kind="CARD",
+            visibility="Visibility_Public",
+        )
+        card["public_native_print"] = f"{gid}:{legacy_lookup_hash(card)}"
+        state = captured(327)
+        return {**state, "commentary_source_sequence": seq, "zones": {zone: [card]}}
+
+    reader = OpponentRead()
+    answer = sight(1, "Counterspell", "Instant", "Counter target spell.", "stack")
+    fetch = sight(
+        2,
+        "Scalding Tarn",
+        "Land",
+        "{T}, Pay 1 life, Sacrifice this land: Search your library for an Island or Mountain card, put it onto the battlefield, then shuffle.",
+    )
+    shock = sight(
+        3,
+        "Watery Grave",
+        "Land — Island Swamp",
+        "As this land enters, you may pay 2 life. If you don't, it enters tapped.\n{T}: Add {U}.\n{T}: Add {B}.",
+    )
+    draw = sight(
+        4,
+        "Library of Alexandria",
+        "Land",
+        "{T}: Add {C}.\n{T}: Draw a card. Activate only if you have exactly seven cards in hand.",
+    )
+    for s in (answer, fetch):
+        reader.plan_block(s)
+    block = reader.plan_block(shock)
+    assert "Counterspell" in block and "Watery Grave" in block and "Scalding Tarn" not in block
+    assert "Library of Alexandria" not in block
+    text = reader.plan_block(draw)
+    assert "Library of Alexandria" in text and "Counterspell" in text
+    assert "Watery Grave" not in reader.plan_block(fetch)
+
+    for condition in ("a Plains or an Island", "two or fewer other lands", "two or more other lands"):
+        rules = f"This land enters tapped unless you control {condition}.\n{{T}}: Add {{W}} or {{U}}."
+        later_land = sight(5, "Dual Land", "Land", rules)
+        assert "Library of Alexandria" in reader.plan_block(later_land)
+    utility = sight(6, "Utility Land", "Land", rules + "\nOther lands you control have ward {1}.")
+    reader.plan_block(utility)
+    assert "Utility Land" in reader.plan_block(sight(7, "Another Dual", "Land", rules))
