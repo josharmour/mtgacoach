@@ -225,6 +225,8 @@ class CommentaryService:
             )
             if self.cancelled.is_set() or time.monotonic() >= exchange.deadline:
                 raise BudgetExceeded("cancelled_or_late")
+            if not isinstance(response, str) or not response.strip():
+                raise BudgetExceeded("incomplete_final_response")
             return json.loads(response)
         finally:
             self.budget.after_call(exchange)

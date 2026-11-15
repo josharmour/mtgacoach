@@ -28,6 +28,7 @@ BROKER_REASONS = frozenset(
         "first_token_timeout",
         "request_timeout",
         "invalid_json",
+        "incomplete_final_response",
         "backend_unavailable",
         "admission_or_request_failed",
     }
@@ -95,7 +96,11 @@ class CommentaryBudget:
         # UTF-8 bytes plus message framing are a conservative token upper bound;
         # no gateway-specific tokenizer guess can undercount a dense Unicode prompt.
         tokens = len(system.encode("utf-8")) + len(user.encode("utf-8")) + len(schema.encode("utf-8")) + 256
-        output = 256 if audit else 512
+        # Reasoning-capable endpoints can consume output tokens before emitting
+        # final audit JSON even when thinking-off was requested. Leave bounded
+        # room for that final answer; the existing total/minute and wall-time
+        # budgets remain authoritative (two full 1536-token exchanges/minute).
+        output = 1024 if audit else 512
         if tokens > 6000:
             raise BudgetExceeded("context_budget")
         if sum(item.input_tokens for item in self.history) + tokens > 48000:

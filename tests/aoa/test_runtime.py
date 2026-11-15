@@ -47,10 +47,10 @@ def test_budget_has_no_backlog_two_calls_no_repairs_and_charges_cancellation():
     assert b.before_call(exchange, "system", "facts", audit=False) == (512, 6)
     now[0] = 2
     b.after_call(exchange)
-    assert b.before_call(exchange, "audit", "line", audit=True) == (256, 4)
+    assert b.before_call(exchange, "audit", "line", audit=True) == (1024, 4)
     now[0] = 5
     b.finish(exchange)  # cancelled attempts are charged too
-    assert exchange.request_seconds == 5 and exchange.output_tokens == 768
+    assert exchange.request_seconds == 5 and exchange.output_tokens == 1536
     with pytest.raises(BudgetExceeded):
         b.before_call(exchange, "repair", "facts", audit=False)
     second = b.begin(4)
@@ -454,3 +454,56 @@ def test_pipe_speech_is_forwarded_once_and_never_implicitly_urgent():
     ui._coach = None
     ui.speak("Play Forest.")
     assert ui._emit.call_args.args[0]["speech_category"] == "workflow"
+
+
+def test_larger_audit_reservation_preserves_minute_output_ceiling_and_deadline():
+    now = [0.0]
+    budget = CommentaryBudget(lambda: now[0])
+    for _ in range(2):
+        exchange = budget.begin(4)
+        assert budget.before_call(exchange, "", "", audit=False)[0] == 512
+        budget.after_call(exchange)
+        assert budget.before_call(exchange, "", "", audit=True)[0] == 1024
+        assert exchange.deadline == now[0] + 6
+        budget.finish(exchange)
+    assert sum(item.output_tokens for item in budget.history) == 3072
+    third = budget.begin(4)
+    with pytest.raises(BudgetExceeded, match="output_budget"):
+        budget.before_call(third, "", "", audit=False)
+    assert third.calls == 0
+    budget.finish(third, usable=False)
+    now[0] = 61
+    fresh = budget.begin(4)
+    budget.before_call(fresh, "", "", audit=False)
+    budget.after_call(fresh)
+    now[0] = 67
+    with pytest.raises(BudgetExceeded, match="call_count_or_deadline"):
+        budget.before_call(fresh, "", "", audit=True)
+
+
+def test_broker_distinguishes_missing_final_content_without_repair():
+    from arenamcp.backends.proxy import ProxyBackend
+    from arenamcp.commentary.budget import broker_failure_code
+
+    class EmptyFinal(ProxyBackend):
+        def __init__(self):
+            self.calls = []
+
+        def complete(self, *args, **kwargs):
+            self.calls.append((args, kwargs))
+            return ""
+
+    backend = EmptyFinal()
+    service = CommentaryService(
+        settings=lambda: {}, backend=lambda: backend, emit=lambda _: None, client_factory=lambda: None
+    )
+    exchange = service.budget.begin()
+    service.budget.before_call(exchange, "generation", "facts", audit=False)
+    service.budget.after_call(exchange)
+    with pytest.raises(BudgetExceeded, match="incomplete_final_response") as caught:
+        service._backend_request(exchange, "audit", {"lines": []}, True)
+    assert broker_failure_code(caught.value) == "incomplete_final_response"
+    assert len(backend.calls) == 1
+    assert backend.calls[0][0][2] == 1024
+    assert backend.calls[0][1]["enable_thinking"] is False
+    assert exchange.calls == 2 and exchange.call_started is None

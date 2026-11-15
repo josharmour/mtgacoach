@@ -2119,7 +2119,15 @@ class ProxyBackend:
             content = "".join(chunks)
             if "</think>" in content:
                 content = content.split("</think>")[-1].strip()
-            if call is not None and call.call_class == "background.game_plan" and finish_reason == "length":
+            if call is not None and call.call_class == "background.commentary":
+                # Audits must use completed final-channel JSON, never a fragment
+                # or a plausible approval salvaged from private deliberation.
+                if finish_reason != "stop" or not content.strip():
+                    logger.warning(
+                        "[PROXY] Commentary missing completed final content; using caller fallback"
+                    )
+                    content = ""
+            elif call is not None and call.call_class == "background.game_plan" and finish_reason == "length":
                 # A truncated JSON prefix can look like a usable partial plan,
                 # and reasoning salvage can turn an unfinished thought into one.
                 # Let the manager keep its old plan and make its bounded repair.
@@ -2190,7 +2198,11 @@ class ProxyBackend:
             or _field(getattr(message, "model_extra", None), "reasoning")
             or getattr(message, "reasoning", None)
         )
-        if (
+        if call is not None and call.call_class == "background.commentary":
+            if getattr(response.choices[0], "finish_reason", None) != "stop" or not content.strip():
+                logger.warning("[PROXY] Commentary missing completed final content; using caller fallback")
+                content = ""
+        elif (
             call is not None
             and call.call_class == "background.game_plan"
             and getattr(response.choices[0], "finish_reason", None) == "length"

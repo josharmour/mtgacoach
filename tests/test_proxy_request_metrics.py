@@ -254,3 +254,36 @@ def test_failed_stream_retains_metadata_without_logging_partial_content(monkeypa
     assert stream.closed
     for private in ("private prompt", "private state", "private reasoning", "private partial answer"):
         assert private not in caplog.text
+
+
+@pytest.mark.parametrize("finish", ["length", "stop", None])
+def test_commentary_never_salvages_reasoning_as_audit(monkeypatch, finish):
+    clock = FakeClock()
+    stream = FakeStream(clock, [(0.1, chunk(reasoning='{"checks":[{"supported":true}]}', finish=finish))])
+    be, calls, _ = backend(monkeypatch, clock, [stream])
+    assert be.complete("audit", "facts", 256, background=True, call_class="background.commentary") == ""
+    assert len(calls) == 1
+    assert be.last_request_metrics["finish_reason"] == finish
+
+
+@pytest.mark.parametrize("finish,expected", [("stop", '{"checks":[]}'), ("length", ""), (None, "")])
+def test_commentary_requires_successful_final_completion(monkeypatch, finish, expected):
+    clock = FakeClock()
+    stream = FakeStream(clock, [(0.1, chunk('{"checks":[]}', finish=finish))])
+    be, calls, _ = backend(monkeypatch, clock, [stream])
+    assert be.complete("audit", "facts", 256, background=True, call_class="background.commentary") == expected
+    assert len(calls) == 1
+
+
+def test_nonstreamed_commentary_does_not_salvage_reasoning(monkeypatch):
+    clock = FakeClock()
+    # A local compatibility failure before any stream output invokes existing
+    # nonstream transport; that response must obey the same final-content gate.
+    response = NS(
+        model="glm-5.3-flash-local",
+        usage=None,
+        choices=[NS(finish_reason="stop", message=NS(content="", reasoning_content='{"checks":[]}'))],
+    )
+    be, calls, _ = backend(monkeypatch, clock, [ValueError("stream unsupported"), response])
+    assert be.complete("audit", "facts", 256, background=True, call_class="background.commentary") == ""
+    assert len(calls) == 2
