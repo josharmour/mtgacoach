@@ -23,6 +23,34 @@ def _ids(values):
     return ids if len(ids) == len(values) else None
 
 
+def _phase_engine_sentinel(annotation):
+    """The exact transient GRE phase/step shape that references the engine as zero."""
+    if (
+        set(annotation) != {"id", "type", "affectedIds", "details"}
+        or not _positive(annotation["id"])
+        or annotation["type"] != ["AnnotationType_PhaseOrStepModified"]
+        or annotation["affectedIds"] != [0]
+        or type(annotation["affectedIds"][0]) is not int
+    ):
+        return False
+    details = annotation["details"]
+    if type(details) is not list or len(details) != 2:
+        return False
+    for detail, key in zip(details, ("phase", "step"), strict=True):
+        if (
+            type(detail) is not dict
+            or set(detail) != {"key", "type", "valueInt32"}
+            or detail["key"] != key
+            or detail["type"] != "KeyValuePairValueType_int32"
+            or type(detail["valueInt32"]) is not list
+            or len(detail["valueInt32"]) != 1
+            or type(detail["valueInt32"][0]) is not int
+            or detail["valueInt32"][0] < 0
+        ):
+            return False
+    return True
+
+
 def _undisturbed_members(message, zones, library_zone, members):
     """Reject contradictory membership and any identities revealed/rewritten in-place.
 
@@ -53,18 +81,15 @@ def _undisturbed_members(message, zones, library_zone, members):
     persistent = message.get("persistentAnnotations", [])
     if not isinstance(annotations, list) or not isinstance(persistent, list):
         return False
-    for annotation in (*annotations, *persistent):
+    for index, annotation in enumerate((*annotations, *persistent)):
         if not isinstance(annotation, dict):
             return False
-        affected = annotation.get("affectedIds", [])
-        # PhaseOrStepModified legitimately references engine/seat zero. It
-        # cannot be a library instance (all are strictly positive). Renames
-        # below still require a complete set of positive physical ids.
-        if (
-            type(affected) is not list
-            or any(type(i) is not int or i in members for i in affected)
-            or annotation.get("affectorId") in members
-        ):
+        affected = _ids(annotation.get("affectedIds", []))
+        if affected is None:
+            if index < len(annotations) and _phase_engine_sentinel(annotation):
+                continue
+            return False
+        if affected & members or annotation.get("affectorId") in members:
             return False
         if "AnnotationType_ObjectIdChanged" not in (annotation.get("type") or []):
             continue

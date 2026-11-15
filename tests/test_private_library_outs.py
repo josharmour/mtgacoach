@@ -591,17 +591,46 @@ def test_repeated_opening_envelope_cannot_rearm_a_failed_census():
     assert g._draw_inventory is None
 
 
-def test_normal_phase_event_with_engine_zero_preserves_unmodified_inventory():
-    """88 of the first compiled 100 real replays hit this non-card phase annotation."""
+def _recorded_phase_event():
+    # Exact GRE field shapes, with a local test id in place of its event number.
+    return {
+        "id": 3,
+        "type": ["AnnotationType_PhaseOrStepModified"],
+        "affectedIds": [0],
+        "details": [
+            {"key": "phase", "type": "KeyValuePairValueType_int32", "valueInt32": [1]},
+            {"key": "step", "type": "KeyValuePairValueType_int32", "valueInt32": [0]},
+        ],
+    }
+
+
+@pytest.mark.parametrize(
+    ("field", "updates", "preserved"),
+    [
+        ("annotations", {}, True),
+        ("annotations", {"affectedIds": [-5]}, False),
+        ("annotations", {"affectedIds": [5, 5]}, False),
+        ("annotations", {"affectedIds": [False]}, False),
+        ("annotations", {"affectedIds": [0, 0]}, False),
+        ("annotations", {"type": ["AnnotationType_NewTreatment"]}, False),
+        ("annotations", {"details": []}, False),
+        ("annotations", {"affectorId": IDS[-1]}, False),
+        ("persistentAnnotations", {}, False),
+    ],
+)
+def test_only_verified_transient_engine_phase_event_can_reference_zero(field, updates, preserved):
     g = opened()
     g.update_from_message(
         {
             "type": "GameStateType_Diff",
             "gameStateId": 3,
             "prevGameStateId": 2,
-            "annotations": [{"type": ["AnnotationType_PhaseOrStepModified"], "affectedIds": [0]}],
+            field: [{**_recorded_phase_event(), **updates}],
         }
     )
     s = board()
     s["_log_game_state_id"] = 3
-    assert project(s, g)["remaining"] == 53
+    if preserved:
+        assert project(s, g)["remaining"] == 53
+    else:
+        assert project(s, g) is None
