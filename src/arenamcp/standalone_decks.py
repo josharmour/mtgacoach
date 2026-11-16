@@ -252,8 +252,9 @@ class _DeckLibraryMixin:
     def _poll_deck_preparation(self, idle: bool, state: dict | None = None) -> None:
         """Run at most one idle lookup off the coaching thread; live play takes precedence."""
         worker = getattr(self, "_deck_prep_thread", None)
-        if not idle and getattr(self, "_coach", None):
-            self._coach._cancel_idle_playbook_builds("match in progress")
+        cancel_builds = getattr(getattr(self, "_coach", None), "_cancel_idle_playbook_builds", None)
+        if not idle and callable(cancel_builds):
+            cancel_builds("match in progress")
         if not idle or not self._auto_deck_strategy:
             cancel = getattr(self, "_deck_prep_cancel", None)
             if cancel is not None and not cancel.is_set() and worker is not None and worker.is_alive():

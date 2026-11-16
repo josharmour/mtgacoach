@@ -773,7 +773,20 @@ def test_a_plan_for_a_turn_that_has_passed_is_cancelled_and_discarded(plan_threa
     mgr2 = GamePlanManager(backend2)
     mgr2._plan = mgr.current
     mgr2._last_sig = (6,)
-    assert mgr2.request_reform(_game(6, active=2))
+    # E5b: time passing alone is no longer a reform trigger — arm a genuine
+    # semantic one instead: a switch condition the plan itself names, now
+    # holding on the live board (our life fell below 10).
+    mgr2._plan.switch_if = ["if our life is below 10 -> switch to defense"]
+    assert mgr2.request_reform(
+        _game(
+            6,
+            active=2,
+            players=[
+                {"seat_id": 1, "is_local": True, "life_total": 5, "hand_size": 5},
+                {"seat_id": 2, "is_local": False, "life_total": 20, "hand_size": 5},
+            ],
+        )
+    )
     assert backend2.entered.wait(3)
     cancel2 = backend2.calls[0][3]["cancel_event"]
     assert not mgr2.request_reform(_game(8, active=2))  # turn 7 has passed
@@ -857,7 +870,26 @@ def test_routine_reform_waits_for_a_moment_with_no_decision_pending(monkeypatch,
     now[0] += 60
     blockers = _game(4, active=2, pending_decision="Declare Blockers")
     assert not mgr.request_reform(blockers)
-    assert mgr.request_reform(_game(4, active=2))
+    # E5: a quiet opponent turn with an unchanged board no longer replans on a
+    # timer; the reform fires on a real change instead — an opposing creature
+    # enters once the block decision is resolved.
+    threat = _game(
+        4,
+        active=2,
+        battlefield=[
+            {
+                "instance_id": 900,
+                "name": "Fleeting Effigy",
+                "owner_seat_id": 2,
+                "controller_seat_id": 2,
+                "type_line": "Creature — Elemental",
+                "card_types": ["CardType_Creature"],
+                "power": 2,
+                "toughness": 2,
+            },
+        ],
+    )
+    assert mgr.request_reform(threat)
     plan_threads[-1].join(timeout=3)
     assert mgr.current.path == "their turn"
 

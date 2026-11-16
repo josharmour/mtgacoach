@@ -299,7 +299,7 @@ def test_deck_worker_starts_once_then_restarts_for_a_changed_commander(deck, mon
     assert runtime._coach._deck_analysis_generation > old_generation
 
 
-def test_plan_preserves_learned_resource_tradeoff_and_refreshes_after_commander_tax_change(deck):
+def test_plan_preserves_learned_resource_tradeoff_and_records_commander_tax_change(deck):
     state, _, _ = deck
     payload = {
         "win_conditions": ["Engine advantage"],
@@ -316,10 +316,37 @@ def test_plan_preserves_learned_resource_tradeoff_and_refreshes_after_commander_
     plan = manager.maybe_reform(state)
     assert payload["resource_priorities"][0] in plan.as_planner_block()
     assert payload["assumptions"][0] in plan.as_planner_block()
-    changed = deepcopy(state)
-    changed["commander_casts"] = {1001: 2}
-    manager.maybe_reform(changed)
-    assert backend.complete.call_count == 2
+
+    def assert_learning_kept():
+        assert payload["resource_priorities"][0] in plan.as_planner_block()
+        assert payload["assumptions"][0] in plan.as_planner_block()
+
+    # Commander tax: recasting costs more but changes neither route nor
+    # resources — E5 folds it into the kept plan without a model call.
+    taxed = deepcopy(state)
+    taxed["commander_casts"] = {1001: 2}
+    assert manager.maybe_reform(taxed) is plan
+    assert backend.complete.call_count == 1
+    turn = state["turn"]["turn_number"]
+    assert f"T{turn}: commander recast (2 casts); strategy kept" in plan.updates
+    assert_learning_kept()
+
+    # A second tax bump on the same commander folds again, still no call.
+    retaxed = deepcopy(taxed)
+    retaxed["commander_casts"] = {1001: 3}
+    assert manager.maybe_reform(retaxed) is plan
+    assert backend.complete.call_count == 1
+    assert f"T{turn}: commander recast (3 casts); strategy kept" in plan.updates
+    assert_learning_kept()
+
+    # Several commanders casting in one turn: the real strategic key carries
+    # (group-id, count) pairs — the fold must sum them, not iterate integers.
+    multi = deepcopy(retaxed)
+    multi["commander_casts"] = {1001: 3, 1002: 1}
+    assert manager.maybe_reform(multi) is plan
+    assert backend.complete.call_count == 1
+    assert f"T{turn}: commander recast (4 casts); strategy kept" in plan.updates
+    assert_learning_kept()
 
 
 def test_reform_renders_the_playbook_without_rules_the_deck_reference_quotes(deck):

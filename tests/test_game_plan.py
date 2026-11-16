@@ -192,8 +192,8 @@ def test_llm_failure_keeps_prior_plan():
     assert mgr.current is None
 
 
-def test_card_identity_churn_alone_does_not_reform_but_the_next_opponent_turn_does():
-    be = FakeBackend([_plan_json(), _plan_json("answer the new engine")])
+def test_card_identity_churn_alone_never_reforms_the_kept_plan():
+    be = FakeBackend([_plan_json()])
     mgr = GamePlanManager(be)
     state = _state(turn=4)
     state["battlefield"] = [{"instance_id": 1, "name": "Old Engine", "type_line": "Enchantment"}]
@@ -204,12 +204,13 @@ def test_card_identity_churn_alone_does_not_reform_but_the_next_opponent_turn_do
     state["graveyard"] = [{"instance_id": 2, "name": "Tutor"}]
     mgr.maybe_reform(state)
     assert be.calls == 1
-    # The opponent's turn plans our next one with the new engine in view.
+    # E5 (2026-11-10 corpus: 746 reforms over 100 matches, most mere churn):
+    # our own permanents swapping identity is not a strategic change — the
+    # kept plan stands through the opponent's turn too.
     opponent_turn = dict(state, turn={"turn_number": 5, "active_player": 2, "phase": "Main1"})
     mgr.maybe_reform(opponent_turn)
-    assert be.calls == 2
-    assert mgr.current.path == "answer the new engine"
-    assert "New Engine" in be.requests[1][1]
+    assert be.calls == 1
+    assert mgr.current.path == "race for lethal ~T6"
 
 
 def test_paying_mana_and_priority_churn_do_not_reform():
@@ -233,9 +234,14 @@ def test_seed_and_prior_plan_are_available_for_adaptation():
     mgr.maybe_reform(state)
     assert be.requests[0][1].startswith(state["deck_reference"])
     assert "Commander copies produce mana" in be.requests[0][1]
-    opponent_turn = _state(turn=3, opp_creatures=1)
-    opponent_turn["turn"]["active_player"] = 2
-    mgr.maybe_reform(opponent_turn)
+    # E5: an unchanged opponent turn keeps the plan; adaptation waits for a
+    # real reason — here a switch condition the plan itself named (an
+    # opponent life threshold, read from live state) starting to hold.
+    mgr._plan.switch_if = ["opponent below 15 life -> shift to burn"]
+    later = _state(turn=7, opp_life=12)
+    later["turn"]["active_player"] = 2
+    later["deck_reference"] = state["deck_reference"]
+    mgr.maybe_reform(later)
     assert "develop commander engine" in be.requests[1][1]
     assert "Removal and tutoring are conditional" in be.requests[1][0]
     assert "Holding mana or passing is correct" in mgr.plan_text()
@@ -310,15 +316,25 @@ def test_background_refresh_cooldown_applies_to_success_and_failure(monkeypatch,
     monkeypatch.setattr("arenamcp.game_plan.time.monotonic", lambda: now[0])
     be = FakeBackend([*responses, _plan_json("new line")])
     mgr = GamePlanManager(be)
-    state = _state(turn=3)
-    assert mgr.request_reform(state)
+    assert mgr.request_reform(_state(turn=3))  # first plan
     plan_threads[-1].join(timeout=2)
-    state = _state(turn=4)
-    state["turn"]["active_player"] = 2
-    assert not mgr.request_reform(state)
+    # E5: the plan is kept until something real changes; a quiet opponent turn
+    # no longer refreshes it.
+    quiet = _state(turn=4)
+    quiet["turn"]["active_player"] = 2
+    assert not mgr.request_reform(quiet)
     assert be.calls == len(responses)
+    # A real reason is still gated by the refresh cooldown right after an
+    # attempt, whether that attempt succeeded or failed. [responses0] names it
+    # via a switch condition on the adopted plan; [responses1] has no plan yet,
+    # so its retry is the first-plan reason — the gate is identical.
+    if mgr._plan is not None:
+        mgr._plan.switch_if = ["opponent below 15 life -> shift to burn"]
+    hot = _state(turn=7, opp_life=12)
+    hot["turn"]["active_player"] = 2
+    assert not mgr.request_reform(hot)
     now[0] += mgr._REFRESH_INTERVAL_S
-    assert mgr.request_reform(state)
+    assert mgr.request_reform(hot)
     plan_threads[-1].join(timeout=2)
     assert be.calls == len(responses) + 1
 
@@ -337,9 +353,14 @@ def test_mid_turn_reforms_wait_for_the_opponents_turn(monkeypatch, plan_threads)
     mgr._stall_count = mgr._STALL_REFORM_THRESHOLD  # "plan stalled"
     assert not mgr.request_reform(_state(turn=3))
     mgr._stall_count = 0
-    assert not mgr.request_reform(_state(turn=7))  # "stale plan" / "no plan for this turn"
+    assert not mgr.request_reform(_state(turn=7))  # no reason: the board is unchanged
     assert be.calls == 1
-    theirs = _state(turn=8)
+    # Their turn with a real reason — a switch condition the plan itself named
+    # (an opponent life threshold, read from live state) now holds: plan our
+    # next one at full effort.
+    assert mgr._plan is not None
+    mgr._plan.switch_if = ["opponent below 15 life -> shift to burn"]
+    theirs = _state(turn=8, opp_life=12)
     theirs["turn"]["active_player"] = 2
     assert mgr.request_reform(theirs)  # their turn: plan our next one, at full effort
     plan_threads[-1].join(timeout=2)
@@ -414,10 +435,12 @@ def _fixture_board(name):
 @pytest.mark.parametrize(
     "fixture", ["bug_20261006_174855_game_state.json", "bug_20261006_185403_game_state.json"]
 )
-def test_an_unchanged_board_reforms_once_per_opponent_turn_whatever_the_phase(monkeypatch, fixture):
-    """The strategic key used to read the board math on the raw snapshot, so
-    turn side and phase flipped the role/lethal flags: a reform at the start
-    of each own turn or at the End step (6-8 calls over 6 unchanged turns)."""
+def test_an_unchanged_board_keeps_one_plan_through_phases_and_sides(monkeypatch, fixture):
+    """E5: one plan per match. The strategic key used to read the board math on
+    the raw snapshot, so turn side and phase flipped the role/lethal flags and
+    reformed every couple of turns over six unchanged turns; now an unchanged
+    board keeps the plan — no per-turn refresh and no stale heartbeat (E5b
+    removed the time-only trigger), so nothing reforms after the first plan."""
     import copy
 
     board = _fixture_board(fixture)
@@ -425,7 +448,7 @@ def test_an_unchanged_board_reforms_once_per_opponent_turn_whatever_the_phase(mo
     first = int(board["turn"]["turn_number"])
     calls = []
 
-    def fake_reform(self, game_state, turn_num, cancel=None, reason=""):
+    def fake_reform(self, game_state, turn_num, cancel=None, reason="", change_detail=""):
         side = "me" if game_state["turn"]["active_player"] == local else "op"
         calls.append(f"T{turn_num}{side}")
         return GamePlan(win_conditions=["x"], path="p", turn_formed=turn_num)
@@ -444,7 +467,7 @@ def test_an_unchanged_board_reforms_once_per_opponent_turn_whatever_the_phase(mo
             state.pop("decision_context", None)
             mgr.maybe_reform(state)
     t0 = first - 2
-    assert calls == [f"T{t0}me", f"T{t0 + 1}op", f"T{t0 + 3}op", f"T{t0 + 5}op"]
+    assert calls == [f"T{t0}me"]
 
 
 def test_a_race_defender_toggle_alone_does_not_reform(monkeypatch):
@@ -457,9 +480,13 @@ def test_a_race_defender_toggle_alone_does_not_reform(monkeypatch):
         facts["now"] = (role, False, False, False)
         mgr.maybe_reform(_state(turn=1))
     assert be.calls == 1
+    # E5 upkeep: even a substantive role change (defender -> aggressor) is
+    # folded into the kept plan by observe(); no model call is spent on a
+    # role flip alone (00651f77 T5 and 218 corpus-wide reforms).
     facts["now"] = ("aggressor", False, False, False)
     mgr.maybe_reform(_state(turn=1))
-    assert be.calls == 2
+    assert be.calls == 1
+    assert mgr.current is not None and mgr.current.role == "aggressor"
 
 
 def test_a_new_opposing_engine_reforms_the_same_turn():
@@ -644,8 +671,13 @@ def test_compact_opening_uses_playbook_then_reuses_a_covered_turn():
     assert mgr.maybe_reform(their_turn) is plan
     assert backend.caps == [2048]
 
-    # Once the playbook line runs out, adapt it in the same short format.
-    later = _state(turn=4)
+    # E5: the playbook running out is not a trigger by itself — the strategy
+    # block plus live board facts carry uncovered turns. Adaptation waits for
+    # a real reason; here a switch condition the plan itself named starts to
+    # hold (an opponent life threshold, read from live state).
+    assert plan is not None
+    plan.switch_if = [*plan.switch_if, "opponent below 15 life -> shift to burn"]
+    later = _state(turn=5, opp_life=12)
     later["turn"]["active_player"] = 2
     assert mgr.maybe_reform(later) is not plan
     assert backend.requests[-1][0] == LIVE_PLAN_PROMPT
@@ -661,13 +693,15 @@ def test_covered_step_cannot_hide_missing_cards_or_a_lethal_flip():
     old = (("aggressor", False, False, False), (), (), frozenset())
     mgr._last_key = old
     board = _state(turn=2)
-    assert mgr._should_reform((2,), key=old, state=board) == "plan our next turn"
+    # E5: a covered step whose cast has left our hand is broken -> replan.
+    assert mgr._should_reform((2,), key=old, state=board) == "planned step unavailable"
     board["hand"] = [{"name": "Shock"}]
     assert mgr._should_reform((2,), key=old, state=board) == ""
     danger = (("defender", False, True, False), (), (), frozenset())
     assert mgr._should_reform((2,), key=danger, state=board) == "lethal flip"
+    # An attack-none step names no cards: nothing broken, plan stands.
     mgr._plan.turn_plan = [{"turn": 3, "attack": "none"}]
-    assert mgr._should_reform((2,), key=old, state=board) == "plan our next turn"
+    assert mgr._should_reform((2,), key=old, state=board) == ""
 
 
 def test_hosted_lethal_flip_still_requests_a_full_strategic_review(monkeypatch):

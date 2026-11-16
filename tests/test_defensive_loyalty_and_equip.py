@@ -221,7 +221,14 @@ def test_mana_engine_arrival_refreshes_plan_and_prices_removal(monkeypatch):
         updated = copy.deepcopy(state)
         next(c for c in updated["battlefield"] if c["instance_id"] == card["instance_id"])[field] = value
         assert removal_board_changed(plan, updated)
+    from arenamcp.game_plan import GamePlanManager
+
+    manager = GamePlanManager(None)
+    manager._plan = plan
+    manager._match_id = state["match_id"]
+    assert manager.current_step(state) == plan.turn_plan[0]
     source["oracle_text"] += "\nHexproof"
+    assert manager.current_step(state) is None
     assert removal_board_changed(plan, state)
     assert "sacrifice Runner" not in mana_engine_context(state)
     assert choose_removal(d, state, None)[0] is None

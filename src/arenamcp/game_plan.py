@@ -270,7 +270,7 @@ BOARD FACTS are computed from the live board (clocks through best blocks, race, 
 - The turn plan covers T (this turn if it is ours, else our next turn), T+1 and T+2 (our following turns). Each turn's "cast" list may name ONLY cards in our hand now (or castable from our graveyard), each card at most once, and their combined mana value must fit that turn's MANA BUDGET with the colours available. A card we hope to draw goes in "hold" as "if drawn: <name>", never in "cast".
 - When BOARD FACTS lists CANDIDATE LINES (a deterministic 2-turn search), build "turns" from one of them and keep its attack/hold posture unless you name a concrete card or combat reason.
 - As defender/control, prioritise creatures that block and removal on attackers over card draw, mana rocks or cycling until the clock is under control. As aggressor, maximise damage; spend removal on blockers.
-- Win conditions must be realistic for the CURRENT state: no empty-library/alternate wins while the library is large, and no combo whose pieces are not in hand or on the battlefield (label a needed draw explicitly).
+- Win conditions must be realistic for the CURRENT state: no empty-library/alternate wins while the library is large, and no combo whose pieces are not in hand or on the battlefield (label a needed draw explicitly). A win route through a card in our graveyard is only real when it can actually come back — its own rules text recurs it (retrace, flashback, embalm, eternalize, escape, ...) or the plan names the recursion line; a card only in exile is out of the game.
 Use the deck list and remaining library to identify realistic engines, outs and backup plans; cards in the library are possibilities, not cards in hand or guaranteed draws. Rules are quoted for the cards seen this game and for the playbook's key cards; a library card listed by name only has no quoted rules, so do not invent abilities for it. Preserve the prior plan when still sound, and adapt when its assumptions change.
 Removal and tutoring are conditional decisions: compare the current threat, timing, mana and opportunity cost. Hold interaction when that protects the winning line; remove a threat when it prevents loss or unlocks progress. A tutor should find the currently useful legal card still in the library, with a feasible follow-up, rather than repeat an old preferred target.
 """
@@ -294,7 +294,7 @@ Respond with ONLY a JSON object, no prose, no markdown:
   "path": "concrete path to the primary win con in turn shorthand (<=25 words)",
   "threat": "the opponent's biggest threat / what beats us (<=15 words)",
   "develop_next": "the single most important thing to develop next (<=12 words)",
-  "switch_if": ["board change that flips the role or plan, e.g. 'they lose their flyer -> attack'"],
+  "switch_if": ["board change that flips the role or plan, e.g. 'opponent below 8 life -> switch to burn'"],
   "active_mechanisms": ["relevant deck playbook mechanism ID and current applicability"],
   "resource_priorities": ["what to preserve versus spend/recover, with a reason"],
   "assumptions": ["mana, timing, survival or availability condition to recheck"],
@@ -361,6 +361,23 @@ class GamePlan:
     # power/toughness and threat keywords, noncreature permanents, their life.
     # Prompts flag the plan's lines once that board has changed.
     basis: dict = field(default_factory=dict)
+    # Programmatic upkeep log (E5): one entry per code-applied change, e.g.
+    # "T7: role defender <- aggressor (opponent's clock)". Rendered into the
+    # planner block so decisions see how the plan evolved; never rewritten by
+    # the model.
+    updates: list[str] = field(default_factory=list)
+    # Route cards backing the win conditions (E5): names visible when the plan
+    # was validated. When every one of them has left our visible zones, the win
+    # route is gone and the plan is reformed ("win route lost").
+    route_cards: list[str] = field(default_factory=list)
+    # Structured upkeep state (E5a), recomputed by code on every observation —
+    # never written by the model. route_state tracks the live win route
+    # (status + where each route card sits); engines tracks which plan-
+    # committed pieces are in play or lost; next_steps carries the upcoming
+    # turn-plan steps.
+    route_state: dict = field(default_factory=dict)
+    engines: dict = field(default_factory=dict)
+    next_steps: list[str] = field(default_factory=list)
 
     def is_empty(self) -> bool:
         return not (self.win_conditions or self.path or self.develop_next or self.turn_plan)
@@ -384,6 +401,20 @@ class GamePlan:
                 "  Turn plan: " + " | ".join(f"T{step['turn']}: {step_text(step)}" for step in self.turn_plan)
             )
         lines.append(f"  Win condition(s): {wins}")
+        if self.route_state:
+            status = str(self.route_state.get("status") or "unknown")
+            pieces = self.route_state.get("pieces") or {}
+            detail = ", ".join(f"{name} ({zone})" for name, zone in pieces.items())
+            lines.append(f"  Live route: {status}" + (f" — {detail}" if detail else ""))
+        if self.engines:
+            in_play = [str(name) for name in self.engines.get("in_play") or []]
+            lost = [str(name) for name in self.engines.get("lost") or []]
+            if in_play:
+                lines.append("  Engines in play: " + ", ".join(in_play))
+            if lost:
+                lines.append("  Engines lost: " + ", ".join(lost))
+        if self.next_steps:
+            lines.append("  Next steps: " + " | ".join(str(step) for step in self.next_steps[:3]))
         if self.path:
             lines.append(f"  Path to win: {self.path}")
         if self.switch_if:
@@ -396,6 +427,7 @@ class GamePlan:
         lines.extend(f"  Resource priority: {item}" for item in self.resource_priorities)
         lines.extend(f"  Recheck assumption: {item}" for item in self.assumptions)
         lines.extend(f"  Lesson so far: {item}" for item in self.lessons)
+        lines.extend(f"  Plan update: {item}" for item in self.updates[-4:])
         lines.append(
             "  Develop toward this win, but treat the plan as conditional guidance. "
             "The current board, stack, legal choices and immediate survival/lethal "
@@ -434,6 +466,11 @@ class GamePlan:
             "switch_if": list(self.switch_if),
             "issues": list(self.issues),
             "lessons": list(self.lessons),
+            "updates": list(self.updates),
+            "route_cards": list(self.route_cards),
+            "route_state": dict(self.route_state),
+            "engines": dict(self.engines),
+            "next_steps": list(self.next_steps),
         }
 
 
@@ -545,6 +582,562 @@ def _flashback_cost(card: dict) -> str | None:
     text = str(card.get("oracle_text") or "")
     match = re.search(r"flashback\s*[\u2014\-—:]?\s*((?:\{[^}]*\})+)", text, re.I)
     return match.group(1) if match else None
+
+
+# --- programmatic plan upkeep (E5) --------------------------------------------
+#
+# The plan is kept for the whole match and updated by code between reforms.
+# Two checks decide whether the written strategy is still executable without a
+# new model call; both are grounded in real logged games (see
+# tests/test_game_plan_upkeep_20261112.py).
+
+
+def _plan_zone_cards(state: dict, zone: str):
+    """Arena shares public zones across players. Control governs the board and ownership governs other zones."""
+    seat = _local_seat(state)
+    for card in state.get(zone) or []:
+        if not isinstance(card, dict):
+            continue
+        owner = card.get("owner_seat_id")
+        side = (card.get("controller_seat_id") or owner) if zone == "battlefield" else owner
+        if side is None or seat is None or str(side) == str(seat):
+            yield card
+
+
+def _zone_names(state: dict, zones: tuple[str, ...]) -> set[str]:
+    return {
+        str(card["name"]).strip().lower()
+        for zone in zones
+        for card in _plan_zone_cards(state, zone)
+        if card.get("name")
+    }
+
+
+def _visible_card_names(state: dict) -> set[str]:
+    return _zone_names(state, ("hand", "battlefield", "graveyard", "exile", "command"))
+
+
+def _piece_zone(name: str, state: dict) -> str:
+    for zone in ("battlefield", "hand", "command", "graveyard", "exile"):
+        if _zone_card(name, state, zone) is not None:
+            return zone
+    return "gone"
+
+
+def _zone_card(name: str, state: dict, zone: str) -> dict | None:
+    if not name or not isinstance(state, dict):
+        return None
+    wanted = name.strip().lower()
+    return next(
+        (c for c in _plan_zone_cards(state, zone) if str(c.get("name") or "").strip().lower() == wanted), None
+    )
+
+
+def _actionable_card_names(state: dict) -> set[str]:
+    return _zone_names(state, ("hand", "battlefield", "command"))
+
+
+def _battlefield_names(state: dict) -> set[str]:
+    return _zone_names(state, ("battlefield",))
+
+
+# Evaluate a single, positive board predicate. Free-form plans can also name
+# conditions outside this vocabulary; those continue to inform tactical prompts.
+_COMPARISONS = {
+    "at most": "<=",
+    "no more than": "<=",
+    "at or below": "<=",
+    "at or under": "<=",
+    "<=": "<=",
+    "≤": "<=",
+    "at least": ">=",
+    "no less than": ">=",
+    "at or above": ">=",
+    "at or over": ">=",
+    ">=": ">=",
+    "≥": ">=",
+    "below": "<",
+    "under": "<",
+    "less than": "<",
+    "fewer than": "<",
+    "<": "<",
+    "above": ">",
+    "over": ">",
+    "more than": ">",
+    "greater than": ">",
+    "exceeds": ">",
+    ">": ">",
+}
+_COMPARISON = "|".join(map(re.escape, sorted(_COMPARISONS, key=len, reverse=True)))
+_LIFE_SWITCH = re.compile(
+    rf"(our|my|opponent(?:'s)?|their)\s+(?:(life|health)(?: total)?\s+(?:is\s+)?)?"
+    rf"({_COMPARISON})\s*(\d+)(?:\s+(life|health))?"
+)
+_POWER_SWITCH = re.compile(
+    rf"(?:the )?(?:opponent|they) (?:has|have|controls?) (?:a |an )?(?:creature (?:with|of) )?"
+    rf"(?:({_COMPARISON})\s+)?(\d+)[ -]power(?: creature)?"
+)
+
+
+def _threshold_holds(value: Any, cue: str, threshold: str) -> bool:
+    try:
+        n, limit = int(value), int(threshold)
+    except (TypeError, ValueError):
+        return False
+    return {"<=": n <= limit, ">=": n >= limit, "<": n < limit, ">": n > limit}[_COMPARISONS[cue]]
+
+
+def switch_if_satisfied(plan: GamePlan, state: dict, basis: dict | None = None) -> list[str]:
+    """Match supported conditions against the current players and public board."""
+    if not plan.switch_if or not state:
+        return []
+    local = _local_seat(state)
+    if local is None:
+        return []
+    life = {}
+    for player in state.get("players") or []:
+        if isinstance(player, dict) and player.get("seat_id") is not None:
+            life[str(player["seat_id"]) == str(local)] = player.get("life_total", player.get("life"))
+    opposing = [
+        card
+        for card in state.get("battlefield") or []
+        if isinstance(card, dict)
+        and (side := card.get("controller_seat_id") or card.get("owner_seat_id")) is not None
+        and str(side) != str(local)
+    ]
+    their_names = {str(card.get("name") or "").lower() for card in opposing}
+    actionable = _actionable_card_names(state)
+    grave = _zone_names(state, ("graveyard",))
+    exile = _zone_names(state, ("exile",))
+    satisfied = []
+    for clause in plan.switch_if:
+        condition, _, action = clause.partition("->")
+        condition = condition.lower().strip().removeprefix("if ").removeprefix("the ").replace("’", "'")
+        if match := _LIFE_SWITCH.fullmatch(condition):
+            subject, life_before, cue, limit, life_after = match.groups()
+            holds = bool(life_before or life_after) and _threshold_holds(
+                life.get(subject in {"our", "my"}), cue, limit
+            )
+        elif match := _POWER_SWITCH.fullmatch(condition):
+            cue, limit = match.groups()
+            holds = any(
+                _is_creature_card(card) and _threshold_holds(card.get("power"), cue or "at least", limit)
+                for card in opposing
+            )
+        elif match := re.fullmatch(r"(?:opponent|they) (?:controls?|has|have) (.+)", condition):
+            holds = match[1] in their_names
+        elif match := re.fullmatch(r"(?:we control|i control) (.+)", condition):
+            holds = match[1] in _battlefield_names(state)
+        elif match := re.fullmatch(
+            r"(.+?) (?:is |was )?(destroyed|sacrificed|discarded|milled|countered|exiled)", condition
+        ):
+            name, event = match.groups()
+            # The relevant loss for the plan is that this piece is no longer
+            # available. An unplayed or unknown card supplies no such evidence.
+            holds = (
+                name in (exile if event == "exiled" else grave)
+                and name not in actionable
+                and name not in their_names
+            )
+        else:
+            continue
+        # A sentence-initial imperative is prose. Preserve capitalization
+        # of the actual card name (including a verb that is itself a card).
+        action = action.strip()
+        if action.split(" ", 1)[0].lower() in {
+            "attack",
+            "block",
+            "cast",
+            "play",
+            "hold",
+            "protect",
+            "shift",
+            "switch",
+            "use",
+            "sacrifice",
+            "activate",
+            "save",
+            "prioritize",
+            "race",
+            "defend",
+        }:
+            action = action.partition(" ")[2]
+        if holds and all(
+            name.group().strip().lower() in actionable
+            for name in re.finditer(
+                r"[A-Z][a-zA-Z'’-]+(?:\s+(?:(?:of|the|and|in|to|for|at)\s+)*[A-Z][a-zA-Z'’-]+)*", action
+            )
+        ):
+            satisfied.append(clause)
+    return satisfied
+
+
+def switch_if_triggered(plan: GamePlan, state: dict, basis: dict | None = None) -> str:
+    """Return the first ``switch_if`` clause the live board satisfies, else ""."""
+    for clause in switch_if_satisfied(plan, state, basis=basis):
+        return clause
+    return ""
+
+
+# Valid board roles (mirrors board_assessment.ROLES; kept local to avoid an
+# import cycle at module load).
+_ROLE_WORDS = frozenset({"aggressor", "defender", "control", "race"})
+
+
+def _cast_total(casts: Any) -> int:
+    """Total casts from a strategic-key cast entry.
+
+    ``_strategic_key`` stores cast counts as ``(group-id, count)`` pairs;
+    older callers passed flat integer counts. Sum the counts either way.
+    """
+    if not casts:
+        return 0
+    first = casts[0]
+    if isinstance(first, (tuple, list)):
+        return sum(int(count) for _, count in casts)
+    return sum(int(count) for count in casts)
+
+
+def _role_word(value: Any) -> str:
+    """A valid board role word, or "" when the assessment is missing/invalid.
+
+    A failed board assessment must never surface as a literal "none" role and
+    overwrite a valid one.
+    """
+    role = str(value if isinstance(value, str) else "").strip().lower()
+    return role if role in _ROLE_WORDS else ""
+
+
+def win_route_lost(plan: GamePlan, state: dict) -> bool:
+    """True when no route card backing the win conditions is reachable.
+
+    Grounded in 2026-11-10 00651f77: the plan kept "win with Etali's Favor"
+    for six turns after the Favor had been exiled. A card only in exile is
+    inaccessible (no standard way back), so it no longer keeps the route
+    alive. A card in the graveyard keeps the route only when it can actually
+    come back — its own rules text carries a recursion mechanic (retrace,
+    flashback, embalm, ...) or the plan itself states a recursion line — not
+    merely because "graveyard recursion is standard".
+    """
+    routes = [name for name in (plan.route_cards or []) if name]
+    if not routes or not isinstance(state, dict) or not state:
+        return False
+    for route in routes:
+        zone = _piece_zone(route, state)
+        if zone in ("battlefield", "hand", "command"):
+            return False
+        if zone == "graveyard" and _graveyard_recursion_usable(
+            plan, _zone_card(route, state, "graveyard"), name=route
+        ):
+            return False
+    return True
+
+
+# Mechanics that bring a specific card back out of our graveyard (generic
+# rules-text anchors, not card names). Deliberately excludes mechanics that
+# only LOOK like recursion but exile the card as part of their effect —
+# scavenge and haunt move the card to exile and never return it, so they are
+# not evidence the route can come back.
+_GRAVEYARD_RECURSION_KEYWORDS = (
+    "retrace",
+    "flashback",
+    "embalm",
+    "eternalize",
+    "escape",
+    "jump-start",
+    "undying",
+    "persist",
+)
+
+# A plan line that NEGATES recursion ("Recursion is unavailable", "no way to
+# recur it", "its recursion is not available") must not be read as promising
+# it. Both directions are covered: a negation cue before the recursion word,
+# and a recursion word followed by an availability/loss verdict — including
+# the "is not available" word order, which the plain adjective list misses.
+# Inflections are covered so "it never returns" is a negation too.
+# Any recursion mention (verbs and the noun "recursion"), for negation checks.
+_PLAN_RECURSION_WORD = r"(?:recur(?:s|red|ring)?|recursions?|retrace(?:s|d|ing)?|return(?:s|ed|ing)?)"
+# Action verbs only: a noun phrase like "recursion of Etali's Favor" states a
+# topic, not an action binding the card as its object.
+_PLAN_RECURSION_ACTION_VERB = r"(?:recur(?:s|red|ring)?|retrace(?:s|d|ing)?|return(?:s|ed|ing)?)"
+_PLAN_RECURSION_NEGATED = re.compile(
+    r"\b(?:no|not|never|cannot|can't|can\u2019t|without|unavailable|unusable|impossible)\b"
+    r"[^.;]{0,30}\b" + _PLAN_RECURSION_WORD + r"\b"
+    r"|\b" + _PLAN_RECURSION_WORD + r"\b[^.;]{0,30}\b"
+    r"(?:unavailable|unusable|impossible|gone|lost)\b"
+    r"|\b" + _PLAN_RECURSION_WORD + r"\b[^.;]{0,40}\b(?:is|are)\s+not\b"
+    r"|\b" + _PLAN_RECURSION_WORD + r"\b[^.;]{0,40}\b(?:no|not)\s+"
+    r"(?:longer\s+)?(?:available|usable|possible)\b"
+)
+
+# Supported connectors inside a positive recursion binding. These are the
+# ONLY words allowed between the recursion verb and the card name (object
+# form) or between the card name and its return predicate (subject form);
+# anything else — purpose infinitives ("to replace"), adverbs ("never"),
+# prepositional detours — leaves the clause unmatched, and unmatched or
+# ambiguous clauses stay lost/unknown instead of being revived by loose text.
+_PLAN_BIND_DETERMINER = r"(?:the|a|an|my|your|our)"
+_PLAN_BIND_AUXILIARY = r"(?:will|shall)"
+
+# Evidence is judged per actual clause: a plan part may hold several
+# sentences, and a name in one sentence plus a recursion word in the next is
+# NOT evidence ("Etali's Favor is lost. Recur World Breaker instead.").
+_PLAN_CLAUSE_SPLIT = re.compile(r"[.;!?]+|\n+")
+
+# A contrastive tail DETACHES a name from the action: in "Recur World Breaker
+# instead of Etali's Favor" the Favor is what was rejected, not the target of
+# "recur". Everything AFTER a contrast marker is the rejected alternative, so
+# only the text BEFORE the first marker can carry a positive commitment —
+# verb and card must bind inside that leading segment. Anything that binds
+# neither way stays lost/unknown — ambiguity is never resolved by growing a
+# negation blacklist.
+_PLAN_CONTRAST_SPLIT = re.compile(
+    r"\b(?:instead of|rather than|in place of|versus|vs\.)\b"
+    r"|,\s*(?:but\s+)?not\b"
+)
+
+
+def _plan_promises_this_recursion(plan: GamePlan, name: str) -> bool:
+    """Card-specific plan evidence that ``name`` comes back from the graveyard.
+
+    Narrow positive action grammar: one actual clause (sentence) of the plan
+    must bind a recursion action to THIS card — either a recursion verb takes
+    the card as its immediate object ("recur Etali's Favor", "return Etali's
+    Favor from the graveyard") or the card is the subject coming back
+    ("Etali's Favor returns from the graveyard"). Between the verb and the
+    card only supported determiners may stand; between the card and its
+    return predicate only supported auxiliaries may stand. Co-occurrence
+    alone is not evidence: a recursion word elsewhere in the clause (even
+    about another card), a contrastive tail ("...instead of Etali's Favor"),
+    a purpose infinitive ("Recur World Breaker to replace Etali's Favor"), a
+    non-returning subject ("Etali's Favor never comes back"), or a negated
+    mention ("Recursion is unavailable") does not revive the route. When no
+    clause binds, the route stays lost/unknown rather than being revived by
+    loose text.
+    """
+    if not name:
+        return False
+    wanted = name.strip().lower().replace("\u2019", "'")
+    escaped = re.escape(wanted)
+    verb_takes_card = re.compile(
+        r"\b" + _PLAN_RECURSION_ACTION_VERB + r"\b"
+        r"(?:\s+" + _PLAN_BIND_DETERMINER + r")*\s+" + escaped
+    )
+    card_comes_back = re.compile(
+        escaped + r"(?:(?:\s+" + _PLAN_BIND_AUXILIARY + r")*\s+"
+        r"(?:returns?|(?:comes?|gets?|is)\s+back|is\s+recurred))\b"
+    )
+    for part in [*plan.win_conditions, plan.path, plan.develop_next, *plan.active_mechanisms]:
+        for raw in _PLAN_CLAUSE_SPLIT.split(str(part or "")):
+            clause = raw.lower().replace("\u2019", "'")
+            if wanted not in clause:
+                continue
+            for segment in _PLAN_CONTRAST_SPLIT.split(clause)[:1]:
+                if wanted not in segment:
+                    continue
+                if _PLAN_RECURSION_NEGATED.search(segment):
+                    continue
+                if verb_takes_card.search(segment) or card_comes_back.search(segment):
+                    return True
+    return False
+
+
+def _graveyard_recursion_usable(plan: GamePlan, card: dict | None, name: str = "") -> bool:
+    """True when a route card sitting in our graveyard can realistically come back.
+
+    Currently usable, card-specific evidence only: the card's own rules text
+    carries a self-return mechanic (retrace, flashback, embalm, ...), or the
+    plan itself names THIS card in a recursion line. Negated lines
+    ("Recursion is unavailable"), unrelated recursion mentions, and
+    exiling-only effects (scavenge, haunt) do not keep the route alive.
+    """
+    text = ""
+    if isinstance(card, dict):
+        text = str(card.get("oracle_text") or card.get("rules_text") or "").lower()
+        if not name:
+            name = str(card.get("name") or "")
+    if any(keyword in text for keyword in _GRAVEYARD_RECURSION_KEYWORDS):
+        return True
+    if re.search(r"returns?\b.{0,60}\bfrom\b.{0,30}\bgraveyard\b.{0,40}\bto\b", text):
+        return True
+    return _plan_promises_this_recursion(plan, name)
+
+
+def _route_cards_from_state(plan: GamePlan, state: dict) -> list[str]:
+    """Names from the win conditions/path that are visible right now.
+
+    Anchors each visible card name against the plan text with word boundaries
+    instead of scanning greedy n-gram chunks — chunking misaligned word
+    boundaries on real win-condition prose ("...trample from Etali's Favor
+    (87300)...") and never produced "etali's favor" as a candidate.
+    """
+    visible = _visible_card_names(state)
+    if not visible:
+        return []
+    text = (
+        "; ".join(str(part) for part in [*plan.win_conditions, plan.path] if part)
+        .lower()
+        .replace("\u2019", "'")
+    )
+    routes: list[str] = []
+    for name in sorted(visible):
+        if len(name) < 3 or name in _ROUTE_STOPWORDS:
+            continue
+        pattern = r"(?<![a-z0-9])" + re.escape(name.replace("\u2019", "'")) + r"(?:'s)?(?![a-z0-9])"
+        if re.search(pattern, text):
+            routes.append(name)
+    routes.sort(key=text.find)
+    return routes
+
+
+def compute_upkeep(plan: GamePlan, state: dict) -> dict[str, Any]:
+    """The structured upkeep snapshot (E5a), recomputed from the live board.
+
+    Returns ``{"route_state": ..., "engines": ..., "next_steps": ...}``:
+    where each route card sits and whether the win route is still live, which
+    plan-committed engine pieces are in play or lost, and the upcoming
+    turn-plan steps. Code-owned — never written by the model — and honest on
+    malformed states (empty/unknown rather than guessed).
+    """
+    turn = 0
+    if isinstance(state, dict):
+        turn_info = state.get("turn")
+        if isinstance(turn_info, dict):
+            try:
+                turn = int(turn_info.get("turn_number") or 0)
+            except (TypeError, ValueError):
+                turn = 0
+    pieces: dict[str, str] = {}
+    for route in plan.route_cards:
+        name = str(route).strip().lower()
+        if name:
+            pieces[name] = _piece_zone(name, state)
+    status = "unknown"
+    if pieces:
+        status = "lost" if win_route_lost(plan, state) else "live"
+    engines_in_play: list[str] = []
+    engines_lost: list[str] = []
+    for name in _plan_engine_names(plan):
+        zone = _piece_zone(name, state)
+        if zone == "battlefield":
+            engines_in_play.append(name)
+        elif zone in ("gone", "exile", "graveyard"):
+            # Not contributing right now: destroyed (gone), exiled, or sitting
+            # in the graveyard awaiting recursion.
+            engines_lost.append(f"{name} ({zone})")
+    next_steps: list[str] = []
+    for step in plan.turn_plan:
+        step_turn = int(step.get("turn") or 0)
+        if step_turn and step_turn >= max(turn, 1):
+            next_steps.append(f"T{step_turn}: {_annotated_next_step(plan, step, state)}")
+        if len(next_steps) >= 3:
+            break
+    return {
+        "route_state": {"status": status, "pieces": pieces, "checked_turn": turn},
+        "engines": {"in_play": engines_in_play, "lost": engines_lost},
+        "next_steps": next_steps,
+    }
+
+
+def _annotated_next_step(plan: GamePlan, step: dict, state: dict) -> str:
+    """Step text plus an honest availability note for the cards it names.
+
+    A step whose card is not actually playable right now is not presented as
+    an unconditional instruction: a piece already on the battlefield is marked
+    done, an unreachable one (exile / graveyard without usable recursion /
+    nowhere visible) is marked unavailable. Nothing is invented — the plan's
+    own step text is kept, only its current status is disclosed.
+    """
+    base = step_text(step)
+    names = [str(cast).strip().lower() for cast in (step.get("cast") or []) if str(cast).strip()]
+    if not names:
+        return base
+    notes: list[str] = []
+    for name in names:
+        zone = _piece_zone(name, state)
+        if zone in ("hand", "command"):
+            continue
+        if zone == "battlefield":
+            notes.append(f"{name} already in play")
+        elif zone == "graveyard":
+            if _graveyard_recursion_usable(plan, _zone_card(name, state, "graveyard"), name=name):
+                notes.append(f"{name} in graveyard (needs recursion)")
+            else:
+                notes.append(f"{name} unavailable (graveyard)")
+        elif zone == "exile":
+            notes.append(f"{name} unavailable (exile)")
+        else:
+            notes.append(f"{name} not in a playable zone")
+    if not notes:
+        return base
+    return f"{base} ({'; '.join(notes)})"
+
+
+def _plan_engine_names(plan: GamePlan) -> list[str]:
+    """Cards the plan committed to using: route cards plus upcoming planned casts."""
+    names: list[str] = []
+    for route in plan.route_cards:
+        name = str(route).strip().lower()
+        if name and name not in names:
+            names.append(name)
+    for step in plan.turn_plan:
+        for cast in step.get("cast") or []:
+            name = str(cast).strip().lower()
+            if name and name not in names:
+                names.append(name)
+    return names
+
+
+_ROUTE_STOPWORDS = frozenset(
+    {
+        "win",
+        "with",
+        "the",
+        "and",
+        "then",
+        "when",
+        "while",
+        "attack",
+        "cast",
+        "play",
+        "hold",
+        "keep",
+        "opponent",
+        "opponents",
+        "their",
+        "they",
+        "have",
+        "has",
+        "life",
+        "damage",
+        "turn",
+        "turns",
+        "next",
+        "this",
+        "that",
+        "from",
+        "into",
+        "over",
+        "under",
+        "until",
+        "before",
+        "after",
+        "each",
+        "every",
+        "more",
+        "than",
+        "our",
+        "your",
+        "you",
+        "for",
+        "out",
+        "off",
+        "all",
+        "both",
+        "two",
+        "three",
+    }
+)
 
 
 def validate_plan(plan: GamePlan, assessment: Any, state: dict) -> GamePlan:
@@ -681,6 +1274,12 @@ def validate_plan(plan: GamePlan, assessment: Any, state: dict) -> GamePlan:
     _strip_unmet_modified_plan_attacks(plan, state, issues)
     _check_plan_line(plan, assessment, state, issues)
     _check_mana_holds(plan, assessment, state, issues)
+    # E5: remember which visible cards back the win route so later turns can
+    # tell (without a model call) when the route has left our zones.
+    try:
+        plan.route_cards = _route_cards_from_state(plan, state)
+    except Exception as error:  # bookkeeping must never discard the plan
+        logger.debug("route-card bookkeeping failed: %s", error)
     plan.issues = issues
     return plan
 
@@ -3864,17 +4463,19 @@ class GamePlanManager:
     commander zone changes, the opponent adds a threat the plan was not
     written from (once per turn), the plan stalls, or no plan exists for this
     turn. Routine reforms wait for a moment with no decision pending, and
-    mid-turn triggers (resumed after a decision, stale plan, role flip) wait
+    mid-turn triggers (resumed after a decision, role flip) wait
     for the opponent's turn — except a genuine lethal flip, which replans the
     current turn at once (#223: waiting could cost the game).
+    E5b: there is no time-based refresh at all — a plan whose board facts are
+    unchanged is kept indefinitely; only a condition the plan itself named
+    (``switch_if``, on its unsatisfied -> satisfied transition), a lost win
+    route, a broken planned step, or one of the board-math flips above costs a
+    call.
     Background requests are rate-limited, one at a time process-wide
     (:data:`STRATEGIC_LANE`), and a request for a turn that has already passed
     is cancelled and its plan discarded.
     """
 
-    # Force a refresh at least this often even if the board looks static, so a
-    # long grind doesn't run forever on a turn-2 plan.
-    _STALE_TURNS = 4
     _REFRESH_INTERVAL_S = 15.0
 
     # After this many consecutive stalls on plan-advancing plays, force a
@@ -3887,18 +4488,20 @@ class GamePlanManager:
     # call does not share the server with the decision call it would delay.
     _ROUTINE_REASONS = frozenset(
         {
-            "plan our next turn",
-            "stale plan",
             "deck playbook changed",
             "new opposing permanent",
             "new opposing threat",
             "resumed after a decision",
+            "switch_if met",
+            "win route lost",
         }
     )
     # The reforms that may start during our own turn: without any plan, one is
     # worth more than one faster decision (2026-10-10 Brawl game); nor is a plan
     # whose attacker has died one (ledger #92).
-    _OUR_TURN_REASONS = frozenset({"first plan", "planned attacker gone"})
+    _OUR_TURN_REASONS = frozenset(
+        {"first plan", "planned attacker gone", "removal board changed", "win route lost", "switch_if met"}
+    )
     # A board-math role change between these two alone, with the lethal and
     # dead-soon flags unchanged, is noise (2026-10-07 replay: turn 6 went
     # aggressor -> race -> defender and turn 7 defender -> race on ordinary
@@ -4048,6 +4651,7 @@ class GamePlanManager:
                     "role": e.role,
                     "plan_formed": e.plan_formed,
                     "planned": e.planned,
+                    "upkeep": e.upkeep,
                     "did": list(e.did),
                     "start": dict(e.start),
                     "end": dict(e.end),
@@ -4128,11 +4732,42 @@ class GamePlanManager:
                 snapshot=snapshot_from_assessment(assessment),
                 role=str(getattr(assessment, "role", "") or ""),
                 plan=self._plan,
+                upkeep=self._upkeep_ledger_note(),
                 decisions_for_turn=decisions_cb,
                 mid_turn=mid_turn,
             )
         except Exception as error:
             logger.debug("match ledger skipped for turn %s: %s", turn, error)
+
+    def _upkeep_ledger_note(self) -> str:
+        """One-line structured-upkeep summary for the ledger entry (never raises).
+
+        Rendered from the code-owned upkeep snapshot — live route status and
+        piece zones, lost engine pieces, upcoming steps — so the per-turn
+        ledger shows what the plan still had to work with when the turn began.
+        """
+        try:
+            plan = self._plan
+            if plan is None:
+                return ""
+            bits: list[str] = []
+            route_state = plan.route_state or {}
+            status = str(route_state.get("status") or "")
+            pieces = route_state.get("pieces") or {}
+            if status:
+                detail = ", ".join(f"{name} {zone}" for name, zone in pieces.items())
+                bits.append(f"route {status}" + (f" ({detail})" if detail else ""))
+            engines = plan.engines or {}
+            lost = [str(name) for name in engines.get("lost") or []]
+            if lost:
+                bits.append("engines lost: " + ", ".join(lost))
+            steps = [str(step) for step in (plan.next_steps or [])[:2]]
+            if steps:
+                bits.append("next: " + " | ".join(steps))
+            return "; ".join(bits)
+        except Exception as error:
+            logger.debug("upkeep ledger note skipped: %s", error)
+            return ""
 
     _CALL_CLASS = "background.game_plan"
 
@@ -4178,6 +4813,8 @@ class GamePlanManager:
         self._last_attempt_at: float | None = None
         # Board-math role/lethal flags and commander zone at the last reform
         # (see _strategic_key); a change re-forms the plan mid-turn.
+        self._inflight_key = None
+        self._last_lethal_attempt = None
         self._last_key: tuple | None = None
         # The in-flight background reform: its cancel event, its strategic-lane
         # token and the turn its plan is for ("T"). Cancelled once that turn
@@ -4204,6 +4841,15 @@ class GamePlanManager:
         self._trick_logged: tuple | None = None
         self._trick_predicted: tuple | None = None
         self._trick_seen: tuple | None = None
+        # E5b: switch_if persistence. ``_switch_active`` holds the clauses that
+        # were satisfied at the last check; ``_switch_pending`` holds satisfied
+        # clauses that have not yet caused a reform. A clause fires on its
+        # unsatisfied -> satisfied transition only, so a condition that stays
+        # true never repeats the model call it already caused.
+        self._switch_active: set[str] = set()
+        self._switch_pending: set[str] = set()
+        # Precise change text carried into the update request ("" = fresh plan).
+        self._reform_change_detail = ""
 
     # ----- lifecycle -------------------------------------------------------
     def reset(self) -> None:
@@ -4211,11 +4857,14 @@ class GamePlanManager:
         with self._lock:
             self._abandon_inflight_locked()
             self._generation += 1
+            self._inflight_key = None
+            self._last_lethal_attempt = None
             self._last_key = None
             self._plan = None
             self._seed = None
             self._last_seed = None
             self._last_sig = None
+            self._upkeep_key = None
             self._last_reform_turn = -1
             self._stall_count = 0
             self._stall_hint = ""
@@ -4234,6 +4883,9 @@ class GamePlanManager:
             self._threat_superseded_turn = 0
             self._threat_supersedes = (0, 0)
             self._consecutive_supersedes = 0
+            self._switch_active = set()
+            self._switch_pending = set()
+            self._reform_change_detail = ""
             self._trick_logged = None
             self._trick_predicted = None
             self._trick_seen = None
@@ -4254,13 +4906,96 @@ class GamePlanManager:
             if match_id:
                 self._match_id = match_id
             if turn > self._observed_turn:
+                # Refresh the structured upkeep snapshot BEFORE the ledger
+                # captures it: a new turn's entry must describe the board as it
+                # stands now (e.g. an engine destroyed since the last
+                # observation), not the stale snapshot from the previous turn.
+                try:
+                    self._refresh_upkeep_state_locked(game_state)
+                except Exception as error:  # pragma: no cover - defensive
+                    logger.debug("plan upkeep refresh before ledger skipped: %s", error)
                 self._ledger_turn_started(game_state, turn)
             self._observed_turn = max(turn, self._observed_turn)
             try:
                 self._live_basis = board_basis(game_state)
             except Exception as error:  # the board comparison is advisory
                 logger.debug("board basis unavailable: %s", error)
+            # E5: keep one plan per match — mutate it in code instead of
+            # reforming. Role flips and commander events are folded into the
+            # kept plan here; only substantive changes reach _should_reform.
+            try:
+                self._plan_upkeep_locked(game_state)
+            except Exception as error:  # upkeep is advisory, never fatal
+                logger.debug("game plan upkeep skipped: %s", error)
             self._observe_tricks(game_state, turn)
+
+    def _plan_upkeep_locked(self, game_state: dict) -> None:
+        """Fold role flips and commander events into the kept plan (E5).
+
+        Caller holds the lock; advisory only, never raises. Runs on every
+        observe(): each change is recorded once, against the last key seen,
+        and the plan itself is mutated — no reform, no model call.
+        """
+        if self._plan is None or self._plan.is_empty():
+            return
+        # Structured upkeep (E5a): recompute the live route / engine /
+        # next-step snapshot from the real board on every observation —
+        # code-owned, never written by the model.
+        self._refresh_upkeep_state_locked(game_state)
+        key = self._strategic_key(game_state)
+        seen = getattr(self, "_upkeep_key", None)
+        self._upkeep_key = key
+        if key is None or seen is None or seen == key or len(seen) < 3 or len(key) < 3:
+            return
+        turn = _round((game_state.get("turn") or {}).get("turn_number"))
+        # Commander zone / recast: keep the strategy, log the event.
+        # Strategic-key layout: (facts, command-zone identities, cast counts,
+        # opposing engines) — see _strategic_key. When the fold lands, advance
+        # the reform baseline to the folded key: that is what suppresses the
+        # commander-change reform in _should_reform. A failed fold leaves the
+        # baseline untouched, so the change surfaces as a reform instead of
+        # vanishing silently (E5b).
+        if self._record_commander_update((seen[1], seen[2]), (key[1], key[2]), turn):
+            # Advance only the COMMANDER components of the reform baseline.
+            # Overwriting the whole key here masked a lethal/role/engine fact
+            # that changed in the same observation: lethal+tax kept the old
+            # plan with one call while lethal alone correctly re-planned.
+            last = self._last_key
+            if last is not None:
+                self._last_key = (
+                    last[0],
+                    key[1],
+                    key[2],
+                    last[3] if len(last) > 3 else frozenset(),
+                )
+        # Role flip: update the kept plan's role in place. The entry records
+        # the flip as the assessment saw it (previous key role -> new), since
+        # validation may have left plan.role on a coarser value. A missing or
+        # failed assessment yields no role at all — never a literal "none"
+        # that would overwrite a valid role.
+        old_role = _role_word(seen[0][0] if isinstance(seen[0], tuple) else seen[0])
+        new_role = _role_word(key[0][0] if isinstance(key[0], tuple) else key[0])
+        if new_role and new_role != old_role:
+            self._apply_role_update(new_role, "board assessment", turn, old_role=old_role)
+
+    def _refresh_upkeep_state_locked(self, game_state: dict) -> None:
+        """Recompute the structured upkeep snapshot from the live board.
+
+        Caller holds the lock; advisory only, never raises. The snapshot is
+        derived purely from game state and the plan's own commitments — no
+        model call, no reform.
+        """
+        plan = self._plan
+        if plan is None:
+            return
+        try:
+            snapshot = compute_upkeep(plan, game_state)
+        except Exception as error:
+            logger.debug("plan upkeep snapshot skipped: %s", error)
+            return
+        plan.route_state = snapshot["route_state"]
+        plan.engines = snapshot["engines"]
+        plan.next_steps = snapshot["next_steps"]
 
     def _tricks(self) -> Any:
         """The opponent-trick table service, or None when it can't be had."""
@@ -4364,6 +5099,11 @@ class GamePlanManager:
                 "plan": asdict(self._plan) if self._plan else None,
                 "seed": self._seed,
                 "last_sig": self._last_sig,
+                "last_key": list(self._last_key[:3]) + [sorted(self._last_key[3])]
+                if self._last_key
+                else None,
+                "switch_active": sorted(self._switch_active),
+                "switch_pending": sorted(self._switch_pending),
                 "last_reform_turn": self._last_reform_turn,
             }
 
@@ -4383,6 +5123,16 @@ class GamePlanManager:
             self.seed(saved.get("seed"))
             self._last_seed = self._seed
             self._last_sig = freeze(saved.get("last_sig"))
+            saved_key = saved.get("last_key")
+            if isinstance(saved_key, (list, tuple)) and len(saved_key) == 4:
+                self._last_key = (*freeze(list(saved_key[:3])), frozenset(saved_key[3]))
+                self._upkeep_key = self._last_key
+            else:
+                # Older handoffs carry no board comparison. Keep the old plan
+                # available until a fresh assessment can validate it.
+                self._last_sig = None
+            self._switch_active = set(saved.get("switch_active") or [])
+            self._switch_pending = set(saved.get("switch_pending") or [])
             self._last_reform_turn = saved.get("last_reform_turn", -1)
             self._last_attempt_at = time.monotonic()
 
@@ -4408,7 +5158,9 @@ class GamePlanManager:
         if not plan or not self._match_id or state.get("match_id") != self._match_id:
             return None
         phase = str((state.get("turn") or {}).get("phase")).lower().removeprefix("phase_")
-        if phase == "main2" and plan_board_changes(plan, state, threats_only=True):
+        if removal_board_changed(plan, state) or (
+            phase == "main2" and plan_board_changes(plan, state, threats_only=True)
+        ):
             return None
         return plan.step_for((state.get("turn") or {}).get("turn_number"))
 
@@ -4558,6 +5310,18 @@ class GamePlanManager:
         """
         with self._lock:
             self.observe(game_state)
+            if (
+                self._inflight
+                and self._plan
+                and self._inflight_key
+                and self._upkeep_key
+                and not game_state.get("stack")
+                and not game_state.get("game_over")
+                and self._key_change_reason(self._inflight_key, self._upkeep_key) == "lethal flip"
+            ):
+                self._plan_cancels += 1
+                self._plan_outcome = "superseded by a lethal change"
+                self._abandon_inflight_locked()
             if self._inflight:
                 self._supersede_stale_inflight_locked(game_state)
                 if self._inflight:
@@ -4581,23 +5345,27 @@ class GamePlanManager:
                 if self._plan_outcome == self._LANE_DEFERRED
                 else self._REFRESH_INTERVAL_S
             )
-            if self._last_attempt_at is not None and now - self._last_attempt_at < cooldown:
-                return False
             sig = self._signature(game_state)
             our_turn = self._our_turn(game_state)
-            if self._stall_count >= self._STALL_REFORM_THRESHOLD:
-                reason = "plan stalled"
-            else:
-                reason = self._should_reform(
-                    sig,
-                    our_turn=our_turn,
-                    key=self._strategic_key(game_state, sig),
-                    board=self._live_basis,
-                    state=game_state,
-                )
+            key = self._strategic_key(game_state, sig)
+            reason = self._should_reform(
+                sig, our_turn=our_turn, key=key, board=self._live_basis, state=game_state
+            )
+            if self._last_attempt_at is not None and now - self._last_attempt_at < cooldown:
+                # Act once on a genuinely new lethal situation. A failed request
+                # for the same flags still observes the normal retry cooldown.
+                if reason != "lethal flip" or self._last_lethal_attempt == key[0][1:]:
+                    return False
             if not reason:
                 return False
-            if reason == "new opposing threat" and self._threat_turn == sig[0]:
+            if (
+                reason == "new opposing threat"
+                and self._threat_turn == sig[0]
+                # E5b: a threat supersede re-aims the in-flight call at the
+                # newest board; that re-request is not a second reform (the
+                # supersede path is itself bounded by _MAX_THREAT_SUPERSEDES).
+                and self._threat_superseded_turn != sig[0]
+            ):
                 return False  # one threat-driven reform per turn
             if (
                 our_turn
@@ -4613,8 +5381,10 @@ class GamePlanManager:
                 # (1.1 s -> 1.9 s). A mid-turn reform replans a turn that is
                 # mostly played by the time a ~20 s high-effort call returns;
                 # every decision prompt already re-renders the live board
-                # facts. Wait for the opponent's turn and plan our next turn
-                # there ("plan our next turn" fires then), at full effort.
+                # facts. Wait for the opponent's turn and let the routine
+                # reason fire there, at full effort. (E5: with one plan kept
+                # per match, routine reasons are rare — switch_if
+                # met, win route lost, planned step unavailable.)
                 # Exception (#223): a genuine lethal flip — we can suddenly win
                 # or suddenly die — replans the current turn at once; waiting
                 # for the opponent's turn could cost the game.
@@ -4639,11 +5409,13 @@ class GamePlanManager:
             self._resume_after_yield = False
             self._inflight = True
             self._inflight_cancel = cancel
+            self._inflight_key = key
             self._inflight_lane = token
             self._inflight_plan_turn = self._plan_turn(snapshot)
             self._inflight_started_at = now
             self._inflight_basis = dict(self._live_basis)
             self._last_attempt_at = now
+            self._last_lethal_attempt = key[0][1:] if reason == "lethal flip" else None
             self._plan_attempts += 1
             if reason == "new opposing threat" or self._threat_superseded_turn == sig[0]:
                 self._threat_turn = sig[0]
@@ -4846,13 +5618,8 @@ class GamePlanManager:
             if _expected_generation is None:
                 self.observe(game_state)
             generation = self._generation
-            stalled = self._stall_count >= self._STALL_REFORM_THRESHOLD
-            reason = (
-                "plan stalled"
-                if stalled
-                else self._should_reform(
-                    sig, our_turn=self._our_turn(game_state), key=key, board=board, state=game_state
-                )
+            reason = self._should_reform(
+                sig, our_turn=self._our_turn(game_state), key=key, board=board, state=game_state
             )
             if not force and not reason:
                 return self._plan
@@ -4860,7 +5627,9 @@ class GamePlanManager:
             stall_count = self._stall_count
             plan_turn = self._plan_turn(game_state)
 
-        plan = self._reform(game_state, turn_num, cancel=_cancel, reason=reason)
+            detail = self._reform_change_detail or reason
+
+        plan = self._reform(game_state, turn_num, cancel=_cancel, reason=reason, change_detail=detail)
         with self._lock:
             if generation != self._generation:
                 return self._plan
@@ -4936,6 +5705,16 @@ class GamePlanManager:
                 self._last_key = key
                 self._last_seed = seed
                 self._last_reform_turn = turn_num
+                # E5b: baseline the upkeep comparison from the plan we just
+                # adopted. Without this the first post-adoption observation
+                # finds _upkeep_key None and silently re-baselines — the
+                # commander tax change that happened in between is never
+                # compared, never folded, never recorded.
+                self._upkeep_key = key
+                # E5b: the reform consumed the switch conditions that held at
+                # its snapshot. A condition still true afterwards is persistent
+                # — it must not fire again until it stops holding and returns.
+                self._switch_pending.clear()
             self._stall_count = max(0, self._stall_count - stall_count)
             if not self._stall_count:
                 self._stall_hint = ""
@@ -4962,8 +5741,47 @@ class GamePlanManager:
         41753907 and f9e0ec3b, :func:`board_changes`). ``request_reform``
         allows that one once per turn.
         """
+        self._reform_change_detail = ""
         if self._plan is None or self._last_sig is None:
             return "first plan"
+        turn_num = sig[0]
+        change = (
+            self._key_change_reason(self._last_key, key)
+            if key is not None and self._last_key is not None
+            else ""
+        )
+        # E5b: observe() folds role flips into the kept plan (plan.role) and
+        # records commander events as plan updates. Neither alone justifies a
+        # model call — the live role and command zone are rendered into every
+        # decision prompt. If the fold did not land (plan.role still stale),
+        # fold it here in code; a role change NEVER reforms by itself.
+        if change == "role flip" and self._plan is not None and key is not None:
+            new_role = str(key[0][0] if isinstance(key[0], tuple) else key[0]).strip().lower()
+            if new_role:
+                if self._plan.role != new_role:
+                    self._apply_role_update(new_role, "board maths", turn_num)
+                change = ""
+        elif change == "commander change":
+            # E5b: observe() suppresses this by advancing the reform baseline
+            # only when the fold actually landed (see _plan_upkeep_locked);
+            # reaching here means the fold did not, so reform rather than let
+            # the event vanish silently.
+            pass
+
+        def fire(reason: str, detail: str) -> str:
+            self._reform_change_detail = detail
+            return reason
+
+        if change == "lethal flip":
+            # The lethal flags live in the FACTS component ([0][1:]); [1] is
+            # the command zone — quoting it described the wrong change.
+            was = (
+                tuple(self._last_key[0][1:])
+                if self._last_key and isinstance(self._last_key[0], tuple)
+                else None
+            )
+            now = tuple(key[0][1:]) if key is not None and isinstance(key[0], tuple) else None
+            return fire("lethal flip", f"the lethal flags flipped {was} -> {now}")
         if removal_board_changed(self._plan, state):
             return "removal board changed"
         if board and plan_attackers_gone(self._plan, basis=board):
@@ -4972,32 +5790,131 @@ class GamePlanManager:
             return "deck playbook changed"
         if getattr(self, "_resume_after_yield", False):
             return "resumed after a decision"
-        turn_num = sig[0]
-        change = (
-            self._key_change_reason(self._last_key, key)
-            if key is not None and self._last_key is not None
-            else ""
-        )
+        if self._stall_count >= self._STALL_REFORM_THRESHOLD:
+            return "plan stalled"
+        # E5: the plan stays for the whole match. Cheap code checks decide
+        # whether the written strategy is still the right one; none burns a
+        # model call until it actually fires.
+        if state is not None:
+            clauses = [c for c in (self._plan.switch_if or []) if c]
+            satisfied = set(switch_if_satisfied(self._plan, state, basis=board)) if clauses else set()
+            for clause in clauses:
+                now_sat = clause in satisfied
+                was_sat = clause in self._switch_active
+                if now_sat and not was_sat:
+                    # New episode: this condition started holding.
+                    self._switch_pending.add(clause)
+                elif not now_sat:
+                    # Episode ended before it could fire; a later re-satisfaction
+                    # starts a fresh episode.
+                    self._switch_pending.discard(clause)
+                if now_sat:
+                    self._switch_active.add(clause)
+                else:
+                    self._switch_active.discard(clause)
+            fired = next((c for c in clauses if c in satisfied and c in self._switch_pending), "")
+            if fired:
+                return fire(
+                    "switch_if met",
+                    f'a switch condition the plan itself named now holds: "{fired}"',
+                )
+            if win_route_lost(self._plan, state):
+                routes = [name for name in (self._plan.route_cards or []) if name][:4]
+                return fire(
+                    "win route lost",
+                    "the win route collapsed — "
+                    + (", ".join(routes) or "its cards")
+                    + " can no longer be reached from hand / battlefield / command",
+                )
         if change and change != "new opposing permanent":
-            return change
+            return fire(change, f"the strategic picture changed ({change})")
         if board and board_changes(self._plan.basis, board, threats_only=True):
-            return "new opposing threat"
+            return fire(
+                "new opposing threat",
+                "the opponent added a threat the plan was not written from: "
+                + "; ".join(board_changes(self._plan.basis, board, threats_only=True)),
+            )
         if change:
-            return change
-        # A validated future step already covers an uneventful turn. Still refresh
-        # when a card the step relies on has left its playable zones.
+            return fire(change, f"the strategic picture changed ({change})")
+        # A step that names cards we no longer have is broken; replan it. A turn
+        # with no step at all is fine — the strategy block plus the live board
+        # facts carry those decisions (2026-11-10 corpus: 26 of 746 reforms were
+        # pure per-turn refreshes with nothing changed).
         target = turn_num if our_turn else turn_num + 1
-        if state is not None and self._planned_step_available(state, target):
-            return ""
-        if turn_num - self._last_reform_turn >= self._STALE_TURNS:
-            return "stale plan"
-        if not our_turn and turn_num > self._last_reform_turn:
-            return "plan our next turn"
-        if our_turn and turn_num > self._last_reform_turn + 1:
-            return "no plan for this turn"
+        if state is not None and self._planned_step_broken(state, target):
+            return fire(
+                "planned step unavailable",
+                f"the plan's step for turn {target} names cards we no longer have",
+            )
+        # E5b: no time-based refresh — an unchanged board keeps its plan.
         return ""
 
-    def _planned_step_available(self, state: dict, turn: int) -> bool:
+    def _apply_role_update(
+        self, new_role: str, reason: str, turn: int | None = None, old_role: str | None = None
+    ) -> None:
+        """Flip the plan's role in place (E5): no reform, one logged update."""
+        plan = self._plan
+        if plan is None:
+            return
+        new = (new_role or "").strip().lower()
+        old = ((plan.role if old_role is None else old_role) or "").strip().lower()
+        if not new or new == old:
+            return
+        plan.role = new
+        plan.role_reason = reason or plan.role_reason
+        if turn is None:
+            turn = self._last_sig[0] if self._last_sig else "?"
+        entry = f"T{turn}: role {new} <- {old}"
+        if reason:
+            entry += f" ({reason})"
+        plan.updates.append(entry[:160])
+        logger.info("Game plan role updated in place: %s", entry)
+
+    def _record_commander_update(
+        self, old_command: tuple, new_command: tuple, turn: int | None = None
+    ) -> bool:
+        """Log a commander-zone/cast change against the kept plan (E5).
+
+        The commander entering or leaving the battlefield (zone identities) or
+        being recast (cast counts) does not invalidate the strategy; the next
+        decision prompt renders the live command zone anyway. Recorded so the
+        planner block shows why the plan survived the change. Returns True when
+        the transition was folded (recorded, or nothing to record) — callers
+        use this to decide whether a commander-change reform may be suppressed.
+        """
+        plan = self._plan
+        if plan is None or old_command == new_command:
+            # Nothing folded — callers must not advance their baseline on a
+            # no-op, or unrelated changes riding the same observation (e.g. a
+            # role flip) would be suppressed too.
+            return False
+        old_ids, old_casts = old_command[0], old_command[1]
+        new_ids, new_casts = new_command[0], new_command[1]
+        if turn is None:
+            turn = self._last_sig[0] if self._last_sig else "?"
+        if old_ids != new_ids:
+            entered = [gid for gid in new_ids if gid not in old_ids]
+            left = [gid for gid in old_ids if gid not in new_ids]
+            verb = "entered" if entered else "left"
+            plan.updates.append(f"T{turn}: commander {verb} the battlefield; strategy kept"[:160])
+            logger.info("Game plan kept through commander zone change: %s", plan.updates[-1])
+            return True
+        if old_casts != new_casts:
+            # Real strategic keys carry cast counts as (group-id, count) pairs
+            # (see _strategic_key); tolerate flat integer counts too.
+            total = _cast_total(new_casts)
+            plan.updates.append(f"T{turn}: commander recast ({total} casts); strategy kept"[:160])
+            logger.info("Game plan kept through commander recast: %s", plan.updates[-1])
+            return True
+        return True
+
+    def _planned_step_broken(self, state: dict, turn: int) -> bool:
+        """True when a step covers ``turn`` but names cards we no longer have.
+
+        E5 splits the old availability check: a missing/empty step is fine (the
+        strategy block plus live board facts carry that turn), but a step whose
+        casts/land are gone from our playable zones is broken and needs a replan.
+        """
         step = self._plan.step_for(turn) if self._plan else None
         if not step or not (
             step.get("land")
@@ -5019,8 +5936,20 @@ class GamePlanManager:
 
         for entry in [*step.get("cast", []), step.get("land")]:
             if entry and not known(_cast_parts(entry, known)[0]):
-                return False
-        return True
+                return True
+        return False
+
+    def _planned_step_available(self, state: dict, turn: int) -> bool:
+        """True when a real step covers ``turn`` and its cards are still ours."""
+        step = self._plan.step_for(turn) if self._plan else None
+        if not step or not (
+            step.get("land")
+            or step.get("cast")
+            or step.get("hold")
+            or (step.get("attack") and not _NO_ATTACK.match(step["attack"]))
+        ):
+            return False
+        return not self._planned_step_broken(state, turn)
 
     def _key_change_reason(self, old: tuple, new: tuple) -> str:
         """Why the strategic key moved enough to re-form the plan ("" = it didn't)."""
@@ -5252,6 +6181,7 @@ class GamePlanManager:
         *,
         cancel: threading.Event | None = None,
         reason: str = "",
+        change_detail: str = "",
     ) -> GamePlan | None:
         from arenamcp.board_assessment import assess
         from arenamcp.match_context import prepare_match_context, split_deck_reference
@@ -5300,6 +6230,17 @@ class GamePlanManager:
             losses = plan_card_losses(self._plan, game_state)
             if losses:
                 user_parts.append(losses)
+            # E5b: an update request carries the prior structured plan and the
+            # precise change that triggered it, so the model revises in place
+            # instead of re-deriving a fresh plan from scratch.
+            detail = change_detail.strip() or reason
+            if detail:
+                user_parts.append(
+                    "PLAN UPDATE REQUEST — revise the plan below in place. "
+                    f"What changed: {detail}. Keep every part of the plan the "
+                    "change does not affect. Return the complete updated JSON, "
+                    "including unchanged commitments."
+                )
         recent = ""
         source = getattr(self, "_recent_actions_source", None)
         if callable(source):
@@ -5340,7 +6281,12 @@ class GamePlanManager:
             self._plan is None
             or self._consecutive_supersedes >= 1
             or reason
-            in {"plan our next turn", "no plan for this turn", "stale plan", "new opposing permanent"}
+            in {
+                "new opposing permanent",
+                "switch_if met",
+                "win route lost",
+                "planned step unavailable",
+            }
         )
         prompt = LIVE_PLAN_PROMPT if compact else GAME_PLAN_PROMPT
         budget = min(self._timeout, self._INITIAL_HOSTED_PLAN_TIMEOUT_S) if compact else self._timeout

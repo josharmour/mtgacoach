@@ -128,22 +128,26 @@ def test_lethal_flip_starts_even_with_a_decision_pending(sync_reforms, monkeypat
     assert be.calls == 2
 
 
-def test_role_flip_on_our_turn_waits_for_the_opponents_turn(sync_reforms, monkeypatch):
-    be = FakeBackend([_plan_json(), _plan_json("plan B")])
+def test_role_flip_folds_into_the_kept_plan_without_a_model_call(sync_reforms, monkeypatch):
+    # E5b: a role flip never reforms — the live role is rendered into every
+    # decision prompt, so observe() folds it into the kept plan in code and
+    # no model call is spent, on our turn or the opponent's.
+    be = FakeBackend([_plan_json()])
     key = {"value": ("aggressor", False, False, False)}
     mgr = _manager_with_key(monkeypatch, be, key)
     assert mgr.request_reform(_state(turn=5)) is True
     assert be.calls == 1
 
-    # Role flipped aggressor -> defender mid-turn: queued, not started.
+    # Role flipped aggressor -> defender mid-turn: folded in code, no call.
     key["value"] = ("defender", False, False, False)
     assert mgr.request_reform(_state(turn=5)) is False
     assert be.calls == 1
+    assert mgr.current is not None and mgr.current.role == "defender"
 
-    # The queued trigger fires on the opponent's turn (planning our next one).
-    assert mgr.request_reform(_state(turn=5, active=2)) is True
-    assert be.calls == 2
-    assert mgr.current.path == "plan B"
+    # The fold persists: the opponent's turn does not repeat it either.
+    assert mgr.request_reform(_state(turn=5, active=2)) is False
+    assert be.calls == 1
+    assert mgr.current is not None and mgr.current.role == "defender"
 
 
 def test_race_defender_noise_never_reforms(sync_reforms, monkeypatch):
@@ -155,3 +159,32 @@ def test_race_defender_noise_never_reforms(sync_reforms, monkeypatch):
     assert mgr.request_reform(_state(turn=5)) is False
     assert mgr.request_reform(_state(turn=5, active=2)) is False
     assert be.calls == 1
+
+
+def test_lethal_replans_inside_cooldown_despite_simultaneous_stall(sync_reforms, monkeypatch):
+    be = FakeBackend([_plan_json(), _plan_json("stop lethal")])
+    key = {"value": ("defender", False, False, False)}
+    mgr = _manager_with_key(monkeypatch, be, key)
+    del mgr._REFRESH_INTERVAL_S
+    assert mgr.request_reform(_state())
+    mgr._stall_count = mgr._STALL_REFORM_THRESHOLD
+    key["value"] = ("defender", False, True, False)
+    assert mgr.request_reform(_state(pending=True))
+    assert mgr.current.path == "stop lethal"
+    assert not mgr.request_reform(_state())
+    assert be.calls == 2
+
+
+def test_same_match_reload_keeps_a_lethal_baseline(sync_reforms, monkeypatch):
+    key = {"value": ("aggressor", False, False, False)}
+    mgr = _manager_with_key(monkeypatch, FakeBackend([_plan_json()]), key)
+    assert mgr.request_reform(_state())
+    saved = json.loads(json.dumps(mgr.export_for_reload()))
+    be = FakeBackend([_plan_json("play defense after reload")])
+    restored = _manager_with_key(monkeypatch, be, key)
+    del restored._REFRESH_INTERVAL_S
+    restored.restore_after_reload(saved, _state())
+    assert not restored.request_reform(_state())
+    key["value"] = ("defender", False, True, True)
+    assert restored.request_reform(_state())
+    assert restored.current.path == "play defense after reload"
