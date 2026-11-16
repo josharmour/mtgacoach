@@ -2173,11 +2173,19 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         quoted = game_state.get("deck_rules_grp_ids")
         if quoted is not None and card.get("grp_id") not in quoted:
             return False  # the reference lists this card by name only
+        from arenamcp.card_facts.prompt_render import _normalize_native_text
         from arenamcp.match_context import oracle_lines
 
-        return bool(card.get("oracle_text")) and (
+        def _comparable_rules(text: Any) -> list[str]:
+            cleaned = _normalize_native_text(str(text or ""))
+            stripped = re.sub(r"\(.*?\)", "", cleaned)
+            return oracle_lines(stripped) or oracle_lines(cleaned)
+
+        card_text = card.get("oracle_text")
+        entry_text = entry.get("oracle_text")
+        return bool(card_text) and (
             (card.get("modified_name") or card.get("name")) == entry.get("name")
-            and oracle_lines(card.get("oracle_text")) == oracle_lines(entry.get("oracle_text"))
+            and _comparable_rules(card_text) == _comparable_rules(entry_text)
         )
 
     @staticmethod

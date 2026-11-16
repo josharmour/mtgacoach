@@ -43,6 +43,7 @@ from arenamcp.decisions import SELECT_N_DECLINE, expand_target_selection
 from arenamcp.mana import SPELL_CAST_TYPES
 from arenamcp.mana_potential import mana_reach_note
 from arenamcp.match_context import (
+    STRATEGIC_POLICY_CORE,
     prepare_match_context,
     split_deck_reference,
     strategic_policy,
@@ -4395,7 +4396,7 @@ class ActionPlanner(_ActionLegalityMixin):
         return re.sub(r",\s*([\]}])", r"\1", m.group(0))
 
     _PAY_DECLINE_SYSTEM_PROMPT = (
-        "You decide whether to PAY an optional cost in a Magic: The "
+        STRATEGIC_POLICY_CORE + "\n" + "You decide whether to PAY an optional cost in a Magic: The "
         "Gathering Arena game (a 'you may pay ...' trigger or ability). "
         "Paying commits you to the effect that follows, including choosing "
         "targets for it. Check the mana left after payment and recent decisions: "
@@ -4425,27 +4426,41 @@ class ActionPlanner(_ActionLegalityMixin):
             logger.info("plan_pay_or_decline skipped: model server unavailable (circuit open)")
             return None
         game_state = prepare_match_context(game_state, compact_starting_deck=True)
-        user_message = with_deck_reference(
-            "\n".join(
-                [
-                    f"Optional cost from: {source_name or 'unknown source'}",
-                    self._memory().prompt_block(game_state),
-                    f"Effect text: {oracle_text or 'unknown'}",
-                    # The amount and, for a ward tax, whose ward and what it
-                    # counters: without them Burst Lightning's {2} ward tax read
-                    # as its "{4} kicker" and was declined (2026-10-19 10:38:30).
-                    *pay_decision_facts(game_state),
-                    # Ledger #104 (12:23:49): Spell Pierce's {2} on our Burst was
-                    # taken for its kicker, which had been declined at the cast.
-                    *filter(None, [self._kicker_answered_fact(game_state)]),
-                    self._decision_game_context(game_state),
-                    self._strategy_context(game_state),
-                    "",
-                    "Should you pay this optional cost?",
-                ]
-            ),
-            game_state,
+        stable_reference = str(
+            game_state.get("deck_reference_stable") or game_state.get("deck_reference") or ""
         )
+        reference_head, seen_rules = split_deck_reference(stable_reference)
+        stable_strategy = self._stable_strategy_context(game_state, request_type="PayCosts")
+        playbook_core, playbook_tail = self._playbook_context_parts(stable_strategy, game_state, "PayCosts")
+        grounded = self._grounded_plan_block(game_state)
+        self._last_plan_block = grounded or ""
+        volatile_lines = [
+            f"Optional cost from: {source_name or 'unknown source'}",
+            self._memory().prompt_block(game_state),
+            f"Effect text: {oracle_text or 'unknown'}",
+            # The amount and, for a ward tax, whose ward and what it
+            # counters: without them Burst Lightning's {2} ward tax read
+            # as its "{4} kicker" and was declined (2026-10-19 10:38:30).
+            *pay_decision_facts(game_state),
+            # Ledger #104 (12:23:49): Spell Pierce's {2} on our Burst was
+            # taken for its kicker, which had been declined at the cast.
+            *filter(None, [self._kicker_answered_fact(game_state)]),
+            self._decision_game_context(game_state),
+        ]
+        if grounded:
+            volatile_lines.append(grounded)
+        volatile_lines.extend(["", "Should you pay this optional cost?"])
+        volatile_block = "\n".join(line for line in volatile_lines if line is not None)
+        if "\n\n\n" in volatile_block:
+            volatile_block = re.sub(r"\n{3,}", "\n\n", volatile_block)
+        ordered_blocks = [
+            block
+            for block in (reference_head, playbook_core, seen_rules, playbook_tail, volatile_block)
+            if block
+        ]
+        user_message = "\n\n".join(ordered_blocks)
+        if not reference_head and not playbook_core and not seen_rules:
+            user_message = with_deck_reference(volatile_block, game_state)
         try:
             response = self._call_llm(
                 self._PAY_DECLINE_SYSTEM_PROMPT,
@@ -9970,7 +9985,7 @@ class ActionPlanner(_ActionLegalityMixin):
         line_tags: dict[str, str] = {}
         # A search/tutor offers library cards: their rules are quoted for this
         # call, and the remaining inventory is listed with them.
-        offered_prints, all_bound = _option_prints(decision)
+        offered_prints, all_bound = _option_prints(decision, game_state)
         game_state = prepare_match_context(
             game_state,
             reveal=offered_prints,
@@ -9982,7 +9997,13 @@ class ActionPlanner(_ActionLegalityMixin):
         # decision rules) leads the message, right after the deck reference, so
         # vLLM's prefix cache matches through it; the per-turn plan facts stay
         # in the volatile tail below.
-        stable_strategy = self._stable_strategy_context(game_state, request_type=decision.request_type)
+        source_label = str(getattr(decision, "source_label", "") or "")
+        window_request_type = (
+            f"{decision.request_type} {source_label}".strip()
+            if "mulligan" in source_label.lower()
+            else decision.request_type
+        )
+        stable_strategy = self._stable_strategy_context(game_state, request_type=window_request_type)
         lines = [
             f"PENDING DECISION: {decision.request_type}"
             + (f" (source: {decision.source_label})" if decision.source_label else ""),
@@ -10447,7 +10468,7 @@ class ActionPlanner(_ActionLegalityMixin):
         candidate_rules = str(game_state.get("decision_candidate_rules") or "")
         reference_head, seen_rules = split_deck_reference(stable_reference)
         playbook_core, playbook_tail = self._playbook_context_parts(
-            stable_strategy, game_state, decision.request_type
+            stable_strategy, game_state, window_request_type
         )
         user_message = "\n\n".join(
             block
@@ -11563,19 +11584,39 @@ def _legal_payable(game_state: dict[str, Any], legal_actions: list[str]) -> dict
     return verdicts
 
 
-def _option_prints(decision: Any) -> tuple[list[int], bool]:
-    """Keep all offered prints; only known non-card buttons can omit one."""
+def _option_prints(decision: Any, game_state: dict[str, Any] | None = None) -> tuple[list[int], bool]:
+    """Keep all offered prints; only known non-card buttons or resolved targets can omit one."""
     out: list[int] = []
     all_bound = True
+    zone_by_iid: dict[int, dict[str, Any]] = {}
+    if isinstance(game_state, dict):
+        for zone_name in ("battlefield", "stack", "graveyard", "exile", "hand", "command"):
+            for card in game_state.get(zone_name) or ():
+                if isinstance(card, dict) and type(card.get("instance_id")) is int:
+                    zone_by_iid.setdefault(card["instance_id"], card)
     for option in getattr(decision, "options", ()) or ():
         meta = getattr(option, "meta", None) or {}
-        bound = option.option_id in {"pass", "cancel", "done", SELECT_N_DECLINE}
+        oid = str(getattr(option, "option_id", "") or "")
+        bound = oid in {"pass", "cancel", "done", SELECT_N_DECLINE} or oid.startswith(("mull:", "optional:"))
         for key in ("grpId", "grp_id", "card_grp_id"):
             value = meta.get(key)
             if type(value) is int and value > 4:
                 bound = True
                 if value not in out:
                     out.append(value)
+        if not bound and (tgt_match := re.fullmatch(r"tgt:(\d+)", oid)) is not None:
+            obj = zone_by_iid.get(int(tgt_match.group(1)))
+            if obj is not None:
+                if obj.get("is_token"):
+                    bound = True
+                else:
+                    gid = obj.get("grp_id")
+                    if type(gid) is int and gid > 4:
+                        bound = True
+                        if gid not in out:
+                            out.append(gid)
+            elif oid in {"tgt:1", "tgt:2"}:
+                bound = True
         all_bound = all_bound and bound
     return out, all_bound
 

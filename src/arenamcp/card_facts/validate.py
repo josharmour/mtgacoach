@@ -71,6 +71,7 @@ KEYWORD_PHRASES: tuple[str, ...] = (
 # token with trample", "...gains vigilance"). Granted keywords belong to other
 # permanents or to future states; they are not required in ``body.keywords``.
 _GRANT_CUE = re.compile(r"\b(with|gains?|has|have|gets?)\b[^.;:\n]*$")
+_THRESHOLD_CUE = re.compile(r"^\s*\d+\+\s*\|[^.;:\n]*$")
 
 # Cast/use modes whose Comprehensive-Rules behaviour removes the permanent from
 # the battlefield as part of resolving that mode. Keyed on mechanic name so it
@@ -80,18 +81,41 @@ _LEAVES_BATTLEFIELD_MODES = frozenset({"evoke", "flashback", "aftermath"})
 
 def _stated_keywords(printed_text: str) -> set[str]:
     """Keywords intrinsically stated by ``printed_text`` (type line + rules)."""
+    stated, _, _ = _stated_keyword_details(printed_text)
+    return stated
+
+
+_PARAM_KEYWORD_RE = re.compile(
+    r"^(?:"
+    r"ward\s*(?:—[^.;(\n]*|-[^.;(\n]*|\{[^{}\n]+\}(?:\s*\{[^{}\n]+\})*)"
+    r"|protection from [^.;,\n]+"
+    r"|hexproof from [^.;,\n]+"
+    r")",
+    re.I,
+)
+
+
+def _stated_keyword_details(printed_text: str) -> tuple[set[str], set[str], dict[str, set[str]]]:
+    """Return (stated_bases, bare_bases, param_clauses_by_base) ignoring granted/threshold occurrences."""
     stated: set[str] = set()
+    bare_stated: set[str] = set()
+    param_clauses: dict[str, set[str]] = {"ward": set(), "protection": set(), "hexproof": set()}
     lowered = printed_text.casefold()
     for phrase in KEYWORD_PHRASES:
         for match in re.finditer(rf"(?<!\w){re.escape(phrase)}(?!\w)", lowered):
             # Text since the last sentence/line boundary before this match.
             prefix = lowered[: match.start()]
             prefix = prefix[max(prefix.rfind("\n"), prefix.rfind("."), prefix.rfind(";")) + 1 :]
-            if _GRANT_CUE.search(prefix):
-                continue  # granted to something else / later state
+            if _GRANT_CUE.search(prefix) or _THRESHOLD_CUE.search(prefix):
+                continue  # granted to something else / threshold-gated
             stated.add(phrase)
-            break
-    return stated
+            if phrase in param_clauses:
+                clause_match = _PARAM_KEYWORD_RE.match(lowered[match.start() :])
+                if clause_match is not None:
+                    param_clauses[phrase].add(normalise(clause_match.group(0)).rstrip("."))
+                else:
+                    bare_stated.add(phrase)
+    return stated, bare_stated, param_clauses
 
 
 def _aura_keywords(line):
@@ -230,14 +254,38 @@ def _validate(record: CardFacts, card: PrintedCard) -> list[str]:
     if "Aura" in card.type_line.split():
         problems.extend(_aura_problems(record, card))
     else:
-        stated = _stated_keywords(printed_text)
-        claimed = {normalise(k) for k in record.body.keywords}
-        for phrase in sorted(stated - claimed):
+        stated, bare_stated, param_clauses = _stated_keyword_details(printed_text)
+        raw_claimed = {normalise(k) for k in record.body.keywords}
+        claimed_norm = {k.rstrip(".") for k in raw_claimed}
+        all_valid_params = set().union(*param_clauses.values())
+        satisfied = set(raw_claimed)
+        for base in ("ward", "protection", "hexproof"):
+            if base not in stated:
+                continue
+            clauses = param_clauses[base]
+            if (clauses and clauses <= claimed_norm) and (base not in bare_stated or base in raw_claimed):
+                satisfied.add(base)
+            elif base in raw_claimed and base not in bare_stated and clauses:
+                # Reject bare claim when printed text specifies a cost or qualifier.
+                satisfied.discard(base)
+                problems.append(f"keyword '{base}' stated with cost/qualifier requires full parameter")
+        for phrase in sorted(stated - satisfied):
             problems.append(f"keyword '{phrase}' stated by the card but missing")
-        for phrase in sorted(claimed - stated):
-            if phrase not in printed_text.casefold():
+        norm_printed = normalise(printed_text)
+        for phrase in sorted(raw_claimed - stated):
+            stripped = phrase.rstrip(".")
+            if stripped in all_valid_params:
+                continue
+            is_param_variant = stripped.startswith(
+                ("ward ", "ward—", "ward-", "protection from ", "hexproof from ")
+            )
+            if phrase not in norm_printed and stripped not in norm_printed:
                 problems.append(
                     f"keyword '{phrase}' claimed by the record but not stated by the type line or rules text"
+                )
+            elif phrase in KEYWORD_PHRASES or is_param_variant:
+                problems.append(
+                    f"keyword '{phrase}' claimed by the record is conditional or granted, not intrinsic"
                 )
 
     problems.extend(_check_modes(record, card))

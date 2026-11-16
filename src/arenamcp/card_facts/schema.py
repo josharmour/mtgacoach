@@ -358,7 +358,10 @@ def card_facts_from_dict(data: dict[str, Any]) -> CardFacts:
         confidence=data.get("confidence", ""),
         notes=data.get("notes", ""),
     )
-    _merge_unknown(record, data, _known_fields(CardFacts))
+    ignored = _known_fields(CardFacts) | (
+        {"status"} if data.get("status") in ("ok", "review", "failed") else set()
+    )
+    _merge_unknown(record, data, ignored)
     return record
 
 

@@ -79,6 +79,7 @@ _HOME_PATHS = (
     ("arenamcp.desktop.runtime", "_SETTINGS_FILE", "settings.json"),
     ("arenamcp.rules_db", "DB_PATH", "cache/rules.db"),
     ("arenamcp.ability_synthesizer", "AbilitySynthesizer._CACHE_DIR", "cache/abilities"),
+    ("arenamcp.card_facts.client", "CACHE_DIR", "cache/card_facts"),
     ("arenamcp.opponent_tricks", "TRICK_DIR", "cache/trick_tables"),
     ("arenamcp.game_plan", "UNUSABLE_PLAN_DIR", "debug"),
     ("arenamcp.action_diagnostics", "MALFORMED_ACTION_DIR", "debug"),
@@ -363,6 +364,9 @@ def _sandbox_arenamcp_home(monkeypatch, tmp_path_factory):
     opponent_tricks = sys.modules.get("arenamcp.opponent_tricks")
     if opponent_tricks is not None:
         monkeypatch.setattr(opponent_tricks.TrickTableService, "_shared", _offline_trick_service(sandbox))
+    card_facts_client = sys.modules.get("arenamcp.card_facts.client")
+    if card_facts_client is not None:
+        monkeypatch.setattr(card_facts_client, "_shared", None)
     game_plan = sys.modules.get("arenamcp.game_plan")
     if game_plan is not None:
         game_plan._TRICK_CACHE.clear()

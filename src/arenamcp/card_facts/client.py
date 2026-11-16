@@ -33,7 +33,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any
 
@@ -104,7 +104,9 @@ def _default_resolver(grp_id: int) -> dict[str, Any] | None:
 
 def _default_opener(url: str, body: bytes, headers: dict[str, str]) -> tuple[int, str]:
     """POST *body* to *url* and return ``(status, text)``; never raises."""
-    request = urllib.request.Request(url, data=body, headers=headers, method="POST")
+    req_headers = dict(headers)
+    req_headers.setdefault("User-Agent", "mtgacoach/unknown (unknown)")
+    request = urllib.request.Request(url, data=body, headers=req_headers, method="POST")
     try:
         with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT_S) as response:
             return int(response.status), response.read().decode("utf-8", "replace")
@@ -202,7 +204,7 @@ class CardFactsClient:
     def fresh_memory_facts(self, cards: Any) -> dict[str, dict[str, Any]]:
         """Read prefetched records without disk I/O, refreshes, or background work."""
         now = self._clock()
-        digests = {digest for card in cards if (digest := hash_for_card(card))}
+        digests = {digest for card in (cards or []) if (digest := hash_for_card(card))}
         results = {}
         with self._lock:
             for digest in digests:
@@ -215,6 +217,44 @@ class CardFactsClient:
                 if isinstance(record, dict) and record.get("rules_hash") == digest:
                     results[digest] = record
         return results
+
+    def warm_memory_from_disk(self, cards: Any, *, alt_hashes: Iterable[str] = ()) -> int:
+        """Load already-cached disk records into memory without queuing network fetches."""
+        now = self._clock()
+        digests = {digest for card in (cards or []) if (digest := hash_for_card(card))}
+        digests.update(
+            h
+            for h in (alt_hashes or ())
+            if isinstance(h, str) and len(h) == 64 and all(c in "0123456789abcdef" for c in h)
+        )
+        if not digests:
+            return 0
+        with self._lock:
+            missing = [
+                d
+                for d in digests
+                if (entry := self._memory.get(d)) is None
+                or type(entry[1]) not in (int, float)
+                or not 0 <= now - entry[1] <= REFRESH_AFTER_S
+            ]
+        loaded = 0
+        for digest in missing:
+            disk_entry = self._read_disk(digest)
+            if disk_entry is None:
+                continue
+            record, fetched_at = disk_entry
+            if (
+                type(fetched_at) in (int, float)
+                and 0 <= now - fetched_at <= REFRESH_AFTER_S
+                and isinstance(record, dict)
+                and record.get("rules_hash") == digest
+            ):
+                with self._lock:
+                    existing = self._memory.get(digest)
+                    if existing is None or type(existing[1]) not in (int, float) or fetched_at > existing[1]:
+                        self._memory[digest] = (record, fetched_at)
+                        loaded += 1
+        return loaded
 
     def prefetch_grp_ids(self, grp_ids: Any) -> None:
         """Queue grp ids for background resolution and lookup. Never blocks."""
@@ -368,6 +408,12 @@ class CardFactsClient:
     def _fetch(self, hashes: list[str]) -> None:
         """One lookup request for *hashes*; requeues on failure or missing."""
         headers = {"Content-Type": "application/json"}
+        try:
+            from arenamcp.client_metadata import get_client_headers
+
+            headers.update(get_client_headers())
+        except Exception:
+            headers.setdefault("User-Agent", "mtgacoach/unknown (unknown)")
         key = self._license_key or _license_key()
         if key:
             headers["Authorization"] = f"Bearer {key}"
@@ -474,6 +520,11 @@ def facts_for(cards: Any, *, memory_only: bool = False) -> dict[str, dict[str, A
     """Look up card records. Memory-only reads never initiate I/O or refreshes."""
     client = shared_client()
     return client.fresh_memory_facts(cards) if memory_only else client.facts_for(cards)
+
+
+def warm_memory_from_disk(cards: Any, *, alt_hashes: Iterable[str] = ()) -> int:
+    """Load already-cached local card-facts records into memory without I/O queuing."""
+    return shared_client().warm_memory_from_disk(cards, alt_hashes=alt_hashes)
 
 
 def prefetch_grp_ids(grp_ids: Any) -> None:

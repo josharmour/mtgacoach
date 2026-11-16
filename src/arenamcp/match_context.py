@@ -42,8 +42,9 @@ def reset_seen_rules() -> None:
         _seen_rules = (None, [])
 
 
-# Subject-tagged like the decision rules (situational_rules): the tutor and
-# fetch-land sentences need a library effect in play.
+# Subject-tagged like the decision rules (situational_rules): always-applicable
+# core rules lead so ``STRATEGIC_POLICY_CORE`` is a byte-identical prefix even
+# when optional subjects (e.g. ``"library"``) are active.
 STRATEGIC_POLICY_PARTS: tuple[tuple[str | None, str], ...] = (
     (
         None,
@@ -58,24 +59,11 @@ STRATEGIC_POLICY_PARTS: tuple[tuple[str | None, str], ...] = (
         "allow responding on the opponent's turn. ",
     ),
     (
-        "library",
-        "For tutors, choose an eligible card still available for the current "
-        "need: survival/interaction, mana, engine, protection, or closing the game. Account for the "
-        "tutor's destination, restrictions, X and the cost/timing of using the found card. Recheck actual "
-        "search options when they arrive. ",
-    ),
-    (
         None,
         "Do not tutor a habitual favorite or spend removal merely "
         "because it is payable. Library composition does not reveal draw order or guarantee a draw. "
         "An unknown library count or missing deck inventory does not mean the library is empty; "
         "never reject a fetch/tutor or predict decking based on missing observations. ",
-    ),
-    (
-        "library",
-        "A fetch land that sacrifices itself for one land replaces a land; it is not net land ramp. "
-        "Evaluate its life cost, needed colors/mana, timing and actual synergies; deck thinning alone "
-        "is not a reason to crack it immediately. ",
     ),
     (
         None,
@@ -90,7 +78,21 @@ STRATEGIC_POLICY_PARTS: tuple[tuple[str | None, str], ...] = (
         "Use only effects supported by the supplied Oracle text: cast, enter, attack, death and zone "
         "changes are different events. A static material/combat score does not price these strategic effects.",
     ),
+    (
+        "library",
+        "\nFor tutors, choose an eligible card still available for the current "
+        "need: survival/interaction, mana, engine, protection, or closing the game. Account for the "
+        "tutor's destination, restrictions, X and the cost/timing of using the found card. Recheck actual "
+        "search options when they arrive. ",
+    ),
+    (
+        "library",
+        "A fetch land that sacrifices itself for one land replaces a land; it is not net land ramp. "
+        "Evaluate its life cost, needed colors/mana, timing and actual synergies; deck thinning alone "
+        "is not a reason to crack it immediately.",
+    ),
 )
+STRATEGIC_POLICY_CORE = compose_rules(STRATEGIC_POLICY_PARTS, frozenset())
 STRATEGIC_POLICY = compose_rules(STRATEGIC_POLICY_PARTS)
 
 
@@ -439,8 +441,112 @@ def _mana_value(value: Any) -> str:
     return str(int(value)) if isinstance(value, float) and value.is_integer() else str(value)
 
 
+def decision_library_in_play(
+    state: dict, *, offered: Iterable[int] = (), catalog: dict[int, dict] | None = None
+) -> bool:
+    """Whether a compact decision window can actively inspect or search the library right now."""
+    try:
+        from arenamcp.mana import SPELL_CAST_TYPES
+
+        context = state.get("decision_context")
+        context = context if isinstance(context, dict) else {}
+        raw_ctx = context.get("raw") if isinstance(context.get("raw"), dict) else {}
+        request = " ".join(
+            str(part)
+            for part in (
+                context.get("type"),
+                context.get("context"),
+                raw_ctx.get("groupContext"),
+                state.get("_bridge_request_type"),
+            )
+            if part
+        ).lower()
+        if "mulligan" in request:
+            return False
+        if any(kind in request for kind in LIBRARY_DECISIONS):
+            return True
+        local = state.get("local_seat_id") or next(
+            (p.get("seat_id") for p in state.get("players", []) if isinstance(p, dict) and p.get("is_local")),
+            None,
+        )
+
+        def ours(card: Any) -> bool:
+            if not isinstance(card, dict):
+                return False
+            side = card.get("controller_seat_id") or card.get("owner_seat_id")
+            return local is None or side in (None, local)
+
+        def has_library_rule(text: Any) -> bool:
+            return bool(text and _LIBRARY_EFFECT_RE.search(" ".join(oracle_lines(text))))
+
+        if any(ours(card) and has_library_rule(card.get("oracle_text")) for card in _zone(state, "stack")):
+            return True
+
+        offered_set = {gid for gid in offered if isinstance(gid, int)}
+        active_ids: set[int] = set(offered_set)
+        active_instances: set[int] = set()
+        raw_actions = (
+            state.get("_bridge_actions")
+            if state.get("_bridge_actions") is not None
+            else state.get("legal_actions_raw")
+        )
+        allowed_atypes = SPELL_CAST_TYPES | {"Activate", "Activate_Mana", "Play", "PlayMDFC"}
+        for action in raw_actions or ():
+            if not isinstance(action, dict):
+                continue
+            atype = str(action.get("actionType") or "").removeprefix("ActionType_")
+            if atype not in allowed_atypes:
+                continue
+            if action.get("hasAutoTap") is False or action.get("_unaffordable"):
+                continue
+            gid = action.get("grpId")
+            iid = action.get("instanceId")
+            if isinstance(gid, int) and gid > 4:
+                active_ids.add(gid)
+            if isinstance(iid, int):
+                active_instances.add(iid)
+
+        if catalog and any(
+            has_library_rule((catalog.get(gid) or {}).get("oracle_text")) for gid in offered_set
+        ):
+            return True
+
+        for zone_name in ("hand", "command", "battlefield"):
+            for card in _zone(state, zone_name):
+                if not ours(card):
+                    continue
+                gid = card.get("grp_id")
+                iid = card.get("instance_id")
+                in_window = (
+                    (iid in active_instances)
+                    or (gid in active_ids)
+                    or (raw_actions is None and not offered_set and zone_name in ("hand", "command"))
+                )
+                if not in_window:
+                    continue
+                if zone_name == "battlefield":
+                    resolved = False
+                    for line in oracle_lines(card.get("oracle_text")):
+                        if not line.startswith("•"):
+                            resolved = _one_time_enters(line)
+                        if not resolved and _LIBRARY_EFFECT_RE.search(line):
+                            return True
+                elif has_library_rule(card.get("oracle_text")):
+                    return True
+        return False
+    except Exception as error:
+        logger.debug("decision library relevance unknown, listing the inventory: %s", error)
+        return True
+
+
 def _card_line(
-    info: dict, count: int, grp_id: int, *, listed: bool = False, verified_keywords: str = ""
+    info: dict,
+    count: int,
+    grp_id: int,
+    *,
+    listed: bool = False,
+    verified_keywords: str = "",
+    compact_oracle: str = "",
 ) -> str:
     """A card's rules line. ``listed``: the deck list above already gives its count, cost, type and stats."""
     name = info.get("name") or f"Unknown({grp_id})"
@@ -458,6 +564,7 @@ def _card_line(
         fields.append(f"printed {info['power']}/{info['toughness']}")
     fields.append(
         verified_keywords
+        or compact_oracle
         or " ".join(oracle_lines(info.get("oracle_text")))
         or "Rules text unavailable; do not invent abilities."
     )
@@ -576,18 +683,39 @@ def prepare_match_context(
             else "RULES (every card in the deck: a tutor in hand or a library inspection can reach any of them; "
             "cost, type and printed stats as listed above)"
         )
-        short = {}
+        compact_rules: dict[int, str] = {}
+        inactive: set[int] = set()
         if compact_decision and source_ids_complete and not full_rules:
             # An eligible past print is already named, with cost, type and
-            # stats, in the starting list. Every current zone and option keeps
-            # its ordinary rules row. Missing evidence keeps the original bytes.
-            inactive = set(quoted) - offered - scope - set(_visible_grp_ids(state, catalog))
-            if inactive:
-                from arenamcp.card_facts.prompt_render import compact_history_rules
+            # stats, in the starting list. Offered options and scope candidates
+            # keep full raw rules; verified inactive and visible non-option cards
+            # use compact CardFacts summaries when shorter. Missing evidence keeps
+            # the original bytes.
+            from arenamcp.card_facts.client import warm_memory_from_disk
+            from arenamcp.card_facts.prompt_render import candidate_fact_hashes, compact_history_rules
 
-                short = compact_history_rules({gid: catalog[gid] for gid in inactive})
+            visible_set = set(_visible_grp_ids(state, catalog))
+            inactive = set(quoted) - offered - scope - visible_set
+            compact_targets = set(quoted) - offered - scope
+            if compact_targets:
+                target_catalog = {gid: catalog[gid] for gid in compact_targets}
+                alt_hashes = [
+                    digest
+                    for card in target_catalog.values()
+                    if isinstance(card, dict)
+                    for digest in candidate_fact_hashes(card)
+                ]
+                warm_memory_from_disk(target_catalog.values(), alt_hashes=alt_hashes)
+                compact_rules = compact_history_rules(target_catalog)
         reference.extend(
-            _card_line(catalog[gid], deck[gid], gid, listed=True, verified_keywords=short.get(gid, ""))
+            _card_line(
+                catalog[gid],
+                deck[gid],
+                gid,
+                listed=True,
+                verified_keywords=compact_rules.get(gid, "") if gid in inactive else "",
+                compact_oracle="" if gid in inactive else compact_rules.get(gid, ""),
+            )
             for gid in quoted
         )
     result["deck_reference"] = "\n".join(reference)
@@ -608,7 +736,15 @@ def prepare_match_context(
         result["deck_reference_stable"] = result["deck_reference"]
     result["deck_catalog"] = catalog
     result["deck_rules_grp_ids"] = sorted(set(quoted) | set(commanders))
-    result["library_listed"] = bool(library or full_rules or library_in_play(state))
+    result["library_listed"] = bool(
+        library
+        or full_rules
+        or (
+            decision_library_in_play(state, offered=offered, catalog=catalog)
+            if compact_decision and library is None
+            else library_in_play(state)
+        )
+    )
 
     remaining = deck.copy()
     seen: set[int] = set()

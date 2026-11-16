@@ -567,6 +567,20 @@ class DeckPlaybook:
         pointer so the rules are not sent twice. A card cited by several
         mechanisms is quoted under the first one and pointed to after that.
         """
+        lines, _ = self._render_lines(omit_oracle_for=omit_oracle_for)
+        return "\n".join(lines)
+
+    def render_parts(self, *, omit_oracle_for: Collection[int] = ()) -> tuple[str, str, str]:
+        """Return full rendering, invariant core fields, and variable mechanism fields."""
+        lines, core = self._render_lines(omit_oracle_for=omit_oracle_for)
+        return (
+            "\n".join(lines),
+            "\n".join(value for index, value in enumerate(lines) if index in core),
+            "\n".join(value for index, value in enumerate(lines) if index not in core),
+        )
+
+    def _render_lines(self, *, omit_oracle_for: Collection[int] = ()) -> tuple[list[str], set[int]]:
+        """Render full playbook lines alongside indices independent of ``omit_oracle_for``."""
         from arenamcp.match_context import plain_rule, unique_abilities
 
         omit = {int(gid) for gid in omit_oracle_for}
@@ -628,11 +642,13 @@ class DeckPlaybook:
             ]
         for rule in data["decision_rules"]:
             lines.extend(self._rule_lines(rule))
+        mech_start = len(lines)
         for mechanism in data["mechanisms"]:
             lines.append(f"MECHANISM {mechanism['id']}: {mechanism['effect']}")
             lines.extend(f"  Requires: {item}" for item in mechanism["requires"])
             lines.extend(f"  Avoid: {item}" for item in mechanism["avoid"])
             lines.extend(evidence_lines(mechanism))
+        mech_end = len(lines)
         lines.extend(
             f"{phase.title()}: {data['phases'][phase]}" for phase in ("early", "mid", "late", "recovery")
         )
@@ -641,7 +657,8 @@ class DeckPlaybook:
             f"  {name(gid)}: {data['card_roles'][str(gid)]}"
             for gid in sorted(int(gid) for gid in data["card_roles"])
         )
-        return "\n".join(lines)
+        core_indices = set(range(mech_start)) | set(range(mech_end, len(lines)))
+        return lines, core_indices
 
     def export(self, *, include_study: bool = True) -> dict:
         data = (

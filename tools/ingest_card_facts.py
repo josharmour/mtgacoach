@@ -121,6 +121,7 @@ class CardFactsServer:
         url = f"{self.base_url}{path}"
         data = json.dumps(body).encode("utf-8") if body is not None else None
         request = urllib.request.Request(url, data=data, method=method)
+        request.add_header("User-Agent", "mtgacoach-ingest/1.0")
         request.add_header("X-Admin-Key", self.admin_key)
         if data is not None:
             request.add_header("Content-Type", "application/json")

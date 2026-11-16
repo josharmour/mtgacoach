@@ -61,6 +61,7 @@ from arenamcp.loyalty_timing import (
     strip_conflicting_activation,
     walkers_in,
 )
+from arenamcp.match_context import STRATEGIC_POLICY_CORE
 from arenamcp.opponent_read import OpponentRead
 from arenamcp.plan_ledger import PlanLedger
 
@@ -262,7 +263,9 @@ STRATEGIC_LANE = StrategicLane()
 # Strong, compact instruction. The model returns STRICT JSON so we can render a
 # stable prompt block for the planner and a one-line intro for spoken advice.
 GAME_PLAN_PROMPT = (
-    """You are a Magic: The Gathering strategic planner forming a PERSISTENT GAME PLAN.
+    STRATEGIC_POLICY_CORE
+    + "\n"
+    + """You are a Magic: The Gathering strategic planner forming a PERSISTENT GAME PLAN.
 Given the current board, hand, mana, life totals, the deterministic BOARD FACTS and the Oracle-grounded deck playbook, decide WHO IS THE BEATDOWN, how this game is won, and what to do on each of our next three turns, like a strong human player looking 2-3 turns ahead.
 
 BOARD FACTS are computed from the live board (clocks through best blocks, race, lethal flags, mana budget per turn). Treat them as hard facts:
@@ -305,7 +308,9 @@ Respond with ONLY a JSON object, no prose, no markdown:
 
 # A short update uses the same validated GamePlan fields as a full strategic review.
 LIVE_PLAN_PROMPT = (
-    """Choose the line from the supplied deck playbook that fits this match.
+    STRATEGIC_POLICY_CORE
+    + "\n"
+    + """Choose the line from the supplied deck playbook that fits this match.
 Use BOARD FACTS, the current hand, the mana available and the prior plan. Keep a sound line.
 Give one win condition, our next play or hold, and the specific opposing play or draw that
 would change it. Follow a feasible candidate line when one is supplied. Cast only cards
@@ -4576,6 +4581,38 @@ class GamePlanManager:
             return profile_seed
         return self._seed
 
+    def _seed_parts(self, seed: str | None, game_state: dict[str, Any]) -> tuple[str, str]:
+        """Split a playbook seed into (invariant core block, variable mechanism tail)."""
+        if not seed:
+            return "", ""
+        source = getattr(self, "_playbook_source", None)
+        if callable(source):
+            try:
+                from arenamcp.deck_strategy import DeckPlaybook
+
+                book = source()
+                if type(book) is DeckPlaybook:
+                    quoted = game_state.get("deck_rules_grp_ids") or ()
+                    fields, core = DeckPlaybook._render_lines(book, omit_oracle_for=quoted)
+                    if (
+                        type(fields) is list
+                        and all(type(field) is str for field in fields)
+                        and type(core) is set
+                        and all(type(index) is int and 0 <= index < len(fields) for index in core)
+                        and "\n".join(fields).strip() == seed.strip()
+                    ):
+                        core_text = "\n".join(field for index, field in enumerate(fields) if index in core)
+                        tail_text = "\n".join(
+                            field for index, field in enumerate(fields) if index not in core
+                        )
+                        return (
+                            f"DECK PLAYBOOK / STRATEGY:\n{core_text}\n" if core_text else "",
+                            tail_text,
+                        )
+            except Exception as error:
+                logger.debug("playbook seed partition skipped: %s", error)
+        return f"DECK PLAYBOOK / STRATEGY:\n{seed}\n", ""
+
     def yield_for_decision(self) -> bool:
         """Cancel an in-flight reform so a per-decision call has the server to itself.
 
@@ -6279,13 +6316,15 @@ class GamePlanManager:
             )
         user_parts.append("\nForm the GAME PLAN as JSON now.")
         # Prefix-cache order (E2): deck list and commanders (stable all
-        # match), then the deck playbook (per deck), then the RULES section
-        # (grows only as cards are seen), then the volatile board. Blocks
-        # keep their exact bytes; only their order changes.
-        seed_block = f"DECK PLAYBOOK / STRATEGY:\n{seed}\n" if seed else ""
+        # match), then the invariant playbook core (per deck), then the RULES
+        # section (grows only as cards are seen), then the variable playbook
+        # mechanism lines (whose quoted-in-reference pointers depend on RULES),
+        # then the volatile board. Blocks keep their exact bytes; only their
+        # order changes.
+        seed_core, seed_tail = self._seed_parts(seed, game_state)
         head, rules = split_deck_reference(str(game_state.get("deck_reference") or ""))
         user_message = "\n\n".join(
-            block for block in (head, seed_block, rules, "\n".join(user_parts)) if block
+            block for block in (head, seed_core, rules, seed_tail, "\n".join(user_parts)) if block
         )
 
         self._reform_failure = ""

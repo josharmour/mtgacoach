@@ -269,7 +269,8 @@ Answer with ONE JSON object and nothing else. It must match this shape:
   "modes": [
     {
       "name": "<cast|activate|evoke|flashback|...>",
-      "cost": {"mana": "", "tap": false, "sacrifice": null,
+      "cost": {"mana": "", "tap": false,
+               "sacrifice": null,  // or {"target": "<sacrificed object>", "count": 1, "condition": ""} (never a string/bool)
                "life": 0, "discard": 0, "exile_from_graveyard": 0},
       "cost_text": "<the cost as printed>",
       "stays_on_battlefield": true
@@ -282,7 +283,7 @@ Answer with ONE JSON object and nothing else. It must match this shape:
       "conditions": ["<only if the text states a condition>"]
     }
   ],
-  "mana": [{"mana": "{W}", "condition": "<only if stated>"}],
+  "mana": [{"mana": "{W}", "condition": "<non-tap cost or restriction, only if stated>"}],  // ONLY mana produced by "Add ..." abilities or basic land subtypes, NEVER mana_cost; leave [] if the card produces no mana; never emit "{C}" unless "{C}" is printed
   "threat": {},
   "relationships": {},
   "limited": {},
@@ -312,28 +313,46 @@ Rules:
 a value, use null / an empty list / an empty string — never invent one.
 2. Numbers are integers exactly as stated ("up to three" allows 3 only \
 because the text says three).
-3. Copy costs, alternate costs and activated abilities each get their own \
-entry in modes/effects.
-4. Put only this permanent's unconditional intrinsic keyword abilities in body.keywords.
-A keyword granted to an enchanted creature, an equipped creature, a token or a target
-belongs to that effect, never to the source's body. Keep ward's cost in the grant.
-For an Aura preserve each printed "Enchant ..." restriction verbatim in a static
-Unknown effect. Its cast must target a legal recipient and it must remain legally
-attached. For Auras, represent EACH other printed rules paragraph once. A simple
-"Enchanted creature gets +N/+N." can use static Pump and "When this Aura enters,
-draw a card." can use ETB Draw. For every other rule or compound effect use one
-Unknown with its complete verbatim paragraph, including restrictions, grants,
-conditions, duration and costs; omit redundant partial typed effects. Use ETB
-for "When this Aura enters, ...", static for attachment and continuous effects,
-and keep conditions empty when the complete rule is in Unknown. Exile has
-no duration field. Do not represent temporary exile as unconditional Exile.
-5. Current TokenSpec cannot represent token colors or affirmative legendary status.
-For a token-creation sentence that states either, use Unknown with the entire
-original sentence verbatim; do not emit a lossy CreateToken or extension fields.
-Keep loyalty costs, optional physical exile payments, linked-card mana colors,
-and conditional resolutions explicit; if no native fields express them exactly,
+3. Every nonland card with a printed mana cost (including {0}) must include its \
+normal "cast" mode in modes. Copy costs, alternate costs and activated abilities \
+each get their own entry in modes/effects. Keep the complete printed sentence \
+verbatim (including any turn or timing restriction, e.g. "If it's not your turn, \
+you may exile a green card from your hand rather than pay this spell's mana \
+cost.") in mode.cost_text, with stays_on_battlefield=false for instants, \
+sorceries, and evoke modes. Keep independent mana-spent triggers (such as \
+"if {R}{R} was spent..." and "if {G}{G} was spent...") as separate effects \
+entries; generic or normal mana can satisfy more than one of them in the same \
+cast.
+4. Put only this permanent's unconditional intrinsic keyword abilities in body.keywords. \
+Keep Ward/Protection costs (e.g. "Ward {2}", "Ward—Pay 2 life") when intrinsic; \
+threshold-gated lines like "8+ | Flying" are conditional Unknown effects, never \
+body.keywords. A keyword granted to an enchanted creature, an equipped creature, \
+a token or a target belongs to that effect, never to the source's body.
+For an Aura preserve each printed "Enchant ..." restriction verbatim in a static \
+Unknown effect. Its cast must target a legal recipient and it must remain legally \
+attached. For Auras, represent EACH other printed rules paragraph once. A simple \
+"Enchanted creature gets +N/+N." can use static Pump and "When this Aura enters, \
+draw a card." can use ETB Draw. For every other rule or compound effect use one \
+Unknown with its complete verbatim paragraph, including restrictions, grants, \
+conditions, duration and costs; omit redundant partial typed effects. On Auras, \
+lines starting with "When ", "Whenever ", or "At " (other than "When this Aura \
+enters, draw a card.") must set trigger to the exact text before the first comma \
+and effect to Unknown with the full line verbatim (conditions: []); "As this Aura \
+enters, ..." lines use trigger "static" and Unknown with the full line verbatim. \
+Use ETB for "When this Aura enters, ...", static for attachment and continuous \
+effects, and keep conditions empty when the complete rule is in Unknown. Exile \
+has no duration field. Do not represent temporary exile as unconditional Exile.
+5. Current TokenSpec cannot represent token colors or affirmative legendary status. \
+When any token-creation clause on the card states either, do not emit CreateToken \
+anywhere in effects; represent token-creating abilities as Unknown with the entire \
+original sentence or paragraph verbatim (including any trailing "Activate only ..." \
+restriction in that paragraph), and do not emit extension fields. \
+Keep loyalty costs, optional physical exile payments, linked-card mana colors, \
+and conditional resolutions explicit; if no native fields express them exactly, \
 retain the original statement as Unknown rather than guessing executable effects.
-6. Output valid JSON only — no markdown fences, no commentary.
+6. Output valid JSON only — no markdown fences, no commentary. Set \
+"confidence": "high" whenever every printed mechanic is faithfully represented \
+via exact typed fields or verbatim Unknown, and keep "notes": "" (empty string).
 """
 
 
@@ -419,39 +438,45 @@ def _token_contract_problems(data: dict[str, Any], printed: PrintedCard) -> list
     Other wording is not certified by absence of a finding. Mixed token clauses
     remain conservative because the current schema has no source-span binding.
     """
-    sentences = re.split(r"(?<=[.!?])\s+|\n+", printed.oracle_text)
-    unsupported = []
-    for sentence in sentences:
-        for creation in re.finditer(r"\bcreate\b", sentence, re.IGNORECASE):
-            # A trigger/condition mentioning token creation is not an instruction.
-            # Comma boundaries retain the ordinary "When ... , create ..." form.
-            prefix = re.split(r"[,;:]", sentence[: creation.start()])[-1]
-            if re.search(r"\b(?:when|whenever|if|unless)\b", prefix, re.IGNORECASE):
-                continue
-            # Recognize only a bounded imperative/optional instruction prefix.
-            # Descriptions such as "effects that create" remain unclassified.
-            if " ".join(prefix.casefold().split()) not in {
-                "",
-                "you",
-                "you may",
-                "then",
-                "then you",
-                "then you may",
-            }:
-                continue
-            tail = sentence[creation.end() :]
-            first_token = re.search(r"\btokens?\b", tail, re.IGNORECASE)
-            if first_token is None:
-                continue
-            properties = tail[: first_token.start()]
-            # Never cross an earlier token object to inspect a later target.
-            if re.search(r"[.;\n]", properties):
-                continue
-            if re.search(
-                r"\b(?:white|blue|black|red|green|colorless|legendary)\b", properties, re.IGNORECASE
-            ):
-                unsupported.append(sentence)
-                break
+    unsupported: list[tuple[str, str]] = []
+    for paragraph in printed.oracle_text.splitlines():
+        if not paragraph.strip():
+            continue
+        para_sentences = re.split(r"(?<=[.!?])\s+", paragraph.strip())
+        for idx, sentence in enumerate(para_sentences):
+            for creation in re.finditer(r"\bcreate\b", sentence, re.IGNORECASE):
+                # A trigger/condition mentioning token creation is not an instruction.
+                # Comma boundaries retain the ordinary "When ... , create ..." form.
+                prefix = re.split(r"[,;:]", sentence[: creation.start()])[-1]
+                if re.search(r"\b(?:when|whenever|if|unless)\b", prefix, re.IGNORECASE):
+                    continue
+                # Recognize only a bounded imperative/optional instruction prefix.
+                # Descriptions such as "effects that create" remain unclassified.
+                if " ".join(prefix.casefold().split()) not in {
+                    "",
+                    "you",
+                    "you may",
+                    "then",
+                    "then you",
+                    "then you may",
+                }:
+                    continue
+                tail = sentence[creation.end() :]
+                first_token = re.search(r"\btokens?\b", tail, re.IGNORECASE)
+                if first_token is None:
+                    continue
+                properties = tail[: first_token.start()]
+                # Never cross an earlier token object to inspect a later target.
+                if re.search(r"[.;\n]", properties):
+                    continue
+                if re.search(
+                    r"\b(?:white|blue|black|red|green|colorless|legendary)\b", properties, re.IGNORECASE
+                ):
+                    trailing = " ".join(
+                        s for s in para_sentences[idx + 1 :] if re.match(r"activate only\b", s.strip(), re.I)
+                    )
+                    unsupported.append((sentence, trailing))
+                    break
     if not unsupported:
         return []
     effects = data.get("effects")
@@ -471,8 +496,24 @@ def _token_contract_problems(data: dict[str, Any], printed: PrintedCard) -> list
         problems.append(
             "TokenSpec cannot preserve stated token color/legendary status; use verbatim Unknown, not CreateToken"
         )
-    if any(sentence not in unknown for sentence in unsupported):
-        problems.append("unrepresentable token statement requires verbatim Unknown")
+
+    def _ws(text: str) -> str:
+        return " ".join(text.split())
+
+    oracle_norm = _ws(printed.oracle_text)
+    unknown_texts = [_ws(t) for t in unknown if _ws(t) in oracle_norm]
+    for sentence, trailing in unsupported:
+        sent_norm = _ws(sentence)
+        pre_colon, sep, post_colon = sentence.partition(":")
+        allow_tail = bool(sep and not re.search(r'\b(?:has|have|gains?|with)\s*["“]', pre_colon, re.I))
+        tail_norm = _ws(post_colon) if allow_tail else ""
+        trail_norm = _ws(trailing)
+        if not any(
+            (sent_norm in u or (tail_norm and tail_norm in u)) and (not trail_norm or trail_norm in u)
+            for u in unknown_texts
+        ):
+            problems.append("unrepresentable token statement requires verbatim Unknown")
+            break
     return problems
 
 
@@ -535,6 +576,35 @@ def _raw_aura_problems(data, printed):
                 "Aura effect uses unsupported or missing native fields; preserve the entire ability as Unknown"
             )
     return problems
+
+
+def _raw_notes_problems(data: dict[str, Any]) -> list[str]:
+    """Reject compiler-authored notes that can smuggle invented rules claims."""
+    notes = data.get("notes", "")
+    if notes != "":
+        return [
+            'notes must be ""; put printed conditions or unmodelled clauses in modes, conditions, or verbatim Unknown'
+        ]
+    return []
+
+
+def _raw_mana_problems(data: dict[str, Any], printed: PrintedCard) -> list[str]:
+    """Reject mana_cost hallucinations or unprinted {C} in the produced-mana list."""
+    mana = data.get("mana")
+    if not mana:
+        return []
+    if not isinstance(mana, list):
+        return ["mana must be a list"]
+    oracle_low = printed.oracle_text.casefold()
+    type_words = set(printed.type_line.split())
+    basic_lands = {"Plains", "Island", "Swamp", "Mountain", "Forest"}
+    if "add " not in oracle_low and not (basic_lands & type_words):
+        return ["mana lists mana produced, never mana_cost; leave [] when the card does not add mana"]
+    if "{c}" not in oracle_low and any(
+        isinstance(m, dict) and "{c}" in str(m.get("mana", "")).casefold() for m in mana
+    ):
+        return ["mana claims {C} not stated by rules text"]
+    return []
 
 
 def _raw_native_type_problems(data: dict[str, Any]) -> list[str]:
@@ -729,7 +799,12 @@ def compile_one(
             record = None
         else:
             try:
-                raw_problems = _raw_native_type_problems(data) + _raw_aura_problems(data, printed)
+                raw_problems = (
+                    _raw_native_type_problems(data)
+                    + _raw_aura_problems(data, printed)
+                    + _raw_notes_problems(data)
+                    + _raw_mana_problems(data, printed)
+                )
                 if raw_problems:
                     raise ValueError("; ".join(raw_problems))
                 record_candidate = _stamp(dict(data), printed)
