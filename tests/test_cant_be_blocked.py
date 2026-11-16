@@ -392,3 +392,157 @@ def test_solver_cache_sees_the_mark():
     rat["cant_be_blocked"] = "Tetsuko Umezawa, Fugitive"
     unblocked = optimal_attacks([rat], [thalia], 17, 4, [], [])
     assert unblocked.damage_through == 1 and unblocked.attacker_ids == [20]
+
+
+def test_team_block_restriction_tracks_live_power_and_controller():
+    grant = "Creatures with power less than this creature's power can't block creatures you control."
+    source = _creature(1, 3, 3, grant)
+    ally = _creature(2, 1, 1)
+    frog = _creature(3, 1, 2, controller=2)
+    board = [source, ally, frog]
+    assert not annotate_cant_be_blocked(board)
+    for attacker in [source, ally]:
+        assert not can_be_blocked_by(attacker, frog)
+        assert can_be_blocked_by(attacker, dict(frog, power=3))
+        assert can_be_blocked_by(attacker, dict(frog, power=None))
+    assert can_be_blocked_by(frog, ally)
+
+    source["power"] = 1
+    annotate_cant_be_blocked(board)
+    assert can_be_blocked_by(ally, frog)
+    source["power"] = 5
+    for inactive in [{"is_phased_out": True}, {"face_down": True}, {"removed_abilities": ["All abilities"]}]:
+        annotate_cant_be_blocked([dict(source, **inactive), ally, frog])
+        assert can_be_blocked_by(ally, frog)
+    annotate_cant_be_blocked([ally, frog])
+    assert can_be_blocked_by(ally, frog)
+
+
+def test_highest_active_power_grant_and_similar_conditional_wording():
+    grant = "Creatures with power less than Banner's power can't block creatures you control."
+    low = _creature(1, 2, 1, grant, name="Banner")
+    high = _creature(2, 4, 3, grant, name="Banner")
+    blocker = _creature(3, 3, 3, controller=2)
+    annotate_cant_be_blocked([low, high, blocker])
+    assert not can_be_blocked_by(low, blocker)
+    high["oracle_text"] = "Whenever this creature attacks, " + grant.lower()
+    annotate_cant_be_blocked([low, high, blocker])
+    assert can_be_blocked_by(low, blocker)
+
+
+def test_board_model_forecasts_power_restriction_at_block_declaration():
+    from arenamcp.board_assessment import _combat, _simulate_attacks
+    from arenamcp.board_model import build_board_model
+    from arenamcp.combat_keywords import projected_blocker_power
+
+    grant = "Creatures with power less than this creature's power can't block creatures you control."
+    state = _state(
+        [
+            (1, "Champion", 1, 3, 3, "Creature", grant, False, 1),
+            (2, "Ally", 1, 2, 2, "Creature", "", False, 1),
+            (3, "Frog", 2, 1, 2, "Creature", "", False, 1),
+        ],
+        turn=3,
+        our_life=8,
+        opp_life=2,
+        attackers=[1, 2],
+    )
+    model = build_board_model(state)
+    source, ally = model.ours
+    assert _combat([source], model.theirs, 2)[0] == 3
+    # A nonattacking source still prevents a block of its teammate.
+    assert _simulate_attacks(model.ours, model.theirs, 2, first_attackers=[ally], first_blockers=None)[0] == 1
+    # Changing power before blocks can open a legal block. If the source was
+    # removed, the ally's previously set threshold must also disappear.
+    shrunk = dict(source, power=1)
+    assert _combat(projected_blocker_power([ally], [shrunk, ally]), model.theirs, 2)[0] == 0
+    assert _combat(projected_blocker_power([ally], [ally]), model.theirs, 2)[0] == 0
+    state["battlefield"][2]["power"] = 3
+    equal = build_board_model(state)
+    assert _combat(equal.ours[:1], equal.theirs, 2)[0] == 0
+
+
+def test_removing_team_power_grant_restores_blocks_in_projected_combat():
+    from arenamcp.board_assessment import _life_loss, _project, _Spell
+    from arenamcp.board_model import build_board_model
+
+    grant = "Creatures with power less than this creature's power can't block creatures you control."
+    state = _state(
+        [
+            (1, "Champion", 2, 3, 3, "Creature", grant, False, 1),
+            (2, "Ally", 2, 2, 2, "Creature", "", False, 1),
+            (3, "Frog", 1, 1, 2, "Creature", "", False, 1),
+        ],
+        turn=3,
+        our_life=2,
+        opp_life=8,
+        attackers=[],
+    )
+    annotate_cant_be_blocked(state["battlefield"])
+    assert _life_loss(state, remove_id=1, attacks=1) == 0
+    assert _life_loss(state, attacks=1) >= 2
+    model = build_board_model(state)
+    removal = _Spell(
+        {"oracle_text": "Destroy target creature.", "type_line": "Instant"},
+        "Removal",
+        "removal",
+        2,
+        (),
+        False,
+    )
+    rows, dead, _ = _project(
+        schedule=[[removal]],
+        budgets=[{"label": "T", "turn": 3, "sources": []}],
+        spells=[],
+        ours=model.ours,
+        theirs=model.theirs,
+        our_life=2,
+        turn=3,
+        our_rules={},
+        their_attack_pending=False,
+        first_their_attackers=None,
+        untapped_ours=model.ours,
+    )
+    assert dead is None and rows[0].life_after == 2
+
+
+@pytest.mark.parametrize("with_grant, lethal", [(True, True), (False, False)])
+def test_greedy_search_can_attack_after_casting_nonattacking_grant(with_grant, lethal):
+    from arenamcp.board_model import build_board_model
+    from arenamcp.line_search import _root, _Search
+
+    state = _state(
+        [(2, "Ally", 1, 2, 2, "Creature", "", False, 1), (3, "Frog", 2, 1, 2, "Creature", "", False, 1)],
+        turn=3,
+        our_life=8,
+        opp_life=2,
+        attackers=[2],
+    )
+    state["turn"].update(phase="Phase_Main1", step="Step_None")
+    state.update(pending_decision=None, decision_context={})
+    text = "Creatures with power less than this creature's power can't block creatures you control."
+    state["hand"] = [
+        _creature(
+            1,
+            3,
+            3,
+            text if with_grant else "",
+            name="Newcomer",
+            mana_cost="{0}",
+            mana_value=0,
+            card_types=["CardType_Creature"],
+        )
+    ]
+    search = _Search(
+        build_board_model(state),
+        groups=16,
+        width=2,
+        k_next=4,
+        survival=False,
+        lethal_now=False,
+        soft_ms=500,
+        hard_ms=3000,
+        opponent=None,
+    )
+    node = search.greedy_step(_root(search), cheap=True)
+    assert (node.opp_life <= 0) == lethal

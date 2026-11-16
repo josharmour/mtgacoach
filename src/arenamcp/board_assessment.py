@@ -59,9 +59,11 @@ from typing import Any
 from arenamcp.attack_potential import annotated, attack_round, modelled_attack_trigger
 from arenamcp.combat_hit import loses_on_combat_hit
 from arenamcp.combat_keywords import (
+    grants_minimum_blocker_power,
     has_combat_keyword,
     is_creature_modified,
     modified_conditional_keywords,
+    projected_blocker_power,
 )
 from arenamcp.combat_solver import _death_life, _resolve_attacker, _search_blocks, combat_resource_roles
 from arenamcp.combat_strategy import _CANT_BLOCK, _rules_text, loyalty
@@ -609,6 +611,8 @@ def _body(
         "_tapped": bool(card.get("is_tapped")),
         "_attacking": bool(card.get("is_attacking")),
         "_sick": sick,
+        "_grants_blocker_power": grants_minimum_blocker_power(card),
+        "minimum_blocker_power": card.get("minimum_blocker_power"),
         "_can_attack": can_attack,
         "_can_block": can_block,
         "_unblockable": bool(unblockable),
@@ -811,14 +815,20 @@ def _attack_round(attackers: list[dict], blockers: list[dict], life: int) -> tup
 
 
 def _attack_round_life(
-    attackers: list[dict], blockers: list[dict], life: int, *, declared: bool = False
+    attackers: list[dict], blockers: list[dict], life: int, *, declared: bool = False, side=None
 ) -> tuple[int, set[int], set[int], int, int, int, int]:
-    """``_attack_once`` with what their attackers add (``attack_potential``, annotated bodies of
-    theirs only): their Treasure-fed and mana pumps, attack-trigger grants (not for an attack
-    ``declared`` already: those are in the snapshot) and an extra combat (ledger #191, #193, #194)."""
+    """Resolve the attack, including triggered pumps, grants and extra combats."""
+    once = _attack_once
+    if side is not None:
+        sent = {b["instance_id"] for b in attackers}
+        held = [b for b in side if b.get("_grants_blocker_power") and b["instance_id"] not in sent]
+
+        def once(current, defending, left):
+            return _attack_once(projected_blocker_power(current, held), defending, left)
+
     if annotated(attackers):
-        return attack_round(attackers, blockers, life, _attack_once, declared=declared)
-    return _attack_once(attackers, blockers, life)
+        return attack_round(attackers, blockers, life, once, declared=declared)
+    return once(attackers, blockers, life)
 
 
 def _attack_once(
@@ -1083,6 +1093,9 @@ def _simulate_attacks(
     the end (no stall, no extrapolation: its damage keeps rising).
     """
     alive_att = list(attackers)
+    power_grant = any(
+        a.get("_grants_blocker_power") or a.get("minimum_blocker_power") is not None for a in alive_att
+    )
     alive_def = list(defenders)
     lives: list[int] = []
     events = 0  # life-gain events of the attacking side's lifelink damage so far
@@ -1136,7 +1149,11 @@ def _simulate_attacks(
                     source, min(source["_tokens"], _MAX_TOKEN_BODIES - made - len(new_tokens)), index
                 )
         damage, dead_att, dead_def, gain, healed, _ll_gain, _ll_heal = _attack_round_life(
-            able, blockers, life, declared=first_declared and index == 0 and first_attackers is not None
+            able,
+            blockers,
+            life,
+            declared=first_declared and index == 0 and first_attackers is not None,
+            side=alive_att if power_grant else None,
         )
         life -= damage - healed + engine
         if index < horizon:
@@ -3443,13 +3460,16 @@ def _project(
     board = list(ours)
     blockers_first = list(untapped_ours)
     enemy = list(theirs)
+    power_grant = any(
+        b.get("_grants_blocker_power") or b.get("minimum_blocker_power") is not None for b in enemy
+    )
     attacks = 0
     dead_in: int | None = None
     now_life: int | None = None
     if their_attack_pending:
         able = [a for a in (first_their_attackers or []) if a["_can_attack"]]
         damage, dead_att, dead_def, _gain, healed, _ll_gain, _ll_heal = _attack_round_life(
-            able, blockers_first, life, declared=their_declared
+            able, blockers_first, life, declared=their_declared, side=enemy if power_grant else None
         )
         life -= damage - healed  # our lifelink blockers heal us
         attacks += 1
@@ -3485,7 +3505,7 @@ def _project(
         if dead_in is None:
             able = [a for a in enemy if a["_can_attack"]]
             damage, dead_att, dead_def, _gain, healed, _ll_gain, _ll_heal = _attack_round_life(
-                able, blockers, life
+                able, blockers, life, side=enemy if power_grant else None
             )
             life -= damage - healed
             attacks += 1

@@ -60,6 +60,7 @@ def _card_key(c: dict) -> tuple:
         c.get("oracle_text"),
         tuple(c.get("keywords") or ()),
         c.get("cant_be_blocked"),
+        c.get("minimum_blocker_power"),
         c.get("combat_hit_bonus"),
         loses_on_combat_hit(c),
         c.get("is_tapped"),

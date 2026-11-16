@@ -362,6 +362,39 @@ def _granted_by(source: dict, creature: dict) -> bool:
     return False
 
 
+def grants_minimum_blocker_power(source: dict) -> bool:
+    """Whether this active creature has the printed team-wide power restriction."""
+    text = source.get("oracle_text") or ""
+    if "power less than" not in text.lower():
+        return False
+    if source.get("is_phased_out") or source.get("face_down") or source.get("removed_abilities"):
+        return False
+    if not is_creature_now(source):
+        return False
+    names = ("this creature", str(source.get("name") or "").lower().strip())
+    return any(
+        line == f"creatures with power less than {name}'s power can't block creatures you control."
+        for line in _rules_lines(source)
+        for name in names
+        if name
+    )
+
+
+def projected_blocker_power(attackers: list[dict], side: list[dict]) -> list[dict]:
+    """Apply surviving sources on this side using their power at block declaration.
+
+    A held or tapped source still applies. An attacking source may have been
+    pumped since the roster was built. Keep sibling simulations independent.
+    """
+    powers = {b["instance_id"]: b["power"] for b in side if b.get("_grants_blocker_power")}
+    powers.update({b["instance_id"]: b["power"] for b in attackers if b.get("_grants_blocker_power")})
+    minimum = max(powers.values(), default=None)
+    return [
+        b if b.get("minimum_blocker_power") == minimum else dict(b, minimum_blocker_power=minimum)
+        for b in attackers
+    ]
+
+
 def annotate_cant_be_blocked(battlefield: list | None) -> dict[int, str]:
     """Mark creatures that can't be blocked right now; return {instance_id: why}.
 
@@ -373,8 +406,24 @@ def annotate_cant_be_blocked(battlefield: list | None) -> dict[int, str]:
     Equipment that says "enchanted/equipped creature ... can't be blocked".
     """
     cards = [card for card in battlefield or [] if isinstance(card, dict)]
+    # A team-wide restriction depends on the granting permanent's current power.
+    # Store a minimum on each attacker, separate from unconditional evasion.
+    minimum_by_controller: dict[int, int] = {}
+    for source in cards:
+        controller = _controller(source)
+        if controller is None or not grants_minimum_blocker_power(source):
+            continue
+        power = _int_stat(source, "power")
+        if power is not None:
+            minimum_by_controller[controller] = max(power, minimum_by_controller.get(controller, power))
+
     found: dict[int, str] = {}
     for creature in cards:
+        minimum = minimum_by_controller.get(_controller(creature))
+        if minimum is not None and is_creature_now(creature) and not creature.get("is_phased_out"):
+            creature["minimum_blocker_power"] = minimum
+        else:
+            creature.pop("minimum_blocker_power", None)
         if not _is_creature(creature):
             continue
         identity = _int_stat(creature, "instance_id")
@@ -454,6 +503,13 @@ def can_be_blocked_by(attacker: dict, blocker: dict) -> bool:
         return False
     if attacker.get("cant_be_blocked"):
         return False
+    minimum = attacker.get("minimum_blocker_power")
+    if attacker.get("_grants_blocker_power") and (own_power := _int_stat(attacker, "power")) is not None:
+        minimum = own_power if minimum is None else max(minimum, own_power)
+    if minimum is not None:
+        power = _int_stat(blocker, "power")
+        if power is not None and power < minimum:
+            return False
     whole, restrictions = _evasion(attacker)
     if whole:
         return False

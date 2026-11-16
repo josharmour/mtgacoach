@@ -124,7 +124,7 @@ from arenamcp.card_facts.schema import card_facts_from_dict
 from arenamcp.card_facts.source_identity import single_face_source
 from arenamcp.cast_growth_risk import grown, per_cast_growth
 from arenamcp.cast_triggers import cast_pumps, spell_kinds
-from arenamcp.combat_keywords import has_combat_keyword
+from arenamcp.combat_keywords import grants_minimum_blocker_power, has_combat_keyword, projected_blocker_power
 from arenamcp.combat_loss import CombatDetail, LossState
 from arenamcp.combat_solver import walker_value
 from arenamcp.combat_strategy import loyalty
@@ -2586,6 +2586,9 @@ class Moves:
         budget: int | None = None,
     ) -> None:
         self.model = model
+        self._power_grant = any(b.get("_grants_blocker_power") for b in (*model.ours, *model.theirs)) or any(
+            grants_minimum_blocker_power(s.card) for s in model.spells
+        )
         self._has_nonhand_spells = any(s.zone != "hand" for s in model.spells)
         from arenamcp.death_bodies import death_is_suppressed
 
@@ -3365,6 +3368,8 @@ class Moves:
             defending_player,
             self._protection_part((*attackers, *blockers)),
         )
+        if self._power_grant:
+            key += (tuple(b.get("minimum_blocker_power") for b in attackers),)
         key += (
             tuple(
                 (b["instance_id"], b.get("_counter_shift", 0))
@@ -5067,6 +5072,8 @@ class Moves:
             return [("none", ())], True
         blockers = [b for b in mid.theirs if b["instance_id"] not in mid.their_tapped]
         fighting, tag = self.cast_pumped(able, mid.pumps)
+        if self._power_grant:
+            fighting = projected_blocker_power(fighting, mid.ours)
         _damage, dead, _ = self.combat(fighting, blockers, mid.opp_life, tag=tag)
         air = any(_reach_or_flying(b) and b["_can_block"] for b in blockers)
         options = [
@@ -5154,6 +5161,8 @@ class Moves:
             if mid.pumps:  # this turn's cast triggers (ledger #94)
                 fighting, pumped = self.cast_pumped(fighting, mid.pumps)
                 tag += pumped
+            if self._power_grant:
+                fighting = projected_blocker_power(fighting, mid.ours)
             walker_id = next(iter(at.values()), None)
             if walker_id in mid.walkers:
                 # Their blockers protect the planeswalker first (its loyalty is the "life" they
@@ -5873,6 +5882,8 @@ class Moves:
         if fixed is not None:
             policies = [("declared", tuple(fixed))]
         else:
+            if self._power_grant:
+                able = projected_blocker_power(able, theirs)
             policies = self.opponent.attack_policies(self, able, defenders, life)
         crack_sources = spare[0] if crack_sources is None else crack_sources
         context = (life, opp_life, ours_all, theirs, defenders, removal, entered, keep_tapped, returning, index, next_k, next_abs, tag, left, entries, crack_sources)  # fmt: skip
@@ -5962,10 +5973,17 @@ class Moves:
         last_details = None
         counter_deltas = {}
 
+        held_sources = []
+        if self._power_grant:
+            sent = {body["instance_id"] for body in attackers}
+            held_sources = [body for body in theirs if body["instance_id"] not in sent]
+
         def resolve_round(a, b, left):
             from arenamcp.combat_infect import add_deltas
 
             nonlocal our_loss, terminal, last_details, counter_deltas
+            if self._power_grant:
+                a = projected_blocker_power(a, held_sources)
             details = self.combat_detail(
                 a,
                 b,
@@ -6091,6 +6109,8 @@ class Moves:
             for spell in cast:
                 self._cast_triggers(scratch, spell)
             fighting, crack_tag = self.cast_pumped(crack, scratch.pumps)
+        if self._power_grant:
+            fighting = projected_blocker_power(fighting, ours_after)
         crack_damage, crack_dead_ours, crack_dead_theirs, crack_gained, crack_healed = (
             self.combat_life(
                 self._future_bodies(fighting),
@@ -6272,6 +6292,8 @@ class Moves:
             attacking = {b["instance_id"] for b in fixed}
             open_blockers = [b for b in node.theirs if b["instance_id"] not in attacking and not b["_tapped"]]
             ready = [b for b in node.ours if b["_can_attack"]]
+            if self._power_grant:
+                ready = projected_blocker_power(ready, node.ours)
             _d, dead, _ = self.combat(ready, open_blockers, node.opp_life, tag="root")
             crack = frozenset(b["instance_id"] for b in ready if b["instance_id"] not in dead)
             variants += ["none", "crackback"] if crack else ["none"]
@@ -6386,6 +6408,8 @@ class Moves:
                     attackers = [b for b in mid.ours if b["instance_id"] in everyone[1]]
                     blockers = [b for b in mid.theirs if b["instance_id"] not in mid.their_tapped]
                     fighting, tag = self.cast_pumped(attackers, mid.pumps)
+                    if self._power_grant:
+                        fighting = projected_blocker_power(fighting, mid.ours)
                     damage = self.combat(fighting, blockers, mid.opp_life, tag=tag)[0]
                     lethal = damage + self.sneak_gain(mid, fighting, blockers, tag) >= mid.opp_life
                     options = [everyone if lethal else options[0]]

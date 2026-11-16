@@ -660,6 +660,11 @@ def build_board_model(state: dict) -> BoardModel | None:
             continue
         (ours if _controller(card) == local else theirs).append(body)
     engines = engines_of(battlefield, local, opponent, draws=their_draws(state))
+    # Apply team evasion after forming both complete controller rosters.
+    from arenamcp.combat_keywords import projected_blocker_power
+
+    ours = projected_blocker_power(ours, ours)
+    theirs = projected_blocker_power(theirs, theirs)
     annotate_engines(theirs, engines)
     # Ours too, read the same way: the board clocks are symmetric (``_clock_facts``).
     our_engines = engines_of(battlefield, opponent, local, draws=their_draws(state, local))
