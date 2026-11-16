@@ -160,13 +160,15 @@ def _overrides() -> dict:
     return parsed
 
 
-def effective_row(family: str) -> dict:
+def effective_row(family: str, *, idle_playbook: bool = False) -> dict:
     """Base row for a family merged with ARENAMCP_THINKING_ROWS overrides.
 
     A family-specific override wins over a "*" override; an unknown family has
     no base row (:data:`UNKNOWN_FAMILY_ROW`), so only overrides apply.
     """
     merged = dict(MODEL_ROWS.get(family, UNKNOWN_FAMILY_ROW))
+    if idle_playbook and family in {"glm", "deepseek"}:
+        merged.pop("playbook", None)  # Allow idle discovery effort before applying machine overrides.
     overrides = _overrides()
     merged.update(overrides.get("*", {}))
     merged.update(overrides.get(family, {}))
@@ -271,7 +273,7 @@ def family_for_backend(backend) -> str:
     return family
 
 
-def effort_for_backend(backend, call_class: str, reasoning_effort):
+def effort_for_backend(backend, call_class: str, reasoning_effort, *, idle_playbook=False):
     """Effort for a call on ``backend``, decided from the model actually served."""
     family, name = _resolve_family(backend)
     if not family:
@@ -289,4 +291,6 @@ def effort_for_backend(backend, call_class: str, reasoning_effort):
         # as asked - but overrides still reach it so an experiment can pin an
         # unknown model's row.
         return apply_policy(effective_row(""), group_for_call_class(call_class), reasoning_effort)
-    return apply_policy(effective_row(family), group_for_call_class(call_class), reasoning_effort)
+    return apply_policy(
+        effective_row(family, idle_playbook=idle_playbook), group_for_call_class(call_class), reasoning_effort
+    )

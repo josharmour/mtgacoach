@@ -186,6 +186,40 @@ def test_cancel_event_aborts_a_call_still_waiting_for_the_server(server_factory,
     assert be.circuit_snapshot()["consecutive_failures"] == 0
 
 
+def test_cancel_event_aborts_an_idle_playbook_call_within_its_300s_budget(server_factory):
+    """Q3: the idle playbook build's 300 s budget must not trap the lane.
+
+    The thinking discovery pass runs with request_timeout_s=300; cancelling it
+    (match start) must still wake the blocked read at once and drop the
+    request, exactly like the shorter background calls above.
+    """
+    server = server_factory(["stall_stream"])
+    be = _backend(server.url)
+    cancel = threading.Event()
+    thread, result = _start(
+        be.complete,
+        "s",
+        "u",
+        call_class="background.deck_playbook",
+        idle_playbook=True,
+        request_timeout_s=300,
+        enable_thinking=True,
+        reasoning_effort="high",
+        cancel_event=cancel,
+        raise_on_error=True,
+    )
+    assert server.stalled.wait(5)
+    cancel.set()
+    thread.join(10)
+    assert not thread.is_alive()
+    assert isinstance(result.get("error"), BackendCallCancelled), result
+    assert result["error"].reason == "cancelled"
+    assert result["elapsed"] < 5, "the blocked read must wake at once, not at its 300 s timeout"
+    assert server.disconnected.wait(5), "the server must see the request dropped"
+    assert be.last_request_metrics["status"] == "cancelled"
+    assert proxy._BACKGROUND_LANE.holder_class() is None
+
+
 def test_a_newer_same_class_call_takes_the_lane_from_a_queued_one(server_factory):
     server = server_factory(["stall_stream", "fresh plan"])
     old = _backend(server.url)

@@ -112,6 +112,16 @@ _PLAYBOOK_PASS_SETTINGS = {
     "compile": {"enable_thinking": False, "reasoning_effort": "low"},
 }
 _PLAYBOOK_DISCOVERY_MAX_TOKENS = 12000
+# Outside a match (idle builds and the Decks window) there is no live match to
+# protect, so the hosted path gets the same treatment as every other backend:
+# discovery thinks at high effort with the full token budget and a 300 s cap.
+# The compact settings above exist because builds were timing out while a match
+# was already running (Q3, 2026-11).
+_HOSTED_IDLE_DISCOVERY_SETTINGS = {"enable_thinking": True, "reasoning_effort": "high"}
+_HOSTED_IDLE_DISCOVERY_TIMEOUT_S = 300.0
+# Which build mode a cache entry was produced in ("match" = compact settings,
+# "idle" = thinking settings). Readers that accept any mode pass both.
+_PLAYBOOK_BUILD_MODES = ("match", "idle")
 _PLAYBOOK_COMPILE_MAX_TOKENS = 12288
 # The hosted current/DeepSeek path requested high reasoning and repeatedly
 # exhausted its 120s cap without usable discovery notes. Keep analysis in the visible notes,
@@ -132,23 +142,31 @@ _HOSTED_DISCOVERY_BRIEF = (
 )
 
 
-def _playbook_discovery_prompt(backend):
+def _playbook_discovery_prompt(backend, outside_match=False):
     from arenamcp.deck_strategy import DECK_DISCOVERY_PROMPT
 
-    if _playbook_call_options(backend, True)["reasoning_effort"] == "none":
+    if _playbook_call_options(backend, True, outside_match)["reasoning_effort"] == "none":
         # Keep all rules/tradeoff checks; bound the visible handoff rather than
         # requesting a 4000-token essay before the independently audited pass.
         return DECK_DISCOVERY_PROMPT.split("Write concise analytical notes", 1)[0] + _HOSTED_DISCOVERY_BRIEF
     return DECK_DISCOVERY_PROMPT
 
 
-def _playbook_call_options(backend, discovery):
+def _playbook_call_options(backend, discovery, outside_match=False):
     from arenamcp.model_call_settings import HOSTED_FAMILIES, family_for_backend
 
     # Hosted settings follow the model actually served (the response's "model"
     # field), not the alias requested; before the first response the alias is
     # the best available guess.
-    hosted = family_for_backend(backend) in HOSTED_FAMILIES
+    family = family_for_backend(backend)
+    hosted = family in HOSTED_FAMILIES
+    if family in {"glm", "deepseek"} and outside_match and discovery:
+        # Idle build: no live match to protect, so think properly (Q3 2026-11).
+        return dict(
+            **_HOSTED_IDLE_DISCOVERY_SETTINGS,
+            max_tokens=_PLAYBOOK_DISCOVERY_MAX_TOKENS,
+            request_timeout_s=_HOSTED_IDLE_DISCOVERY_TIMEOUT_S,
+        )
     settings = (
         _HOSTED_PLAYBOOK_SETTINGS
         if hosted
@@ -163,7 +181,7 @@ def _playbook_call_options(backend, discovery):
     )
 
 
-def _playbook_prompt_fingerprint() -> str:
+def _playbook_prompt_fingerprint(mode: str = "match") -> str:
     """Changes whenever the prompts, schema or per-pass model settings that built a cached playbook change."""
     from arenamcp.deck_strategy import DECK_DISCOVERY_PROMPT, LEGACY_PLAYBOOK_VERSION
 
@@ -179,6 +197,15 @@ def _playbook_prompt_fingerprint() -> str:
             _HOSTED_DISCOVERY_BRIEF,
         )
     )
+    if mode == "idle":
+        text += "\0".join(
+            (
+                "",
+                mode,
+                json.dumps(_HOSTED_IDLE_DISCOVERY_SETTINGS, sort_keys=True),
+                str(_HOSTED_IDLE_DISCOVERY_TIMEOUT_S),
+            )
+        )
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
@@ -273,6 +300,11 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         self._playbook_cache: dict[str, Any] = {}
         self._playbook_runs: dict[str, threading.Event] = {}
         self._playbook_cancels: dict[str, threading.Event] = {}
+        # Why each pending build runs: "idle" (outside a match, thinking) or
+        # "match" (the live match's compact build). Idle builds are stopped at
+        # a match boundary even for the same deck; in-match builds keep their
+        # protected lifecycle.
+        self._playbook_cancel_modes: dict[str, str] = {}
         # "Model offline" has been said for the current outage.
         self._offline_announced = False
         self._rules_db: RulesDB | None = None
@@ -704,6 +736,24 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             self._last_advised_plan_intro = ""
             if self._game_plan_mgr is not None:
                 self._game_plan_mgr.reset()
+        # An outside-match build has no work a live match must wait for: stop
+        # it now (this deck's included) so the match never queues behind a
+        # minutes-long thinking build. In-match builds are left alone.
+        self._cancel_idle_playbook_builds("strategy cleared at a match/deck boundary")
+
+    def _cancel_idle_playbook_builds(self, reason: str) -> None:
+        """Stop pending outside-match playbook builds, this deck's included.
+
+        The match builds its own compact playbook; the next idle window
+        rebuilds the thinking one. In-match builds keep their protected
+        lifecycle (a new match with the same deck does not abort them).
+        """
+        with self._deck_analysis_lock:
+            for other, cancel in list(self._playbook_cancels.items()):
+                if self._playbook_cancel_modes.get(other) != "idle" or cancel.is_set():
+                    continue
+                logger.info("Idle playbook build for %s cancelled: %s", other[:8], reason)
+                cancel.set()
 
     _PLAN_WAITS_FOR_DECK_ANALYSIS_S = 12.0
 
@@ -743,17 +793,24 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         """Reserve this analysis before starting its worker, not after enrichment.
 
         A running analysis of a different deck is cancelled, so its model call
-        stops occupying a server slot.
+        stops occupying a server slot. A pending outside-match build of this
+        very deck is cancelled too: the live match needs the deck now and must
+        not queue behind a minutes-long thinking build. An in-match build of
+        this deck keeps its protected lifecycle.
         """
         with self._deck_analysis_lock:
-            for other, cancel in self._playbook_cancels.items():
-                if other != identity:
-                    logger.info(
-                        "Deck analysis %s cancelled: a different deck (%s) is being analysed",
-                        other[:8],
-                        identity[:8],
-                    )
-                    cancel.set()
+            for other, cancel in list(self._playbook_cancels.items()):
+                if other == identity and self._playbook_cancel_modes.get(other) != "idle":
+                    # A new match with the same deck does not abort an in-match
+                    # build (compact lifecycle preserved).
+                    continue
+                reason = (
+                    "a match needs this deck now"
+                    if other == identity
+                    else f"a different deck ({identity[:8]}) is being analysed"
+                )
+                logger.info("Deck playbook build %s cancelled: %s", other[:8], reason)
+                cancel.set()
             if self._deck_analysis_identity != identity:
                 self.clear_deck_strategy()
                 self._deck_strategy_pending_since = time.monotonic()
@@ -778,7 +835,8 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         published with no model call; ``refresh=True`` rebuilds it. One
         analysis per identity runs at a time: a second request waits for the
         first instead of paying for its own, and a new match with the same
-        deck does not abort it (only a different deck does).
+        deck does not abort an in-match build (only a different deck does, or
+        a pending outside-match build, which the match must not wait on).
         """
         from arenamcp.deck_strategy import deck_identity
 
@@ -796,21 +854,27 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         try:
             playbook = None if refresh else self._cached_playbook(identity, game_state)
             source = "cache"
-            if playbook is None:
+            waits = 0
+            while playbook is None:
                 run, running = self._claim_playbook_run(identity)
-                if running is not None:
-                    logger.info(
-                        "Deck playbook for this deck is already being built; waiting for that analysis"
-                    )
-                    running.wait(self._PLAYBOOK_MODEL_WAIT_S + 2 * 120.0)
-                    playbook = self._cached_playbook(identity, game_state)
-                    source = "the concurrent analysis"
-                    if playbook is None:
-                        raise ValueError("The concurrent analysis of this deck produced no playbook")
-            if playbook is None:
-                playbook = self._build_playbook(game_state, be, identity, generation)
-                source = "model"
-                self._store_playbook(playbook)
+                if running is None:
+                    playbook = self._build_playbook(game_state, be, identity, generation)
+                    source = "model"
+                    self._store_playbook(playbook)
+                    break
+                waits += 1
+                if waits > 2:
+                    raise ValueError("The concurrent analysis of this deck produced no playbook")
+                logger.info("Deck playbook for this deck is already being built; waiting for that analysis")
+                running.wait(self._PLAYBOOK_MODEL_WAIT_S + 2 * 120.0)
+                playbook = self._cached_playbook(identity, game_state)
+                source = "the concurrent analysis"
+                if playbook is None:
+                    # The concurrent analysis ended without storing a playbook
+                    # — cancelled at a match boundary (e.g. the idle build for
+                    # this very deck) or failed. Take over and build it here
+                    # rather than leave the live match without one.
+                    logger.info("Concurrent deck playbook ended without a result; building it now")
             return self._publish_playbook(playbook, generation, start, source)
         except Exception as error:
             with self._deck_analysis_lock:
@@ -826,7 +890,14 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                     self._deck_strategy_pending = False
 
     def prepare_playbook(
-        self, game_state: dict, backend=None, *, refresh: bool = False, progress=None, cancel=None
+        self,
+        game_state: dict,
+        backend=None,
+        *,
+        refresh: bool = False,
+        progress=None,
+        cancel=None,
+        in_match=None,
     ):
         """Build (or load) the playbook for ``game_state``'s deck without publishing it.
 
@@ -841,15 +912,21 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         if not identity:
             raise ValueError("The deck list is empty or unknown")
         be = backend or self._backend
-        playbook = None if refresh else self._cached_playbook(identity, game_state)
+        playbook = None if refresh else self._cached_playbook(identity, game_state, modes=("idle",))
         if playbook is not None:
             if progress:
                 progress("cache")
             return playbook
+
+        def wanted():
+            return not (cancel and cancel.is_set()) and not (in_match and in_match())
+
+        if not wanted():
+            raise ValueError("Deck preparation paused for active play")
         run, running = self._claim_playbook_run(identity)
         if running is not None:
             running.wait(self._PLAYBOOK_MODEL_WAIT_S + 2 * 300.0)
-            playbook = self._cached_playbook(identity, game_state)
+            playbook = self._cached_playbook(identity, game_state, modes=("idle",))
             if playbook is None:
                 raise ValueError("The concurrent analysis of this deck produced no playbook")
             return playbook
@@ -859,11 +936,14 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                 be,
                 identity,
                 -1,
-                wanted=lambda: cancel is None or not cancel.is_set(),
+                wanted=wanted,
                 progress=progress,
                 cancel=cancel,
+                outside_match=True,
             )
-            self._store_playbook(playbook)
+            if not wanted():
+                raise ValueError("Deck preparation paused for active play")
+            self._store_playbook(playbook, mode="idle")
             if progress:
                 progress("done")
             return playbook
@@ -880,6 +960,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         wanted=None,
         progress=None,
         cancel=None,
+        outside_match: bool = False,
     ):
         """The two model calls: discovery notes, then the audited JSON playbook."""
         from arenamcp.deck_strategy import (
@@ -913,19 +994,36 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         if deck_note := analysis_note(identity):
             user_message += "\n" + deck_note
         deadline = time.monotonic() + self._PLAYBOOK_MODEL_WAIT_S
-        lane = STRATEGIC_LANE.acquire("deck_playbook", self._PLAYBOOK_LANE_WAIT_S, abort=lambda: not wanted())
-        if lane is None:
-            if not wanted():
-                raise ValueError("Deck changed during analysis")
-            raise ValueError(
-                f"Deck analysis deferred: strategic lane held or reserved for {STRATEGIC_LANE.holder or 'a game plan'}"
-            )
         cancel = cancel or threading.Event()
+        # Register the cancellation BEFORE waiting for the strategic lane
+        # (verifier rejection of 4089f58, 2026-11-11): a match boundary that
+        # lands while this build is still queued in acquire() must stop it
+        # there. With the entry registered only after the grant,
+        # clear_deck_strategy()/begin_deck_analysis() found no event to set,
+        # the abort callback stayed False, and both model passes ran and the
+        # cache was written.
         with self._deck_analysis_lock:
             self._playbook_cancels[identity] = cancel
+            self._playbook_cancel_modes[identity] = "idle" if outside_match else "match"
+        lane = None
         try:
+            lane = STRATEGIC_LANE.acquire(
+                "deck_playbook", self._PLAYBOOK_LANE_WAIT_S, abort=lambda: cancel.is_set() or not wanted()
+            )
+            if lane is None:
+                if cancel.is_set():
+                    raise ValueError("Deck analysis yielded or was superseded")
+                if not wanted():
+                    raise ValueError("Deck changed during analysis")
+                raise ValueError(
+                    f"Deck analysis deferred: strategic lane held or reserved for {STRATEGIC_LANE.holder or 'a game plan'}"
+                )
             labels = accepted_call_kwargs(
-                be, call_class=self._PLAYBOOK_CALL_CLASS, priority=BACKGROUND_PRIORITY, cancel_event=cancel
+                be,
+                call_class=self._PLAYBOOK_CALL_CLASS,
+                priority=BACKGROUND_PRIORITY,
+                cancel_event=cancel,
+                idle_playbook=True if outside_match else None,
             )
 
             # Separate strategic reasoning from encoding the result. Asking
@@ -935,7 +1033,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                 options = dict(
                     temperature=0.0,
                     background=True,
-                    **_playbook_call_options(be, discovery),
+                    **_playbook_call_options(be, discovery, outside_match),
                     **labels,
                 )
                 if not discovery:
@@ -976,7 +1074,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
 
             if progress:
                 progress("discovery")
-            notes = complete(_playbook_discovery_prompt(be), user_message, discovery=True)
+            notes = complete(_playbook_discovery_prompt(be, outside_match), user_message, discovery=True)
             user_message += _PLAYBOOK_AUDIT_INSTRUCTIONS + notes
             playbook = None
             for attempt in range(2):
@@ -1007,6 +1105,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             with self._deck_analysis_lock:
                 if self._playbook_cancels.get(identity) is cancel:
                     del self._playbook_cancels[identity]
+                    self._playbook_cancel_modes.pop(identity, None)
             STRATEGIC_LANE.release(lane)
 
     @staticmethod
@@ -1122,7 +1221,9 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                 logger.warning("Could not load saved deck strategy %s: %s", identity, error)
         return None
 
-    def _cached_playbook(self, identity: str, game_state: dict):
+    def _cached_playbook(
+        self, identity: str, game_state: dict, modes: tuple[str, ...] = _PLAYBOOK_BUILD_MODES
+    ):
         """A playbook built earlier for this exact deck (memory, then disk), else None."""
         if not identity:
             return None
@@ -1132,9 +1233,10 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         with self._deck_analysis_lock:
             cached = self._playbook_cache.get(identity)
         if cached is not None:
+            cached, built_mode = cached
             if "study" in cached.data:
                 return cached.with_current_study(cached.data["study"])
-            return cached
+            return cached if built_mode in modes else None
         path = self._playbook_cache_path(identity)
         if path is None or not path.exists():
             return None
@@ -1144,8 +1246,11 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             saved = json.loads(path.read_text(encoding="utf-8"))
             if saved.get("schema") != self._PLAYBOOK_CACHE_SCHEMA:
                 raise ValueError("cache schema changed")
-            if saved.get("prompt") != _playbook_prompt_fingerprint():
-                raise ValueError("built with older prompts")
+            built_mode = saved.get("mode", "match")
+            if built_mode not in _PLAYBOOK_BUILD_MODES or saved.get("prompt") != _playbook_prompt_fingerprint(
+                built_mode
+            ):
+                raise ValueError("built with different prompts or build mode")
             if time.time() - float(saved.get("saved_at") or 0) > self._PLAYBOOK_CACHE_MAX_AGE_S:
                 raise ValueError("older than 30 days")
             # Revalidates version, deck/commander identity, catalog and evidence.
@@ -1153,27 +1258,32 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             from arenamcp.laelia_strategy import validate_generated_plan
 
             validate_generated_plan(playbook)
+            # A structured study has its own source validation. Preserve it across
+            # preparation modes, including when its native evidence is temporarily unavailable.
+            if built_mode not in modes and not (playbook.study_withheld or "study" in playbook.data):
+                return None
         except Exception as error:
             logger.info("Ignoring cached deck playbook %s: %s", path.name, error)
             return None
         if not playbook.study_withheld:
             with self._deck_analysis_lock:
-                self._playbook_cache[identity] = playbook
+                self._playbook_cache[identity] = (playbook, built_mode)
         return playbook
 
-    def _store_playbook(self, playbook) -> None:
+    def _store_playbook(self, playbook, mode: str = "match") -> None:
         identity = getattr(playbook, "identity", "")
         if not identity:
             return
         with self._deck_analysis_lock:
-            self._playbook_cache[identity] = playbook
+            self._playbook_cache[identity] = (playbook, mode)
         path = self._playbook_cache_path(identity)
         if path is None:
             return
         try:
             payload = {
                 "schema": self._PLAYBOOK_CACHE_SCHEMA,
-                "prompt": _playbook_prompt_fingerprint(),
+                "mode": mode,
+                "prompt": _playbook_prompt_fingerprint(mode),
                 "saved_at": time.time(),
                 "playbook": playbook.export(),
             }

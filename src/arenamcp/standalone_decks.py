@@ -194,33 +194,75 @@ class _DeckLibraryMixin:
             return
         state = record.game_state()
         self._deck_prep_identity = record.identity()
-        if self._coach._cached_playbook(self._deck_prep_identity, state) is not None or cancel.is_set():
+        if (
+            self._coach._cached_playbook(self._deck_prep_identity, state, modes=("idle",)) is not None
+            or cancel.is_set()
+        ):
             return
         backend = self._deck_library_backend()
         try:
-            self._coach.prepare_playbook(state, backend=backend, cancel=cancel)
+            self._coach.prepare_playbook(
+                state, backend=backend, cancel=cancel, in_match=self._deck_library_in_match
+            )
             logger.info("Pre-match playbook ready for %s", record.name)
         finally:
             close = getattr(backend, "close", None)
             if callable(close):
                 close()
 
+    def _build_missing_playbooks(self, cancel: threading.Event) -> None:
+        """Idle sweep (Q3 2026-11): one thinking playbook per deck without one.
+
+        Builds used to start only when a match began — 37-89 s in on the Mac —
+        so early turns ran on generic heuristics or waited on a compact build.
+        After the selected deck is warm this walks every other complete deck
+        without an idle-mode playbook, most recently played first, one at a
+        time (they share the model server), and stops at once when a match
+        starts or the worker is cancelled.
+        """
+        if cancel.is_set() or self._deck_library_in_match():
+            return
+        library = getattr(self, "_deck_library", None) or self.collect_decks()[0]
+        records = [record for record in library.values() if record.complete and not record.snapshot]
+        # Newest first; decks never played last (matches the Decks window order).
+        records.sort(key=lambda record: (record.last_played == "", record.name.lower()))
+        records.sort(key=lambda record: record.last_played, reverse=True)
+        for record in records:
+            if cancel.is_set() or self._deck_library_in_match():
+                return
+            state = record.game_state()
+            identity = record.identity()
+            if not identity or self._coach._cached_playbook(identity, state, modes=("idle",)) is not None:
+                continue
+            backend = self._deck_library_backend()
+            try:
+                self._coach.prepare_playbook(
+                    state, backend=backend, cancel=cancel, in_match=self._deck_library_in_match
+                )
+                logger.info("Idle playbook ready for %s", record.name)
+            except Exception as error:
+                if cancel.is_set() or self._deck_library_in_match():
+                    return
+                logger.warning("Idle playbook for %s failed: %s", record.name, error)
+            finally:
+                close = getattr(backend, "close", None)
+                if callable(close):
+                    close()
+
     def _poll_deck_preparation(self, idle: bool, state: dict | None = None) -> None:
         """Run at most one idle lookup off the coaching thread; live play takes precedence."""
         worker = getattr(self, "_deck_prep_thread", None)
+        if not idle and getattr(self, "_coach", None):
+            self._coach._cancel_idle_playbook_builds("match in progress")
         if not idle or not self._auto_deck_strategy:
             cancel = getattr(self, "_deck_prep_cancel", None)
             if cancel is not None and not cancel.is_set() and worker is not None and worker.is_alive():
-                from arenamcp.deck_strategy import deck_identity
-
-                # The live worker joins a build for its own deck. Let that build
-                # finish, subject to the existing first-plan handoff deadline.
-                if (
-                    not self._auto_deck_strategy
-                    or not state
-                    or (not self._deck_prep_identity or deck_identity(state) != self._deck_prep_identity)
-                ):
-                    cancel.set()
+                # A match starting stops the idle build at once, even for the
+                # same deck (Q3 rework 2026-11): a thinking build can run for
+                # minutes, and live play must never wait on it. The match
+                # builds its own compact playbook; the next idle window
+                # replaces it with a thinking one.
+                cancel.set()
             self._deck_prep_next_check = 0.0
             return
         from arenamcp.server import get_last_queue_selection
@@ -251,6 +293,7 @@ class _DeckLibraryMixin:
         def prepare():
             try:
                 self._prepare_selected_deck(cancel)
+                self._build_missing_playbooks(cancel)
             except Exception as error:
                 if not cancel.is_set():
                     logger.warning("Pre-match playbook unavailable: %s", error)
@@ -287,7 +330,11 @@ class _DeckLibraryMixin:
 
         try:
             playbook = coach.prepare_playbook(
-                record.game_state(), backend=self._deck_library_backend(), refresh=refresh, progress=progress
+                record.game_state(),
+                backend=self._deck_library_backend(),
+                refresh=refresh,
+                progress=progress,
+                in_match=self._deck_library_in_match,
             )
             coach.save_deck_strategy(playbook)
             payload = {

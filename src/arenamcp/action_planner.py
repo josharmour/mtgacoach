@@ -10167,6 +10167,9 @@ class ActionPlanner(_ActionLegalityMixin):
                     ]
                     if offered:
                         note += f" [Arena enchant candidates: {', '.join(offered)}. On entry you {payoff.removeprefix('you ')}; weigh the effect on the host.]"
+                from arenamcp.entry_damage import entry_damage_note
+
+                note += entry_damage_note(source_card, game_state)
                 note += legend_cast_note(game_state, source_card)
                 note += combat_cast_note(game_state, source_card)
                 note += trick_timing_note(game_state, source_card)
@@ -11058,7 +11061,13 @@ class ActionPlanner(_ActionLegalityMixin):
             reason = answer.get("reasoning", "")
             fights = fight_claim_concerns(decision, state, picks, reason)
             if decision.request_type == "ActionsAvailable":
-                return fights + surviving_damage_targets(state, reason)
+                from arenamcp.entry_damage import entry_kill_concerns
+
+                return (
+                    fights
+                    + surviving_damage_targets(state, reason)
+                    + entry_kill_concerns(decision, state, picks, reason)
+                )
             return fights + false_activation_target_kills(
                 decision,
                 state,

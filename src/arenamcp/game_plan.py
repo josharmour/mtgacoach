@@ -3362,8 +3362,14 @@ def removal_board_changed(plan, state):
     required = {iid for step in plan.turn_plan for iid in step.get("removal_participants", [])}
     if not required:
         return False
-    present = {card.get("instance_id") for card in state["battlefield"] if not card.get("is_phased_out")}
-    return not required <= present
+    from arenamcp.loyalty_removal import removal_terms_changed
+
+    present = {
+        card.get("instance_id"): card for card in state["battlefield"] if not card.get("is_phased_out")
+    }
+    return not required <= present.keys() or any(
+        removal_terms_changed(step, present, state) for step in plan.turn_plan
+    )
 
 
 def compose_strategy_block(

@@ -107,7 +107,7 @@ def test_changed_or_unavailable_source_withholds_study_without_losing_it(monkeyp
         coach._store_playbook(book)
         coach = CoachEngine(backend=backend)
     elif store == "memory":
-        coach._playbook_cache[identity] = book
+        coach._playbook_cache[identity] = (book, "match")
 
     def read():
         return (

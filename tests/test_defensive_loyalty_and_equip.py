@@ -193,6 +193,35 @@ def test_mana_engine_arrival_refreshes_plan_and_prices_removal(monkeypatch):
     assert "4 damage to Tinkerer" in plan.develop_next and plan.turn_plan[0]["attack"] == ""
     assert not removal_board_changed(plan, state)
     assert removal_board_changed(plan, {**state, "battlefield": [walker, food, *artifacts]})
+    import copy
+
+    changed = copy.deepcopy(state)
+    changed["legal_actions_raw"] = changed["legal_actions_raw"][:1]
+    assert removal_board_changed(plan, changed)
+    # During another player's priority their offers do not invalidate our ability.
+    changed["turn"]["priority_player"] = 2
+    assert not removal_board_changed(plan, changed)
+    changed = copy.deepcopy(state)
+    next(p for p in changed["players"] if p["seat_id"] == 2)["life_total"] = 3
+    assert removal_board_changed(plan, changed)
+    changed = dict(state, battlefield=[c for c in state["battlefield"] if c not in artifacts])
+    assert removal_board_changed(plan, changed)
+
+    # Tapping the source of a loyalty ability does not spend this plan's cost.
+    updated = copy.deepcopy(state)
+    next(c for c in updated["battlefield"] if c["instance_id"] == 10)["is_tapped"] = True
+    assert not removal_board_changed(plan, updated)
+    for card, field, value in [
+        (food, "power", 1),
+        (food, "subtypes", []),
+        (source, "toughness", 8),
+        (source, "controller_seat_id", 1),
+        (food, "controller_seat_id", 2),
+    ]:
+        updated = copy.deepcopy(state)
+        next(c for c in updated["battlefield"] if c["instance_id"] == card["instance_id"])[field] = value
+        assert removal_board_changed(plan, updated)
     source["oracle_text"] += "\nHexproof"
+    assert removal_board_changed(plan, state)
     assert "sacrifice Runner" not in mana_engine_context(state)
     assert choose_removal(d, state, None)[0] is None

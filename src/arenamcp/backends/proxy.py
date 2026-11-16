@@ -491,6 +491,10 @@ def _rejects_stream_usage(error: Exception) -> bool:
 # skipped while the endpoint is down, and runs in the process-wide
 # background lane (one background call in flight at a time).
 BACKGROUND_CLASS_PREFIX = "background."
+# Q3 (owner-approved scope, 2026-11-11): an idle playbook build thinks for
+# minutes, so its caller timeout may raise the 120 s background default —
+# never above this cap, and every other class keeps the old policy.
+_PLAYBOOK_MAX_BUDGET_S = 300.0
 CALL_CLASSES: dict[str, str] = {
     "decision.typed": "autopilot typed bridge decision (action_planner._llm_decision_options)",
     "decision.plan": "autopilot/coach plan_actions",
@@ -1315,6 +1319,7 @@ class ProxyBackend:
         cancel_event: threading.Event | None = None,
         lane_wait_s: float | None = None,
         selective_thinking: bool = False,
+        idle_playbook: bool = False,
         completion_usage: CompletionUsage | None = None,
     ) -> str:
         """Get completion from the API endpoint.
@@ -1386,11 +1391,18 @@ class ProxyBackend:
         # Full deck analysis is off the tactical path and can need longer than
         # a live action window. Opt in per request; never mutate the shared
         # client's timeout or relax the default decision budget.
+        resolved_class = _resolve_call_class(call_class)
         budget = 120.0 if background else self._CLIENT_HARD_TIMEOUT_S
-        if request_timeout_s is not None:
+        if idle_playbook and resolved_class == "background.deck_playbook":
+            # Q3 (owner-approved scope, 2026-11-11): an idle playbook build
+            # thinks for minutes, so its caller timeout may raise the 120 s
+            # background default, capped at _PLAYBOOK_MAX_BUDGET_S; a smaller
+            # request (the in-match compact build asks for 60 s) still wins.
+            if request_timeout_s is not None:
+                budget = min(_PLAYBOOK_MAX_BUDGET_S, max(0.0, request_timeout_s))
+        elif request_timeout_s is not None:
             budget = min(budget, max(0.0, request_timeout_s))
         deadline = request_started + budget
-        resolved_class = _resolve_call_class(call_class)
         is_background = bool(background) or resolved_class.startswith(BACKGROUND_CLASS_PREFIX)
         call = _CallContext(
             call_class=resolved_class,
@@ -1429,11 +1441,14 @@ class ProxyBackend:
                 and selective_enabled(served_name_for_backend(self))
                 and call.call_class == "decision.typed"
             )
-            # Thinking settings follow the model actually served (the response's
-            # "model" field, logged as served_model), not the alias requested:
-            # decisions without thinking, plan calls capped at low, playbook/
-            # announcer/probe without thinking. See arenamcp.model_call_settings.
-            reasoning_effort = effort_for_backend(self, call.call_class, reasoning_effort)
+            reasoning_effort = effort_for_backend(
+                self,
+                call.call_class,
+                reasoning_effort,
+                idle_playbook=idle_playbook
+                and call.call_class == "background.deck_playbook"
+                and enable_thinking is True,
+            )
             if bounded_thinking:
                 thinking_enabled = True
                 reasoning_effort = 1

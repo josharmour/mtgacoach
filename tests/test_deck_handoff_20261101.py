@@ -94,9 +94,13 @@ def test_hosted_two_pass_pipeline_still_publishes_only_audited_playbook(monkeypa
     assert playbook.data["mechanisms"] == response["mechanisms"]
     calls = backend.complete.call_args_list
     assert len(calls) == 2
-    assert calls[0].kwargs["max_tokens"] == 1536 and calls[0].kwargs["request_timeout_s"] == 60
+    assert calls[0].kwargs["enable_thinking"] is True
+    assert calls[0].kwargs["reasoning_effort"] == "high"
+    assert calls[0].kwargs["max_tokens"] == 12000
+    assert calls[0].kwargs["request_timeout_s"] == 300.0
     assert calls[1].kwargs["max_tokens"] == 12288 and "response_format" in calls[1].kwargs
-    assert all(c.kwargs["reasoning_effort"] == "none" for c in calls)
+    # The audited compile pass keeps its compact settings in both modes (Q3 2026-11).
+    assert calls[1].kwargs["reasoning_effort"] == "none"
     assert "Concise mechanisms grounded" in calls[1].args[1]
 
 

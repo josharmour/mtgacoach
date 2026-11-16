@@ -179,8 +179,49 @@ def _without_lord(board, food, target):
     return projected
 
 
+def _sacrifice_kills(food, target, board):
+    from arenamcp.play_safety import _damage_protected, lethal_damage
+
+    need = lethal_damage(target)
+    return (
+        is_creature_now(target)
+        and need is not None
+        and need <= food["power"]
+        and not _damage_protected(target, targeted=True)
+        and not ward_of(target, attached_to(target, board))
+    )
+
+
+def removal_terms_changed(step, board, state):
+    terms = step.get("removal_terms")
+    if not terms:
+        return False  # Older plans record only the participant identities.
+    local = get_local_seat_id(state)
+    source, food, target = [board.get(iid) for iid in step["removal_participants"]]
+    if not (local and source and food and target):
+        return True
+    at_priority, pick = _removal_at_priority(state)
+    if at_priority:
+        if not pick:
+            return True
+        option, line = pick
+        if [option.meta["instanceId"], line.fodder, line.target] != step[
+            "removal_participants"
+        ] or line.reason != step.get("hold"):
+            return True
+    return (
+        source.get("controller_seat_id") != local
+        or (loyalty(source) or 0) < terms["cost"]
+        or not _draw_fodder(food, local, terms["subtype"])
+        or food["power"] != terms["power"]
+        or not _enough_library(state, food["power"])
+        or target.get("controller_seat_id") in (None, local)
+        or not _sacrifice_kills(food, target, list(board.values()))
+    )
+
+
 def defensive_minus(decision, state):
-    from arenamcp.play_safety import _damage_protected, evasive_power_next_turn, lethal_damage
+    from arenamcp.play_safety import evasive_power_next_turn
 
     if decision.request_type != "ActionsAvailable" or state.get("stack"):
         return None
@@ -209,15 +250,7 @@ def defensive_minus(decision, state):
             for target in board:
                 if target.get("controller_seat_id") in (None, local) or target.get("is_phased_out"):
                     continue
-                if not is_creature_now(target):
-                    continue
-                need = lethal_damage(target)
-                if (
-                    need is None
-                    or need > power
-                    or _damage_protected(target, targeted=True)
-                    or ward_of(target, attached_to(target, board))
-                ):
+                if not _sacrifice_kills(food, target, board):
                     continue
                 after, _ = evasive_power_next_turn(
                     {**state, "battlefield": _without_lord(board, food, target)}
@@ -457,33 +490,47 @@ def postcombat_activation(decision, state, step):
     return None
 
 
-def align_offered_removal(plan, state):
-    """Install the same urgent first action the live picker would execute, only on a real menu."""
+def _removal_at_priority(state):
+    """Return whether we have our main-phase priority menu and the current best removal, if any."""
     from arenamcp.decisions import build_pending_decision, label_sibling_activations
 
     turn = state.get("turn") or {}
+    local = get_local_seat_id(state)
     if (
-        state.get("stack")
-        or turn.get("active_player") != get_local_seat_id(state)
+        not local
+        or state.get("stack")
+        or turn.get("active_player") != local
+        or turn.get("priority_player") not in (None, local)
         or str(turn.get("phase")).lower().removeprefix("phase_") not in {"main1", "main2"}
+        or state.get("_bridge_request_type") not in (None, "", "ActionsAvailable")
     ):
-        return
-    step = plan.step_for(turn.get("turn_number"))
+        return False, None
     actions = state.get("_bridge_actions") if "_bridge_actions" in state else state.get("legal_actions_raw")
-    # Background forecasts made before the opponent finishes never promise
-    # an activation. Only reconcile against this snapshot's actual offer.
-    if not step or not actions or not engine_removal_note(state):
-        return
+    if not actions:
+        return False, None
     abilities = [a for a in actions if a.get("actionType") == "ActionType_Activate"]
-    if not abilities:
-        return
+    if not abilities or not engine_removal_note(state):
+        return True, None
     menu = build_pending_decision(
         {"has_pending": True, "request_type": "ActionsAvailable", "actions": abilities, "can_pass": True}
     )
-    if menu is None or not (pick := defensive_minus(label_sibling_activations(menu), state)):
+    if menu is None:
+        return True, None
+    menu = label_sibling_activations(menu)
+    pick = defensive_minus(menu, state)
+    return True, (menu.find(pick[0]), pick[1]) if pick else None
+
+
+def align_offered_removal(plan, state):
+    """Install the same urgent first action the live picker would execute, only on a real menu."""
+    step = plan.step_for((state.get("turn") or {}).get("turn_number"))
+    if not step:
         return
-    oid, line = pick
-    participants = [menu.find(oid).meta["instanceId"], line.fodder, line.target]
+    _, pick = _removal_at_priority(state)
+    if not pick:
+        return
+    option, line = pick
+    participants = [option.meta["instanceId"], line.fodder, line.target]
     plan.issues.append("Current loyalty activation replaces the forecast until its damage and draw resolve.")
     plan.develop_next = line.reason
     plan.path = line.reason
@@ -492,4 +539,11 @@ def align_offered_removal(plan, state):
     plan.turn_plan = [{**step, "cast": [], "land": "", "attack": "", "hold": line.reason}]
     plan.turn_plan[0].pop("postcombat_sacrifice", None)
     plan.turn_plan[0]["removal_participants"] = participants
+    ability = _POWER_DRAW.search(option.label)
+    food = next(c for c in state["battlefield"] if c.get("instance_id") == line.fodder)
+    plan.turn_plan[0]["removal_terms"] = {
+        "cost": int(ability[1]),
+        "subtype": ability[2],
+        "power": food["power"],
+    }
     plan.switch_if = ["Reassess when the ability resolves or its target changes."]

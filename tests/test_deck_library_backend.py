@@ -9,6 +9,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from arenamcp.coach import _playbook_call_options
 from arenamcp.mac_bridge_adapter import MacBridgeAdapter
 from arenamcp.pipe_adapter import PipeAdapter
 from arenamcp.standalone_decks import _DeckLibraryMixin
@@ -133,15 +134,20 @@ class FakePlaybook:
 class FakeCoach:
     def __init__(self, cached=None) -> None:
         self.cached = cached
-        self.prepared: list[tuple[str, bool]] = []
+        self.prepared: list = []
 
-    def _cached_playbook(self, identity, state):
+    def _cached_playbook(self, identity, state, modes=None):
         return self.cached
+
+    def _cancel_idle_playbook_builds(self, reason):
+        pass
 
     def save_deck_strategy(self, playbook):
         self.saved = playbook
 
-    def prepare_playbook(self, state, backend=None, *, refresh=False, progress=None, cancel=None):
+    def prepare_playbook(
+        self, state, backend=None, *, refresh=False, progress=None, cancel=None, in_match=None
+    ):
         self.prepared.append((state["deck_name"], refresh))
         if progress:
             progress("discovery")
@@ -312,7 +318,10 @@ def test_pregame_prepares_only_selected_deck_and_skips_cached_version(library, m
     assert coach.prepared == [("b", False)]
 
 
-def test_pregame_worker_hands_same_deck_to_match_and_cancels_a_different_deck(library):
+def test_match_start_cancels_the_prep_worker_even_for_the_same_deck(library):
+    """Q3 rework 2026-11 (verifier rejection of 46862f6): a match beginning stops
+    the idle prep worker at once even when it is building the very deck the match
+    uses — live play never waits on a background thinking build."""
     from arenamcp.deck_library import DeckRecord
 
     lib = library(FakeCoach())
@@ -322,9 +331,8 @@ def test_pregame_worker_hands_same_deck_to_match_and_cancels_a_different_deck(li
     lib._deck_prep_thread = Mock()
     lib._deck_prep_thread.is_alive.return_value = True
     lib._deck_prep_cancel = threading.Event()
+    # Same deck as the running build: still stopped at once.
     lib._poll_deck_preparation(False, record.game_state())
-    assert not lib._deck_prep_cancel.is_set()
-    lib._poll_deck_preparation(False, DeckRecord("b", "Next", main=[(200, 60)]).game_state())
     assert lib._deck_prep_cancel.is_set()
 
 
@@ -356,3 +364,455 @@ def test_idle_poll_starts_only_one_worker_and_wakes_for_a_different_selection(li
     lib._poll_deck_preparation(False)
     lib._deck_prep_thread.join(1)
     assert len(releases) == 2 and releases[1].is_set()
+
+
+# -- Q3 (2026-11): idle builds think; in-match builds stay compact -----------
+
+
+def test_hosted_idle_builds_think_while_in_match_builds_stay_compact():
+    """2026-10-31 20:29:18 standalone.log: a hosted discovery during a match ran
+    at reasoning_effort 'none', max_tokens 1536 with a 60 s cap. Idle builds now
+    think at high effort with the full budget and a 300 s cap."""
+
+    class HostedBackend:
+        model = "current"
+
+    in_match = _playbook_call_options(HostedBackend(), True)
+    assert in_match["enable_thinking"] is False
+    assert in_match["reasoning_effort"] == "none"
+    assert in_match["max_tokens"] == 1536
+    assert in_match["request_timeout_s"] == 60.0
+
+    idle = _playbook_call_options(HostedBackend(), True, outside_match=True)
+    assert idle["enable_thinking"] is True
+    assert idle["reasoning_effort"] == "high"
+    assert idle["max_tokens"] == 12000
+    assert idle["request_timeout_s"] == 300.0
+
+    # Backends that already think are unchanged, and so is the compile pass.
+    assert _playbook_call_options(object(), True) == _playbook_call_options(
+        object(), True, outside_match=True
+    )
+    assert _playbook_call_options(HostedBackend(), False) == _playbook_call_options(
+        HostedBackend(), False, outside_match=True
+    )
+
+
+def test_a_compact_playbook_is_rebuilt_by_the_next_idle_pass(monkeypatch, tmp_path):
+    """2026-10-11 10:50:54 standalone.log: 'The Notary Hobbits Digital' was built
+    in-match at compact settings; the next idle pass must replace it with a
+    thinking build instead of reusing it."""
+    from tests.deck_fakes import deck_case
+
+    from arenamcp.coach import CoachEngine, _playbook_prompt_fingerprint
+
+    state, catalog, response = deck_case()
+    monkeypatch.setattr("arenamcp.match_context._local_card", lambda gid, epoch: catalog[gid])
+    coach = CoachEngine(backend=Mock())
+    monkeypatch.setattr(
+        coach, "_playbook_cache_path", staticmethod(lambda identity: tmp_path / f"{identity}.json")
+    )
+
+    def building_backend():
+        backend = Mock()
+        backend.complete.side_effect = ["notes about the deck", json.dumps(response)]
+        return backend
+
+    playbook = coach.prepare_playbook(state, backend=building_backend())
+    path = tmp_path / f"{playbook.identity}.json"
+    payload = json.loads(path.read_text())
+    assert payload["mode"] == "idle"
+
+    # Demote the entry to what an in-match build leaves behind.
+    payload["mode"] = "match"
+    payload["prompt"] = _playbook_prompt_fingerprint("match")
+    path.write_text(json.dumps(payload))
+    coach._playbook_cache.clear()
+
+    rebuild = building_backend()
+    again = coach.prepare_playbook(state, backend=rebuild)
+    assert rebuild.complete.call_count == 2  # rebuilt with thinking, not reused
+    assert json.loads(path.read_text())["mode"] == "idle"
+    assert again.identity == playbook.identity
+
+    # A reader that accepts any build mode still reuses the entry with no model call.
+    assert coach._cached_playbook(playbook.identity, state) is not None
+
+
+class SweepCoach(FakeCoach):
+    """Per-deck cache awareness for the idle sweep."""
+
+    def __init__(self, cached_ids=()) -> None:
+        super().__init__()
+        self.cached_ids = set(cached_ids)
+        self.prepared: list[str] = []
+
+    def _cached_playbook(self, identity, state, modes=None):
+        return FakePlaybook() if identity in self.cached_ids else None
+
+    def prepare_playbook(
+        self, state, backend=None, *, refresh=False, progress=None, cancel=None, in_match=None
+    ):
+        self.prepared.append(state["deck_name"])
+        return FakePlaybook()
+
+
+def test_idle_sweep_builds_each_uncached_deck_newest_first(library):
+    """Q3 2026-11: builds used to start only when a match began (37-89 s in on
+    the Mac), so early turns ran on generic heuristics. The idle sweep warms
+    every complete deck without a thinking playbook, newest first, skipping
+    decks that already have one and snapshot-only decks."""
+    from arenamcp.deck_library import DeckRecord
+
+    records = {
+        "old": DeckRecord("old", "Ancient", main=[(100, 60)], last_played="2026-09-01"),
+        "new": DeckRecord("new", "Fresh", main=[(200, 60)], last_played="2026-10-11"),
+        "mid": DeckRecord("mid", "Middle", main=[(300, 60)], last_played="2026-10-02"),
+        "cached": DeckRecord("cached", "Warmed", main=[(400, 60)], last_played="2026-10-05"),
+        "snap": DeckRecord("snap", "Snapshot", main=[(500, 60)], last_played="2026-10-06", snapshot=True),
+        "thin": DeckRecord("thin", "NoCards"),
+    }
+    coach = SweepCoach(cached_ids={records["cached"].identity()})
+    lib = library(coach, log_decks=records)
+    # Cold Home session: no Recent Match selection and nobody has opened Decks yet.
+    lib._build_missing_playbooks(threading.Event())
+    assert coach.prepared == ["Fresh", "Middle", "Ancient"]
+
+
+def test_idle_sweep_stops_when_a_match_starts(library):
+    """Q3 2026-11: the sweep shares the model server with live play; the moment
+    a match begins the remaining decks wait for the next idle window."""
+    from arenamcp.deck_library import DeckRecord
+
+    records = {
+        "a": DeckRecord("a", "First", main=[(100, 60)], last_played="2026-10-11"),
+        "b": DeckRecord("b", "Second", main=[(200, 60)], last_played="2026-10-01"),
+    }
+
+    class MatchStartingCoach(SweepCoach):
+        def __init__(self) -> None:
+            super().__init__()
+            self.owner = None
+
+        def prepare_playbook(
+            self, state, backend=None, *, refresh=False, progress=None, cancel=None, in_match=None
+        ):
+            self.prepared.append(state["deck_name"])
+            self.owner._draft_event_in_match = lambda: True
+            return FakePlaybook()
+
+    coach = MatchStartingCoach()
+    lib = library(coach, log_decks=records)
+    coach.owner = lib
+    lib.collect_decks()
+    lib._build_missing_playbooks(threading.Event())
+    assert coach.prepared == ["First"]  # 'Second' waits for the next idle window
+
+
+def test_match_start_stops_the_running_idle_build_mid_call(library):
+    """Q3 rework 2026-11 (verifier rejection of 46862f6): the sweep's currently
+    running build stops mid-call when a match begins — including when the match
+    uses the same deck — instead of finishing and moving on to the next deck."""
+    from arenamcp.deck_library import DeckRecord
+
+    records = {
+        "a": DeckRecord("a", "First", main=[(100, 60)], last_played="2026-10-11"),
+        "b": DeckRecord("b", "Second", main=[(200, 60)], last_played="2026-10-01"),
+    }
+
+    class MidCallMatchCoach(SweepCoach):
+        """Two-pass build honouring cancel; the match starts inside pass one."""
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.owner = None
+            self.compiled: list[str] = []
+
+        def prepare_playbook(
+            self, state, backend=None, *, refresh=False, progress=None, cancel=None, in_match=None
+        ):
+            if cancel is not None and cancel.is_set():
+                raise ValueError("Deck analysis yielded or was superseded")
+            self.prepared.append(state["deck_name"])
+            # Mid-call: a match begins with this very deck.
+            self.owner._poll_deck_preparation(False, state)
+            if cancel is not None and cancel.is_set():
+                raise ValueError("Deck analysis yielded or was superseded")
+            self.compiled.append(state["deck_name"])
+            return FakePlaybook()
+
+    coach = MidCallMatchCoach()
+    lib = library(coach, log_decks=records)
+    coach.owner = lib
+    lib._auto_deck_strategy = True
+    lib._deck_prep_thread = Mock()
+    lib._deck_prep_thread.is_alive.return_value = True
+    lib._deck_prep_cancel = threading.Event()
+    lib.collect_decks()
+    lib._build_missing_playbooks(lib._deck_prep_cancel)
+    assert coach.prepared == ["First"]
+    assert coach.compiled == []  # the running build never reached its compile pass
+
+
+def test_match_boundaries_cancel_idle_builds_but_not_in_match_builds():
+    """Q3 rework 2026-11 (verifier rejection of 46862f6): clear_deck_strategy and
+    begin_deck_analysis stop pending outside-match builds — this deck's included —
+    while an in-match build keeps its protected lifecycle."""
+    from arenamcp.coach import CoachEngine
+
+    def pending(coach, identity, mode):
+        cancel = threading.Event()
+        coach._playbook_cancels[identity] = cancel
+        coach._playbook_cancel_modes[identity] = mode
+        return cancel
+
+    coach = CoachEngine(backend=Mock())
+    idle_same = pending(coach, "a" * 16, "idle")
+    match_other = pending(coach, "b" * 16, "match")
+    coach.begin_deck_analysis("a" * 16)
+    assert idle_same.is_set()  # same-deck idle build stops at once
+    assert match_other.is_set()  # a different deck's build is superseded
+
+    coach = CoachEngine(backend=Mock())
+    match_same = pending(coach, "c" * 16, "match")
+    coach.begin_deck_analysis("c" * 16)
+    assert not match_same.is_set()  # in-match build for the same deck is preserved
+
+    coach = CoachEngine(backend=Mock())
+    idle = pending(coach, "d" * 16, "idle")
+    in_match = pending(coach, "e" * 16, "match")
+    coach.clear_deck_strategy()
+    assert idle.is_set() and not in_match.is_set()
+
+
+def test_match_start_aborts_an_idle_thinking_build_and_the_match_builds_its_own(monkeypatch, tmp_path):
+    """Q3 rework 2026-11 (verifier rejection of 46862f6): with an idle thinking
+    build in flight for this very deck, a match starting stops it between passes
+    (compile never runs, nothing is stored) and the live analysis builds its own
+    compact playbook instead of waiting on or failing after the idle build."""
+    from tests.deck_fakes import deck_case
+
+    from arenamcp.coach import CoachEngine
+
+    state, catalog, response = deck_case()
+    monkeypatch.setattr("arenamcp.match_context._local_card", lambda gid, epoch: catalog[gid])
+    coach = CoachEngine(backend=Mock())
+    monkeypatch.setattr(
+        coach, "_playbook_cache_path", staticmethod(lambda identity: tmp_path / f"{identity}.json")
+    )
+
+    in_discovery = threading.Event()
+    release_discovery = threading.Event()
+    idle_calls: list[str] = []
+
+    def idle_discovery(system, message, **kwargs):
+        idle_calls.append("discovery")
+        in_discovery.set()
+        release_discovery.wait(5)
+        return "notes about the deck"
+
+    idle_backend = Mock()
+    idle_backend.complete.side_effect = idle_discovery
+
+    result: dict = {}
+
+    def build_idle():
+        try:
+            coach.prepare_playbook(state, backend=idle_backend)
+            result["ok"] = True
+        except Exception as error:  # noqa: BLE001 - mirrors the production abort path
+            result["error"] = error
+
+    worker = threading.Thread(target=build_idle)
+    worker.start()
+    assert in_discovery.wait(2)
+
+    # A match starts with this same deck while discovery is in flight.
+    coach.clear_deck_strategy()
+    release_discovery.set()
+    worker.join(5)
+    assert isinstance(result.get("error"), ValueError)
+    assert idle_calls == ["discovery"]  # compile never ran
+    assert not list(tmp_path.glob("*.json"))  # the aborted build stored nothing
+
+    # The live match analyses the same deck and gets its own compact playbook.
+    live_backend = Mock()
+    live_backend.complete.side_effect = ["live notes", json.dumps(response)]
+    strategy = coach.analyze_deck(state, backend=live_backend)
+    assert strategy is not None
+    assert live_backend.complete.call_count == 2
+
+
+def test_live_analysis_waits_out_a_cancelled_concurrent_build_then_builds(monkeypatch, tmp_path):
+    """Q3 rework 2026-11 (verifier rejection of 46862f6): at match start the idle
+    build for this very deck is cancelled; the live analysis waits out that dying
+    run and then builds its own compact playbook instead of raising 'The
+    concurrent analysis of this deck produced no playbook'."""
+    import time
+
+    from tests.deck_fakes import deck_case
+
+    from arenamcp.coach import CoachEngine
+    from arenamcp.deck_strategy import deck_identity
+
+    state, catalog, response = deck_case()
+    monkeypatch.setattr("arenamcp.match_context._local_card", lambda gid, epoch: catalog[gid])
+    coach = CoachEngine(backend=Mock())
+    monkeypatch.setattr(
+        coach, "_playbook_cache_path", staticmethod(lambda identity: tmp_path / f"{identity}.json")
+    )
+    identity = deck_identity(state)
+
+    # A concurrent (about-to-be-cancelled) run holds the slot; it winds down
+    # exactly as _finish_playbook_run does: entry removed first, event set after.
+    stale = threading.Event()
+    coach._playbook_runs[identity] = stale
+
+    def wind_down():
+        time.sleep(0.1)
+        coach._finish_playbook_run(identity, stale)
+
+    threading.Thread(target=wind_down).start()
+
+    backend = Mock()
+    backend.complete.side_effect = ["live notes", json.dumps(response)]
+    strategy = coach.analyze_deck(state, backend=backend)
+    assert strategy is not None
+    assert backend.complete.call_count == 2
+
+
+def test_clearing_strategy_stops_a_queued_build_before_the_lane_grant(monkeypatch, tmp_path):
+    """Q3 rework 2 (verifier rejection of 4089f58): a Decks-window build with
+    cancel=None that is still WAITING for the strategic lane when a match
+    boundary lands stops at the boundary — no model call, nothing stored."""
+    import time
+
+    from tests.deck_fakes import deck_case
+
+    from arenamcp.coach import CoachEngine
+    from arenamcp.deck_strategy import deck_identity
+    from arenamcp.game_plan import STRATEGIC_LANE
+
+    state, catalog, response = deck_case()
+    monkeypatch.setattr("arenamcp.match_context._local_card", lambda gid, epoch: catalog[gid])
+    coach = CoachEngine(backend=Mock())
+    monkeypatch.setattr(
+        coach, "_playbook_cache_path", staticmethod(lambda identity: tmp_path / f"{identity}.json")
+    )
+    identity = deck_identity(state)
+
+    held = STRATEGIC_LANE.try_acquire("held")
+    assert held is not None
+    try:
+        backend = Mock()
+        result: dict = {}
+
+        def build_idle():
+            try:
+                coach.prepare_playbook(state, backend=backend)
+                result["ok"] = True
+            except Exception as error:  # noqa: BLE001 - mirrors the production abort path
+                result["error"] = error
+
+        worker = threading.Thread(target=build_idle)
+        worker.start()
+        # The build is queued: its cancellation is registered before the grant.
+        deadline = time.time() + 5
+        while identity not in coach._playbook_cancels and time.time() < deadline:
+            time.sleep(0.01)
+        assert identity in coach._playbook_cancels
+
+        # The boundary lands while the build still waits for the lane.
+        coach.clear_deck_strategy()
+        assert coach._playbook_cancels[identity].is_set()
+    finally:
+        STRATEGIC_LANE.release(held)
+
+    worker.join(5)
+    assert isinstance(result.get("error"), ValueError)
+    assert backend.complete.call_count == 0  # neither model pass ran
+    assert not list(tmp_path.glob("*.json"))  # nothing was cached
+
+
+def test_a_match_start_stops_a_queued_build_for_the_same_deck(monkeypatch, tmp_path):
+    """Q3 rework 2 (verifier rejection of 4089f58): begin_deck_analysis for the
+    SAME deck stops a queued idle build before its lane grant ('a match needs
+    this deck now') instead of letting both model passes run once granted."""
+    import time
+
+    from tests.deck_fakes import deck_case
+
+    from arenamcp.coach import CoachEngine
+    from arenamcp.deck_strategy import deck_identity
+    from arenamcp.game_plan import STRATEGIC_LANE
+
+    state, catalog, response = deck_case()
+    monkeypatch.setattr("arenamcp.match_context._local_card", lambda gid, epoch: catalog[gid])
+    coach = CoachEngine(backend=Mock())
+    monkeypatch.setattr(
+        coach, "_playbook_cache_path", staticmethod(lambda identity: tmp_path / f"{identity}.json")
+    )
+    identity = deck_identity(state)
+
+    held = STRATEGIC_LANE.try_acquire("held")
+    assert held is not None
+    try:
+        backend = Mock()
+        result: dict = {}
+
+        def build_idle():
+            try:
+                coach.prepare_playbook(state, backend=backend)
+                result["ok"] = True
+            except Exception as error:  # noqa: BLE001 - mirrors the production abort path
+                result["error"] = error
+
+        worker = threading.Thread(target=build_idle)
+        worker.start()
+        deadline = time.time() + 5
+        while identity not in coach._playbook_cancels and time.time() < deadline:
+            time.sleep(0.01)
+        assert identity in coach._playbook_cancels
+
+        # A match starts with this same deck while the build is still queued.
+        coach.begin_deck_analysis(identity)
+        assert coach._playbook_cancels[identity].is_set()
+    finally:
+        STRATEGIC_LANE.release(held)
+
+    worker.join(5)
+    assert isinstance(result.get("error"), ValueError)
+    assert backend.complete.call_count == 0
+    assert not list(tmp_path.glob("*.json"))
+
+
+@pytest.mark.parametrize("already_playing", [True, False])
+def test_manual_build_yields_before_server_if_match_begins_during_input(
+    monkeypatch, tmp_path, already_playing
+):
+    from tests.deck_fakes import deck_case
+
+    from arenamcp.coach import CoachEngine
+
+    state, catalog, _ = deck_case()
+    playing = already_playing
+    backend = Mock()
+    coach = CoachEngine(backend=backend)
+    record = Mock(complete=True, deck_id="manual", name="Manual")
+    record.game_state.return_value = state
+    owner = Library(coach)
+    monkeypatch.setattr(owner, "_deck_library_backend", lambda: backend)
+    monkeypatch.setattr(owner, "_deck_library_in_match", lambda: playing)
+    monkeypatch.setattr("arenamcp.logging_config.LOG_DIR", tmp_path)
+
+    def prepare(state):
+        nonlocal playing
+        playing = True
+        return {"deck_catalog": catalog}
+
+    monkeypatch.setattr("arenamcp.match_context.prepare_match_context", prepare)
+    result = owner.analyze_deck_record(record, refresh=True)
+    assert result["status"] == "error"
+    assert "active play" in result["error"] or "changed during analysis" in result["error"]
+    backend.complete.assert_not_called()
+    assert not coach._playbook_cache
