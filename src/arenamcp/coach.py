@@ -578,12 +578,14 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
 
                 choice = combat_choice(game_state)
                 if choice is not None and choice.explanation:
+                    defense = f", you gain {choice.block_life_gain} blocking" if choice.block_life_gain else ""
                     if not choice.assignments:
-                        return f"Hold your attackers (their counterattack: {choice.crackback})."
+                        return f"Hold your attackers (their counterattack: {choice.crackback}{defense})."
                     attacks = choice.explanation.split(f"; {choice.player_damage} damage to player", 1)[0]
+                    gain = f"you gain {choice.attack_life_gain} life, " if choice.attack_life_gain else ""
                     return (
-                        f"Attack: {attacks} ({choice.player_damage} damage, "
-                        f"their counterattack {choice.crackback})."
+                        f"Attack: {attacks} ({choice.player_damage} damage, {gain}"
+                        f"their counterattack {choice.crackback}{defense})."
                     )
         except Exception as error:  # never break advice on the solver
             logger.debug(f"combat fallback unavailable: {error}")

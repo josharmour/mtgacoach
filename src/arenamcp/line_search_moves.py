@@ -632,9 +632,7 @@ _GAIN_TRIGGER = re.compile(
     r",\s*(?:you may )?(?:you )?gain (?P<n>\d+) life\.?$"
 )
 # "Players can't gain life." (Giant Cindermaw); "Your opponents can't gain life." on our side.
-_NO_GAIN = re.compile(r"\b(?:players|each player) can't gain life\b")
-_NO_GAIN_THEM = re.compile(r"\byour opponents can't gain life\b")
-_NO_GAIN_SELF = re.compile(r"\byou can't gain life\b")
+_NO_GAIN = re.compile(r"^(players|each player|your opponents|you) can't gain life[.]?$", re.MULTILINE)
 # "Creatures your opponents control enter tapped." (Authority of the Consuls, Blind Obedience).
 _ENTER_TAPPED = re.compile(
     r"\b(?:artifacts and |nonland )?(?:creatures|permanents) your opponents control enter(?: the battlefield)? tapped\b"
@@ -1272,6 +1270,19 @@ def held_removal_floor(card: dict, role: str, *, mana: int) -> float:
     return 3.0 + min(damage, 4) if damage > 0 else 0.0
 
 
+def life_gain_prevented(cards, seat, opposing_seat) -> bool:
+    """Check active battlefield effects that stop the selected player gaining life."""
+    for card in cards:
+        if card.get("is_phased_out") or card.get("face_down") or card.get("removed_abilities"):
+            continue
+        for subject in _NO_GAIN.findall(_engine_text(*_key(card))):
+            if subject in ("players", "each player"):
+                return True
+            if _controller(card) == (opposing_seat if subject == "your opponents" else seat):
+                return True
+    return False
+
+
 def their_engines(
     battlefield, local: int | None, opponent: int | None, *, draws: int = 1, drops: int = 1
 ) -> TheirEngines:
@@ -1279,9 +1290,7 @@ def their_engines(
     growth they feed, draws, "enter tapped", "can't gain life" and their drains."""
     cards = [c for c in battlefield if isinstance(c, dict) and not c.get("is_phased_out")]
     theirs = [c for c in cards if _controller(c) == opponent]
-    no_gain = any(_NO_GAIN.search(_engine_text(*_key(c))) for c in cards) or any(
-        _NO_GAIN_THEM.search(_engine_text(*_key(c))) for c in cards if _controller(c) == local
-    ) or any(_NO_GAIN_SELF.search(_engine_text(*_key(c))) for c in theirs)  # fmt: skip
+    no_gain = life_gain_prevented(cards, opponent, local)
     gains = per_ours = life_ours = 0
     walkers: set[int] = set()
     walker_abilities: list[tuple[int, int, tuple[tuple[int, int, int, int], ...]]] = []

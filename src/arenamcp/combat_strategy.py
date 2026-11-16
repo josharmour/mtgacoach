@@ -92,6 +92,8 @@ class CombatChoice:
     bounded: bool = False
     poison_given: int = 0
     cards_milled: int = 0
+    attack_life_gain: int = 0
+    block_life_gain: int = 0
 
 
 def loyalty(card: dict) -> int | None:
@@ -286,6 +288,9 @@ def _search(state: dict, raw: list[dict], budget: int, deadline_s: float) -> Com
         choices.append(legal if entry.get("mustAttack") and free else [None, *legal])
     if not candidates:
         return None
+    from arenamcp.line_search_moves import life_gain_prevented
+
+    gain_allowed = not life_gain_prevented(battlefield, local_id, opponent_id)
     started = time.monotonic()
     remaining = budget
     best = None
@@ -334,6 +339,26 @@ def _search(state: dict, raw: list[dict], budget: int, deadline_s: float) -> Com
                     yield tuple(
                         recipient if i in selected else None for i, recipient in enumerate(all_to_target)
                     )
+            # If the return swing deals at least our current life, compare gaining
+            # life on attack with gaining it on blocks before the larger search.
+            if (
+                blockable
+                and gain_allowed
+                and len(candidates) > 1
+                and best is not None
+                and best.crackback >= your_life
+            ):
+                group = {card["instance_id"] for card, r in zip(candidates, all_to_target, strict=True) if r}
+                defenses = math.prod(1 + len(group & eligible) for eligible in blockable_by)
+                if defenses <= min(remaining, combat_solver.BIG_BLOCK_SEARCH):
+                    yield all_to_target
+                gains = [
+                    _resolve_attacker(card, []).life_gained if recipient else 0
+                    for card, recipient in zip(candidates, all_to_target, strict=True)
+                ]
+                if max(gains) > 0:
+                    index = gains.index(max(gains))
+                    yield tuple(r if i == index else None for i, r in enumerate(all_to_target))
             yield all_to_target
         yield from product(*choices)
 
@@ -381,6 +406,7 @@ def _search(state: dict, raw: list[dict], budget: int, deadline_s: float) -> Com
             damage = Counter()
             poison_given = 0
             cards_milled = 0
+            attack_life_gain = 0
             ends_game = False
             dead_attackers, dead_blockers = set(), set()
             for attacker in attacking:
@@ -390,6 +416,8 @@ def _search(state: dict, raw: list[dict], budget: int, deadline_s: float) -> Com
                     if identity == attacker["instance_id"]
                 ]
                 outcome = _resolve_attacker(attacker, assigned)
+                if gain_allowed:
+                    attack_life_gain += outcome.life_gained
                 recipient = recipient_key(mapping[attacker["instance_id"]])
                 damage[recipient] += outcome.damage_through
                 if recipient == ("player", opponent_id):
@@ -416,10 +444,13 @@ def _search(state: dict, raw: list[dict], budget: int, deadline_s: float) -> Com
                 for card in theirs
                 if card["instance_id"] not in dead_blockers and can_attack_next_turn(card, creature_died=died)
             ]
+            life_after_attack = your_life + attack_life_gain
             response = guarded_block_plan(
-                survivors, defenders, your_life, max_options=2000, defender=our_loss
+                survivors, defenders, life_after_attack, max_options=2000, defender=our_loss
             )
             crackback = response.damage_through if response else 0
+            block_life_gain = response.blocker_life_gained if response and gain_allowed else 0
+            net_counterattack = crackback - block_life_gain
             crack_poison = response.poison_given if response else 0
             crack_milled = response.cards_milled if response else 0
             crackback_loses = bool(response and response.player_loses)
@@ -443,13 +474,13 @@ def _search(state: dict, raw: list[dict], budget: int, deadline_s: float) -> Com
                 player_damage * 5 / max(1, opponent_life - player_damage)
                 + walker_value
                 + material
-                - crackback * 5 / max(1, your_life - crackback)
-                - walker_crackback_cost(crackback, your_life, our_walkers)
+                + (attack_life_gain - net_counterattack) * 5 / max(1, life_after_attack - net_counterattack)
+                - walker_crackback_cost(crackback, life_after_attack, our_walkers)
             )
             if player_loses(player_damage, poison_given, cards_milled, ends_game):
                 score = 10000
             elif (
-                crackback >= your_life
+                net_counterattack >= life_after_attack
                 or crackback_loses
                 or _finishes(our_loss, our_loss.hit(crack_poison, crack_milled))
             ):
@@ -462,6 +493,8 @@ def _search(state: dict, raw: list[dict], budget: int, deadline_s: float) -> Com
                 score,
                 poison_given=poison_given,
                 cards_milled=cards_milled,
+                attack_life_gain=attack_life_gain,
+                block_life_gain=block_life_gain,
             )
             if worst is None or evaluated.score < worst.score:
                 worst = evaluated
@@ -494,6 +527,8 @@ def _search(state: dict, raw: list[dict], budget: int, deadline_s: float) -> Com
         hits = f"{best.player_damage} damage to player"
         if best.poison_given or best.cards_milled:
             hits += f", {best.poison_given} poison, {best.cards_milled} milled"
+        if best.attack_life_gain:
+            hits += f", you gain {best.attack_life_gain} life"
         best.explanation = f"{attacks}; {hits}, planeswalkers removed: {removed_names}; counterattack {best.crackback}. Approximate visible-board search; unknown tricks and triggers excluded."
     return best
 
