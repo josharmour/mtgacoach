@@ -1169,8 +1169,14 @@ class CompactCoachPanel(QWidget):
     def _toggle_auto_queue(self) -> None:
         self._auto_queue_enabled = not self._auto_queue_enabled
         if self._auto_queue_enabled:
-            # The engine may be offline when the user starts a fresh run.
-            self._settings.set("auto_queue_streak", {}, save=False)
+            from arenamcp.standalone_auto_queue import AUTO_QUEUE_LOSS_LIMIT
+
+            # An explicit re-arm after the safety stop works even with the
+            # engine offline. Ordinary navigation retries retain every loss.
+            streak = settings.Settings().get("auto_queue_streak") or {}
+            if streak.get("losses", 0) >= AUTO_QUEUE_LOSS_LIMIT:
+                now = time.time()
+                self._settings.set("auto_queue_streak", {"since": now, "rearmed_at": now}, save=False)
         self._settings.set("auto_queue_enabled", self._auto_queue_enabled)
         self._auto_queue_detail = "Waiting for Autoplay and match status." if self._auto_queue_enabled else ""
         self._render_auto_queue_status()

@@ -19,6 +19,7 @@ EventJoin follows.
 from __future__ import annotations
 
 import datetime
+import json
 import logging
 from pathlib import Path
 from unittest.mock import Mock
@@ -43,7 +44,19 @@ EVENT_JOIN = (
 @pytest.fixture
 def real_log(monkeypatch, tmp_path):
     path = tmp_path / "Player.log"
-    path.write_bytes(FIXTURE.read_bytes())
+    # The archived fixture scrubs both users to "USER". Supply distinct test
+    # identities for the result lookup while retaining both seats and the winner.
+    lines = FIXTURE.read_text().splitlines(keepends=True)
+    for i, line in enumerate(lines):
+        if "MatchGameRoomStateType_MatchCompleted" in line:
+            prefix, raw = line.split("{", 1)
+            event = json.loads("{" + raw)
+            room = event["matchGameRoomStateChangedEvent"]["gameRoomInfo"]
+            for player in room["gameRoomConfig"]["reservedPlayers"]:
+                player["userId"] = f"fixture-seat-{player['systemSeatId']}"
+            lines[i] = prefix + json.dumps(event) + "\n"
+    path.write_text("".join(lines))
+    monkeypatch.setattr("arenamcp.log_utils.get_local_player_id", lambda: "fixture-seat-1")
     monkeypatch.setattr(server, "_log_path", lambda: path)
     monkeypatch.setattr(server.time, "time", lambda: RESTART)
     monkeypatch.setattr(server, "_last_queue_selection", {})
@@ -59,6 +72,7 @@ def test_the_real_log_reads_idle_after_the_deck_edit(real_log):
         "event_id": "Ladder",
         "completed_at": 1792432715.381,
         "match_complete": True,
+        "outcome": "loss",
         "deck_name": "Mono-Red Burn",
         "deck_id": "1543b787-1438-460c-bd4a-e61aa4ea185e",
     }
@@ -130,3 +144,12 @@ def test_a_refused_requeue_is_logged(real_log, navigator, caplog):
     with caplog.at_level(logging.INFO, logger="arenamcp.standalone_auto_queue"):
         runtime._poll_auto_queue({"match_id": MATCH, "turn": {"turn_number": 0}})
     assert f"navigation did not take match {MATCH}" in caplog.text
+
+
+def test_restart_with_unresolved_local_identity_does_not_queue(real_log, navigator, monkeypatch):
+    monkeypatch.setattr("arenamcp.log_utils.get_local_player_id", lambda: None)
+    run = Runtime()
+    run._auto_queue_restart_pending = True
+    assert not run._poll_auto_queue({"match_id": MATCH, "turn": {"turn_number": 0}})
+    navigator.note_match_end.assert_not_called()
+    navigator.process_tick.assert_not_called()

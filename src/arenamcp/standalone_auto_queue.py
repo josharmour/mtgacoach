@@ -23,7 +23,7 @@ class _AutoQueueMixin(AutoQuestMixin):
         if streak is None:
             saved = self.settings.get("auto_queue_streak")
             streak = self._auto_queue_streak = dict(saved) if isinstance(saved, dict) else {}
-            self._queue_restore_streak = bool(streak.get("since"))
+            self._queue_restore_streak = True
         return streak
 
     def _queue_loss_guard(self, state: dict, completed: dict) -> bool:
@@ -37,9 +37,42 @@ class _AutoQueueMixin(AutoQuestMixin):
             # A checkpoint may resume the navigator without ever consulting
             # Recent Match. Reconcile newer Arena results before either path.
             if getattr(self, "_queue_restore_results", None) is None:
-                self._queue_restore_results = logged_queue_results(
-                    max(streak["since"], streak.get("through", 0))
+                now = time.monotonic()
+                if now < getattr(self, "_queue_history_retry_at", 0):
+                    return False
+                rearmed = streak.get("rearmed_at", 0)
+                history = logged_queue_results(rearmed, limit=AUTO_QUEUE_LOSS_LIMIT)
+                # Only a confirmed win/draw breaks the run. A newer known
+                # breaker makes preceding unknown results irrelevant.
+                for i in reversed(range(len(history))):
+                    if history[i]["outcome"] in ("win", "draw"):
+                        history = history[i:]
+                        break
+                for i, row in enumerate(history):
+                    if row["outcome"] not in ("win", "draw", "loss"):
+                        resolved = logged_queue_results(rearmed, row["match_id"])
+                        if not resolved or resolved[0]["outcome"] not in ("win", "draw", "loss"):
+                            self._queue_history_retry_at = now + 2
+                            self.ui.status(
+                                "AUTO_QUEUE_DETAIL", "Waiting for Arena to confirm the match result."
+                            )
+                            return False
+                        history[i] = resolved[0]
+                # Earlier versions reset the counter on a navigation retry. Anchor
+                # the saved count to its real result before replaying newer games.
+                prior_losses = 0
+                for row in history:
+                    prior_losses = prior_losses + 1 if row["outcome"] == "loss" else 0
+                    if row["match_id"] == streak.get("last") and prior_losses > streak.get("losses", 0):
+                        streak["losses"] = prior_losses
+                        self.settings.set("auto_queue_streak", streak)
+                newer = [row for row in history if row["arena_completed_at"] > streak.get("through", 0)]
+                # A win or draw while queue was off breaks the streak, including
+                # older losses that would have stopped a continuously active run.
+                last_break = next(
+                    (i for i in reversed(range(len(newer))) if newer[i]["outcome"] in ("win", "draw")), 0
                 )
+                self._queue_restore_results = newer[last_break:]
             for row in self._queue_restore_results:
                 if row["match_id"] != streak.get("last") and row["arena_completed_at"] > streak.get(
                     "through", 0
@@ -50,6 +83,8 @@ class _AutoQueueMixin(AutoQuestMixin):
                         return False
             self._queue_restore_streak = False
             self._queue_restore_results = None
+            if streak.get("losses", 0) >= AUTO_QUEUE_LOSS_LIMIT:
+                return self._stop_queue_after_losses()
         pending = streak.get("pending")
         current = state.get("match_id")
         turn = state.get("turn") or state.get("turn_info") or {}
@@ -93,6 +128,13 @@ class _AutoQueueMixin(AutoQuestMixin):
                     self.settings.set("auto_queue_streak", streak)
                 self.ui.status("AUTO_QUEUE_DETAIL", "Waiting for Arena to confirm this match’s result.")
                 return False
+        if stamp and stamp <= streak.get("through", 0):
+            # A delayed disk result for an older pending game cannot change
+            # the streak after a more recent confirmed result.
+            if streak.get("pending") == mid:
+                streak.pop("pending")
+                self.settings.set("auto_queue_streak", streak)
+            return True
         streak.update(
             losses=streak.get("losses", 0) + 1 if outcome == "loss" else 0,
             last=mid,
@@ -118,10 +160,13 @@ class _AutoQueueMixin(AutoQuestMixin):
             self.ui.status("GRIND", "OFF")
         if bool(enabled) != bool(getattr(self, "_auto_queue_enabled", False)):
             if enabled:
-                self._queue_restore_streak = False
+                streak = self._queue_streak()
+                if streak.get("losses", 0) >= AUTO_QUEUE_LOSS_LIMIT:
+                    now = time.time()
+                    self._auto_queue_streak = {"since": now, "rearmed_at": now}
+                    self.settings.set("auto_queue_streak", self._auto_queue_streak, save=False)
+                self._queue_restore_streak = True
                 self._queue_restore_results = None
-                self._auto_queue_streak = {"since": time.time()}
-                self.settings.set("auto_queue_streak", self._auto_queue_streak, save=False)
             try:
                 self._loss_store().new_session()
             except Exception:

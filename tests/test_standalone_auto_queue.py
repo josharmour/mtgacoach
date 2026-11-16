@@ -256,3 +256,101 @@ def test_pending_missing_result_retries_without_losing_identity(navigator, monke
     runtime._poll_auto_queue({})
     assert not runtime._auto_queue_enabled
     nav.process_tick.assert_not_called()
+
+
+def test_retrying_queue_recovers_losses_including_games_played_while_off(navigator, monkeypatch):
+    nav, _ = navigator
+    run = Runtime()
+    store = {"auto_queue_streak": {"since": 50, "last": "one", "through": 60, "losses": 1}}
+    run.settings.get.side_effect = store.get
+    run.settings.set.side_effect = lambda k, v, **kw: store.update({k: v})
+    run.set_auto_queue(False)
+    recorded = [
+        {"match_id": name, "arena_completed_at": stamp, "outcome": "loss"}
+        for name, stamp in (("one", 60), ("two", 70), ("three", 80))
+    ]
+    monkeypatch.setattr(
+        server,
+        "logged_queue_results",
+        lambda since, **kw: [r for r in recorded if r["arena_completed_at"] > since],
+    )
+    run.set_auto_queue(True)
+    run._poll_auto_queue({})
+    assert not run._auto_queue_enabled
+    assert store["auto_queue_streak"]["losses"] == 3
+    nav.process_tick.assert_not_called()
+    run.set_auto_queue(True)
+    assert run._queue_loss_guard({}, {}) and run._queue_streak().get("losses", 0) == 0
+
+
+def test_prior_build_undercount_reconciles_against_native_results(navigator, monkeypatch):
+    nav, _ = navigator
+    run = Runtime()
+    run.settings.get.side_effect = {
+        "auto_queue_streak": {"since": 75, "last": "four", "through": 80, "losses": 1}
+    }.get
+    rows = [
+        {"match_id": n, "arena_completed_at": t, "outcome": "loss"}
+        for n, t in (("two", 65), ("three", 70), ("four", 80))
+    ]
+    monkeypatch.setattr(server, "logged_queue_results", lambda since, **kw: rows)
+    run._poll_auto_queue({})
+    assert run._queue_streak()["losses"] == 3
+    assert not run._auto_queue_enabled
+    nav.process_tick.assert_not_called()
+
+
+def test_later_confirmed_win_clears_losses_before_manual_resume(navigator, monkeypatch):
+    run = Runtime()
+    run.settings.get.side_effect = {
+        "auto_queue_streak": {"since": 20, "last": "two", "through": 30, "losses": 2}
+    }.get
+    rows = [
+        {"match_id": n, "arena_completed_at": t, "outcome": o}
+        for n, t, o in (("three", 40, "loss"), ("won", 50, "win"), ("next", 60, "loss"))
+    ]
+    monkeypatch.setattr(server, "logged_queue_results", lambda since, **kw: rows)
+    assert run._queue_loss_guard({}, {})
+    assert run._queue_streak()["losses"] == 1
+
+
+def test_delayed_old_pending_win_does_not_erase_newer_losses(navigator, monkeypatch):
+    run = Runtime()
+    run.settings.get.side_effect = {
+        "auto_queue_streak": {"since": 5, "last": "before", "through": 10, "pending": "old"}
+    }.get
+    rows = [
+        {"match_id": n, "arena_completed_at": t, "outcome": o}
+        for n, t, o in (("won", 30, "win"), ("loss1", 40, "loss"), ("loss2", 50, "loss"))
+    ]
+    old = {"match_id": "old", "arena_completed_at": 20, "outcome": "win"}
+    monkeypatch.setattr(
+        server, "logged_queue_results", lambda since, match_id=None, **kw: [old] if match_id else rows
+    )
+    assert run._queue_loss_guard({}, {})
+    assert run._queue_streak()["losses"] == 2 and "pending" not in run._queue_streak()
+    assert not run._queue_loss_guard({}, {"match_id": "third", "arena_completed_at": 60, "outcome": "loss"})
+
+
+def test_unresolved_loss_before_old_retry_checkpoint_holds_navigation(navigator, monkeypatch):
+    run = Runtime()
+    run.settings.get.side_effect = {
+        "auto_queue_streak": {"since": 75, "last": "C", "through": 80, "losses": 1}
+    }.get
+    rows = [
+        {"match_id": n, "arena_completed_at": t, "outcome": o}
+        for n, t, o in (("A", 60, "loss"), ("B", 70, None), ("C", 80, "loss"))
+    ]
+    resolved = []
+
+    def read(since, match_id=None, **kw):
+        assert since == 0
+        return resolved if match_id else list(rows)
+
+    monkeypatch.setattr(server, "logged_queue_results", read)
+    assert not run._queue_loss_guard({}, {})
+    assert run._auto_queue_enabled
+    run._queue_history_retry_at = 0
+    resolved.append(dict(rows[1], outcome="loss"))
+    assert not run._queue_loss_guard({}, {})
+    assert not run._auto_queue_enabled

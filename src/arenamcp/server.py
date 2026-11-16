@@ -641,7 +641,8 @@ def _logged_match_outcome(info: dict, local_id: str | None) -> str | None:
     from arenamcp.loss_streak import resolve_match_result
 
     players = (info.get("gameRoomConfig") or {}).get("reservedPlayers") or []
-    local = next((p for p in players if isinstance(p, dict) and local_id and p.get("userId") == local_id), {})
+    matches = [p for p in players if isinstance(p, dict) and local_id and p.get("userId") == local_id]
+    local = matches[0] if len(matches) == 1 else {}
     return resolve_match_result(
         (info.get("finalMatchResult") or {}).get("resultList") or [],
         local.get("systemSeatId"),
@@ -649,7 +650,9 @@ def _logged_match_outcome(info: dict, local_id: str | None) -> str | None:
     )
 
 
-def logged_queue_results(since: float, match_id: str | None = None) -> list[dict]:
+def logged_queue_results(
+    since: float, match_id: str | None = None, *, limit: int | None = None
+) -> list[dict]:
     """Arena's match-level results in order, independent of menu activity or deck identity."""
     import mmap
     from functools import cache
@@ -688,6 +691,8 @@ def logged_queue_results(since: float, match_id: str | None = None) -> list[dict
                     records[mid] = {"match_id": mid, "outcome": outcome, "arena_completed_at": stamp}
                     if match_id and outcome:
                         return [records[mid]]
+                    if limit is not None and len(records) >= limit:
+                        return sorted(records.values(), key=lambda row: row["arena_completed_at"])
         except (OSError, ValueError):
             # Empty or rotated log. Arena retains the previous process's log.
             continue
