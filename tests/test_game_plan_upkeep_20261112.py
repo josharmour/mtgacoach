@@ -430,6 +430,21 @@ def test_missing_assessment_never_becomes_a_literal_none_role(monkeypatch):
     assert not any("none" in update for update in mgr.current.updates)
 
 
+def test_tactical_observe_uses_the_board_role_even_when_strategy_requests_are_paused(monkeypatch):
+    be, mgr = _formed_manager(monkeypatch)
+    state = _state(turn=4)
+    key = _key(role="control/stabilize")
+    monkeypatch.setattr(mgr, "_strategic_key", lambda s, sig=None: key)
+    mgr.observe(state)
+    assert mgr.current.role == "control/stabilize"
+    assert "Role: CONTROL/STABILIZE" in mgr.plan_text()
+    assert be.calls == 1
+    key = ((None, False, False, False), (), (), frozenset())
+    mgr.maybe_reform(state)
+    assert mgr.current.role == "control/stabilize"
+    assert be.calls == 1
+
+
 def test_ledger_carries_the_upkeep_snapshot():
     """The per-turn ledger shows what the plan still had to work with when the
     turn began: live route + piece zones, lost engines, upcoming steps."""

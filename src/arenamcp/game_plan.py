@@ -779,11 +779,6 @@ def switch_if_triggered(plan: GamePlan, state: dict, basis: dict | None = None) 
     return ""
 
 
-# Valid board roles (mirrors board_assessment.ROLES; kept local to avoid an
-# import cycle at module load).
-_ROLE_WORDS = frozenset({"aggressor", "defender", "control", "race"})
-
-
 def _cast_total(casts: Any) -> int:
     """Total casts from a strategic-key cast entry.
 
@@ -805,7 +800,9 @@ def _role_word(value: Any) -> str:
     overwrite a valid one.
     """
     role = str(value if isinstance(value, str) else "").strip().lower()
-    return role if role in _ROLE_WORDS else ""
+    from arenamcp.board_assessment import ROLES
+
+    return role if role in ROLES else ""
 
 
 def win_route_lost(plan: GamePlan, state: dict) -> bool:
@@ -4814,6 +4811,7 @@ class GamePlanManager:
         # Board-math role/lethal flags and commander zone at the last reform
         # (see _strategic_key); a change re-forms the plan mid-turn.
         self._inflight_key = None
+        self._reload_lethal_unchecked = False
         self._last_lethal_attempt = None
         self._last_key: tuple | None = None
         # The in-flight background reform: its cancel event, its strategic-lane
@@ -4858,6 +4856,7 @@ class GamePlanManager:
             self._abandon_inflight_locked()
             self._generation += 1
             self._inflight_key = None
+            self._reload_lethal_unchecked = False
             self._last_lethal_attempt = None
             self._last_key = None
             self._plan = None
@@ -5102,6 +5101,7 @@ class GamePlanManager:
                 "last_key": list(self._last_key[:3]) + [sorted(self._last_key[3])]
                 if self._last_key
                 else None,
+                "reload_lethal_unchecked": self._reload_lethal_unchecked,
                 "switch_active": sorted(self._switch_active),
                 "switch_pending": sorted(self._switch_pending),
                 "last_reform_turn": self._last_reform_turn,
@@ -5126,11 +5126,15 @@ class GamePlanManager:
             saved_key = saved.get("last_key")
             if isinstance(saved_key, (list, tuple)) and len(saved_key) == 4:
                 self._last_key = (*freeze(list(saved_key[:3])), frozenset(saved_key[3]))
-                self._upkeep_key = self._last_key
+                self._reload_lethal_unchecked = bool(saved.get("reload_lethal_unchecked"))
             else:
-                # Older handoffs carry no board comparison. Keep the old plan
-                # available until a fresh assessment can validate it.
-                self._last_sig = None
+                # Preserve the same-match plan and signature from older engines.
+                # Current threats and switch conditions are still checked. A
+                # visible lethal has no historical baseline and merits one
+                # immediate check before trusting the restored strategy.
+                self._last_key = self._strategic_key(state)
+                self._reload_lethal_unchecked = True
+            self._upkeep_key = self._last_key
             self._switch_active = set(saved.get("switch_active") or [])
             self._switch_pending = set(saved.get("switch_pending") or [])
             self._last_reform_turn = saved.get("last_reform_turn", -1)
@@ -5703,6 +5707,7 @@ class GamePlanManager:
                 self._consecutive_supersedes = 0
                 self._last_sig = sig
                 self._last_key = key
+                self._reload_lethal_unchecked = False
                 self._last_seed = seed
                 self._last_reform_turn = turn_num
                 # E5b: baseline the upkeep comparison from the plan we just
@@ -5756,11 +5761,10 @@ class GamePlanManager:
         # decision prompt. If the fold did not land (plan.role still stale),
         # fold it here in code; a role change NEVER reforms by itself.
         if change == "role flip" and self._plan is not None and key is not None:
-            new_role = str(key[0][0] if isinstance(key[0], tuple) else key[0]).strip().lower()
-            if new_role:
-                if self._plan.role != new_role:
-                    self._apply_role_update(new_role, "board maths", turn_num)
-                change = ""
+            new_role = _role_word(key[0][0] if isinstance(key[0], tuple) else key[0])
+            if new_role and self._plan.role != new_role:
+                self._apply_role_update(new_role, "board maths", turn_num)
+            change = ""
         elif change == "commander change":
             # E5b: observe() suppresses this by advancing the reform baseline
             # only when the fold actually landed (see _plan_upkeep_locked);
@@ -5772,6 +5776,16 @@ class GamePlanManager:
             self._reform_change_detail = detail
             return reason
 
+        missing_facts = self._last_key is not None and self._last_key[0] is None
+        if (self._reload_lethal_unchecked or missing_facts) and key is not None and key[0] is not None:
+            if any(key[0][1:]):
+                return fire(
+                    "lethal flip",
+                    "lethal or a two-turn clock is visible and the previous board assessment is unavailable",
+                )
+            if missing_facts:
+                self._last_key = (key[0], *self._last_key[1:])
+            self._reload_lethal_unchecked = False
         if change == "lethal flip":
             # The lethal flags live in the FACTS component ([0][1:]); [1] is
             # the command zone — quoting it described the wrong change.

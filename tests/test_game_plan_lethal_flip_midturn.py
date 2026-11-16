@@ -188,3 +188,39 @@ def test_same_match_reload_keeps_a_lethal_baseline(sync_reforms, monkeypatch):
     key["value"] = ("defender", False, True, True)
     assert restored.request_reform(_state())
     assert restored.current.path == "play defense after reload"
+
+
+@pytest.mark.parametrize("lethal", [True, False])
+def test_legacy_handoff_keeps_the_signature_and_rechecks_visible_lethal(sync_reforms, monkeypatch, lethal):
+    key = {"value": ("aggressor", False, False, False)}
+    old = _manager_with_key(monkeypatch, FakeBackend([_plan_json()]), key)
+    assert old.request_reform(_state())
+    saved = json.loads(json.dumps(old.export_for_reload()))
+    del saved["last_key"]
+    key["value"] = ("defender", False, lethal, False)
+    be = FakeBackend([_plan_json("defend against visible lethal")])
+    restored = _manager_with_key(monkeypatch, be, key)
+    del restored._REFRESH_INTERVAL_S
+    restored.restore_after_reload(saved, _state())
+    assert restored._last_sig == old._last_sig
+    assert restored.request_reform(_state()) is lethal
+    assert not restored.request_reform(_state())
+    assert be.calls == int(lethal)
+
+
+def test_legacy_restore_without_board_math_detects_later_lethal(sync_reforms, monkeypatch):
+    key = {"value": ("defender", False, False, False)}
+    old = _manager_with_key(monkeypatch, FakeBackend([_plan_json()]), key)
+    assert old.request_reform(_state())
+    saved = old.export_for_reload()
+    del saved["last_key"]
+    key["value"] = None
+    be = FakeBackend([_plan_json("stop new lethal")])
+    restored = _manager_with_key(monkeypatch, be, key)
+    del restored._REFRESH_INTERVAL_S
+    restored.restore_after_reload(saved, _state())
+    key["value"] = ("defender", False, False, False)
+    assert not restored.request_reform(_state())
+    key["value"] = ("defender", False, True, False)
+    assert restored.request_reform(_state())
+    assert be.calls == 1
