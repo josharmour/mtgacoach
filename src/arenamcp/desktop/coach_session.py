@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import time
 from pathlib import Path
 from typing import Any
 
@@ -713,6 +714,23 @@ class CoachSession(QObject):
     def set_auto_queue(self, enabled: bool) -> None:
         """Choose whether autoplay may repeat the recent queue after a match."""
         self._process.send_payload({"cmd": "set_auto_queue", "enabled": bool(enabled)})
+
+    def clear_loss_safeguard(self, *, enable_auto_queue: bool = True) -> None:
+        """Clear any persisted loss-safeguard streak and optionally resume Auto-queue."""
+        from arenamcp.settings import get_settings
+
+        current_settings = get_settings()
+        prev = current_settings.get("auto_queue_streak")
+        prev_dict = prev if isinstance(prev, dict) else {}
+        cut = max(time.time(), float(prev_dict.get("through") or 0.0))
+        fresh = {"since": cut, "rearmed_at": cut, "through": cut, "losses": 0}
+        if prev_dict.get("last"):
+            fresh["last"] = prev_dict["last"]
+        current_settings.set("auto_queue_streak", fresh)
+        current_settings.set("auto_queue_enabled", bool(enable_auto_queue))
+        self._process.send_payload(
+            {"cmd": "clear_loss_safeguard", "enable_auto_queue": bool(enable_auto_queue)}
+        )
 
     def toggle_mute(self) -> None:
         self.send_command("toggle_mute")

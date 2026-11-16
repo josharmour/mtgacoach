@@ -955,6 +955,7 @@ def _handle_select_n_req(game_state: "GameState", msg: dict) -> bool:
         "id_type": id_type,
         "list_type": req.get("listType") or "",
         "static_list": req.get("staticList") or "",
+        "allow_cancel": msg.get("allowCancel") or "",
         **prompt_info,
     }
     if prompt_choices:

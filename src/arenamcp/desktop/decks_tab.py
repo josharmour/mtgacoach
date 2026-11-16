@@ -291,12 +291,14 @@ class DecksTab(QWidget):
             self._summary.setText("Reading decks…")
             self._session.request_deck_list()
 
-    def open_builder(self) -> None:
+    def open_builder(self, *, prefer_wildcard_filter: bool = False) -> None:
         from .deck_builder import DeckBuilderDialog
 
         builder = getattr(self, "_builder", None)
         if builder is None:
             builder = self._builder = DeckBuilderDialog(self._session, parent=self.window())
+        if prefer_wildcard_filter:
+            builder.mode.setCurrentIndex(1)
         if self._session is not None:
             self._session.set_auto_queue(False)
         builder.show()

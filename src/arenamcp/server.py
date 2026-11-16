@@ -2156,15 +2156,17 @@ def _get_bridge_overlay(
     bridge_turn_raw = bridge_state.get("turn") if isinstance(bridge_state.get("turn"), dict) else {}
     # Windows puts the id at the top level, the Mac adapter inside "turn" (compared here
     # only: the autopilot's window checks treat _bridge_game_state_id as authoritative).
-    bridge_game_state_id = (
-        _coerce_int(bridge_state.get("game_state_id"), 0)
-        or _coerce_int(bridge_turn_raw.get("game_state_id"), 0)
-        or 0
-    )
+    bridge_gsid_raw = bridge_state.get("game_state_id")
+    if bridge_gsid_raw is None:
+        bridge_gsid_raw = bridge_turn_raw.get("game_state_id")
+    has_bridge_gsid = bridge_gsid_raw is not None and _coerce_int(bridge_gsid_raw, None) is not None
+    bridge_game_state_id = _coerce_int(bridge_gsid_raw, 0) or 0
     log_turn = _coerce_int(fallback_turn.get("turn_number"), 0) or 0
-    bridge_turn = _coerce_int(bridge_turn_raw.get("turn_number"), 0) or 0
-    if (bridge_game_state_id and log_game_state_id and bridge_game_state_id < log_game_state_id) or (
-        bridge_turn and log_turn and bridge_turn < log_turn
+    bridge_turn_num_raw = bridge_turn_raw.get("turn_number")
+    has_bridge_turn = bridge_turn_num_raw is not None and _coerce_int(bridge_turn_num_raw, None) is not None
+    bridge_turn = _coerce_int(bridge_turn_num_raw, 0) or 0
+    if (has_bridge_gsid and log_game_state_id and bridge_game_state_id < log_game_state_id) or (
+        has_bridge_turn and log_turn and bridge_turn < log_turn
     ):
         logger.debug(
             "Bridge state behind the log (gameStateId %s < %s, turn %s vs %s); keeping the log's board",
@@ -2177,15 +2179,29 @@ def _get_bridge_overlay(
         return overlay
 
     # Mac reflection bounds VisibleCards, while TotalCardCount is read separately.
-    # Never replace the log's complete public board with a truncated bridge read:
-    # missing late objects can erase attackers and make legal blocks unverifiable.
+    # Never replace the log's complete public board with a truncated or missing
+    # bridge read: missing late objects can erase permanents or controller seats.
     public_zones = bridge_state.get("zones")
     battlefield_zone = public_zones.get("battlefield") if isinstance(public_zones, dict) else None
-    if isinstance(battlefield_zone, dict):
+    fallback_bf = fallback_zones.get("battlefield") if isinstance(fallback_zones, dict) else None
+    fallback_has_bf = any(
+        isinstance(card, dict) and card.get("object_kind") != "ABILITY" for card in (fallback_bf or [])
+    )
+    if not isinstance(battlefield_zone, dict):
+        if fallback_has_bf or log_game_state_id > 0:
+            logger.debug("Bridge state missing battlefield zone; keeping the log's board")
+            overlay["_bridge_state_incomplete"] = True
+            return overlay
+    else:
         total = battlefield_zone.get("total_count")
         visible = battlefield_zone.get("cards")
         visible_count = sum(isinstance(card, dict) for card in visible) if isinstance(visible, list) else 0
-        if type(total) is int and total > visible_count:
+        missing_when_log_has_bf = visible_count == 0 and total is None and fallback_has_bf
+        if (
+            not isinstance(visible, list)
+            or (type(total) is int and total > visible_count)
+            or missing_when_log_has_bf
+        ):
             logger.debug(
                 "Bridge battlefield incomplete (%s/%s objects); keeping the log's board",
                 visible_count,

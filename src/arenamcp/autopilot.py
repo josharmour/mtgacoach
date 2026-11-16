@@ -5920,7 +5920,10 @@ class AutopilotEngine(
             not option_ids
             and (
                 decision.request_type in {"Search", "SelectTargets"}
-                or (decision.request_type == "SelectN" and decision.max_select == 0)
+                or (
+                    decision.request_type == "SelectN"
+                    and (decision.max_select == 0 or decision.min_select == 0)
+                )
             )
             and decision.selection_is_valid([])
         )

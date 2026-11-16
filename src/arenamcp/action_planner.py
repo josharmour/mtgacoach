@@ -39,7 +39,7 @@ from arenamcp.decision_memory import (
     critical_decision,
     lethal_reach,
 )
-from arenamcp.decisions import expand_target_selection
+from arenamcp.decisions import SELECT_N_DECLINE, expand_target_selection
 from arenamcp.mana import SPELL_CAST_TYPES
 from arenamcp.mana_potential import mana_reach_note
 from arenamcp.match_context import (
@@ -4858,7 +4858,7 @@ class ActionPlanner(_ActionLegalityMixin):
         option = decision.options[0]
         if option.payable is False or option.meta.get("repeatedSelectAllowed"):
             return None
-        if option.option_id in ("pass", DECLINE_DECISION, NO_TARGETS_DECISION):
+        if option.option_id in ("pass", DECLINE_DECISION, NO_TARGETS_DECISION, SELECT_N_DECLINE):
             return None
         if decision.min_select != 1 or decision.max_select < 1:
             return None
@@ -5278,7 +5278,7 @@ class ActionPlanner(_ActionLegalityMixin):
         except (AttributeError, IndexError, KeyError, TypeError, ValueError) as error:
             logger.debug("Land forecast unavailable for this state (%s)", type(error).__name__)
         if not decision.options:
-            if decision.request_type == "Search" and decision.selection_is_valid([]):
+            if decision.request_type in {"Search", "SelectN"} and decision.selection_is_valid([]):
                 return []
             return [DECLINE_DECISION]
         if decision.request_type == "ActionsAvailable" and decision.find("pass") is not None:
@@ -5445,14 +5445,28 @@ class ActionPlanner(_ActionLegalityMixin):
                         self._last_decision_trace["validated_ids"] = chosen
                     self._remember_chosen_x(decision, chosen)
                 return chosen
-            # An explicit empty answer is legal for an "up to" target request.
+            # An explicit empty answer is legal for an "up to" target request or optional SelectN.
             # Do this before filtering invalid IDs: a bogus nonempty answer must
             # still use the guarded fallback, not become an accidental decline.
             if decision.request_type == "SelectTargets" and chosen == [] and decision.selection_is_valid([]):
                 self._last_decision_trace["validated_ids"] = []
                 self._last_decision_trace["target_validation"] = "no_targets"
                 return []
+            if (
+                decision.request_type == "SelectN"
+                and decision.min_select == 0
+                and chosen == []
+                and decision.selection_is_valid([])
+            ):
+                self._last_decision_trace["validated_ids"] = []
+                return []
             chosen = [c for c in chosen if c in valid]
+            if decision.request_type == "SelectN" and SELECT_N_DECLINE in chosen:
+                if chosen == [SELECT_N_DECLINE] and decision.selection_is_valid(chosen):
+                    self._last_decision_trace["validated_ids"] = chosen
+                    return chosen
+                # Never mix "Decline" with selected item ids.
+                chosen = [c for c in chosen if c != SELECT_N_DECLINE]
             if decision.request_type == "ActionsAvailable" and len(chosen) == 1:
                 from arenamcp.decisions import reasoning_choice_conflict
 
@@ -7678,16 +7692,25 @@ class ActionPlanner(_ActionLegalityMixin):
                 if p.get("is_local"):
                     local_seat = p.get("seat_id")
                     break
+        zones = game_state.get("zones") or {}
         controllers: dict[int, int | None] = {}
-        for c in self._target_objects(game_state).values():
-            try:
-                iid = int(c.get("instance_id") or 0)
-            except (TypeError, ValueError):
-                continue
-            if iid:
+        for zone in ("battlefield", "stack", "graveyard", "exile", "command", "hand"):
+            cards = game_state.get(zone, zones.get(zone, [])) or []
+            public_control_only = zone in ("battlefield", "stack")
+            for c in cards:
+                if not isinstance(c, dict):
+                    continue
+                iid = _as_int(c.get("instance_id"))
+                if not iid or iid in controllers:
+                    continue
                 # Ownership does not establish current control of a stolen
-                # permanent. Unknown control must remain unknown.
-                controllers[iid] = _as_int(c.get("controller_seat_id")) or None
+                # permanent on the battlefield or spell on the stack. Unknown
+                # control must remain unknown there; graveyard/exile/command/hand
+                # cards have an owner seat rather than a battlefield controller.
+                ctrl = _as_int(c.get("controller_seat_id")) or None
+                if ctrl is None and not public_control_only:
+                    ctrl = _as_int(c.get("owner_seat_id")) or None
+                controllers[iid] = ctrl
         for player in game_state.get("players", []) or []:
             seat = _as_int(player.get("seat_id"))
             if seat:
@@ -11506,6 +11529,11 @@ class ActionPlanner(_ActionLegalityMixin):
                 if decision.selection_is_valid(selection):
                     return selection
             return []
+        if decision.request_type == "SelectN":
+            if any(o.option_id == SELECT_N_DECLINE for o in opts):
+                return [SELECT_N_DECLINE]
+            if int(decision.min_select or 0) == 0 and decision.selection_is_valid([]):
+                return []
         n = max(1, int(decision.min_select or 1))
         return [o.option_id for o in opts[:n]]
 
@@ -11541,7 +11569,7 @@ def _option_prints(decision: Any) -> tuple[list[int], bool]:
     all_bound = True
     for option in getattr(decision, "options", ()) or ():
         meta = getattr(option, "meta", None) or {}
-        bound = option.option_id in {"pass", "cancel", "done"}
+        bound = option.option_id in {"pass", "cancel", "done", SELECT_N_DECLINE}
         for key in ("grpId", "grp_id", "card_grp_id"):
             value = meta.get(key)
             if type(value) is int and value > 4:

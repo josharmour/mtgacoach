@@ -1595,8 +1595,10 @@ class StandaloneCoach(
     def _emit_control_status_snapshot(self, actual_model: str | None) -> None:
         """Emit the current control-state snapshot for GUI frontends."""
         self.ui.status("AUTO_QUEUE", "ON" if getattr(self, "_auto_queue_enabled", False) else "OFF")
-        if not self._auto_queue_enabled and self._queue_streak().get("losses", 0) >= AUTO_QUEUE_LOSS_LIMIT:
+        streak = self._reconcile_saved_loss_streak()
+        if not self._auto_queue_enabled and streak.get("losses", 0) >= AUTO_QUEUE_LOSS_LIMIT:
             self.ui.status("AUTO_QUEUE_DETAIL", LOSS_STOP_DETAIL)
+            self._emit_loss_safeguard_advice()
         model_value = actual_model or self.model_name or "default"
         self.ui.status("MODEL", str(model_value))
         self.ui.status("STYLE", self.advice_style)

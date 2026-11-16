@@ -33,6 +33,22 @@ from arenamcp.target_effects import target_highlight
 
 logger = logging.getLogger(__name__)
 
+SELECT_N_DECLINE = "select_n:decline"
+
+
+def _normalize_allow_cancel(value: Any) -> str:
+    """Normalize AllowCancel strings/enums to ``AllowCancel_*`` (or '')."""
+    if isinstance(value, dict):
+        if "$none" in value:
+            return ""
+        value = value.get("e", "")
+    text = str(value or "").strip()
+    if not text or text in ("AllowCancel_None", "None", "0"):
+        return ""
+    if not text.startswith("AllowCancel_") and text in ("Continue", "Abort", "No"):
+        return f"AllowCancel_{text}"
+    return text
+
 
 @dataclass(frozen=True)
 class DecisionOption:
@@ -95,6 +111,7 @@ class PendingDecision:
     # OptionContext); None when the request declares none.
     selection_context: str | None = None
     option_context: str | None = None
+    allow_cancel: str = ""
 
     def option_ids(self) -> set[str]:
         return {o.option_id for o in self.options}
@@ -115,6 +132,8 @@ class PendingDecision:
 
     def selection_is_valid(self, chosen: list[str]) -> bool:
         """Validate distinct selection ids and the engine's count/weight bounds."""
+        if SELECT_N_DECLINE in chosen:
+            return chosen == [SELECT_N_DECLINE] and SELECT_N_DECLINE in self.option_ids()
         if not set(chosen).issubset(self.option_ids()):
             return False
         if len(set(chosen)) != len(chosen):
@@ -1303,7 +1322,25 @@ def _build_select_n(
         )
     min_select = int(poll.get("select_n_min", 1))
     max_select = int(poll.get("select_n_max", 0 if is_search else 1))
-    if not options and not (is_search and min_select == 0):
+    payload = poll.get("request_payload") or {}
+    selection_context = poll.get("select_n_context") or payload.get("context")
+    option_context = poll.get("select_n_option_context") or payload.get("optionContext")
+    allow_cancel = _normalize_allow_cancel(
+        poll.get("allow_cancel")
+        or payload.get("allowCancel")
+        or (poll.get("decision_context") or {}).get("allow_cancel")
+    )
+    decline_allowed = (
+        not is_search
+        and can_cancel
+        and allow_cancel == "AllowCancel_Continue"
+        and not _is_trigger_stacking_selection(selection_context, option_context)
+    )
+    if (
+        not options
+        and not (is_search and min_select == 0)
+        and not (not is_search and (min_select == 0 or decline_allowed))
+    ):
         return None
     min_weight, max_weight = None, None
     if weights:
@@ -1312,9 +1349,14 @@ def _build_select_n(
         if min_weight == -(2**31) and max_weight == 2**31 - 1:
             min_weight, max_weight = min_select, max_select
             min_select, max_select = 0, len(options)
-    payload = poll.get("request_payload") or {}
-    selection_context = poll.get("select_n_context") or payload.get("context")
-    option_context = poll.get("select_n_option_context") or payload.get("optionContext")
+    if decline_allowed:
+        options.append(
+            DecisionOption(
+                option_id=SELECT_N_DECLINE,
+                label="Decline (take no selection and continue)",
+                meta={"identity_known": True, "choice": "decline"},
+            )
+        )
     stacking_prompt = ""
     if not is_search and _is_trigger_stacking_selection(selection_context, option_context):
         stacking_prompt = (
@@ -1335,6 +1377,7 @@ def _build_select_n(
         prompt_text=stacking_prompt,
         selection_context=selection_context or None,
         option_context=option_context or None,
+        allow_cancel=allow_cancel,
     )
 
 
@@ -2642,6 +2685,7 @@ def decision_to_dict(decision: PendingDecision) -> dict[str, Any]:
         **({"prompt_text": decision.prompt_text} if decision.prompt_text else {}),
         **({"selection_context": decision.selection_context} if decision.selection_context else {}),
         **({"option_context": decision.option_context} if decision.option_context else {}),
+        **({"allow_cancel": decision.allow_cancel} if decision.allow_cancel else {}),
     }
 
 
@@ -2678,6 +2722,7 @@ def decision_from_dict(data: dict[str, Any]) -> PendingDecision:
         prompt_text=str(data.get("prompt_text") or ""),
         selection_context=data.get("selection_context"),
         option_context=data.get("option_context"),
+        allow_cancel=str(data.get("allow_cancel") or ""),
     )
 
 
@@ -2805,9 +2850,12 @@ def select_n_needs_arena_default(decision: PendingDecision) -> bool:
     if _is_trigger_stacking_selection(decision.selection_context, decision.option_context):
         return False
     decidable, blind = select_n_blind_split(decision)
+    real_decidable = [o for o in decidable if o.option_id != SELECT_N_DECLINE]
     if not blind or decision.max_select == 0:
         return False
-    if len(decidable) >= max(decision.min_select, 1):
+    if len(real_decidable) >= max(decision.min_select, 1):
+        return False
+    if any(o.option_id == SELECT_N_DECLINE for o in decidable):
         return False
     return True
 
@@ -2915,8 +2963,15 @@ def submit_option(
         if not decision.selection_is_valid([]):
             return False
         return bool(bridge.submit_targets([]))
-    if decision.request_type == "SelectN" and not option_ids and decision.max_select == 0:
-        # A look selection ("Click OK to continue"): OK is the empty selection.
+    if (
+        decision.request_type == "SelectN"
+        and not option_ids
+        and (decision.max_select == 0 or decision.min_select == 0)
+    ):
+        # A look selection ("Click OK to continue") or optional "up to N"
+        # SelectN (min_select == 0): empty selection submits cleanly.
+        if decision.max_select > 0 and not decision.selection_is_valid([]):
+            return False
         return bool(bridge.submit_selection([]))
     if decision.request_type in _GROUPED_TYPES and not option_ids:
         # An edict whose every group has minSelect 0 may legally be answered
@@ -2961,6 +3016,10 @@ def submit_option(
         return bool(bridge.submit_pass())
     if first.startswith("mull:"):
         return bool(bridge.submit_mulligan(first == "mull:keep"))
+    if first == SELECT_N_DECLINE:
+        if chosen != [SELECT_N_DECLINE] or not decision.selection_is_valid(chosen):
+            return False
+        return bool(bridge.cancel_action(expected_request_id=decision.request_id, require_cancel=True))
     if first.startswith("optional:"):
         return bool(
             bridge.submit_optional(first == "optional:accept", expected_request_id=decision.request_id)
@@ -3123,13 +3182,15 @@ def _select_ids(decision: Any) -> list[int] | None:
     ids = []
     for option in getattr(decision, "options", ()) or ():
         option_id = str(getattr(option, "option_id", "") or "")
+        if option_id == SELECT_N_DECLINE:
+            continue
         if not option_id.startswith("sel:"):
             return None
         try:
             ids.append(int(option_id[4:]))
         except ValueError:
             return None
-    return ids
+    return ids or None
 
 
 def _hand_by_id(state: dict[str, Any]) -> dict[int, dict]:
@@ -3301,6 +3362,8 @@ def hand_loss(decision: Any, state: dict[str, Any]) -> HandLoss | None:
         )
         if rewards is not None:
             unusual = f"{rewards.get('name') or 'a card'} uses our graveyard"
+    if not unusual and (SELECT_N_DECLINE in decision.option_ids() or getattr(decision, "min_select", 1) == 0):
+        unusual = "selection is optional"
     if not unusual and any(is_unknown_card_name(str(hand[i].get("name") or "")) for i in ids):
         unusual = "a hand card is not identified yet"
     return HandLoss(kind, evidence.strip(), name, unusual)
@@ -3471,6 +3534,20 @@ def select_n_note(decision: Any, state: dict[str, Any]) -> str:
                     "That spends the card; it is not free value. For an optional selection, keep it in hand "
                     "unless a concrete entry/death payoff or another effect makes putting it in worthwhile."
                 )
+    if SELECT_N_DECLINE in decision.option_ids():
+        lines.append(
+            f"OPTIONAL SELECTION: Choosing {SELECT_N_DECLINE} declines this selection and continues "
+            "without choosing a card."
+        )
+    elif (
+        getattr(decision, "request_type", "") == "SelectN"
+        and getattr(decision, "min_select", 1) == 0
+        and getattr(decision, "max_select", 0) > 0
+    ):
+        lines.append(
+            f"OPTIONAL SELECTION: This selection allows {decision.min_select} to {decision.max_select} "
+            "items; option_ids: [] is legal when choosing none is best."
+        )
     return "\n".join(lines)
 
 

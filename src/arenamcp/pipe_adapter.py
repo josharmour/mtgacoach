@@ -557,6 +557,8 @@ class PipeAdapter:
                 )
             elif action == "set_auto_queue":
                 coach.set_auto_queue(cmd.get("enabled") is True)
+            elif action == "clear_loss_safeguard":
+                coach.clear_loss_safeguard(enable_auto_queue=cmd.get("enable_auto_queue", True) is not False)
             elif action == "set_autopilot":
                 # Idempotent control plane (fable-improvements.md item 6):
                 # raced/repeated calls converge on the requested state.

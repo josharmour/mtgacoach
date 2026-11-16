@@ -79,6 +79,7 @@ SNAPSHOT_GETTERS = [
     "IsStackingDecision",
     "IsMultiZoneSearch",
     "IsOptional",
+    "CancellationType",
 ]
 MAX_NUMERIC_INPUT_ENTRIES = 20
 TARGET_COMMIT_TIMEOUT_S = 1.2
@@ -207,6 +208,18 @@ def enum_name(value: Any) -> str:
     if isinstance(value, dict) and "e" in value:
         return str(value["e"])
     return "" if value is None else str(value)
+
+
+def _allow_cancel_name(value: Any) -> str:
+    """Normalize Arena's AllowCancel enum or CancellationType getter into AllowCancel_*."""
+    if value is None or (isinstance(value, dict) and "$none" in value):
+        return ""
+    name = enum_name(value).strip()
+    if not name or name in ("AllowCancel_None", "None", "0"):
+        return ""
+    if not name.startswith("AllowCancel_") and name in ("Continue", "Abort", "No"):
+        return f"AllowCancel_{name}"
+    return name
 
 
 def num(value: Any, default: int = 0) -> int:
@@ -535,6 +548,28 @@ class MacBridgeAdapter:
             ops.get(request, name, depth=1, optional=True)
         return Snapshot(self._run(ops, timeout))
 
+    def pending_cancellation_info(
+        self, timeout: float | None = None
+    ) -> tuple[int | None, int | None, bool, str]:
+        """Read (game_state_id, msg_id, can_cancel, allow_cancel) on the live request."""
+        ops = _Ops()
+        request = ops.pending(0)
+        orig_ref = ops.get(request, "OriginalMessage", depth=1, optional=True)
+        cancel_type_ref = ops.get(request, "CancellationType", depth=1, optional=True)
+        can_cancel_ref = ops.get(request, "CanCancel", depth=1, optional=True)
+        results = self._run(ops, timeout)
+        req_node = results[request["ref"]]
+        if not isinstance(req_node, dict) or "$none" in req_node:
+            return None, None, False, ""
+        orig = results[orig_ref["ref"]]
+        gsid = num(field(orig, "GameStateId")) if isinstance(orig, dict) else None
+        msg_id = num(field(orig, "MsgId")) if isinstance(orig, dict) else None
+        can_cancel = bool(results[can_cancel_ref["ref"]])
+        allow_cancel = _allow_cancel_name(results[cancel_type_ref["ref"]]) or _allow_cancel_name(
+            field(orig, "AllowCancel")
+        )
+        return gsid, msg_id, can_cancel, allow_cancel
+
     def _submit(
         self, snapshot: Snapshot, build: Callable[[_Ops, dict], None], timeout: float | None
     ) -> list[Any]:
@@ -547,6 +582,12 @@ class MacBridgeAdapter:
 
     def handles(self, command: dict[str, Any]) -> bool:
         if self._runtime == BEPINEX_RUNTIME:
+            if command.get("action") == "cancel_action":
+                return (
+                    bool(command.get("require_cancel"))
+                    or "expected_game_state_id" in command
+                    or "expected_msg_id" in command
+                )
             return command.get("action") in BEPINEX_REFLECT_COMMANDS
         return command.get("action") not in PASSTHROUGH
 
@@ -2135,6 +2176,11 @@ class MacBridgeAdapter:
             "allow_undo": bool(getters.get("AllowUndo")),
             "bridge_runtime": self._runtime,
         }
+        allow_cancel = _allow_cancel_name(getters.get("CancellationType")) or _allow_cancel_name(
+            field(snapshot.original_message, "AllowCancel")
+        )
+        if allow_cancel:
+            response["allow_cancel"] = allow_cancel
         if self._runtime == "il2cpp-macos" and _verified_sole_pass(snapshot):
             response["native_sole_pass_verified"] = True
         if snapshot.game_state_id is not None:
@@ -2933,12 +2979,11 @@ class MacBridgeAdapter:
                 return {"ok": True, "submitted_type": "SelectN"}
         if snapshot.request_class == "SelectNRequest" and not ids:
             max_sel = field(snapshot.request, "MaxSel")
-            if max_sel is not None and num(max_sel) == 0:
-                # A look selection (SelectNRequest.IsLookSelection: MinSel = MaxSel
-                # = 0, cards shown, "Click OK to continue"): SelectNWorkflow_Look's
-                # OK submits an empty selection. SubmitArbitrary sends ids [0] with
-                # OrderArbitraryOnce, which Arena refused 17 times on Herald's Horn
-                # revealing a Plains (2026-10-20 13:52:05-13:52:46, LimitViolation).
+            min_sel = field(snapshot.request, "MinSel")
+            if (max_sel is not None and num(max_sel) == 0) or (min_sel is not None and num(min_sel) == 0):
+                # A look selection (MinSel=MaxSel=0) or optional "up to N" SelectN
+                # (MinSel=0): submit an empty selection. SubmitArbitrary sends [0],
+                # which Arena rejects for LimitViolation or picks an unwanted card.
                 empty = UINTS([])
                 self._submit(
                     snapshot, lambda ops, request: ops.call(request, "SubmitSelection", empty), timeout
@@ -3764,13 +3809,21 @@ class MacBridgeAdapter:
 
     def _cmd_cancel_action(self, command: dict, timeout: float | None) -> dict:
         snapshot = self._require(timeout)
+        self._check_request_identity(snapshot, command)
         self._require_gameplay_request(snapshot)
+        require_cancel = bool(command.get("require_cancel"))
         cancel = bool(snapshot.getters.get("CanCancel"))
         if not cancel:
+            if require_cancel:
+                raise AdapterError("Request cannot be cancelled cleanly (CanCancel is false)")
             self._require_automatic_response_safe(snapshot)
-        self._submit(
-            snapshot, lambda ops, request: ops.call(request, "Cancel" if cancel else "AutoRespond"), timeout
-        )
+
+        def submit(ops: _Ops, request: dict) -> None:
+            if cancel and require_cancel:
+                ops.expect_member(request, "CanCancel", True)
+            ops.call(request, "Cancel" if cancel else "AutoRespond")
+
+        self._submit(snapshot, submit, timeout)
         return {"ok": True, "cancelled": cancel, "request_class": snapshot.request_class}
 
 

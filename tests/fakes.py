@@ -111,7 +111,7 @@ class FakeBridge:
     def submit_pass(self) -> bool:
         return False
 
-    def cancel_action(self) -> bool:
+    def cancel_action(self, **kwargs) -> bool:
         return False
 
     def submit_mulligan(self, keep: bool) -> bool:
@@ -172,8 +172,11 @@ class TypedBridge:
         self.submitted.append(("pass",))
         return True
 
-    def cancel_action(self):
-        self.submitted.append(("cancel",))
+    def cancel_action(self, *, expected_request_id=None, require_cancel=False):
+        if expected_request_id is None and not require_cancel:
+            self.submitted.append(("cancel",))
+        else:
+            self.submitted.append(("cancel", expected_request_id, require_cancel))
         return True
 
     def auto_respond(self):

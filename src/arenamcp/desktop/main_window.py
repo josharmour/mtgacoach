@@ -133,6 +133,9 @@ class MainWindow(QMainWindow):
         self.coach_panel.restart_requested.connect(self._restart_coach)
         self.coach_panel.reload_engine_requested.connect(self._reload_engine)
         self.coach_panel.autopilot_bug_requested.connect(self._session.trigger_autopilot_bug)
+        open_suggestions = getattr(self, "_open_wildcard_deck_suggestions", None)
+        if callable(open_suggestions):
+            self.coach_panel.deck_suggestions_requested.connect(open_suggestions)
 
         self._stack = QStackedWidget()
         self._stack.addWidget(self.coach_panel)  # Index 0
@@ -143,6 +146,9 @@ class MainWindow(QMainWindow):
         self._stack.addWidget(_build_page("Decks", self.decks_tab, self._show_coach_view))  # 3
         self.setCentralWidget(self._stack)
         self._session.adviceReceived.connect(self._on_deck_invitation)
+        on_safeguard = getattr(self, "_on_loss_safeguard", None)
+        if callable(on_safeguard):
+            self._session.adviceReceived.connect(on_safeguard)
 
     def _build_dev_commit_button(self) -> None:
         self.dev_commit_button = None
@@ -518,6 +524,42 @@ class MainWindow(QMainWindow):
         self._stack.setCurrentIndex(3)
         if not self.decks_tab._decks:
             self.decks_tab.refresh()
+
+    def _open_wildcard_deck_suggestions(self) -> None:
+        self._show_decks_view()
+        self.decks_tab.open_builder(prefer_wildcard_filter=True)
+
+    def _on_loss_safeguard(self, text: str, label: str) -> None:
+        from arenamcp.standalone_auto_queue import LOSS_SAFEGUARD_LABEL
+
+        if label != LOSS_SAFEGUARD_LABEL:
+            return
+        current = getattr(self, "_loss_safeguard_dialog", None)
+        if current is not None and current.isVisible():
+            return
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle("Auto-queue paused — loss safeguard")
+        dialog.setTextFormat(Qt.PlainText)
+        dialog.setText(text)
+        dialog.setInformativeText(
+            "You can clear the safeguard to resume queueing immediately, or review deck suggestions "
+            "matched to the cards you own and the wildcards you've collected."
+        )
+        clear_btn = dialog.addButton("Clear safeguard", QMessageBox.AcceptRole)
+        suggest_btn = dialog.addButton("Suggest decks (cards & wildcards)", QMessageBox.ActionRole)
+        dialog.addButton("Keep paused", QMessageBox.RejectRole)
+        dialog.setDefaultButton(clear_btn)
+
+        def chosen(button):
+            if button is clear_btn:
+                self.coach_panel._clear_loss_safeguard()
+            elif button is suggest_btn:
+                self.coach_panel._open_safeguard_deck_suggestions()
+
+        dialog.buttonClicked.connect(chosen)
+        self._loss_safeguard_dialog = dialog
+        dialog.setModal(False)
+        dialog.show()
 
     def _on_deck_invitation(self, text: str, label: str) -> None:
         from arenamcp.deck_recommendation import ADVICE_LABEL

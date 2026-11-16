@@ -356,6 +356,7 @@ class CompactCoachPanel(QWidget):
     restart_requested = Signal()
     reload_engine_requested = Signal()
     autopilot_bug_requested = Signal()
+    deck_suggestions_requested = Signal()
 
     _PERTINENT_LOG_ROLES = frozenset({"spoken", "error", "status", "advice"})
 
@@ -637,6 +638,7 @@ class CompactCoachPanel(QWidget):
         self.after_match_popover.setAccessibleName("After this match")
         self.after_match_popover.add_button(self.auto_queue_btn)
         self.after_match_btn = QPushButton("After match…")
+        self.after_match_btn.setObjectName("afterMatchButton")
         self.after_match_btn.clicked.connect(
             lambda: self.after_match_popover.popup_from(self.after_match_btn)
         )
@@ -674,6 +676,24 @@ class CompactCoachPanel(QWidget):
         self.auto_quest_status_label.setWordWrap(True)
         self.after_match_popover._layout.addWidget(self.auto_quest_status_label)
         self.auto_quest_status_label.hide()
+
+        self.clear_safeguard_btn = QPushButton("Clear safeguard && resume")
+        self.clear_safeguard_btn.setObjectName("clearSafeguardButton")
+        self.clear_safeguard_btn.setToolTip(
+            "Reset the consecutive-loss safeguard counter and resume Auto-queue"
+        )
+        self.clear_safeguard_btn.clicked.connect(self._clear_loss_safeguard)
+        self.after_match_popover.add_button(self.clear_safeguard_btn)
+        self.clear_safeguard_btn.hide()
+
+        self.safeguard_decks_btn = QPushButton("Suggest decks (cards && wildcards)…")
+        self.safeguard_decks_btn.setObjectName("safeguardDecksButton")
+        self.safeguard_decks_btn.setToolTip(
+            "Compare stronger Standard & Brawl decks against cards you own and wildcards collected"
+        )
+        self.safeguard_decks_btn.clicked.connect(self._open_safeguard_deck_suggestions)
+        self.after_match_popover.add_button(self.safeguard_decks_btn)
+        self.safeguard_decks_btn.hide()
 
         self.help_details = Disclosure("Help & settings")
         self.autopilot_bug_btn = QPushButton("Autopilot bug")
@@ -1175,23 +1195,69 @@ class CompactCoachPanel(QWidget):
             # engine offline. Ordinary navigation retries retain every loss.
             streak = settings.Settings().get("auto_queue_streak") or {}
             if streak.get("losses", 0) >= AUTO_QUEUE_LOSS_LIMIT:
-                now = time.time()
-                self._settings.set("auto_queue_streak", {"since": now, "rearmed_at": now}, save=False)
+                cut = max(time.time(), float(streak.get("through") or 0.0))
+                fresh = {"since": cut, "rearmed_at": cut, "through": cut, "losses": 0}
+                if streak.get("last"):
+                    fresh["last"] = streak["last"]
+                self._settings.set("auto_queue_streak", fresh)
         self._settings.set("auto_queue_enabled", self._auto_queue_enabled)
         self._auto_queue_detail = "Waiting for Autoplay and match status." if self._auto_queue_enabled else ""
         self._render_auto_queue_status()
         self._session.set_auto_queue(self._auto_queue_enabled)
 
+    def _clear_loss_safeguard(self) -> None:
+        """Reset the consecutive-loss safeguard and immediately resume Auto-queue."""
+        self._auto_queue_enabled = True
+        self._settings.set("auto_queue_enabled", True)
+        self._auto_queue_detail = "Waiting for Autoplay and match status."
+        self._session.clear_loss_safeguard(enable_auto_queue=True)
+        self._render_auto_queue_status()
+
+    def _open_safeguard_deck_suggestions(self) -> None:
+        """Clear the safeguard pause and open deck suggestions using owned cards and wildcards."""
+        self.after_match_popover.hide()
+        self._auto_queue_enabled = False
+        self._auto_queue_detail = ""
+        self._session.clear_loss_safeguard(enable_auto_queue=False)
+        self._render_auto_queue_status()
+        self.deck_suggestions_requested.emit()
+
     def _render_auto_queue_status(self) -> None:
         enabled = self._auto_queue_enabled
+        grind = getattr(self, "_grind_enabled", False)
         self.auto_queue_btn.setText(f"Auto-queue: {'On' if enabled else 'Off'}")
         self.auto_queue_btn.setProperty("state", "on" if enabled else "off")
         theme.repolish(self.auto_queue_btn)
-        detail = self._auto_queue_detail.strip()
+        raw_detail = self._auto_queue_detail.strip()
+        detail = raw_detail
         if detail and not detail.lower().startswith("auto-queue"):
             detail = f"Auto-queue: {detail}"
         self.auto_queue_status_label.setText(block(span(detail, "muted"), size="caption"))
         self.auto_queue_status_label.setVisible(bool(detail))
+        if hasattr(self, "after_match_btn"):
+            if grind:
+                btn_text = "Grind: On"
+            elif enabled:
+                btn_text = "Queue: On"
+            else:
+                btn_text = "After match…"
+            lower = raw_detail.lower()
+            detail_is_stop = bool(raw_detail) and ("stopped" in lower or "paused" in lower)
+            if (not enabled and not grind and detail_is_stop) or (enabled and "paused" in lower):
+                btn_state = "paused"
+            elif enabled or grind:
+                btn_state = "on"
+            else:
+                btn_state = "off"
+            self.after_match_btn.setText(btn_text)
+            self.after_match_btn.setProperty("state", btn_state)
+            theme.repolish(self.after_match_btn)
+            self.after_match_btn.setToolTip(detail or "After this match — configure Auto-queue or Grind")
+        safeguard_tripped = not enabled and not grind and "consecutive match losses" in raw_detail.lower()
+        if hasattr(self, "clear_safeguard_btn"):
+            self.clear_safeguard_btn.setVisible(safeguard_tripped)
+        if hasattr(self, "safeguard_decks_btn"):
+            self.safeguard_decks_btn.setVisible(safeguard_tripped)
 
     def _on_autopilot_bug_clicked(self) -> None:
         self.autopilot_bug_btn.setText("Capturing autopilot bug…")
@@ -1723,6 +1789,7 @@ class CompactCoachPanel(QWidget):
             self._grind_enabled = val.strip().upper() == "ON"
             self.auto_quest_btn.setText("Grind: On" if self._grind_enabled else "Grind: Off")
             self.auto_quest_status_label.setVisible(self._grind_enabled)
+            self._render_auto_queue_status()
         elif key == "AUTO_QUEST":
             self.auto_quest_status_label.setText("Grind: " + val)
             self.auto_quest_status_label.setVisible(self._grind_enabled)
@@ -1734,8 +1801,15 @@ class CompactCoachPanel(QWidget):
                     self._auto_queue_detail = ""
                 self._render_auto_queue_status()
         elif key == "AUTO_QUEUE_DETAIL":
+            prev_detail = self._auto_queue_detail.strip()
             self._auto_queue_detail = val
             self._render_auto_queue_status()
+            notice = val.strip()
+            if notice != prev_detail and notice.lower().startswith(("auto-queue stopped", "paused:")):
+                self.append_log(notice, role="status")
+                if not (self._last_state.get("match_id") and self._last_state.get("turn")):
+                    self._now = (datetime.datetime.now().strftime("%H:%M"), notice)
+                    self._render_now()
         elif key == "ARENA":
             self._render_arena_status()
         elif key == "STYLE":
@@ -1957,6 +2031,11 @@ class CompactCoachPanel(QWidget):
 
     def _on_advice_received(self, text: str, label: str) -> None:
         if not text.strip():
+            return
+        from arenamcp.deck_recommendation import ADVICE_LABEL as DECK_ADVICE_LABEL
+        from arenamcp.standalone_auto_queue import LOSS_SAFEGUARD_LABEL
+
+        if label in (LOSS_SAFEGUARD_LABEL, DECK_ADVICE_LABEL):
             return
         if self._execution_trace(text):
             self._on_log_emitted(text, "debug")

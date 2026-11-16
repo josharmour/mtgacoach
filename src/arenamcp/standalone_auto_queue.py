@@ -15,6 +15,14 @@ LOSS_STOP_DETAIL = (
     f"Auto-queue stopped after {AUTO_QUEUE_LOSS_LIMIT} consecutive match losses. "
     "Turn Auto-queue on to start a fresh run."
 )
+LOSS_SAFEGUARD_LABEL = "LOSS SAFEGUARD"
+LOSS_SAFEGUARD_MESSAGE = (
+    f"Auto-queue paused automatically after {AUTO_QUEUE_LOSS_LIMIT} consecutive match losses so it "
+    "doesn't keep queueing unattended during a losing streak or bad matchup run. Autoplay itself "
+    "remains ready when you enter a game.\n\n"
+    "Choose Clear safeguard to reset the loss counter and resume queueing right away, or "
+    "Suggest decks to review decklists matched to the cards you own and the wildcards you've collected."
+)
 
 
 class _AutoQueueMixin(AutoQuestMixin):
@@ -26,10 +34,48 @@ class _AutoQueueMixin(AutoQuestMixin):
             self._queue_restore_streak = True
         return streak
 
+    def _reconcile_saved_loss_streak(self) -> dict:
+        """Clear a saved loss streak if later confirmed wins or draws occurred."""
+        if not hasattr(self, "settings"):
+            return {}
+        streak = self._queue_streak()
+        if streak.get("losses", 0) <= 0:
+            return streak
+        try:
+            from arenamcp.server import logged_queue_results
+
+            rows = logged_queue_results(streak.get("rearmed_at", 0), limit=max(AUTO_QUEUE_LOSS_LIMIT + 3, 10))
+        except Exception:
+            logger.debug("Could not reconcile saved loss streak from log", exc_info=True)
+            return streak
+        through = float(streak.get("through") or 0.0)
+        newer = [
+            row
+            for row in rows
+            if row.get("outcome") in ("win", "draw", "loss")
+            and float(row.get("arena_completed_at") or 0.0) > through
+        ]
+        if not newer or not any(row["outcome"] in ("win", "draw") for row in newer):
+            return streak
+        last_break = max(i for i, row in enumerate(newer) if row["outcome"] in ("win", "draw"))
+        trailing_losses = sum(1 for row in newer[last_break + 1 :] if row["outcome"] == "loss")
+        streak.update(
+            losses=trailing_losses,
+            last=newer[-1]["match_id"],
+            through=float(newer[-1]["arena_completed_at"]),
+        )
+        streak.pop("pending", None)
+        streak.setdefault("since", streak.get("rearmed_at", time.time()))
+        self.settings.set("auto_queue_streak", streak)
+        return streak
+
     def _queue_loss_guard(self, state: dict, completed: dict) -> bool:
         """Account for Arena's final match outcome before allowing any next entry."""
         streak = self._queue_streak()
-        if streak.get("losses", 0) >= AUTO_QUEUE_LOSS_LIMIT:
+        if (
+            not getattr(self, "_queue_restore_streak", False)
+            and streak.get("losses", 0) >= AUTO_QUEUE_LOSS_LIMIT
+        ):
             return self._stop_queue_after_losses()
         if getattr(self, "_queue_restore_streak", False):
             from arenamcp.server import logged_queue_results
@@ -148,23 +194,74 @@ class _AutoQueueMixin(AutoQuestMixin):
             return self._stop_queue_after_losses()
         return True
 
+    def _emit_loss_safeguard_advice(self) -> None:
+        advice = getattr(self.ui, "advice", None)
+        if not callable(advice):
+            return
+        streak = getattr(self, "_auto_queue_streak", None) or {}
+        key = (streak.get("last"), streak.get("through"))
+        if hasattr(self, "_loss_safeguard_notified_key") and self._loss_safeguard_notified_key == key:
+            return
+        self._loss_safeguard_notified_key = key
+        advice(LOSS_SAFEGUARD_MESSAGE, LOSS_SAFEGUARD_LABEL)
+
     def _stop_queue_after_losses(self) -> bool:
         self.set_auto_queue(False)
         self.ui.status("AUTO_QUEUE_DETAIL", LOSS_STOP_DETAIL)
+        self.ui.log(LOSS_STOP_DETAIL)
+        self._emit_loss_safeguard_advice()
         logger.info(LOSS_STOP_DETAIL)
+        return False
+
+    def clear_loss_safeguard(self, *, enable_auto_queue: bool = True) -> bool:
+        """Reset any recorded loss-safeguard streak and optionally resume Auto-queue."""
+        prev = (
+            self._queue_streak()
+            if hasattr(self, "settings")
+            else (getattr(self, "_auto_queue_streak", None) or {})
+        )
+        latest_log_ts = 0.0
+        try:
+            from arenamcp.server import logged_queue_results
+
+            latest = logged_queue_results(0, limit=1)
+            if latest:
+                latest_log_ts = float(latest[-1].get("arena_completed_at") or 0.0)
+        except Exception:
+            pass
+        cut = max(time.time(), float(prev.get("through") or 0.0), latest_log_ts)
+        fresh = {"since": cut, "rearmed_at": cut, "through": cut, "losses": 0}
+        if prev.get("last"):
+            fresh["last"] = prev["last"]
+        self._auto_queue_streak = fresh
+        self._queue_restore_streak = False
+        self._queue_restore_results = None
+        self._loss_safeguard_notified_key = None
+        if hasattr(self, "settings"):
+            self.settings.set("auto_queue_streak", fresh)
+        if enable_auto_queue:
+            return self.set_auto_queue(True)
+        self.ui.status("AUTO_QUEUE_DETAIL", "")
+        self.ui.log("Auto-queue loss safeguard cleared.")
         return False
 
     def set_auto_queue(self, enabled: bool) -> bool:
         if getattr(self, "_auto_quest", None):
             self._auto_quest = None
             self.ui.status("GRIND", "OFF")
+        if enabled:
+            streak = self._queue_streak() if hasattr(self, "settings") else {}
+            if streak.get("losses", 0) >= AUTO_QUEUE_LOSS_LIMIT:
+                cut = max(time.time(), float(streak.get("through") or 0.0))
+                fresh = {"since": cut, "rearmed_at": cut, "through": cut, "losses": 0}
+                if streak.get("last"):
+                    fresh["last"] = streak["last"]
+                self._auto_queue_streak = fresh
+                self._loss_safeguard_notified_key = None
+                if hasattr(self, "settings"):
+                    self.settings.set("auto_queue_streak", fresh)
         if bool(enabled) != bool(getattr(self, "_auto_queue_enabled", False)):
             if enabled:
-                streak = self._queue_streak()
-                if streak.get("losses", 0) >= AUTO_QUEUE_LOSS_LIMIT:
-                    now = time.time()
-                    self._auto_queue_streak = {"since": now, "rearmed_at": now}
-                    self.settings.set("auto_queue_streak", self._auto_queue_streak, save=False)
                 self._queue_restore_streak = True
                 self._queue_restore_results = None
             try:
@@ -363,6 +460,25 @@ class _AutoQueueMixin(AutoQuestMixin):
         )
         if not active:
             self._suspend_auto_queue()
+            if not enabled and hasattr(self, "settings"):
+                streak = self._queue_streak()
+                if streak.get("losses", 0) > 0:
+                    from arenamcp.server import get_completed_match_for_navigation
+
+                    completed = get_completed_match_for_navigation() or {}
+                    outcome = completed.get("outcome")
+                    comp_mid = completed.get("match_id")
+                    comp_at = float(completed.get("completed_at") or 0.0)
+                    if (
+                        outcome in ("win", "draw")
+                        and comp_mid
+                        and comp_mid != streak.get("last")
+                        and comp_at > float(streak.get("through") or 0.0)
+                    ):
+                        streak.update(losses=0, last=comp_mid, through=comp_at)
+                        streak.pop("pending", None)
+                        self.settings.set("auto_queue_streak", streak)
+                        self.ui.status("AUTO_QUEUE_DETAIL", "")
             return False
         from arenamcp.bridge_readiness import automation_blocker
         from arenamcp.gre_bridge import get_bridge

@@ -636,6 +636,12 @@ class GREBridge:
                 # A legacy pipe ignores extra fields on submit_pass. A strict
                 # native result must never degrade to an unguarded submission.
                 raise GREBridgeError("The current bridge cannot verify a sole priority pass")
+            elif action == "cancel_action" and (
+                cmd.get("require_cancel") or "expected_game_state_id" in cmd or "expected_msg_id" in cmd
+            ):
+                # A raw BepInEx pipe ignores expected_* / require_cancel and
+                # falls back to AutoRespond() when CanCancel is false.
+                raise GREBridgeError("The current bridge cannot verify a guarded cancel_action")
             else:
                 outcome = self._send_command_raw(cmd, timeout, expected_generation=generation)
             return outcome
@@ -852,10 +858,37 @@ class GREBridge:
         try:
             resp = self._send_safe({"action": "get_pending_actions"})
             if resp.get("ok"):
-                return self._reshape_cost_selection(resp)
+                resp = self._reshape_cost_selection(resp)
+                return self._enrich_select_n_cancellation(resp)
         except GREBridgeError as e:
             logger.debug(f"get_pending_actions failed: {e}")
         return None
+
+    def _enrich_select_n_cancellation(self, resp: dict[str, Any]) -> dict[str, Any]:
+        adapter = self._mac_adapter
+        if (
+            adapter is None
+            or adapter.plays_matches
+            or not resp.get("has_pending")
+            or resp.get("can_cancel") is not True
+            or resp.get("allow_cancel")
+        ):
+            return resp
+        req_label = f"{resp.get('request_type') or ''} {resp.get('request_class') or ''}"
+        if "SelectN" not in req_label:
+            return resp
+        try:
+            gsid, msg_id, can_cancel, allow_cancel = adapter.pending_cancellation_info()
+        except Exception as e:  # noqa: BLE001 - preserve the plugin's poll reply
+            logger.debug(f"SelectN cancellation probe failed: {e}")
+            return resp
+        resp_gsid = resp.get("game_state_id")
+        resp_msg_id = resp.get("msg_id")
+        if (gsid and resp_gsid and gsid != resp_gsid) or (msg_id and resp_msg_id and msg_id != resp_msg_id):
+            return resp
+        if can_cancel and allow_cancel:
+            resp["allow_cancel"] = allow_cancel
+        return resp
 
     # The BepInEx plugin has no handler for a payment whose cost is a choice
     # (Gallia, Tragic Host: "Exile another creature card from your graveyard"):
@@ -1404,6 +1437,7 @@ class GREBridge:
             else:
                 resp = self._send_safe(command)
             if resp.get("ok"):
+                self.invalidate_game_state_cache()
                 logger.info(f"GRE bridge submitted selection: {len(ids)} ids")
                 return True
             logger.warning(f"GRE bridge submit_selection failed: {resp.get('error')}")
@@ -1805,19 +1839,35 @@ class GREBridge:
             logger.warning(f"GRE bridge auto_respond error: {e}")
         return False
 
-    def cancel_action(self) -> bool:
-        """Cancel the current pending action (undo the cast/activation).
+    def cancel_action(
+        self,
+        *,
+        expected_request_id: tuple[int, int] | None = None,
+        require_cancel: bool = False,
+    ) -> bool:
+        """Cancel the current pending action (undo cast/activation or AllowCancel_Continue decline).
 
-        Only works when the request has CanCancel=true (e.g. PayCostsRequest
-        with AllowCancel_Abort). Falls back to AutoRespond if cancel not allowed.
+        Only cancels when the request has CanCancel=true (e.g. PayCostsRequest
+        with AllowCancel_Abort or SelectNRequest with AllowCancel_Continue).
+        Falls back to AutoRespond if cancel not allowed unless ``require_cancel=True``.
         """
         try:
-            resp = self._send_safe({"action": "cancel_action"})
+            command: dict[str, Any] = {"action": "cancel_action"}
+            if expected_request_id is not None:
+                command["expected_game_state_id"] = int(expected_request_id[0])
+                command["expected_msg_id"] = int(expected_request_id[1])
+            if require_cancel:
+                command["require_cancel"] = True
+            resp = self._send_safe(command)
             if resp.get("ok"):
-                cancelled = resp.get("cancelled", False)
+                self.invalidate_game_state_cache()
+                cancelled = bool(resp.get("cancelled", False))
                 logger.info(
                     f"GRE bridge cancel_action: cancelled={cancelled}, {resp.get('request_class', '?')}"
                 )
+                if require_cancel and not cancelled:
+                    logger.warning("GRE bridge cancel_action did not cancel cleanly (cancelled=False)")
+                    return False
                 return True
             logger.warning(f"GRE bridge cancel_action failed: {resp.get('error')}")
         except GREBridgeError as e:
@@ -1987,8 +2037,20 @@ class GREBridge:
             if generation != getattr(self, "connection_generation", 0):
                 return None
             if resp.get("ok"):
-                self._cached_game_state = resp
-                self._cached_game_state_time = now
+                zones = resp.get("zones")
+                if "zones" not in resp:
+                    cacheable = True
+                elif isinstance(zones, dict) and isinstance(zones.get("battlefield"), dict):
+                    bf = zones["battlefield"]
+                    total = bf.get("total_count")
+                    cards = bf.get("cards")
+                    visible = sum(isinstance(card, dict) for card in cards) if isinstance(cards, list) else 0
+                    cacheable = not (type(total) is int and total > visible)
+                else:
+                    cacheable = False
+                if cacheable:
+                    self._cached_game_state = resp
+                    self._cached_game_state_time = now
                 return resp
             else:
                 logger.debug(f"get_game_state: {resp.get('error')}")
@@ -2765,6 +2827,7 @@ def _stamp_bridge_fields(
     snapshot["_bridge_actions"] = actions if actions else None
     snapshot["_bridge_can_pass"] = poll.get("can_pass", False)
     snapshot["_bridge_can_cancel"] = poll.get("can_cancel", False)
+    snapshot["_bridge_allow_cancel"] = poll.get("allow_cancel") if has_pending else None
     snapshot["_bridge_allow_undo"] = poll.get("allow_undo", False)
     request_payload = normalized["request_payload"]
     snapshot["_bridge_request_payload"] = request_payload if has_pending and request_payload else None
