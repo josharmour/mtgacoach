@@ -14,6 +14,8 @@ from arenamcp.ability_synthesizer import Damage
 from arenamcp.card_db import get_card_database, is_unknown_card_name
 from arenamcp.card_facts.removal import (
     KickerDamage,
+    LoyaltySweep,
+    ToughnessDestroy,
     printed_removal_effects,
     reviewed_library_nonremoval,
     supported_public_creature,
@@ -110,8 +112,18 @@ def _answers_creature(card, threat, *, local_creature=False, local_basic=False, 
     types = threat["type_line"].split(" — ")[0].split()
     results = []
     for effect in effects:
+        if isinstance(effect, LoyaltySweep):
+            power = threat.get("modified_power", threat.get("power"))
+            results.append(False if type(power) is int and power < effect.minimum_power else None)
+            continue
+        if isinstance(effect, ToughnessDestroy):
+            toughness = threat.get("modified_toughness", threat.get("toughness"))
+            results.append(toughness >= effect.minimum_toughness if type(toughness) is int else None)
+            continue
         if (
-            effect.target.endswith("with flying")
+            effect.target == "enchantment"
+            and "Enchantment" not in types
+            or effect.target.endswith("with flying")
             and not has_combat_keyword(threat, "flying")
             or effect.target.startswith("nonland permanent")
             and "Land" in types

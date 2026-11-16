@@ -155,6 +155,9 @@ _SELF_PUMP = r"[Tt]his creature gets \+[0-9]+/\+[0-9]+ until end of turn\."
 _LIBRARY_CREATURE_LINE = re.compile(
     rf"(?:Flying|Haste|First strike|Double strike|Lifelink|Prowess|Trample|Vigilance|Reach"
     r"|Players can't gain life\."
+    r"|When this creature enters, you gain [1-9][0-9]? life and draw a card\."
+    r"|Whenever one or more other creatures you control with power [0-9]+ or less enter, "
+    r"draw a card\. This ability triggers only once each turn\."
     rf"|Plot {_MANA}"
     rf"|Whenever you cast a noncreature spell, {_SELF_PUMP}"
     rf"|{_MANA}: {_SELF_PUMP}"
@@ -175,6 +178,16 @@ class KickerDamage:
     target: str = "any target"
 
 
+@dataclass(frozen=True)
+class LoyaltySweep:
+    minimum_power: int
+
+
+@dataclass(frozen=True)
+class ToughnessDestroy:
+    minimum_toughness: int
+
+
 def reviewed_library_nonremoval(card):
     digest = legacy_lookup_hash(card)
     if not digest:
@@ -184,7 +197,20 @@ def reviewed_library_nonremoval(card):
     text = card["oracle_text"]
     if card["type_line"].split(" — ")[0] in ("Creature", "Legendary Creature"):
         return bool(text) and all(_LIBRARY_CREATURE_LINE.fullmatch(line) for line in text.splitlines())
+    if card["type_line"] == "Enchantment":
+        return bool(
+            re.fullmatch(r"Creature tokens you control get \+[0-9]+/\+[0-9]+ and have vigilance\.", text)
+        )
     if card["type_line"] in _DAMAGE_SPELL_TYPES:
+        if re.fullmatch(
+            r"Choose a color\. (?:White|Blue|Black|Red|Green) creatures you control "
+            r"gain protection from the chosen color until end of turn\.",
+            text,
+        ) or text == (
+            "Until your next turn, your life total can't change and you gain protection from everything. "
+            f"All permanents you control phase out.\nExile {card['name']}."
+        ):
+            return True
         return bool(
             re.fullmatch(
                 rf"(?:{re.escape(card['name'])}|This spell) deals [1-9][0-9]? damage to each opponent\.", text
@@ -228,11 +254,23 @@ def printed_removal_effects(card, *, local_creature=False, local_basic=False):
     if effects:
         return effects
     text = card["oracle_text"]
-    if card["type_line"] == "Enchantment" and text == (
-        "When this enchantment enters, exile target nonland permanent an opponent controls "
-        "until this enchantment leaves the battlefield."
+    if card["type_line"] == "Enchantment" and re.fullmatch(
+        rf"(?:Flash\n)?When this enchantment enters, exile target nonland permanent an opponent controls "
+        rf"until this enchantment leaves the battlefield\.(?:\nCycling {_MANA})?",
+        text,
     ):
         return (Exile("nonland permanent"),)
+    if card["type_line"].split(" — ")[0] == "Legendary Planeswalker":
+        # Recognize the complete set of loyalty abilities. Eligibility alone
+        # does not prove the walker can activate the negative loyalty cost.
+        sweep = re.fullmatch(
+            r"\[\+\d+\]: Create (?:one|two|three) 1/1 white Soldier creature tokens\.\n"
+            r"\[-\d+\]: Destroy all creatures with power (\d+) or greater\.\n"
+            r'\[-\d+\]: You get an emblem with "Creatures you control get \+\d+/\+\d+ and have flying\."',
+            text,
+        )
+        if sweep:
+            return (LoyaltySweep(minimum_power=int(sweep[1])),)
     if card["type_line"] == "Sorcery" and text == (
         "Exile target creature with mana value less than or equal to the number of Plains you control. "
         "Its controller gains 3 life."
@@ -240,6 +278,20 @@ def printed_removal_effects(card, *, local_creature=False, local_basic=False):
         return (Exile("creature with mana value up to local Plains count"),)
     if card["type_line"] not in _DAMAGE_SPELL_TYPES:
         return None
+    if re.fullmatch(
+        r"Destroy target nonland permanent\. Its controller creates a 1/1 "
+        r"(?:white|blue|black|red|green) [A-Z][a-z]+ creature token\.",
+        text,
+    ):
+        return (Destroy("nonland permanent"),)
+    # Native modal text uses indentation markup around each printed bullet.
+    modes = [
+        re.sub(r"^•\s*", "•", re.sub(r"</?indent(?:=4%)?>", "", line).strip()) for line in text.splitlines()
+    ]
+    if len(modes) == 3 and modes[0] == "Choose one —" and modes[2] == "•Destroy target enchantment.":
+        threshold = re.fullmatch(r"•Destroy target creature with toughness (\d+) or greater\.", modes[1])
+        if threshold:
+            return (ToughnessDestroy(minimum_toughness=int(threshold[1])), Destroy("enchantment"))
     # The optional land search happens after exile. Its controller cannot
     # keep the targeted creature by declining to search.
     if text == (

@@ -1243,3 +1243,112 @@ def test_plains_bound_exile_follows_current_control_and_subtype():
     assert fact()["direct_removal_total"] == 6
     lookup[17] = dict(spell, oracle_text=text + " Draw a card.")
     assert "direct_removal_total" not in fact()
+
+
+def test_modal_toughness_and_enchantment_outs_use_the_live_threat():
+    from arenamcp.commentary.private_outs import _answers_creature
+
+    text = "Choose one — \n•<indent=4%>Destroy target creature with toughness 4 or greater.</indent>\n•Destroy target enchantment."
+    modal = card(17, "Two choices", "Instant", text)
+    target = {"type_line": "Creature", "toughness": 3}
+    assert _answers_creature(modal, target) is False
+    assert _answers_creature(modal, dict(target, modified_toughness=4)) is True
+    assert _answers_creature(modal, dict(target, toughness=None)) is None
+    assert _answers_creature(modal, dict(target, type_line="Enchantment Creature")) is True
+    assert _answers_creature(dict(modal, oracle_text=text + "\nDraw a card."), target) is None
+
+
+def test_full_spell_and_enchantment_rules_add_named_library_outs():
+    from arenamcp.commentary.private_outs import _answers_creature
+
+    enchant = card(
+        17,
+        "Detention",
+        "Enchantment",
+        "Flash\nWhen this enchantment enters, exile target nonland permanent an opponent controls until this enchantment leaves the battlefield.\nCycling {oW}",
+    )
+    destroy = card(
+        18,
+        "Exchange",
+        "Instant",
+        "Destroy target nonland permanent. Its controller creates a 1/1 red Goblin creature token.",
+    )
+    target = {"type_line": "Creature"}
+    lookup = {**CARDS, 17: enchant, 18: destroy}
+    fact = private_removal_fact(board(), opened(), allow_private=True, card_lookup=lookup.get)
+    assert fact["answers"]["Detention"] == 2 and fact["answers"]["Exchange"] == 3
+    for spell in (enchant, destroy):
+        assert _answers_creature(spell, dict(target, type_line="Land Creature")) is False
+        assert _answers_creature(dict(spell, linked_face_ids=[88]), target) is None
+        assert (
+            _answers_creature(
+                dict(spell, oracle_text=spell["oracle_text"] + "\nUnless its controller pays {2}."), target
+            )
+            is None
+        )
+
+
+def test_loyalty_sweep_cannot_remove_below_threshold_and_needs_activation_proof_above():
+    from arenamcp.commentary.private_outs import _answers_creature
+
+    text = '[+1]: Create three 1/1 white Soldier creature tokens.\n[-3]: Destroy all creatures with power 4 or greater.\n[-7]: You get an emblem with "Creatures you control get +2/+2 and have flying."'
+    walker = card(17, "Commander of Soldiers", "Legendary Planeswalker — Soldier", text)
+    target = {"type_line": "Creature", "power": 3}
+    assert _answers_creature(walker, target) is False
+    assert _answers_creature(walker, dict(target, modified_power=4)) is None
+    assert (
+        _answers_creature(dict(walker, oracle_text=text + "\n[-1]: Exile target creature."), target) is None
+    )
+
+
+@pytest.mark.parametrize(
+    ("kind", "text"),
+    [
+        ("Enchantment", "Creature tokens you control get +2/+1 and have vigilance."),
+        ("Creature — Bird", "Flying\nWhen this creature enters, you gain 2 life and draw a card."),
+        (
+            "Creature — Scout",
+            "Whenever one or more other creatures you control with power 1 or less enter, draw a card. This ability triggers only once each turn.",
+        ),
+        (
+            "Instant",
+            "Choose a color. Red creatures you control gain protection from the chosen color until end of turn.",
+        ),
+        (
+            "Instant",
+            "Until your next turn, your life total can't change and you gain protection from everything. All permanents you control phase out.\nExile Own Spell.",
+        ),
+    ],
+)
+def test_complete_nonremoval_text_and_unknown_extra_ability(kind, text):
+    from arenamcp.commentary.private_outs import _answers_creature
+
+    spell = card(17, "Own Spell", kind, text)
+    target = {"type_line": "Creature"}
+    assert _answers_creature(spell, target) is False
+    assert _answers_creature(dict(spell, oracle_text=text + "\nDestroy target creature."), target) is None
+
+
+@pytest.mark.parametrize(
+    "native, usable",
+    [
+        (["CardType_Enchantment", "CardType_Creature"], True),
+        (["CardType_Creature"], False),
+        (["CardType_Enchantment"], False),
+        ([], False),
+    ],
+)
+def test_modal_out_census_requires_matching_native_permanent_types(native, usable):
+    game, snapshot = opened(), board()
+    game.game_objects[800].card_types = native
+    threat = snapshot["zones"]["battlefield"][0]
+    threat.update(type_line="Enchantment Creature — Bird", card_types=native)
+    oracle = (
+        "Choose one —\n• Destroy target creature with toughness 4 or greater.\n• Destroy target enchantment."
+    )
+    lookup = {**CARDS, 17: card(17, "Choice", "Instant", oracle)}
+    fact = private_removal_fact(snapshot, game, allow_private=True, card_lookup=lookup.get)
+    if usable:
+        assert fact["answers"]["Choice"] == 2
+    else:
+        assert fact is None

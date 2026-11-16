@@ -2299,6 +2299,21 @@ class GameState(_GameStateAnnotationsMixin):
                 printed_types = row["type_line"].split(" — ")[0].split()
                 if any(str(t).removeprefix("CardType_") not in printed_types for t in obj.card_types):
                     return None
+                if obj.controller_seat_id != seat and "Creature" in printed_types:
+                    permanent_types = {
+                        "Artifact",
+                        "Battle",
+                        "Creature",
+                        "Enchantment",
+                        "Land",
+                        "Planeswalker",
+                    }
+                    printed = permanent_types.intersection(printed_types)
+                    current = {str(t).removeprefix("CardType_") for t in obj.card_types}
+                    # Known types can disappear as well as be added. Multitype eligibility
+                    # needs affirmative native evidence for each printed permanent type.
+                    if (current or len(printed) > 1) and current.intersection(permanent_types) != printed:
+                        return None
                 if obj.controller_seat_id == seat and local_plains is not None:
                     raw_land = any(str(t).removeprefix("CardType_") == "Land" for t in obj.card_types)
                     printed_subtypes = row["type_line"].partition(" — ")[2].split()
