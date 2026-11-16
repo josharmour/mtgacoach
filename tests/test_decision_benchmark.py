@@ -4,6 +4,8 @@ import importlib.util
 import json
 from pathlib import Path
 
+import pytest
+
 spec = importlib.util.spec_from_file_location(
     "benchmark", Path(__file__).parents[1] / "tools/decision_benchmark.py"
 )
@@ -609,3 +611,70 @@ def test_swallowed_capability_error_is_still_harness_error(tmp_path, monkeypatch
     assert result["interface_errors"] == 1
     assert result["generation_attempts"] == 0
     assert result["chosen"] == []
+
+
+def test_public_print_proof_survives_benchmark_replay_only_in_public_zone(tmp_path):
+    from arenamcp.card_facts.source_identity import legacy_lookup_hash
+
+    receipt_card = {
+        "grp_id": 701,
+        "instance_id": 13,
+        "name": "Example",
+        "mana_cost": "{G}",
+        "type_line": "Creature — Elf",
+        "oracle_text": "Reach",
+        "object_kind": "CARD",
+        "owner_seat_id": 1,
+        "controller_seat_id": 1,
+    }
+    proof = f"701:{legacy_lookup_hash(receipt_card)}"
+    receipt_card["public_native_print"] = proof
+
+    def build(zone, row, seat=1):
+        data = sample()
+        state = data["packet"]["decisions"][0]["state_snapshot"]["state"]
+        state["local_seat_id"] = seat
+        state[zone] = [row]
+        path = tmp_path / "packet.json"
+        path.write_text(json.dumps(data))
+        return b.build_cases([path])[0]
+
+    cases = build("battlefield", receipt_card)
+    assert len(cases) == 1
+    assert cases[0]["snapshot"]["state"]["battlefield"][0]["public_native_print"] == proof
+    assert not build("battlefield", receipt_card, seat=None)
+    assert not build("battlefield", receipt_card, seat=True)
+    for updates in ({"oracle_text": ""}, {"type_line": "Basic Land — Forest"}):
+        impossible = dict(receipt_card, **updates)
+        impossible["public_native_print"] = f"701:{legacy_lookup_hash(impossible)}"
+        assert not build("battlefield", impossible)
+    assert not build("hand", receipt_card)
+    assert not build("exile", receipt_card)
+    for updates in (
+        {"face_down": True},
+        {"generated": True},
+        {"grp_id": 702},
+        {"public_native_print": "701:" + "1" * 64},
+        {"oracle_text": "Haste"},
+    ):
+        assert not build("battlefield", dict(receipt_card, **updates))
+    assert build("exile", dict(receipt_card, visibility="Visibility_Public"))
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "valid"),
+    [
+        ("single_face_source", False, True),
+        ("single_face_source", True, False),
+        ("generated", True, True),
+        ("generated", False, False),
+        ("generated", 1, False),
+        ("single_face_source", "no", False),
+    ],
+)
+def test_benchmark_preserves_exact_native_source_flags(field, value, valid):
+    if valid:
+        b.assert_record_schema({field: value}, "card")
+    else:
+        with pytest.raises(b.UnsafeCase):
+            b.assert_record_schema({field: value}, "card")

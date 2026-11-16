@@ -362,7 +362,7 @@ def numeric_tree(value):
     return numeric(value)
 
 
-def assert_record_schema(value, context):
+def assert_record_schema(value, context, *, zone=None, local_seat=None):
     if not isinstance(value, dict):
         raise UnsafeCase("expected typed container")
     for key, item in value.items():
@@ -374,7 +374,36 @@ def assert_record_schema(value, context):
             continue
         valid = False
         if context == "card":
-            if key in _CARD_TEXT:
+            if key == "single_face_source":
+                # The native source producer marks only unresolved or linked prints.
+                valid = item is False
+            elif key == "generated":
+                valid = item is True
+            elif key == "public_native_print":
+                from arenamcp.card_facts.source_identity import legacy_lookup_hash
+                from arenamcp.commentary.observations import card_identity_visible, generated_or_changed_print
+
+                gid = value.get("grp_id")
+                digest = legacy_lookup_hash(value)
+                valid = (
+                    type(local_seat) is int
+                    and local_seat in (1, 2)
+                    and zone in {"battlefield", "stack", "graveyard", "command", "exile"}
+                    and bool(value.get("oracle_text"))
+                    and "Basic Land" not in str(value.get("type_line") or "")
+                    and value.get("object_kind") == "CARD"
+                    and type(value.get("owner_seat_id")) is int
+                    and value["owner_seat_id"] in (1, 2)
+                    and type(value.get("controller_seat_id")) is int
+                    and value["controller_seat_id"] == value["owner_seat_id"]
+                    and type(gid) is int
+                    and gid > 0
+                    and card_identity_visible(value, zone)
+                    and not generated_or_changed_print(value)
+                    and bool(digest)
+                    and item == f"{gid}:{digest}"
+                )
+            elif key in _CARD_TEXT:
                 valid = isinstance(item, str)
             elif key in _CARD_LIST_TEXT:
                 valid = isinstance(item, list) and all(isinstance(v, str) for v in item)
@@ -507,9 +536,10 @@ def assert_case_schema(snapshot, pending):
                 raise UnsafeCase("mismatched opening-hand context")
             continue
 
-        def card_check(card):
+        def card_check(card, zone="graveyard" if key == "zones" else None):
             try:
-                assert_record_schema(card, "card")
+                # Nested zone card lists accepted by state_field are both graveyards.
+                assert_record_schema(card, "card", zone=zone, local_seat=state.get("local_seat_id"))
                 return True
             except (UnsafeCase, TypeError, ValueError):
                 return False
@@ -520,7 +550,7 @@ def assert_case_schema(snapshot, pending):
             if not isinstance(value, list):
                 raise UnsafeCase("card list")
             for card in value:
-                assert_record_schema(card, "card")
+                assert_record_schema(card, "card", zone=key, local_seat=state.get("local_seat_id"))
         elif key == "players":
             if not isinstance(value, list):
                 raise UnsafeCase("players list")
