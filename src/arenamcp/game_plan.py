@@ -2670,6 +2670,16 @@ def _plan_eval_steps(
     hand = [c for c in state.get("hand") or [] if isinstance(c, dict) and c.get("name")]
     hand_names = _card_names(_castable_cards(state))
     lands_left = [c for c in hand if _is_hand_land(c)]
+    seat = _local_seat(state)
+    board = (
+        [
+            c
+            for c in state.get("battlefield") or []
+            if (c.get("controller_seat_id") or c.get("owner_seat_id")) == seat
+        ]
+        if seat is not None and isinstance(state.get("battlefield"), list)
+        else None
+    )
     creatures = _our_creature_names(state)
     lookahead = list(getattr(assessment, "lookahead", None) or [])
     planned: dict[int, dict] = {}
@@ -2698,7 +2708,7 @@ def _plan_eval_steps(
         if not land and free and (index > 0 or (lookahead and lookahead[0].land)):
             preferred = _plain(lookahead[index].land) if index < len(lookahead) else ""
             taken = next((c for c in free if _plain(c["name"]) == preferred), None) or min(
-                free, key=lambda c: (_enters_tapped(c), lands_left.index(c))
+                free, key=lambda c: (_enters_tapped(c, board), lands_left.index(c))
             )
             land = str(taken["name"])
         if taken is not None:
@@ -2723,6 +2733,8 @@ def _plan_eval_steps(
                 # token, Elemental token" from CANDIDATE LINES): it matches them by name there.
                 named.append(str(raw.get("attack")))
             attack = ", ".join(named) or "none"
+        if board is not None and taken is not None:
+            board.append(taken)
         out.append({"label": LABELS[index], "land": land, "cast": casts, "attack": attack})
     return out
 

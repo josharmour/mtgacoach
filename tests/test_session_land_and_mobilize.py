@@ -84,6 +84,57 @@ def test_slow_land_counts_other_lands_and_dynamic_verge_enablement():
     assert refresh_sources([source], [VERGE, mountain])[0].produces == {"W", "R"}
 
 
+@pytest.mark.parametrize(("count", "tapped"), [(0, False), (1, False), (2, False), (3, True), (4, True)])
+def test_fast_land_in_the_live_play_menu_respects_other_controlled_lands(count, tapped):
+    from types import SimpleNamespace
+
+    from arenamcp.land_intent import _entry
+
+    fast = {
+        **land(102, "Fast dual", 2),
+        "oracle_text": "This land enters tapped unless you control two or fewer other lands.\n{T}: Add {W} or {B}.",
+        "type_line": "Land",
+    }
+    ours = [land(i + 200, "Forest", 2) for i in range(count)]
+    phased = {**land(300, "Island", 2), "is_phased_out": True}
+    s = incident([], [])
+    s["battlefield"] = [*ours, phased, land(400, "Island", 1)]
+    s["hand"] = [fast]
+    opt = SimpleNamespace(option_id="idx:0", meta={"actionType": "Play", "instanceId": 102})
+    assert action_key(opt, s) == ("land", ({"W", "B"}, tapped))
+    assert _entry(s, fast) is tapped
+    assert enters_tapped(fast, [*ours, fast, phased]) is tapped
+    assert enters_tapped(fast)  # Without a board, avoid promising untapped mana.
+    del s["battlefield"]
+    assert _entry(s, fast) is None
+    assert action_key(opt, s)[1][1] is True
+
+
+def test_fast_land_uncertain_faces_and_projected_fourth_land():
+    from arenamcp.board_assessment import _budget_turns
+    from arenamcp.land_intent import _entry
+
+    fast = {
+        **land(105, "Early dual", 2),
+        "oracle_text": "This land enters tapped unless you control two or fewer other lands.\n{T}: Add {W} or {B}.",
+        "type_line": "Land",
+    }
+    basics = [land(1, "Island", 2), land(2, "Forest", 2)]
+    modal = {"instance_id": 4, "controller_seat_id": 2, "type_line": "Creature — Elf // Land"}
+    state = incident([], [])
+    state["battlefield"] = [*basics, modal]
+    assert _entry(state, fast) is None
+    assert enters_tapped(fast, state["battlefield"])
+    modal["card_types"] = ["CardType_Creature"]
+    assert _entry(state, fast) is False
+    modal["card_types"].append("CardType_Land")
+    assert _entry(state, fast) is True
+    first = _budget_turns(True, 5, [], [], [fast], True, state["battlefield"])
+    assert not first[0]["sources"]
+    second = _budget_turns(True, 5, [], [], [fast, {**fast, "instance_id": 106}], True, basics)
+    assert [len(t["sources"]) for t in second[:2]] == [1, 1]
+
+
 def test_model_and_action_key_do_not_forecast_verge_red_without_basic_type():
     from types import SimpleNamespace
 

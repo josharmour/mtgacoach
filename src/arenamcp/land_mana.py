@@ -53,21 +53,47 @@ def land_colors(card: dict, permanents=()) -> frozenset[str]:
     return frozenset(colors)
 
 
-def enters_tapped(card: dict, permanents=()) -> bool:
+_LAND_COUNT_ENTRY = re.compile(
+    r"enters (?:the battlefield )?tapped unless you control two or (more|fewer) other lands\."
+)
+
+
+def _land_count_entry(card, permanents, direction):
+    """Current types bound the count even if a face or a permanent is unidentified."""
+    if permanents is None:
+        return None
+    minimum = maximum = 0
+    for obj in permanents:
+        if obj.get("is_phased_out") or (
+            card.get("instance_id") and card["instance_id"] == obj.get("instance_id")
+        ):
+            continue
+        types = obj.get("card_types")
+        if types:
+            is_land = any(str(t).lower().removeprefix("cardtype_") == "land" for t in types)
+        else:
+            line = str(obj.get("type_line") or "")
+            is_land = (
+                bool(re.search(r"\bland\b", line.split("—", 1)[0], re.I))
+                if line and "//" not in line
+                else None
+            )
+        minimum += is_land is True
+        maximum += is_land is not False
+    if direction == "fewer":
+        return True if minimum > 2 else False if maximum <= 2 else None
+    return True if maximum < 2 else False if minimum >= 2 else None
+
+
+def enters_tapped(card: dict, permanents=None) -> bool:
     text = _text(card)
     if not re.search(r"enters (?:the battlefield )?tapped", text):
         return False
-    if re.search(r"enters (?:the battlefield )?tapped unless you control two or more other lands", text):
-        return (
-            sum(
-                bool(re.search(r"\bland\b", str(c.get("type_line") or ""), re.I))
-                or any(str(t).lower().removeprefix("cardtype_") == "land" for t in c.get("card_types") or [])
-                for c in permanents
-                if not c.get("is_phased_out")
-                and (not card.get("instance_id") or c.get("instance_id") != card.get("instance_id"))
-            )
-            < 2
-        )
+    if permanents is None:
+        return True
+    count_condition = _LAND_COUNT_ENTRY.search(text)
+    if count_condition:
+        return _land_count_entry(card, permanents, count_condition[1]) is not False
     check = re.search(
         r"enters (?:the battlefield )?tapped unless you control (?:a|an) (plains|island|swamp|mountain|forest)\b(?: or (?:a|an) (plains|island|swamp|mountain|forest)\b)?\.",
         text,

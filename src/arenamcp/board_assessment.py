@@ -1203,7 +1203,7 @@ def _mana_source(card: dict, turn: int, permanents=()) -> SimpleNamespace | None
     return SimpleNamespace(produces=frozenset(colors), name=_name(card))
 
 
-def _enters_tapped(card: dict, permanents=()) -> bool:
+def _enters_tapped(card: dict, permanents=None) -> bool:
     from arenamcp.land_mana import enters_tapped
 
     return enters_tapped(card, permanents)
@@ -2148,6 +2148,7 @@ def _assess(state: dict) -> BoardAssessment | None:
         sources_all,
         hand_lands,
         land_drop_now and not model.t_instant_only,
+        our_permanents,
     )
     schedule = _schedule(
         spells,
@@ -3008,6 +3009,7 @@ def _budget_turns(
     sources_all: list,
     hand_lands: list[dict],
     land_drop_now: bool,
+    our_permanents: list[dict],
 ) -> list[dict]:
     """Mana sources for T, T+1, T+2 (land drops from hand, one per turn).
 
@@ -3021,9 +3023,9 @@ def _budget_turns(
     played: list[SimpleNamespace] = []
     plan = []
     first_turn = turn if our_turn else turn + 1
+    board = list(our_permanents)
     for k in range(_LOOKAHEAD_TURNS):
         base = list(sources_now if (k == 0 and our_turn) else sources_all)
-        board = [s.land_card for s in [*sources_all, *played] if getattr(s, "land_card", None)]
         land_name = ""
         new_land = None
         tapped = False

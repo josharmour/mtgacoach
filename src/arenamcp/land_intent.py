@@ -3,7 +3,7 @@
 import re
 from dataclasses import dataclass
 
-from arenamcp.land_mana import basic_types, enters_tapped, mana_source
+from arenamcp.land_mana import _LAND_COUNT_ENTRY, _land_count_entry, basic_types, enters_tapped, mana_source
 from arenamcp.mana import get_local_seat_id
 from arenamcp.mulligan_policy import _mana_value, _pip_matching, _symbols
 from arenamcp.play_safety import find_source
@@ -18,7 +18,11 @@ class LandMismatch:
 
 def _entry(state, land):
     local = get_local_seat_id(state)
-    board = [c for c in state.get("battlefield") or [] if c.get("controller_seat_id") == local]
+    if local is None or not isinstance(state.get("battlefield"), list):
+        return None
+    board = [
+        c for c in state["battlefield"] if (c.get("controller_seat_id") or c.get("owner_seat_id")) == local
+    ]
     # External entry replacements or optional entry payments are not a proof.
     if any(
         re.search(r"lands?[^.]*enter[^.]*tapped", str(c.get("oracle_text") or ""), re.I)
@@ -27,8 +31,10 @@ def _entry(state, land):
     ):
         return None
     text = str(land.get("oracle_text") or "")
+    if count_condition := _LAND_COUNT_ENTRY.search(text.lower()):
+        return _land_count_entry(land, board, count_condition[1])
     if re.search(
-        r"enters (?:the battlefield )?tapped unless you control (?:two or more other lands|(?:a|an) (?:Mountain|Forest|Plains|Swamp|Island)\.)",
+        r"enters (?:the battlefield )?tapped unless you control (?:a|an) (?:Mountain|Forest|Plains|Swamp|Island)\.",
         text,
         re.I,
     ):
@@ -58,7 +64,11 @@ def _payment_after(state, land, spell):
         return None
     if any(p.get("mana_pool") for p in state.get("players") or [] if p.get("seat_id") == local):
         return None
-    board = [c for c in state.get("battlefield") or [] if c.get("controller_seat_id") == local]
+    if local is None or not isinstance(state.get("battlefield"), list):
+        return None
+    board = [
+        c for c in state["battlefield"] if (c.get("controller_seat_id") or c.get("owner_seat_id")) == local
+    ]
     if any(not c.get("type_line") or "oracle_text" not in c for c in board):
         return None  # an unidentified controlled object may itself provide mana
     # Static cost/mana effects need the complete payment engine, not a one-land count.

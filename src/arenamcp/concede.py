@@ -595,7 +595,7 @@ def _scan_outs(
         and "//" not in str(c.get("type_line") or "")
     ]
     if land_drop and playable_lands:
-        untapped = [c for c in playable_lands if not _enters_tapped(c)]
+        untapped = [c for c in playable_lands if not _enters_tapped(c, ours_permanents)]
         if untapped:
             best = max(untapped, key=lambda c: len(_land_colors(c)))
             sources.append(SimpleNamespace(produces=frozenset(_land_colors(best) or {"C"}), name=_name(best)))

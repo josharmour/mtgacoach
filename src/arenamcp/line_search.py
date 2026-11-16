@@ -554,6 +554,7 @@ class _Search(Moves):
         budgets = _budget_turns(
             model.our_turn, model.turn, list(model.sources_now), list(model.sources_all),
             list(model.hand_lands), model.land_drop_now and not model.t_instant_only,
+            list(model.our_permanents),
         )  # fmt: skip
         # In the search's own (name) order, so the pick never depends on the hand's order.
         copies = [self.spells[i].spell for i in self.hand0]
@@ -1205,7 +1206,8 @@ def action_key(option: Any, state: dict) -> ActionKey | None:
             for c in state.get("battlefield") or []
             if c.get("controller_seat_id", c.get("owner_seat_id")) == local
         ]
-        return ("land", (land_colors(source, board), _enters_tapped(source, board)))
+        known_board = board if local is not None and isinstance(state.get("battlefield"), list) else None
+        return ("land", (land_colors(source, board), _enters_tapped(source, known_board)))
     if action == "cast" and str(meta.get("alternative") or "").lower() == "sneak":
         # The Sneak cast after blocks (ledger #156): not the card's ordinary cast.
         if zone == "command":
