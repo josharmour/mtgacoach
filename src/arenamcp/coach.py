@@ -60,6 +60,7 @@ from arenamcp.coach_tracker import WordUsageTracker
 from arenamcp.coach_triggers import GameStateTrigger
 from arenamcp.combat_keywords import (
     annotate_cant_be_blocked,
+    has_combat_keyword,
     is_creature_modified,
     modified_conditional_keywords,
     printed_combat_keywords,
@@ -1306,10 +1307,10 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         double strike and lifelink from Practiced Offense and the prompt
         counted neither).
         """
-        from arenamcp.combat_solver import _can_block, _resolve_attacker
+        from arenamcp.combat_solver import _can_block, _has, _resolve_attacker
 
-        if not _can_block(atk, blk):
-            return None  # flying vs no flying/reach, or "can't be blocked" (own text or a grant)
+        if _has(atk, "menace") or not _can_block(atk, blk):
+            return None  # This is a one-blocker example; the group solver handles menace.
         atk_name = atk.get("name", "?")
         atk_pow = atk.get("power") or 0
         atk_tgh = atk.get("toughness") or 0
@@ -1335,7 +1336,9 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         else:
             return f"both live{lifelink}", False, False
 
-    def _compute_optimal_blocking_damage(self, attackers: list[dict], blockers: list[dict]) -> int:
+    def _compute_optimal_blocking_damage(
+        self, attackers: list[dict], blockers: list[dict], allowed: dict[int, set[int]] | None = None
+    ) -> int:
         """Compute minimum damage through after optimal blocking assignment.
 
         Each attacker's damage comes from the combat solver (double strike,
@@ -1343,13 +1346,18 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         ``combat_strategy.with_hit_bonus``); a menace attacker needs two
         blockers. The biggest hits are blocked first.
         """
-        from arenamcp.combat_solver import _can_block, _has, _resolve_attacker
+        from arenamcp.combat_solver import _can_block_this_attacker, _has, _resolve_attacker
 
+        allowed = allowed or {}
         available_blk = list(blockers)
         damage_through = 0
         unblocked = {id(atk): _resolve_attacker(atk, []).damage_through for atk in attackers}
         for atk in sorted(attackers, key=lambda c: unblocked[id(c)], reverse=True):
-            valid = [blk for blk in available_blk if _can_block(atk, blk)]
+            valid = [
+                blk
+                for blk in available_blk
+                if _can_block_this_attacker(atk, blk, allowed.get(blk.get("instance_id")))
+            ]
             need = 2 if _has(atk, "menace") else 1
             if len(valid) < need:
                 damage_through += unblocked[id(atk)]
@@ -2536,6 +2544,11 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                 # Each distinct line once (ledger #182: 15 attackers into 33 blockers were 528 lines).
                 trades = []
                 for atk in valid_attackers:
+                    if has_combat_keyword(atk, "menace"):
+                        lines.append(
+                            f"{atk.get('name', '?')} has menace; blocking it requires at least two creatures."
+                        )
+                        continue
                     for blk in opp_blockers:
                         trade = self._compute_combat_trade(atk, blk)
                         if trade is None:
@@ -2657,32 +2670,21 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         """Format the block-side combat analysis (opponent's turn)."""
         lines: list[str] = []
         ctx = decision_context or {}
-        attacking = [c for c in opp_cards if c.get("is_attacking")]
-        if not attacking and _inferred_atk_ids:
-            attacking = [c for c in opp_cards if c.get("instance_id") in _inferred_atk_ids]
-        if not attacking:
-            # GRE-authoritative attacker ids from the DeclareBlockersReq
-            # decision context (log path parity, issue #420).
-            ctx_atk_ids = self._attacker_ids_from_decision_context(ctx)
-            if ctx_atk_ids:
-                attacking = [c for c in opp_cards if int(c.get("instance_id") or 0) in ctx_atk_ids]
-        from arenamcp.combat_solver import _has, _resolve_attacker
+        from arenamcp.combat_solver import _has, _resolve_attacker, blocker_options
 
+        raw = ctx.get("raw_blockers")
+        current_options = blocker_options(raw or [])
+        allowed_map = (
+            blocker_options(raw or [], ctx.get("blocker_options"))
+            if ctx.get("blocker_options")
+            else current_options
+        )
+        board = game_state or {"battlefield": your_cards + opp_cards}
+        attacking = self._current_block_attackers(opp_cards, board, ctx, _inferred_atk_ids, current_options)
         if attacking:
-            # Arena's request is the authority on who attacks (a withdrawn
-            # attacker is no threat), and a combat-damage trigger that adds
-            # damage this combat counts (combat_strategy.with_hit_bonus).
-            from arenamcp.combat_strategy import phantom_attackers, with_hit_bonus
+            from arenamcp.combat_strategy import with_hit_bonus
 
-            board = game_state or {"battlefield": your_cards + opp_cards}
-            phantoms = phantom_attackers(
-                board, [c.get("instance_id") for c in attacking], ctx.get("raw_blockers")
-            )
-            attacking = with_hit_bonus(
-                [c for c in attacking if c.get("instance_id") not in phantoms],
-                board,
-                (local_player or {}).get("seat_id"),
-            )
+            attacking = with_hit_bonus(attacking, board, (local_player or {}).get("seat_id"))
         flying_atk = [c for c in attacking if _has(c, "flying")]
         ground_atk = [c for c in attacking if not _has(c, "flying")]
         your_creatures = [
@@ -2690,6 +2692,12 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             for c in your_cards
             if self._is_creature_now(c) and not c.get("is_tapped") and not self._is_impending(c)
         ]
+        if ctx.get("type") == "declare_blockers":
+            declared = ctx.get("legal_blocker_ids")
+            if isinstance(raw, list) or isinstance(declared, list):
+                offered_blockers = set(current_options)
+                offered_blockers.update(int(bid) for bid in declared or [] if str(bid).isdecimal())
+                your_creatures = [c for c in your_creatures if c.get("instance_id") in offered_blockers]
         flyer_blockers = [c for c in your_creatures if _has(c, "flying") or _has(c, "reach")]
 
         if not attacking:
@@ -2755,7 +2763,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                 f"\u26a0\ufe0f DEATHTOUCH: {', '.join(c.get('name', '?') for c in dth_atk)} \u2014 any blocker DIES regardless of toughness!"
             )
 
-        damage_through = self._compute_optimal_blocking_damage(attacking, your_creatures)
+        damage_through = self._compute_optimal_blocking_damage(attacking, your_creatures, allowed_map)
         life_after_blocks = your_life - damage_through
         if damage_through < total_incoming:
             if any(_has(c, "lifelink") for c in your_creatures):
@@ -2774,7 +2782,15 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         if your_creatures and attacking:
             trades = []  # each distinct line once (ledger #182)
             for atk in attacking:
+                if _has(atk, "menace"):
+                    lines.append(
+                        f"{atk.get('name', '?')} has menace; blocking it requires at least two creatures."
+                    )
+                    continue
                 for blk in your_creatures:
+                    offered = allowed_map.get(blk.get("instance_id"))
+                    if offered is not None and atk.get("instance_id") not in offered:
+                        continue
                     trade = self._compute_combat_trade(atk, blk)
                     if trade is None:
                         continue
@@ -2822,29 +2838,12 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         try:
             from arenamcp.combat_solver import (
                 attacking_trick_exposure,
-                blocker_options,
                 combat_resource_roles,
                 mana_spending_restriction,
                 optimal_blocks,
             )
 
-            usable_blockers = [c for c in your_creatures if not c.get("is_tapped")]
-            # Restrict to the GRE's legal blockers when the decision context
-            # names them (creatures that can't block are excluded upstream).
-            legal_blocker_ids: set[int] = set()
-            if str(ctx.get("type") or "") == "declare_blockers":
-                for bid in ctx.get("legal_blocker_ids") or []:
-                    try:
-                        legal_blocker_ids.add(int(bid))
-                    except (TypeError, ValueError):
-                        continue
-            if legal_blocker_ids:
-                gre_blockers = [
-                    c for c in usable_blockers if int(c.get("instance_id") or 0) in legal_blocker_ids
-                ]
-                if gre_blockers:
-                    usable_blockers = gre_blockers
-            allowed_map = blocker_options(ctx.get("raw_blockers") or [], ctx.get("blocker_options"))
+            usable_blockers = your_creatures
             from arenamcp.combat_recovery import CombatRecovery
 
             recovery = CombatRecovery(game_state or {})
@@ -4089,28 +4088,30 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                     continue
         return ids
 
-    def _collect_block_decision_attackers(self, game_state: dict[str, Any]) -> list[dict]:
-        """Resolve the attacking creatures for the current block decision.
+    def _current_block_attackers(self, opp_cards, state, ctx, inferred, current_options):
+        from arenamcp.combat_strategy import phantom_attackers
 
-        Prefers battlefield ``is_attacking`` flags (attackState from the log,
-        or bridge enrichment); falls back to the decision_context attacker ids
-        so the log path stays precise even if the attackState annotation was
-        missed (issue #420).
-        """
-        battlefield = game_state.get("battlefield", []) or []
-        local_seat = None
-        for p in game_state.get("players", []) or []:
-            if p.get("is_local"):
-                local_seat = p.get("seat_id")
-                break
-        opp_cards = [c for c in battlefield if c.get("owner_seat_id") != local_seat]
-        attacking = [c for c in opp_cards if c.get("is_attacking")]
-        if attacking:
-            return attacking
-        ctx_ids = self._attacker_ids_from_decision_context(game_state.get("decision_context"))
-        if ctx_ids:
-            return [c for c in opp_cards if int(c.get("instance_id") or 0) in ctx_ids]
-        return []
+        flagged = {c.get("instance_id") for c in opp_cards if c.get("is_attacking")}
+        ids = set(flagged or inferred or self._attacker_ids_from_decision_context(ctx))
+        for offered in current_options.values():
+            ids.update(offered)
+        ids -= phantom_attackers(state, ids, ctx.get("raw_blockers"))
+        return [c for c in opp_cards if c.get("instance_id") in ids]
+
+    def _collect_block_decision_attackers(self, game_state: dict[str, Any]) -> list[dict]:
+        """Use the same current attacker evidence for the declaration and its damage estimate."""
+        from arenamcp.combat_solver import blocker_options
+
+        local_seat = get_local_seat_id(game_state)
+        opp_cards = [
+            c
+            for c in game_state.get("battlefield") or []
+            if (c.get("controller_seat_id") or c.get("owner_seat_id")) != local_seat
+        ]
+        ctx = game_state.get("decision_context") or {}
+        return self._current_block_attackers(
+            opp_cards, game_state, ctx, (), blocker_options(ctx.get("raw_blockers") or [])
+        )
 
     _COMBAT_KEYWORDS = (
         "flying",
@@ -4126,8 +4127,6 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
 
     def _combat_keyword_flags(self, card: dict) -> str:
         """Compact ``[FLYING,DEATHTOUCH]``-style suffix for combat listings."""
-        from arenamcp.combat_keywords import has_combat_keyword
-
         found = [kw.upper().replace(" ", "-") for kw in self._COMBAT_KEYWORDS if has_combat_keyword(card, kw)]
         return f" [{','.join(found)}]" if found else ""
 

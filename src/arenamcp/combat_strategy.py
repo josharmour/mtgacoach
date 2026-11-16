@@ -2756,12 +2756,15 @@ def phantom_attackers(state: dict, attacker_ids, raw_blockers: list | None = Non
         return set()
     cards = {card.get("instance_id"): card for card in battlefield}
     phantoms: set[int] = set()
+    confirmed: set[int] = set()
     for entry in raw_blockers:
         if not isinstance(entry, dict):
             continue
         try:
             blocker = cards.get(int(entry.get("blockerInstanceId") or entry.get("instanceId") or 0))
             listed = {int(identity) for identity in entry.get("attackerInstanceIds") or []}
+            confirmed.update(listed)
+            confirmed.update(int(identity) for identity in entry.get("selectedAttackerInstanceIds") or [])
         except (TypeError, ValueError):
             continue
         if blocker is None or not listed or _CANT_BLOCK.search(_rules_text(blocker)):
@@ -2776,7 +2779,9 @@ def phantom_attackers(state: dict, attacker_ids, raw_blockers: list | None = Non
                 and _can_block(attacker, blocker)
             ):
                 phantoms.add(identity)
-    return phantoms
+    # A current legal or selected block proves the attacker is still in combat,
+    # even if a different blocker cannot be assigned to it.
+    return phantoms - confirmed
 
 
 _UNBLOCKABLE_TEXT = re.compile(r"can(?:'|no)t be blocked|\bunblockable\b")
