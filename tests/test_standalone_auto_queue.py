@@ -233,7 +233,7 @@ def test_restart_recovers_unobserved_third_loss_before_any_navigation(
     # Even after long menu/game traffic or an Arena restart, the loss still counts.
     source = path.with_name("Player-prev.log") if from_checkpoint else path
     source.write_bytes(line.encode() + b"\n" + b"menu log\n" * (server._RESTART_SCAN_BYTES // 9 + 1))
-    monkeypatch.setattr(server, "_log_path", lambda: path)
+    monkeypatch.setattr(server, "_log_path", lambda: str(path) if from_checkpoint else path)
     monkeypatch.setattr("arenamcp.log_utils.get_local_player_id", lambda: "local")
     runtime._poll_auto_queue({})
     assert not runtime._auto_queue_enabled

@@ -656,13 +656,14 @@ def logged_queue_results(
     """Arena's match-level results in order, independent of menu activity or deck identity."""
     import mmap
     from functools import cache
+    from pathlib import Path
 
     from arenamcp.log_utils import get_local_player_id
 
     # Identity discovery can itself scan Player.log. Resolve once for this replay.
     local_id = cache(get_local_player_id)
     records = {}
-    path = _log_path()
+    path = Path(_log_path())
     marker = _MATCH_COMPLETED_TOKEN.encode()
     for candidate in (path, path.with_name("Player-prev.log")):
         try:
