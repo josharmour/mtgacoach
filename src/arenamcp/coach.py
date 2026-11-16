@@ -578,7 +578,9 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
 
                 choice = combat_choice(game_state)
                 if choice is not None and choice.explanation:
-                    defense = f", you gain {choice.block_life_gain} blocking" if choice.block_life_gain else ""
+                    defense = (
+                        f", you gain {choice.block_life_gain} blocking" if choice.block_life_gain else ""
+                    )
                     if not choice.assignments:
                         return f"Hold your attackers (their counterattack: {choice.crackback}{defense})."
                     attacks = choice.explanation.split(f"; {choice.player_damage} damage to player", 1)[0]
