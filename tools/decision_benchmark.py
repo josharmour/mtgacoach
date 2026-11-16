@@ -943,7 +943,7 @@ def _silence_replay_diagnostics():
                     os.close(duplicate)
 
 
-def aggregate_only(bundles):
+def aggregate_only(bundles, *, native_combat=False):
     """Replay in memory and return allowlisted counters, never cases or choices.
 
     This CLI operation suppresses planner diagnostics process-wide. Run alone
@@ -963,6 +963,14 @@ def aggregate_only(bundles):
                 "arenamcp.card_db.get_card_database", side_effect=RuntimeError("offline database disabled")
             ),
         ):
+            if native_combat:
+                from arenamcp.benchmark_combat import aggregate
+
+                with (
+                    patch("arenamcp.card_facts.client.facts_for", return_value={}),
+                    patch("arenamcp.line_search_moves.facts_for", return_value={}),
+                ):
+                    return {"native_combat": aggregate(bundles.glob("*.json.gz")), "model_layer": "not_run"}
             cases, _, _ = build_cases(bundles.glob("*.json.gz"))
             counts = {key: 0 for key in ("answered", "withheld", "invalid", "error")}
             seconds = 0.0
@@ -1008,12 +1016,23 @@ def main(argv=None):
     )
     parser.add_argument("--code-only", action="store_true")
     parser.add_argument("--report", type=Path)
+    parser.add_argument(
+        "--native-combat",
+        action="store_true",
+        help="compare native combat submissions in aggregate-only mode",
+    )
     args = parser.parse_args(argv)
+    if args.native_combat and not args.aggregate_only:
+        parser.exit(2, "native combat requires aggregate-only mode\n")
     if args.aggregate_only:
         if args.bundles is None or args.cases is not None or args.report is not None:
             parser.exit(2, "aggregate-only requires bundles and forbids case/report files\n")
         try:
-            value = aggregate_only(args.bundles)
+            value = (
+                aggregate_only(args.bundles, native_combat=True)
+                if args.native_combat
+                else aggregate_only(args.bundles)
+            )
         except Exception:
             parser.exit(2, "offline aggregate replay failed; no cases exported\n")
         print(json.dumps(value, sort_keys=True))
