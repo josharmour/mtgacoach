@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 from arenamcp.deck_candidates import (
     RARITIES,
     arena_export,
+    bo1_variant,
     compare_collection,
     cost_order_key,
     fleet_autopilot_results,
@@ -80,6 +81,10 @@ class _LoadDecks(QRunnable):
                 database = pricing_database()
                 self.deck["export"] = arena_export(self.deck, database=database)
                 self.deck["cost"] = compare_collection(self.deck, self.collection, self.wildcards, database)
+                bo1 = bo1_variant(self.deck, database=database)
+                if bo1 is not None:
+                    self.deck["bo1_export"] = arena_export(bo1, database=database)
+                    self.deck["bo1_cost"] = compare_collection(bo1, self.collection, self.wildcards, database)
                 decks = [self.deck]
             message = "" if decks else "No complete decklists available from the source."
             if warning:
@@ -93,7 +98,7 @@ class DeckBuilderDialog(QDialog):
     def __init__(self, session, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Build a stronger deck")
-        self.resize(760, 620)
+        self.resize(880, 640)
         self._session = session
         self._collection = None
         self._wildcards = {}
@@ -125,11 +130,18 @@ class DeckBuilderDialog(QDialog):
         self.order.setAccessibleName("Deck ordering")
         self.order.addItems(["Fewest wildcards first", "Highest measured win rate first"])
         self.order.currentIndexChanged.connect(self._render)
+        self.list_scope = QComboBox()
+        self.list_scope.setAccessibleName("List scope")
+        self.list_scope.addItems(["Best-of-1 (60-card main deck)", "Full list (with Bo3 sideboard)"])
+        self.list_scope.currentIndexChanged.connect(self._render)
         source = QPushButton("Untapped Arena decks ↗")
         source.clicked.connect(lambda: open_url("https://mtga.untapped.gg/constructed/standard/decks"))
-        for widget in (self.refresh_button, self.mode, self.order, source):
+        for widget in (self.refresh_button, self.mode, self.order, self.list_scope, source):
             actions.addWidget(widget)
         layout.addLayout(actions)
+        self.balance_label = QLabel("")
+        self.balance_label.setWordWrap(True)
+        layout.addWidget(self.balance_label)
         self.status = QLabel("Return to Arena's home screen to read your collection and wildcard balances.")
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
@@ -197,6 +209,8 @@ class DeckBuilderDialog(QDialog):
             return
         self._collection = {int(k): int(v) for k, v in (payload.get("cards") or {}).items()}
         self._wildcards = dict(payload.get("wildcards") or {})
+        balance_summary = ", ".join(f"{int(self._wildcards.get(r) or 0)} {r}" for r in RARITIES)
+        self.balance_label.setText(f"Your wildcard balance: {balance_summary}")
         self.status.setText("Finding source decklists and comparing your cards…")
         self._worker = _LoadDecks(self._collection, self._wildcards)
         self._worker.result.ready.connect(self._loaded)
@@ -219,31 +233,77 @@ class DeckBuilderDialog(QDialog):
         if error and not candidates:
             self.status.setText(error + " You can still paste a source deck export to check its cost.")
 
+    def _use_bo1(self, deck: dict) -> bool:
+        return self.list_scope.currentIndex() == 0 and "bo1_cost" in deck and "bo1_export" in deck
+
+    def _active_cost(self, deck: dict) -> dict:
+        return deck["bo1_cost"] if self._use_bo1(deck) else deck["cost"]
+
+    def _active_export(self, deck: dict) -> str:
+        return deck["bo1_export"] if self._use_bo1(deck) else deck["export"]
+
+    def _shortfall_for(self, cost: dict) -> dict[str, int]:
+        explicit = cost.get("shortfall_wildcards")
+        if isinstance(explicit, dict):
+            return {r: int(explicit[r]) for r in RARITIES if int(explicit.get(r) or 0) > 0}
+        if self._collection is None:
+            return {}
+        spend = cost.get("spend") or {}
+        return {
+            r: int(spend.get(r) or 0) - int(self._wildcards.get(r) or 0)
+            for r in RARITIES
+            if int(spend.get(r) or 0) > int(self._wildcards.get(r) or 0)
+        }
+
+    def _active_order_key(self, deck: dict) -> tuple:
+        return cost_order_key({"cost": self._active_cost(deck), "source_rank": deck.get("source_rank", 999)})
+
     def _render(self):
         mode = self.mode.currentIndex()
         filtered = [
-            d for d in self._candidates if mode == 2 or d["cost"]["owned" if mode == 0 else "affordable"]
+            d
+            for d in self._candidates
+            if mode == 2 or bool(self._active_cost(d).get("owned" if mode == 0 else "affordable"))
         ]
         if filtered or not self._candidates:
-            self._visible = (
-                sorted(filtered, key=cost_order_key) if self.order.currentIndex() == 0 else filtered
-            )
+            if self.order.currentIndex() == 0:
+                self._visible = sorted(filtered, key=self._active_order_key)
+            else:
+                self._visible = sorted(
+                    filtered,
+                    key=lambda d: (
+                        0
+                        if isinstance(d.get("arena"), dict) and d["arena"].get("win_rate") is not None
+                        else 1,
+                        -(float((d.get("arena") or {}).get("win_rate") or 0.0)),
+                        self._active_order_key(d),
+                    ),
+                )
             fallback = False
         else:
             # Never show an empty table: when no candidate fits the filter,
             # show every candidate nearest first (fewest wildcards to craft)
             # and say so, instead of leaving the customer with nothing.
-            self._visible = sorted(self._candidates, key=cost_order_key)
+            self._visible = sorted(self._candidates, key=self._active_order_key)
             fallback = True
         self.table.setRowCount(0)
         for deck in self._visible:
             row = self.table.rowCount()
             self.table.insertRow(row)
-            cost = deck["cost"]
+            cost = self._active_cost(deck)
             price = (
                 ", ".join(f"{cost['spend'].get(r, 0)} {r}" for r in RARITIES if cost["spend"].get(r))
                 or "None"
             )
+            if self._use_bo1(deck):
+                price += " (Bo1 main)"
+            if cost.get("affordable") is False and not cost.get("unknown"):
+                short = self._shortfall_for(cost)
+                price += (
+                    " · short " + ", ".join(f"{n} {r}" for r, n in short.items())
+                    if short
+                    else " · exceeds balance"
+                )
             if cost["unknown"]:
                 price += " · unresolved cards"
             arena = deck.get("arena")
@@ -265,12 +325,13 @@ class DeckBuilderDialog(QDialog):
         self.table.resizeRowsToContents()
         if fallback:
             self.status.setText(
-                f"No candidate fits this filter yet — showing all {len(self._visible)} candidates "
-                "nearest first (fewest wildcards to craft)."
+                f"0 decks match '{self.mode.currentText()}' — No candidate fits this filter yet; "
+                f"showing all {len(self._visible)} candidates nearest first (fewest wildcards to craft)."
             )
         else:
+            count_word = "deck matches" if len(self._visible) == 1 else "decks match"
             self.status.setText(
-                f"{len(self._visible)} decks match this filter. "
+                f"{len(self._visible)} {count_word} this filter. "
                 "Try All candidates or paste another deck if none fit."
             )
         if self._source_warning:
@@ -286,11 +347,14 @@ class DeckBuilderDialog(QDialog):
         self.copy_button.setEnabled(deck is not None)
         self.source_button.setEnabled(bool(deck and deck.get("url")))
         if deck:
+            cost = self._active_cost(deck)
             parts = [
                 f"[{deck.get('format', 'Pasted')}]",
                 f"Source: {deck['source']}.",
                 f"Checked: {deck.get('checked_at', 'locally')}.",
             ]
+            if self._use_bo1(deck):
+                parts.append("Scope: Best-of-1 main deck (sideboard omitted).")
             arena = deck.get("arena")
             if arena:
                 source, unit = {
@@ -301,9 +365,17 @@ class DeckBuilderDialog(QDialog):
                     f"{source}: {arena['games']} autopilot {unit} with this archetype, "
                     f"{arena['win_rate']:.0%} win rate."
                 )
+            if cost.get("affordable") is False:
+                short = self._shortfall_for(cost)
+                if short:
+                    parts.append(
+                        "Not enough wildcards: short " + ", ".join(f"{n} {r}" for r, n in short.items()) + "."
+                    )
+                else:
+                    parts.append("Not enough wildcards for this list under your current balance.")
             parts.append("Arena verifies format legality and final wildcard cost at import.")
-            if deck["cost"]["unknown"]:
-                parts.append("Unresolved: " + ", ".join(deck["cost"]["unknown"]))
+            if cost["unknown"]:
+                parts.append("Unresolved: " + ", ".join(cost["unknown"]))
             text = " ".join(parts)
         else:
             text = "Select a deck to review its source and cost."
@@ -338,8 +410,23 @@ class DeckBuilderDialog(QDialog):
     def _copy(self):
         deck = self._selected()
         if deck:
-            QApplication.clipboard().setText(deck["export"])
-            self.status.setText(
-                "Deck copied. In Arena, open Decks → Import. Review the list and any missing cards; "
-                "use Craft All only if you accept Arena's wildcard cost. No wildcards have been spent by Coach."
-            )
+            QApplication.clipboard().setText(self._active_export(deck))
+            cost = self._active_cost(deck)
+            if cost.get("affordable") is False:
+                short = self._shortfall_for(cost)
+                short_text = (
+                    "short " + ", ".join(f"{n} {r}" for r, n in short.items()) if short else "exceeds balance"
+                )
+                bo1_hint = (
+                    " or switch to Best-of-1" if (not self._use_bo1(deck) and "bo1_export" in deck) else ""
+                )
+                self.status.setText(
+                    f"Deck copied — NOT ENOUGH WILDCARDS ({short_text}). "
+                    f"Arena Craft All will fail unless you have those wildcards{bo1_hint}. "
+                    "No wildcards have been spent by Coach."
+                )
+            else:
+                self.status.setText(
+                    "Deck copied. In Arena, open Decks → Import. Review the list and any missing cards; "
+                    "use Craft All only if you accept Arena's wildcard cost. No wildcards have been spent by Coach."
+                )

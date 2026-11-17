@@ -96,15 +96,29 @@ def compare_collection(
             unknown.append(name)
         else:
             spend[rarity] += shortfall
+    shortfall_wildcards = {
+        r: spend[r] - int(wildcards.get(r) or 0) for r in RARITIES if spend[r] > int(wildcards.get(r) or 0)
+    }
     return {
         "missing": missing,
         "spend": dict(spend),
+        "shortfall_wildcards": shortfall_wildcards,
         "unknown": unknown,
         "owned": bool(required) and not missing,
         "affordable": bool(required)
         and not unknown
-        and all(spend[r] <= int(wildcards.get(r, 0)) for r in RARITIES),
+        and all(spend[r] <= int(wildcards.get(r) or 0) for r in RARITIES),
     }
+
+
+def bo1_variant(deck: dict, database=None) -> dict | None:
+    """Return a Best-of-1 copy (main deck + optional companion) if a list has extra sideboard cards."""
+    if not isinstance(deck, dict) or deck.get("commander"):
+        return None
+    _main, side, _cmd, companion = _piles(deck, database)
+    if not side or side == companion:
+        return None
+    return {**deck, "sideboard": list(deck.get("companion") or [])}
 
 
 def split_export(text: str) -> dict:
@@ -244,6 +258,10 @@ def load_candidates(
             try:
                 deck = client.get_deck_list(entry["url"])
                 exported = arena_export(deck, format_name=fmt.lower(), database=database)
+                bo1 = bo1_variant(deck, database=database)
+                bo1_export = (
+                    arena_export(bo1, format_name=fmt.lower(), database=database) if bo1 is not None else None
+                )
             except (ValueError, OSError, KeyError) as exc:
                 logger.warning(
                     "Skipping %s source %r (%s): %s",
@@ -254,18 +272,21 @@ def load_candidates(
                 )
                 continue
             budget = bool(entry.get("budget"))
-            candidates.append(
-                {
-                    **entry,
-                    **deck,
-                    "source_rank": rank,
-                    "format": label,
-                    "source": f"MTGGoldfish {label} ({'budget list' if budget else 'paper metagame'})",
-                    "checked_at": deck.get("checked_at") or "unavailable",
-                    "export": exported,
-                    "cost": compare_collection(deck, collection, wildcards, database, index=index),
-                }
-            )
+            cost = compare_collection(deck, collection, wildcards, database, index=index)
+            row = {
+                **entry,
+                **deck,
+                "source_rank": rank,
+                "format": label,
+                "source": f"MTGGoldfish {label} ({'budget list' if budget else 'paper metagame'})",
+                "checked_at": deck.get("checked_at") or "unavailable",
+                "export": exported,
+                "cost": cost,
+            }
+            if bo1 is not None and bo1_export is not None:
+                row["bo1_export"] = bo1_export
+                row["bo1_cost"] = compare_collection(bo1, collection, wildcards, database, index=index)
+            candidates.append(row)
     candidates.sort(key=cost_order_key)
     return candidates
 

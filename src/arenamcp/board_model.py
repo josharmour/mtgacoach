@@ -474,6 +474,7 @@ class BoardModel:
     opponent_loss: Any = None
     has_pending_stack: bool = False
     attack_tax_notes: tuple[str, ...] = ()
+    synergy_groups: tuple[tuple[int, ...], ...] = ()
 
     @property
     def unknowns(self) -> list[str]:
@@ -827,6 +828,20 @@ def build_board_model(state: dict) -> BoardModel | None:
             )
     from arenamcp.combat_loss import loss_state
 
+    synergy_groups_list: list[tuple[int, ...]] = []
+    for raw_grp in state.get("_synergy_groups") or ():
+        if isinstance(raw_grp, (list, tuple, set, frozenset)):
+            cleaned = tuple(sorted({int(g) for g in raw_grp if type(g) is int and g > 4}))
+            if len(cleaned) >= 2 and cleaned not in synergy_groups_list:
+                synergy_groups_list.append(cleaned)
+    for syn_entry in state.get("live_synergies") or ():
+        if isinstance(syn_entry, dict):
+            cleaned = tuple(
+                sorted({int(g) for g in (syn_entry.get("pieces") or ()) if type(g) is int and g > 4})
+            )
+            if len(cleaned) >= 2 and cleaned not in synergy_groups_list:
+                synergy_groups_list.append(cleaned)
+
     return BoardModel(
         local=local, opponent=opponent, turn=turn, our_turn=our_turn, phase=phase, step=step,
         our_life=_life(state, local), opp_life=_life(state, opponent),
@@ -864,4 +879,5 @@ def build_board_model(state: dict) -> BoardModel | None:
         starting_life=starting_life(state),
         engines=engines,
         our_engines=our_engines,
+        synergy_groups=tuple(synergy_groups_list),
     )  # fmt: skip

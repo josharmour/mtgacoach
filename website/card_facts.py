@@ -119,8 +119,39 @@ MAX_HASHES_PER_LOOKUP = 300
 MAX_RECORD_BYTES = 64 * 1024  # per-record cap for admin upserts
 MAX_BATCH_RECORDS = 200
 MAX_LOOKUP_BODY_BYTES = 256 * 1024
+MAX_STUDY_BODY_BYTES = 512 * 1024
 # Worst-case batch: every record at the per-record cap plus JSON overhead.
 MAX_UPSERT_BODY_BYTES = MAX_BATCH_RECORDS * (MAX_RECORD_BYTES + 1024) + 64 * 1024
+
+_FORBIDDEN_STUDY_PII_KEYS = frozenset(
+    {
+        "user_id",
+        "email",
+        "license_key",
+        "patreon",
+        "file_path",
+        "player_name",
+        "account_id",
+        "display_name",
+        "arena_id",
+        "client_id",
+    }
+)
+
+
+def _check_no_pii_keys(value: Any) -> None:
+    """Iteratively reject any nested object containing customer/PII identifier keys."""
+    stack: list[Any] = [value]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, dict):
+            for key, item in node.items():
+                if isinstance(key, str) and key.strip().casefold() in _FORBIDDEN_STUDY_PII_KEYS:
+                    raise ValueError(f"forbidden customer identifier key: {key}")
+                stack.append(item)
+        elif isinstance(node, list):
+            stack.extend(node)
+
 
 # Lookup abuse limits, mirroring match_bundles' upload limits: per key
 # (owner digest), rolling 24 h count plus a minimum interval between
@@ -164,6 +195,15 @@ def init_db() -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_card_facts_lookups_owner
                 ON card_facts_lookups(owner, looked_at);
+
+            CREATE TABLE IF NOT EXISTS deck_studies (
+                deck_hash TEXT NOT NULL,
+                study_version INTEGER NOT NULL,
+                model_id TEXT NOT NULL DEFAULT '',
+                payload TEXT NOT NULL,
+                updated_at REAL NOT NULL,
+                PRIMARY KEY (deck_hash, study_version)
+            );
             """
         )
 
@@ -504,6 +544,122 @@ def admin_card_facts_statuses(
     for value in requested:
         _validated_hash(value)
     return {"records": record_statuses(requested)}
+
+
+# ---------------------------------------------------------------------------
+# Shared deck studies (G2: anonymous by deck identity + study version)
+# ---------------------------------------------------------------------------
+
+
+def get_stored_deck_study(deck_hash: str, study_version: int) -> dict[str, Any] | None:
+    """Return a stored deck study if present and strictly valid JSON."""
+    with _get_db().get_db() as conn:
+        row = conn.execute(
+            "SELECT model_id, payload, updated_at FROM deck_studies WHERE deck_hash = ? AND study_version = ?",
+            (deck_hash, int(study_version)),
+        ).fetchone()
+    if row is None:
+        return None
+    try:
+        parsed = json.loads(row["payload"])
+        _check_strict_json(parsed)
+    except (ValueError, RecursionError):
+        logger.warning("deck_studies payload for %s v%s is invalid JSON", deck_hash[:12], study_version)
+        return None
+    return {
+        "deck_hash": deck_hash,
+        "study_version": int(study_version),
+        "model_id": row["model_id"],
+        "updated_at": row["updated_at"],
+        "study": parsed,
+    }
+
+
+def upsert_stored_deck_study(*, deck_hash: str, study_version: int, model_id: str, payload: str) -> float:
+    """Insert or update a shared deck study; server owns updated_at."""
+    now = time.time()
+    with _get_db().get_db() as conn:
+        conn.execute(
+            """
+            INSERT INTO deck_studies (deck_hash, study_version, model_id, payload, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(deck_hash, study_version) DO UPDATE SET
+                model_id = excluded.model_id,
+                payload = excluded.payload,
+                updated_at = excluded.updated_at
+            """,
+            (deck_hash, int(study_version), model_id, payload, now),
+        )
+    return now
+
+
+@router.get("/v1/deck-studies/{deck_hash}")
+async def fetch_deck_study(
+    deck_hash: str,
+    version: int = Query(default=1, ge=1),
+    auth: dict = Depends(authorize_upload),
+) -> dict[str, Any]:
+    """Fetch a shared deck study by deck identity hash and version."""
+    _validated_hash(deck_hash)
+    owner = owner_of(auth["license_key"])
+    _enforce_lookup_quota(owner)
+    _record_lookup(owner)
+    stored = get_stored_deck_study(deck_hash, version)
+    if stored is None:
+        return {"found": False, "deck_hash": deck_hash, "study_version": int(version)}
+    return {"found": True, **stored}
+
+
+@router.post("/v1/deck-studies")
+async def store_deck_study(
+    request: Request,
+    auth: dict = Depends(authorize_upload),
+) -> dict[str, Any]:
+    """Store or update an anonymous shared deck study keyed by (deck_hash, study_version)."""
+    body = await _read_json_object(request, MAX_STUDY_BODY_BYTES)
+    try:
+        _check_no_pii_keys(body)
+        _check_strict_json(body)
+    except (ValueError, RecursionError) as exc:
+        raise HTTPException(400, f"Invalid deck study payload: {exc}")
+
+    deck_hash = _validated_hash(body.get("deck_hash"))
+    study_version = body.get("study_version")
+    if type(study_version) is not int or study_version < 1:
+        raise HTTPException(422, "study_version must be a positive integer")
+    study = body.get("study")
+    if not isinstance(study, dict):
+        raise HTTPException(422, "study must be a JSON object")
+    inner_study = study.get("study") if isinstance(study.get("study"), dict) else study
+    if not isinstance(inner_study.get("cards"), list) or not isinstance(
+        inner_study.get("interactions"), list
+    ):
+        raise HTTPException(422, "study must contain cards and interactions lists")
+    if "chapters" in study and not isinstance(study["chapters"], dict):
+        raise HTTPException(422, "study.chapters must be a JSON object")
+    model_id = str(body.get("model_id") or "")[:120]
+    try:
+        payload = json.dumps(study, allow_nan=False)
+    except (TypeError, ValueError, RecursionError) as exc:
+        raise HTTPException(400, f"study is not serializable JSON: {exc}")
+    if len(payload.encode("utf-8")) > MAX_STUDY_BODY_BYTES:
+        raise HTTPException(413, f"study exceeds {MAX_STUDY_BODY_BYTES} bytes")
+
+    owner = owner_of(auth["license_key"])
+    _enforce_lookup_quota(owner)
+    _record_lookup(owner)
+    updated_at = upsert_stored_deck_study(
+        deck_hash=deck_hash,
+        study_version=study_version,
+        model_id=model_id,
+        payload=payload,
+    )
+    return {
+        "stored": True,
+        "deck_hash": deck_hash,
+        "study_version": study_version,
+        "updated_at": updated_at,
+    }
 
 
 # Create the tables when the module is imported alongside the app;

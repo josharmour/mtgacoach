@@ -383,12 +383,13 @@ def compact_facts_summary(card: dict[str, Any], record: CardFacts) -> str | None
     return summary
 
 
-def compact_history_rules(catalog):
+def compact_history_rules(catalog, *, warm: bool = False):
     """Quote verified CardFacts summaries by print ID for non-option deck cards."""
-    from arenamcp.card_facts.client import facts_for
+    from arenamcp.card_facts.client import facts_for, warm_memory_from_disk
     from arenamcp.card_facts.schema import card_facts_from_dict
 
     query_cards: list[dict[str, Any]] = []
+    alt_hashes: list[str] = []
     for card in catalog.values():
         if not isinstance(card, dict) or not single_face_source(card) or not card.get("oracle_text"):
             continue
@@ -396,9 +397,13 @@ def compact_history_rules(catalog):
         norm = normalized_scryfall_card(card)
         if norm is not None:
             query_cards.append(norm)
+        if warm:
+            alt_hashes.extend(candidate_fact_hashes(card))
     if not query_cards:
         return {}
     try:
+        if warm:
+            warm_memory_from_disk(query_cards, alt_hashes=alt_hashes)
         records = facts_for(query_cards, memory_only=True)
     except (AttributeError, OSError, TypeError, ValueError):
         return {}

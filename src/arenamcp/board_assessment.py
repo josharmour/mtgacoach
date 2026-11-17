@@ -1750,6 +1750,16 @@ def _signature(state: dict) -> tuple:
             for e in state.get("recent_events") or []
             if isinstance(e, dict) and e.get("type") == "player_counter_changed"
         ),
+        tuple(
+            tuple(g)
+            for g in (state.get("_synergy_groups") or ())
+            if isinstance(g, (list, tuple, set, frozenset))
+        ),
+        tuple(
+            tuple(sorted(g for g in (syn.get("pieces") or ()) if type(g) is int))
+            for syn in (state.get("live_synergies") or ())
+            if isinstance(syn, dict) and (syn.get("pieces") or ())
+        ),
     )
 
 

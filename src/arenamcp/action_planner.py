@@ -856,6 +856,25 @@ class ActionPlanner(_ActionLegalityMixin):
         provider = getattr(self, "_deck_playbook_fn", None)
         return provider() if provider else None
 
+    def _with_live_synergies(self, game_state: dict[str, Any]) -> dict[str, Any]:
+        """Attach live G4 synergy piece groups so board search explores full synergy lines."""
+        playbook = self._deck_playbook()
+        if playbook is None or not isinstance(game_state, dict):
+            return game_state
+        try:
+            from arenamcp.synergy_tracker import entries_from_playbook, evaluate_synergies
+
+            entries = entries_from_playbook(playbook, deck_cards=game_state.get("deck_cards") or ())
+            if not entries:
+                return game_state
+            snap = evaluate_synergies(entries, game_state, catalog=getattr(playbook, "catalog", None))
+            groups = [s["pieces"] for s in snap.live if len(s.get("pieces") or ()) >= 2]
+            if groups:
+                return {**game_state, "_synergy_groups": groups}
+        except Exception as exc:
+            logger.debug("live synergy group enrichment skipped: %s", exc)
+        return game_state
+
     def _has_deck_rule(self, *kinds: str) -> bool:
         playbook = self._deck_playbook()
         return bool(
@@ -4563,104 +4582,62 @@ class ActionPlanner(_ActionLegalityMixin):
     _DECISION_SYSTEM_PARTS: tuple[tuple[str | None, str], ...] = (
         (
             None,
-            "You decide one pending choice in a Magic: The Gathering Arena game. "
-            "You get the game state and a list of legal options, each with an "
-            "option_id. Output ONLY a JSON object — no prose before or after, "
-            "no markdown, English only: "
-            '{"option_ids": ["<id>", ...], "reasoning": "<one short sentence>"}. '
-            'Example: {"option_ids": ["tgt:123"], "reasoning": "kills the '
-            'biggest threat"}. '
-            "Pick between min_select and max_select options FROM THE LIST — any "
-            "other id is invalid. Prefer plays that advance your board and "
-            "remove the biggest threat; never pick options marked 'cannot "
-            "auto-pay'. Arena-confirmed payable options are authoritative: do not "
-            "reject them based on estimated mana or printed costs. Each option is "
-            "payable individually now, not necessarily together; reassess after each play. "
-            "Use the deck strategy to compare plays. ",
+            "Choose one legal action from OPTIONS and output ONLY JSON: "
+            '{"option_ids": ["<id>", ...], "reasoning": "<one short sentence>"} '
+            '(e.g. {"option_ids": ["tgt:123"], "reasoning": "kills the biggest threat"}). '
+            "Never pick 'cannot auto-pay' options; [OK] options are Arena-confirmed payable. "
+            "Each option is payable individually now; reassess after each play. Use the deck strategy to compare plays. ",
         ),
         (
             "commander",
-            "A commander in the command zone is an available "
-            "engine, not a future draw: when payable, compare deploying it against other setup spells. ",
+            "A commander in the command zone is an available engine: compare deploying it against other setup spells and explain that tradeoff. ",
         ),
         (
             None,
-            "Count the bodies and abilities from token copies, including how they increase mana production "
-            "on later turns; respect summoning sickness and colored mana requirements. Prefer establishing "
-            "a useful engine over repeated setup unless survival, interaction, or a stronger concrete line "
-            "justifies waiting. ",
+            "Prefer establishing a real engine over redundant setup unless survival or a stronger concrete line requires waiting. ",
         ),
-        ("commander", "When choosing another spell over a payable commander, explain that tradeoff. "),
         (
             "library",
-            "Searching lands into hand supplies future land drops; it does not add mana sources to the "
-            "battlefield or bypass land-drop limits. Do not call it immediate mana acceleration. ",
+            "Searching lands into hand funds future land drops, not immediate mana acceleration. ",
         ),
         (
             "vehicle",
-            "Crew activates a Vehicle already on the battlefield; it does not cast it "
-            "again or retrigger its enters ability. Crew only for a concrete benefit "
-            "such as attacking, blocking, or a synergy, not merely because an opponent "
-            "cast a spell. Avoid redundant crewing when the Vehicle is already a creature. "
-            "A Vehicle that entered this turn cannot attack without haste, even after crewing. "
-            "Summoning-sick creatures may pay crew costs, but that does not give the Vehicle haste. "
-            "An enters-or-attacks trigger does not trigger from crewing; check that an attack is actually possible. ",
+            "Crew activates a Vehicle already in play; it does not retrigger enters or grant haste. "
+            "Crew only for a concrete attack, block, or synergy when the Vehicle isn't already a creature. ",
         ),
         (
             "animation",
-            "Animating an artifact or land does not untap it, give it haste, or retrigger entering. "
-            "If it is tapped or the payment taps it, it cannot attack or block without an actual untap effect. "
-            "Check current card types: leftover power/toughness does not mean a temporary animation is still active. "
-            "Do not pay to animate it without a concrete combat or other payoff. ",
+            "Animating an artifact or land does not untap it, give haste, or retrigger entering. Check current card types before assuming it is a creature. ",
         ),
         (None, "Payable does not mean free. "),
         (
             "animation",
-            "Until-end-of-turn animation expires this turn: it cannot supply a future-turn blocker or "
-            "Great Henge discount. Name a use before it expires; compare any discount with the activation "
-            "cost and the greatest power you already control. All-creature-types animation can increase "
-            "tribal mana only when the supplied rules count those creature types and the producers can tap this turn. ",
+            "Until-end-of-turn animation expires this turn and cannot block or discount spells on future turns. ",
         ),
         (
             "equipment",
-            "For haste-granting equipment, reassess after the wearer taps or new creatures enter: "
-            "moving it to an untapped summoning-sick creature can enable a useful attack or tap ability. "
-            "To fund one large spell with several fresh Notary Hobbits, equip one, bank its mana via "
-            "the offered Bank mana action, move Greaves, and repeat in the same main phase. "
-            "Name that spell and preserve its colored costs; Notary makes colorless per current Halfling. "
-            "Auto-pay cannot tap sick creatures that no longer wear Greaves; moving it does not untap them. "
-            "Shroud also blocks your own targeted protection. "
-            "Equip only when Arena offers it. Do not shuffle equipment without a concrete benefit, "
-            "float mana without a use, or abandon valuable shroud/hexproof protection merely for an untapped wearer. ",
+            "For haste-granting equipment, weigh equipping summoning-sick creatures for attacks or tap abilities; "
+            "equip only when offered and avoid shuffling equipment without concrete gain (note shroud blocks targeting). ",
         ),
         (
             None,
-            "Evaluate every clause of a spell: a team buff has no combat value without friendly creatures, "
-            "but an unconditional draw-a-card clause can still justify cycling it to find lands or early plays. "
-            "Compare that draw against spending mana needed for a useful creature or interaction; explain "
-            "when casting only for the draw. Never buff an opposing creature merely to draw. ",
+            "Evaluate every spell clause: unconditional card draw can justify cycling a buff early, "
+            "but Never buff an opposing creature merely to draw. ",
         ),
         (
             "library",
-            "For library searches, compare the offered cards' rules text and choose a complementary set "
-            "up to max_select when the extra cards help. Explain the specific role of each choice. ",
+            "For library searches, compare offered cards and pick a complementary set up to max_select. ",
         ),
         (
             None,
-            "Distinguish cards going to hand from cards entering the battlefield: putting a creature onto "
-            "the battlefield does not trigger 'when you cast' abilities. Consider cost and time to cast "
-            "cards going to hand, and do not assume an unchosen spell mode such as entwine is active. "
-            "When passing your main phase, explain the concrete constraint (unpayable creatures, "
-            "no useful targets, or holding interaction), and consider all playable lands and useful payable plays. "
-            "TEMPORARY EFFECTS: 'until end of turn' -X/-Y or +X/+Y expires at the end of THIS turn; on your own "
-            "turn outside combat it does nothing against their attack, so use it only when it kills now "
-            "(toughness <= Y) or in this turn's combat. SEQUENCING: each option is payable alone — casting one "
-            "spell can leave another unpayable (a cheaper spell after a bigger one, or a card castable only now, "
-            "such as under threshold), so order the plays you want. A payable permanent with a landfall trigger "
-            "('whenever a land you control enters') that you mean to cast this turn goes BEFORE the land drop, "
-            "so the land triggers it. A sorcery-speed cast missing only while "
-            "your own spell is on the stack returns once it resolves: pass to resolve it rather than discarding "
-            "that card. Never discard a castable card for an effect that kills nothing.",
+            "Putting a creature onto the battlefield does not trigger 'when you cast' abilities. "
+            "Account for cost/timing of cards sent to hand. "
+            "TEMPORARY EFFECTS: 'until end of turn' -X/-Y or +X/+Y expires at end of turn, "
+            "so outside combat use it only when it kills now. "
+            "SEQUENCING: casting one spell can leave another unpayable; "
+            "cast payable landfall permanents before your land drop. "
+            "Pass when your own spell is on the stack so it resolves before discarding a missing sorcery-speed card. "
+            "Never discard a castable card for an effect that kills nothing.",
         ),
     )
     # Every rule: the prompt when every subject is in play.
@@ -10007,12 +9984,13 @@ class ActionPlanner(_ActionLegalityMixin):
             raise LLMUnavailableError("model server unavailable (circuit open)")
         self._last_llm_asked = True
         # Tags and LINES read the snapshot the guards assess (one search, cached).
-        line_source, lines_text, unmodelled = self._line_prompt_context(decision, game_state)
+        line_state = self._with_live_synergies(game_state)
+        line_source, lines_text, unmodelled = self._line_prompt_context(decision, line_state)
         from arenamcp.line_guard import guard_mode, planner_certain_pick
 
         certainty_mode = guard_mode("planner_certain")
         certain = (
-            planner_certain_pick(line_source, decision, game_state)
+            planner_certain_pick(line_source, decision, line_state)
             if certainty_mode != "off" and not unmodelled
             else None
         )
@@ -10024,7 +10002,7 @@ class ActionPlanner(_ActionLegalityMixin):
             )
             self._last_decision_trace = {"policy": "planner_certain", "validated_ids": [certain]}
             return [certain]
-        tag_state = game_state
+        tag_state = line_state
         target_hints = (
             self._target_highlights(decision, game_state) if decision.request_type == "SelectTargets" else {}
         )
@@ -10038,6 +10016,9 @@ class ActionPlanner(_ActionLegalityMixin):
             library=True if decision.request_type in ("Search", "SearchFromGroups") else None,
             compact_decision=True,
             source_ids_complete=all_bound,
+        )
+        game_state["_option_grp_ids"] = sorted(
+            {gid for gid in offered_prints if type(gid) is int and gid > 4}
         )
         # #224: the call-to-call STABLE strategy text (deck strategy, playbook
         # decision rules) leads the message, right after the deck reference, so

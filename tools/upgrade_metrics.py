@@ -43,8 +43,146 @@ import sys
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from statistics import median
+from types import SimpleNamespace
+
+_REPO_SRC = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src")
+if _REPO_SRC not in sys.path:
+    sys.path.insert(0, _REPO_SRC)
 
 DEFAULT_BUNDLES_DIR = os.path.expanduser("~/.arenamcp/match_bundles")
+DEFAULT_PLAYBOOK_DIRS = (
+    os.path.expanduser("~/.arenamcp/evidence/g2-g4-e3-1117/playbooks"),
+    os.path.expanduser("~/.arenamcp/cache/playbooks"),
+)
+
+_PLAYBOOK_SYNERGY_CACHE: dict[tuple[tuple[str, ...], str], tuple[list, dict]] = {}
+_CARD_FACTS_DISK_CACHE: dict[str, dict[str, dict]] = {}
+
+
+def _load_disk_card_facts(facts_dir: str | None = None) -> dict[str, dict]:
+    target = facts_dir or os.path.expanduser("~/.arenamcp/cache/card_facts")
+    if target in _CARD_FACTS_DISK_CACHE:
+        return _CARD_FACTS_DISK_CACHE[target]
+    out: dict[str, dict] = {}
+    if os.path.isdir(target):
+        for fname in os.listdir(target):
+            if not fname.endswith(".json"):
+                continue
+            digest = fname[:-5]
+            try:
+                with open(os.path.join(target, fname), encoding="utf-8") as fh:
+                    rec = json.load(fh)
+                if isinstance(rec, dict):
+                    out[digest] = rec
+            except (OSError, ValueError, TypeError):
+                continue
+    _CARD_FACTS_DISK_CACHE[target] = out
+    return out
+
+
+def _playbook_search_dirs() -> tuple[str, ...]:
+    env_dirs = os.environ.get("ARENAMCP_PLAYBOOK_DIRS", "").strip()
+    if env_dirs:
+        return tuple(d for d in env_dirs.split(os.pathsep) if d)
+    return DEFAULT_PLAYBOOK_DIRS
+
+
+def _synergy_entries_for_state(state: dict) -> tuple[list, dict]:
+    """Load cached/studied playbook entries (or CardFacts links) for a bundle snapshot."""
+    if not isinstance(state, dict) or not state.get("deck_cards"):
+        return [], {}
+    from arenamcp.deck_strategy import deck_identity
+    from arenamcp.synergy_tracker import entries_from_playbook
+
+    identity = deck_identity(state)
+    dirs = _playbook_search_dirs()
+    cache_key = (dirs, identity)
+    if cache_key in _PLAYBOOK_SYNERGY_CACHE:
+        return _PLAYBOOK_SYNERGY_CACHE[cache_key]
+
+    saved = None
+    for directory in dirs:
+        candidate = os.path.join(directory, f"{identity}.json")
+        if os.path.isfile(candidate):
+            try:
+                with open(candidate, encoding="utf-8") as fh:
+                    parsed = json.load(fh)
+            except (OSError, ValueError, TypeError):
+                continue
+            if isinstance(parsed, dict) and (
+                isinstance(parsed.get("data"), dict)
+                or isinstance((parsed.get("playbook") or {}).get("data"), dict)
+            ):
+                saved = parsed
+                break
+    if isinstance(saved, dict) and isinstance(saved.get("playbook"), dict):
+        saved = saved["playbook"]
+    if not isinstance(saved, dict) or not isinstance(saved.get("data"), dict):
+        _PLAYBOOK_SYNERGY_CACHE[cache_key] = ([], {})
+        return [], {}
+    raw_catalog = saved.get("catalog") or {}
+    catalog = {int(k): v for k, v in raw_catalog.items() if str(k).isdigit() and isinstance(v, dict)}
+    pb = SimpleNamespace(
+        data=saved["data"],
+        catalog=catalog,
+        commanders=list(saved.get("commanders") or ()),
+    )
+    facts_map = _load_disk_card_facts()
+    entries = entries_from_playbook(
+        pb,
+        deck_cards=state.get("deck_cards") or (),
+        card_facts_map=facts_map or None,
+    )
+    _PLAYBOOK_SYNERGY_CACHE[cache_key] = (entries, catalog)
+    return entries, catalog
+
+
+def _unwrap_decision_state(decision: dict) -> dict | None:
+    raw = decision.get("state_snapshot")
+    if not isinstance(raw, dict):
+        return None
+    inner = raw.get("state")
+    return inner if isinstance(inner, dict) else raw
+
+
+def _option_grp_id_map(options: list, state: dict, catalog: dict) -> dict[str, int]:
+    """Resolve option_id -> canonical grp_id across option metadata and state zones."""
+    by_iid: dict[int, int] = {}
+    for zone_name in ("hand", "battlefield", "command", "graveyard", "exile", "stack"):
+        for card in state.get(zone_name) or (state.get("zones") or {}).get(zone_name) or ():
+            if not isinstance(card, dict):
+                continue
+            iid = card.get("instance_id")
+            gid = card.get("original_grp_id") or card.get("base_grp_id") or card.get("grp_id")
+            if type(iid) is int and type(gid) is int and gid > 4:
+                by_iid[iid] = gid
+    by_name: dict[str, int] = {}
+    for gid, info in catalog.items():
+        if isinstance(info, dict) and info.get("name"):
+            by_name.setdefault(str(info["name"]).strip().casefold(), int(gid))
+
+    resolved: dict[str, int] = {}
+    for opt in options:
+        if not isinstance(opt, dict) or not opt.get("option_id"):
+            continue
+        oid = str(opt["option_id"])
+        meta = opt.get("meta") if isinstance(opt.get("meta"), dict) else {}
+        gid = meta.get("grpId") or meta.get("grp_id")
+        if type(gid) is not int or gid <= 4:
+            iid = meta.get("instanceId") or meta.get("instance_id")
+            if type(iid) is int and iid in by_iid:
+                gid = by_iid[iid]
+        if (type(gid) is not int or gid <= 4) and opt.get("label"):
+            label = str(opt["label"]).strip()
+            for prefix in ("Cast ", "Play land: ", "Activate ", "Play "):
+                if label.startswith(prefix):
+                    label = label[len(prefix) :].strip()
+                    break
+            gid = by_name.get(label.casefold())
+        if type(gid) is int and gid > 4:
+            resolved[oid] = gid
+    return resolved
+
 
 REQUEST_METRICS_RE = re.compile(r"Request metrics:?\s*(\{.*\})\s*$")
 KEEP_LINE_RE = re.compile(r"Mulligan guard: KEEP")
@@ -835,6 +973,16 @@ def summarize_bundle(bundle):
             "redundant_pass_cycles_s": [],
             "cancelled_proxy_calls": [],
         },
+        # G4 synergy execution tracking
+        "synergy_execution": {
+            "decisions_evaluated": 0,
+            "live_decisions": 0,
+            "executed_live": 0,
+            "chose_other": 0,
+            "line_tagged_executed": 0,
+            "line_tagged_other": 0,
+            "samples": [],
+        },
     }
 
     for line in coach_lines:
@@ -903,6 +1051,56 @@ def summarize_bundle(bundle):
                     if key in chosen_set:
                         out["chosen_unmodelled"] += 1
 
+        state = _unwrap_decision_state(decision)
+        if state is not None:
+            entries, catalog = _synergy_entries_for_state(state)
+            if entries:
+                from arenamcp.synergy_tracker import evaluate_synergies
+
+                syn = out["synergy_execution"]
+                syn["decisions_evaluated"] += 1
+                snap = evaluate_synergies(entries, state, catalog=catalog)
+                if snap.live:
+                    syn["live_decisions"] += 1
+                    option_gids = _option_grp_id_map(options, state, catalog)
+                    live_pieces = {gid for item in snap.live for gid in item["pieces"]}
+                    chosen_touches = any(option_gids.get(oid) in live_pieces for oid in chosen)
+                    offered_touches = any(
+                        option_gids.get(o.get("option_id")) in live_pieces
+                        for o in options
+                        if isinstance(o, dict) and o.get("payable") is not False
+                    )
+                    tags = (lines or {}).get("tags") if isinstance(lines, dict) else {}
+                    if not isinstance(tags, dict):
+                        tags = {}
+                    chosen_tag = tags.get(chosen[0]) if chosen else None
+                    synergy_tags = [
+                        tags.get(o.get("option_id"))
+                        for o in options
+                        if isinstance(o, dict)
+                        and option_gids.get(o.get("option_id")) in live_pieces
+                        and tags.get(o.get("option_id"))
+                    ]
+                    if chosen_touches:
+                        syn["executed_live"] += 1
+                        if chosen_tag:
+                            syn["line_tagged_executed"] += 1
+                    elif offered_touches:
+                        syn["chose_other"] += 1
+                        if chosen_tag:
+                            syn["line_tagged_other"] += 1
+                    if len(syn["samples"]) < 5 and (chosen_touches or offered_touches):
+                        syn["samples"].append(
+                            {
+                                "turn": decision.get("turn"),
+                                "chosen": list(chosen),
+                                "executed": chosen_touches,
+                                "live_ids": [item["id"] for item in snap.live[:4]],
+                                "chosen_tag": chosen_tag,
+                                "synergy_tags": synergy_tags[:4],
+                            }
+                        )
+
     out["t1"] = t1_bundle_metrics(bundle)
 
     return out
@@ -935,6 +1133,20 @@ def _merge(dst, src):
         "cancelled_proxy_calls",
     ):
         t1_dst[key].extend(t1_src.get(key) or [])
+    syn_dst = dst["synergy_execution"]
+    syn_src = src.get("synergy_execution") or {}
+    for key in (
+        "decisions_evaluated",
+        "live_decisions",
+        "executed_live",
+        "chose_other",
+        "line_tagged_executed",
+        "line_tagged_other",
+    ):
+        syn_dst[key] += int(syn_src.get(key) or 0)
+    for sample in syn_src.get("samples") or ():
+        if len(syn_dst["samples"]) < 10:
+            syn_dst["samples"].append(sample)
     dst["games"] += 1
 
 
@@ -1108,6 +1320,15 @@ def aggregate(summaries):
                     "redundant_pass_cycles_s": [],
                     "cancelled_proxy_calls": [],
                 },
+                "synergy_execution": {
+                    "decisions_evaluated": 0,
+                    "live_decisions": 0,
+                    "executed_live": 0,
+                    "chose_other": 0,
+                    "line_tagged_executed": 0,
+                    "line_tagged_other": 0,
+                    "samples": [],
+                },
                 "_latest": None,
             },
         )
@@ -1185,6 +1406,18 @@ def aggregate(summaries):
         idx = min(int(len(sorted_values) * q), len(sorted_values) - 1)
         return sorted_values[idx]
 
+    syn_evaluated = sum(fold["synergy_execution"]["decisions_evaluated"] for fold in matches.values())
+    syn_live = sum(fold["synergy_execution"]["live_decisions"] for fold in matches.values())
+    syn_exec = sum(fold["synergy_execution"]["executed_live"] for fold in matches.values())
+    syn_other = sum(fold["synergy_execution"]["chose_other"] for fold in matches.values())
+    syn_tag_exec = sum(fold["synergy_execution"]["line_tagged_executed"] for fold in matches.values())
+    syn_tag_other = sum(fold["synergy_execution"]["line_tagged_other"] for fold in matches.values())
+    syn_per_match = {
+        mid: {k: v for k, v in fold["synergy_execution"].items() if k != "samples" or v}
+        for mid, fold in matches.items()
+        if fold["synergy_execution"]["decisions_evaluated"] > 0
+    }
+
     return {
         "matches": n_matches,
         "days_covered": sorted({s["day"] for s in summaries}),
@@ -1229,6 +1462,17 @@ def aggregate(summaries):
         "prompt_size_median_chars": percentile(all_prompts, 0.5),
         "prompt_size_p90_chars": percentile(all_prompts, 0.9),
         "t1": aggregate_t1(matches),
+        "synergy_execution": {
+            "matches_with_decisions": len(syn_per_match),
+            "decisions_evaluated": syn_evaluated,
+            "live_synergy_decisions": syn_live,
+            "executed_live_synergy": syn_exec,
+            "chose_different_play": syn_other,
+            "execution_rate_pct": pct(syn_exec, syn_exec + syn_other),
+            "line_tagged_executed": syn_tag_exec,
+            "line_tagged_other": syn_tag_other,
+            "per_match": syn_per_match,
+        },
     }
 
 
@@ -1423,6 +1667,18 @@ def render_report(agg):
             out.append(
                 f"{mid:<40}{surf_cell:>14}{_secs(rope_min):>12}{hop_cell:>8}{cancel_cell:>12}{cyc_cell:>14}"
             )
+
+    syn = agg.get("synergy_execution") or {}
+    if syn.get("decisions_evaluated"):
+        rate = f"{syn['execution_rate_pct']:.1f}%" if syn.get("execution_rate_pct") is not None else "-"
+        out.append("")
+        out.append(
+            f"Synergy execution (G4): {syn['matches_with_decisions']} matches, "
+            f"{syn['decisions_evaluated']} evaluated decisions, "
+            f"{syn['live_synergy_decisions']} with live synergy "
+            f"(executed={syn['executed_live_synergy']}, other={syn['chose_different_play']}, rate={rate}; "
+            f"line-tagged executed={syn.get('line_tagged_executed', 0)}, other={syn.get('line_tagged_other', 0)})"
+        )
 
     return "\n".join(out)
 

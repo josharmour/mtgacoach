@@ -898,6 +898,8 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         progress=None,
         cancel=None,
         in_match=None,
+        study_client=None,
+        build_full_study: bool = False,
     ):
         """Build (or load) the playbook for ``game_state``'s deck without publishing it.
 
@@ -914,6 +916,17 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         be = backend or self._backend
         playbook = None if refresh else self._cached_playbook(identity, game_state, modes=("idle",))
         if playbook is not None:
+            if (study_client is not None or build_full_study) and (
+                "study" not in playbook.data or "study_chapters" not in playbook.data
+            ):
+                playbook = self.attach_shared_study(
+                    playbook,
+                    game_state,
+                    study_client=study_client,
+                    backend=be,
+                    build_missing=build_full_study,
+                    cancel=cancel,
+                )
             if progress:
                 progress("cache")
             return playbook
@@ -941,6 +954,15 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                 cancel=cancel,
                 outside_match=True,
             )
+            if study_client is not None or build_full_study:
+                playbook = self.attach_shared_study(
+                    playbook,
+                    game_state,
+                    study_client=study_client,
+                    backend=be,
+                    build_missing=build_full_study,
+                    cancel=cancel,
+                )
             if not wanted():
                 raise ValueError("Deck preparation paused for active play")
             self._store_playbook(playbook, mode="idle")
@@ -949,6 +971,69 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             return playbook
         finally:
             self._finish_playbook_run(identity, run)
+
+    def attach_shared_study(
+        self,
+        playbook,
+        game_state: dict,
+        *,
+        study_client=None,
+        backend=None,
+        build_missing: bool = False,
+        cancel=None,
+    ):
+        """Attach a validated server-cached (or freshly built) full G2 study onto ``playbook``."""
+        from collections import Counter
+
+        from arenamcp.deck_study import (
+            STUDY_VERSION,
+            DeckStudyClient,
+            build_deck_study,
+            deck_study_hash,
+            validate_study,
+            validate_study_chapters,
+        )
+
+        client = study_client or DeckStudyClient()
+        counts = Counter(
+            gid for gid in (game_state.get("deck_cards") or []) if isinstance(gid, int) and gid > 4
+        )
+        try:
+            dhash = deck_study_hash(playbook.catalog, playbook.commanders, counts=dict(counts))
+        except Exception:
+            return playbook
+        hit = client.fetch_study(dhash, version=STUDY_VERSION)
+        if (
+            isinstance(hit, dict)
+            and isinstance(hit.get("study"), dict)
+            and isinstance(hit.get("chapters"), dict)
+        ):
+            try:
+                validate_study(hit["study"], playbook.catalog)
+                chapters = hit["chapters"]
+                validate_study_chapters(chapters, playbook.catalog)
+                updated = playbook.with_current_study(hit["study"], chapters)
+                if not updated.study_withheld:
+                    self._store_playbook(updated, mode="idle")
+                return updated
+            except Exception as exc:
+                logger.info("Shared deck study invalid for %s: %s", dhash[:12], exc)
+        if not build_missing:
+            return playbook
+        be = backend or self._backend
+        result = build_deck_study(
+            playbook.catalog,
+            playbook.commanders,
+            be,
+            format_name=str(game_state.get("format_name") or ""),
+            deck_counts=dict(counts),
+            study_client=client,
+            cancel_check=(lambda: bool(cancel and cancel.is_set())),
+        )
+        updated = playbook.with_current_study(result.study, result.chapters)
+        if not updated.study_withheld:
+            self._store_playbook(updated, mode="idle")
+        return updated
 
     def _build_playbook(
         self,
@@ -2261,6 +2346,8 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         for_planner: bool = False,
         rules_in_reference: bool = False,
         display_label: str | None = None,
+        game_state: dict[str, Any] | None = None,
+        compact_summary: str | None = None,
     ) -> list[str]:
         """Format a single battlefield card into display lines.
 
@@ -2397,7 +2484,21 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         if raw_oracle and not is_basic_land and not rules_in_reference:
             stripped = self._remove_reminder_text(raw_oracle).strip()
             if stripped:
-                lines.append(f"    {self._clean_oracle_for_prompt(stripped)}")
+                cleaned = self._clean_oracle_for_prompt(stripped)
+                option_gids = set((game_state or {}).get("_option_grp_ids") or ())
+                card_gid = card.get("original_grp_id") or card.get("base_grp_id") or card.get("grp_id")
+                if for_planner and card_gid not in option_gids:
+                    summary = compact_summary
+                    if summary is None:
+                        try:
+                            from arenamcp.card_facts.prompt_render import compact_history_rules
+
+                            summary = compact_history_rules({0: card}, warm=True).get(0, "")
+                        except (ImportError, OSError, TypeError, ValueError):
+                            summary = ""
+                    if summary and len(summary) < len(cleaned):
+                        cleaned = summary
+                lines.append(f"    {cleaned}")
 
         for key, label in (("granted_abilities", "Granted"), ("removed_abilities", "Removed")):
             abilities = card.get(key) or []
@@ -2444,6 +2545,26 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         "*Rabbit ×12 (#1..#12) 1/1". 2026-10-19 match 41b07b15: 23 Soldier
         tokens and 12 Rabbits were 35 near-identical lines.
         """
+        option_gids = set((game_state or {}).get("_option_grp_ids") or ())
+        compact_board_rules: dict[int, str] | None = None
+        if for_planner and cards:
+            targets = {
+                id(c): c
+                for c in cards
+                if isinstance(c, dict)
+                and c.get("oracle_text")
+                and (c.get("original_grp_id") or c.get("base_grp_id") or c.get("grp_id")) not in option_gids
+            }
+            if targets:
+                try:
+                    from arenamcp.card_facts.prompt_render import compact_history_rules
+
+                    compact_board_rules = compact_history_rules(targets, warm=True)
+                except (ImportError, OSError, TypeError, ValueError):
+                    compact_board_rules = {}
+            else:
+                compact_board_rules = {}
+
         counts = Counter(c.get("name", "Unknown") for c in cards)
         seen: dict[str, int] = {}
         groups: dict[tuple, list[tuple[dict, int | None]]] = {}
@@ -2458,8 +2579,12 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             key_lines = self._format_board_card(
                 card, local_seat, turn_num, attachments, Counter(), {}, is_local=is_local,
                 for_planner=for_planner, rules_in_reference=True, display_label=str(name),
+                game_state=game_state, compact_summary="",
             )  # fmt: skip
-            key = (tuple(key_lines), str(card.get("oracle_text") or ""))
+            is_opt = (
+                card.get("original_grp_id") or card.get("base_grp_id") or card.get("grp_id")
+            ) in option_gids
+            key = (tuple(key_lines), str(card.get("oracle_text") or ""), bool(for_planner and is_opt))
             groups.setdefault(key, []).append((card, number))
             order.append((key, card, number))
         lines: list[str] = []
@@ -2480,6 +2605,10 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                     rules_in_reference=self._rules_in_deck_reference(card, game_state)
                     or self._rules_shown_before(card, rules_shown),
                     display_label=label,
+                    game_state=game_state,
+                    compact_summary=None
+                    if compact_board_rules is None
+                    else compact_board_rules.get(id(card), ""),
                 )
             )  # fmt: skip
         return lines
@@ -3460,7 +3589,13 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                     names[iid] = str(name)
         return names
 
-    def _format_stack_section(self, game_state: dict[str, Any], local_seat: int) -> list[str]:
+    def _format_stack_section(
+        self,
+        game_state: dict[str, Any],
+        local_seat: int,
+        *,
+        for_planner: bool = False,
+    ) -> list[str]:
         """Render the ordered stack with controller, targets and chosen modes.
 
         Every snapshot's stack is top-first, as Arena's Stack zone lists it:
@@ -3512,9 +3647,10 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
 
             suffix = "  <- resolves next" if position == 1 else ""
             lines.append(f"  {position}. {side} {name}{detail}{suffix}")
-            oracle = self._clean_oracle_for_prompt(str(obj.get("oracle_text") or ""))
-            if oracle:
-                lines.append(f"     {oracle}")
+            if not (for_planner and self._rules_in_deck_reference(obj, game_state)):
+                oracle = self._clean_oracle_for_prompt(str(obj.get("oracle_text") or ""))
+                if oracle:
+                    lines.append(f"     {oracle}")
         try:
             from arenamcp.stack_responses import shield_response_note
 
@@ -3527,7 +3663,12 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         return lines
 
     def _format_zones_and_events(
-        self, game_state: dict[str, Any], local_seat: int, opp_seat: int | None
+        self,
+        game_state: dict[str, Any],
+        local_seat: int,
+        opp_seat: int | None,
+        *,
+        for_planner: bool = False,
     ) -> list[str]:
         """Format recent events, revealed cards, stack, graveyard, command zone, and library."""
         lines: list[str] = []
@@ -3609,7 +3750,20 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             if opp_revealed:
                 lines.append(f"Opp revealed {len(opp_revealed)} card(s) this game")
 
-        lines.extend(self._format_stack_section(game_state, local_seat))
+        lines.extend(self._format_stack_section(game_state, local_seat, for_planner=for_planner))
+
+        compact_gy_exile = bool(for_planner and game_state.get("deck_reference"))
+        uses_gy_exile = True
+        if compact_gy_exile:
+            from arenamcp.match_context import (
+                _has_graveyard_or_exile_play,
+                _is_basic_mana_land,
+                _state_uses_graveyard_or_exile,
+            )
+
+            uses_gy_exile = _state_uses_graveyard_or_exile(
+                game_state, offered=game_state.get("_option_grp_ids") or ()
+            )
 
         for zone_name in ("graveyard", "exile"):
             cards = game_state.get(zone_name) or []
@@ -3625,11 +3779,16 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                 side = "YOUR" if owner == local_seat else "OPP" if owner == opp_seat else "UNKNOWN OWNER"
                 name = str(card.get("name") or "Unknown")
                 card_type = str(card.get("type_line") or "")
-                oracle = (
-                    ""
-                    if self._rules_in_deck_reference(card, game_state)
-                    else self._clean_oracle_for_prompt(str(card.get("oracle_text") or ""))
-                )
+                if self._rules_in_deck_reference(card, game_state) or (
+                    compact_gy_exile
+                    and (
+                        _is_basic_mana_land(card)
+                        or (not uses_gy_exile and not _has_graveyard_or_exile_play(card))
+                    )
+                ):
+                    oracle = ""
+                else:
+                    oracle = self._clean_oracle_for_prompt(str(card.get("oracle_text") or ""))
                 key = (side, name, card_type, oracle)
                 groups[key] = groups.get(key, 0) + 1
             for (side, name, card_type, oracle), quantity in groups.items():
@@ -4068,7 +4227,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             lines.append("BOARD: Empty")
 
         # Recent events and revealed cards
-        lines.extend(self._format_zones_and_events(game_state, local_seat, opp_seat))
+        lines.extend(self._format_zones_and_events(game_state, local_seat, opp_seat, for_planner=for_planner))
 
         # Counts are public information; card identities in hidden zones are
         # not. The live server stores these counts in the nested zones payload.

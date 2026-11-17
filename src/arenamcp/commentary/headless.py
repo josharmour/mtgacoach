@@ -501,6 +501,11 @@ class HeadlessBooth:
                         "seat": 3 - local if key == "revealed_opposing_hand" else local,
                         **info,
                     }
+            if isinstance(syn := observation.private_state.get("synergies"), dict):
+                self.player_cards["private:synergies"] = {
+                    "seat": observation.public_state.get("local_seat_id"),
+                    **syn,
+                }
         self.deck_plan = (
             observation.private_state.get("deck_overview") if self.settings.private_information else None
         )

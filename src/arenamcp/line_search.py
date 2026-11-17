@@ -57,7 +57,7 @@ import dataclasses
 import logging
 import re
 import time
-from collections.abc import Collection, Iterator
+from collections.abc import Collection, Iterable, Iterator
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -520,7 +520,16 @@ def _after_our_pending(model: BoardModel) -> BoardModel:
 
 
 class _Search(Moves):
-    def __init__(self, model: BoardModel, *, groups: int, width: int, k_next: int, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        model: BoardModel,
+        *,
+        groups: int,
+        width: int,
+        k_next: int,
+        live_synergies: Iterable[Iterable[int]] = (),
+        **kwargs: Any,
+    ) -> None:
         from arenamcp.entry_draw_projection import model_reasons as entry_draw_reasons
         from arenamcp.sacrifice_continuation import UnsupportedContinuation
 
@@ -531,6 +540,14 @@ class _Search(Moves):
         model = _after_our_pending(model)
         super().__init__(model, **kwargs)
         self.groups, self.width, self.k_next = max(1, groups), max(1, width), max(0, k_next)
+        explicit_syn = tuple(
+            tuple(sorted({int(g) for g in grp if type(g) is int and g > 4}))
+            for grp in (live_synergies or ())
+            if grp
+        )
+        self.synergy_groups = tuple(
+            grp for grp in (explicit_syn or getattr(model, "synergy_groups", ())) if len(grp) >= 2
+        )
         self._race_memo: dict = {}
         # Their growth and drains count in their clock (ledger #128-#133, #143); ours in ours.
         self._race_engines = (
@@ -701,6 +718,35 @@ class _Search(Moves):
         self.free = True  # later calls (to_projections) must never raise Deadline
         return result
 
+    def _synergy_keys(self, node: Node, casts: tuple) -> set:
+        if not getattr(self, "synergy_groups", ()) or not casts:
+            return set()
+        cast_gids = {
+            gid
+            for var, _ in casts
+            if (
+                gid := (
+                    self.spells[var.spell].spell.card.get("original_grp_id")
+                    or self.spells[var.spell].spell.card.get("base_grp_id")
+                    or self.spells[var.spell].spell.card.get("grp_id")
+                )
+            )
+            and type(gid) is int
+        }
+        if not cast_gids:
+            return set()
+        board_gids = {
+            gid
+            for b in node.ours
+            if type(gid := (b.get("original_grp_id") or b.get("base_grp_id") or b.get("grp_id"))) is int
+        }
+        combined = board_gids | cast_gids
+        return {
+            ("synergy", idx)
+            for idx, group in enumerate(self.synergy_groups)
+            if set(group) <= combined and bool(set(group) & cast_gids)
+        }
+
     def _root_groups(self, roots, groups: list[_Group]) -> bool:
         """Every T step after each root: one per action key first, then by spell value."""
         pairs = []
@@ -713,7 +759,7 @@ class _Search(Moves):
             for land in self.land_options(node):
                 _base, sources = self.sources(node, land)
                 for casts in self.cast_sets(node, sources, instant_only=instant_only):
-                    keys = frozenset(self.play_keys(land, casts) | extra)
+                    keys = frozenset(self.play_keys(land, casts) | self._synergy_keys(node, casts) | extra)
                     value = self.choice_value(casts, node.theirs, self.gained_at_start(node), node.ours)
                     pairs.append((value, block, node, land, casts, keys))
         pairs.sort(key=lambda pair: (-round(pair[0], 6), self._pair_text(pair)))
@@ -1126,6 +1172,7 @@ def search_lines(
     k_next: int = 4,
     opponent: OpponentModel | None = None,
     budget: int | None = None,
+    live_synergies: Iterable[Iterable[int]] = (),
 ) -> LineSearchResult:
     """Search our lines over T, T+1 (and a greedy T+2) against the paranoid opponent.
 
@@ -1140,7 +1187,7 @@ def search_lines(
     try:
         search = _Search(
             model, survival=survival, lethal_now=lethal_now, soft_ms=soft_ms, hard_ms=hard_ms, groups=groups,
-            width=width, k_next=k_next, opponent=opponent, budget=budget,
+            width=width, k_next=k_next, opponent=opponent, budget=budget, live_synergies=live_synergies,
         )  # fmt: skip
         result = search.run()
     except (UnsupportedContinuation, UnsupportedAttackTaxProjection) as error:

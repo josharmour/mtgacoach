@@ -288,6 +288,11 @@ class PipeAdapter:
             event["private_library_removal"] = private_outs
         self._emit(event)
         if self._coach is not None:
+            from arenamcp.synergy_tracker import player_synergy_facts
+
+            synergies = player_synergy_facts(self._coach, snapshot)
+            if synergies is not None:
+                snapshot = {**snapshot, "commentary_synergies": synergies}
             if self._commentary is None:
                 from arenamcp.commentary.service import CommentaryService
 

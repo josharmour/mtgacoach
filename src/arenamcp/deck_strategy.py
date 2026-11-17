@@ -22,7 +22,8 @@ from arenamcp.loyalty_timing import (
 )
 
 LEGACY_PLAYBOOK_VERSION = 2
-PLAYBOOK_VERSION = 3
+STUDY_PLAYBOOK_VERSION = 3
+PLAYBOOK_VERSION = 4
 
 DECK_ANALYSIS_PROMPT = (
     """Analyze every card in the supplied Magic deck using its supplied Oracle text, costs, types and faces. Build a reusable playbook for both coaching and autoplay, not a generic archetype summary. Explicitly analyze each designated commander; a legendary card is not necessarily the commander. If there is no commander, analyze the deck's engines normally.
@@ -428,11 +429,17 @@ class DeckPlaybook:
             from arenamcp.deck_study import validate_study
 
             validate_study(data["study"], catalog)
+            if "study_chapters" in data:
+                from arenamcp.deck_study import validate_study_chapters
+
+                validate_study_chapters(data["study_chapters"], catalog)
         return cls(data, catalog, commanders, identity)
 
     @property
     def version(self):
-        return PLAYBOOK_VERSION if "study" in self.data else LEGACY_PLAYBOOK_VERSION
+        if "study" in self.data:
+            return PLAYBOOK_VERSION if "study_chapters" in self.data else STUDY_PLAYBOOK_VERSION
+        return LEGACY_PLAYBOOK_VERSION
 
     @staticmethod
     def _rule_lines(rule: dict) -> list[str]:
@@ -492,8 +499,12 @@ class DeckPlaybook:
             # Trading a body changes the same resources as sacrifices and
             # recovery choices, though the actual trigger events still differ.
             kinds.update(("sacrifice", "commander_zone"))
-        if context.get("commander_return"):
+        if "commander" in str(request_type or "").lower() or context.get("commander_return"):
             kinds.add("commander_zone")
+        if "study" in self.data:
+            return self._studied_decision_context_lines(
+                state, kinds=kinds, context=context, request_type=request_type
+            )
         rules = [
             rule
             for rule in self.data["decision_rules"]
@@ -539,6 +550,163 @@ class DeckPlaybook:
                     f"Requires: {'; '.join(mechanism['requires'])}. "
                     f"Avoid: {'; '.join(mechanism['avoid'])}."
                 )
+        if "mulligan" in kinds:
+            from arenamcp.mulligan_policy import free_mulligans_from_state, mulligans_from_state
+
+            free = free_mulligans_from_state(state)
+            taken = mulligans_from_state(state)
+            lines.append(
+                "LIVE MULLIGAN COST OVERRIDE: "
+                f"explicitly granted free mulligans={free}; "
+                f"redraws already taken={taken if taken is not None else 'UNKNOWN'}. "
+                "A deck playbook or Brawl format label cannot grant a free mulligan. "
+                "Ignore any cached rule claiming one without current explicit evidence."
+            )
+            if taken is not None:
+                bottom = max(0, taken - free)
+                lines.append(
+                    f"Keeping this London hand bottoms {bottom} and keeps {max(0, 7 - bottom)} "
+                    "of the seven shown cards; Arena's actual bottom request remains authoritative."
+                )
+        return lines, core_indices
+
+    @staticmethod
+    def _concise_study_plan(text: str, limit: int = 220) -> str:
+        """Trim verbose legacy prose to one sentence inside studied decision headers."""
+        cleaned = " ".join(str(text or "").split())
+        if len(cleaned) <= limit:
+            return cleaned
+        first = re.split(r"(?<=[.!?])\s+", cleaned, maxsplit=1)[0].strip()
+        if len(first) <= limit:
+            return first
+        clipped = first[: limit - 3].rsplit(" ", 1)[0].rstrip(",;:-")
+        return f"{clipped or first[: limit - 3]}..."
+
+    def _studied_decision_context_lines(
+        self,
+        state: dict,
+        *,
+        kinds: set[str],
+        context: dict,
+        request_type: str | None = None,
+    ) -> tuple[list[str], set[int]]:
+        """State-driven compact decision rules when a complete G2 study is attached (G4)."""
+        from arenamcp.opponent_read import OpponentRead
+        from arenamcp.synergy_tracker import (
+            entries_from_playbook,
+            evaluate_synergies,
+            tutor_missing_piece_hints,
+        )
+
+        lines = [
+            "DECK DECISION RULES FOR THIS WINDOW (conditional, not automatic overrides):",
+            f"Primary plan: {self._concise_study_plan(self.data['primary_plan'])}",
+            f"Backup plan: {self._concise_study_plan(self.data['backup_plan'])}",
+        ]
+        core_indices = set(range(len(lines)))
+        for policy in self.data["commanders"]:
+            core_indices.add(len(lines))
+            lines.append(
+                f"Commander policy [grp:{policy['card']}]: "
+                f"{self._concise_study_plan(policy['preserve_or_reuse'])}"
+            )
+
+        entries = entries_from_playbook(self, deck_cards=state.get("deck_cards") or ())
+        snap = evaluate_synergies(entries, state, catalog=self.catalog)
+        if snap.live:
+            live_parts = [
+                f"{item['id']} ({', '.join(item['names'])}): {item['outcome']}" for item in snap.live[:4]
+            ]
+            lines.append("Live synergies: " + "; ".join(live_parts))
+        if snap.one_step_away:
+            step_parts = []
+            for item in snap.one_step_away[:4]:
+                missing = item.get("missing_names") or ()
+                if missing:
+                    copies = int(item.get("copies_in_library") or 0)
+                    need_tag = f"missing {', '.join(missing)} ({copies} in library)"
+                else:
+                    need_tag = f"needs +{int(item.get('mana_shortfall') or 0)} mana"
+                    if int(item.get("turn_wait") or 0) > 0:
+                        need_tag += f", wait {item['turn_wait']} turn(s)"
+                step_parts.append(f"{' + '.join(item['names'])} [{need_tag}]")
+            lines.append("One step away: " + "; ".join(step_parts))
+
+        option_gids = [gid for gid in (state.get("_option_grp_ids") or ()) if type(gid) is int and gid > 4]
+        option_set = set(option_gids)
+        study_cards_raw = (self.data.get("study") or {}).get("cards")
+        cards_by_gid: dict[int, dict] = {}
+        if isinstance(study_cards_raw, list):
+            for row in study_cards_raw:
+                if isinstance(row, dict) and type(row.get("card")) is int:
+                    cards_by_gid[row["card"]] = row
+        elif isinstance(study_cards_raw, dict):
+            for key, row in study_cards_raw.items():
+                if isinstance(row, dict) and str(key).isdigit():
+                    cards_by_gid[int(key)] = row
+
+        for gid in option_gids:
+            card_entry = cards_by_gid.get(gid)
+            if card_entry is None:
+                continue
+            play_adv = str((card_entry.get("play") or {}).get("advice") or "").strip()
+            hold_adv = str((card_entry.get("hold") or {}).get("advice") or "").strip()
+            avoid_adv = str((card_entry.get("avoid") or {}).get("advice") or "").strip()
+            lines.append(
+                f"Option role [grp:{gid}] ({card_entry.get('role', '')}): "
+                f"play — {play_adv}; hold — {hold_adv}; avoid — {avoid_adv}"
+            )
+
+        chapters = self.data.get("study_chapters")
+        if isinstance(chapters, dict):
+            seq_count = 0
+            seq_block = chapters.get("sequencing")
+            seq_rules = seq_block.get("sequencing") if isinstance(seq_block, dict) else seq_block
+            for seq in seq_rules or ():
+                if not isinstance(seq, dict):
+                    continue
+                touched = {
+                    int(g) for g in (*(seq.get("before") or ()), *(seq.get("after") or ())) if type(g) is int
+                }
+                if option_set and not (option_set & touched):
+                    continue
+                lines.append(f"Sequencing ({seq.get('turn_window', '')}): {seq.get('why', '')}")
+                seq_count += 1
+                if seq_count >= 3:
+                    break
+
+            switches = chapters.get("switches")
+            if isinstance(switches, dict) and switches:
+                active_classes = set(state.get("active_threat_classes") or ())
+                active_classes.update(OpponentRead().threat_classes(state))
+                for sw_key in sorted(active_classes):
+                    sw = switches.get(sw_key)
+                    if isinstance(sw, dict):
+                        lines.append(f"Switch ({sw_key} — {sw.get('posture', '')}): {sw.get('rule', '')}")
+
+        lines.extend(tutor_missing_piece_hints(snap, state, request_type=request_type))
+
+        relevant_gids = set(option_gids)
+        for zone_name in ("command", "battlefield"):
+            for card in state.get(zone_name) or (state.get("zones") or {}).get(zone_name) or ():
+                if isinstance(card, dict) and type(card.get("grp_id")) is int:
+                    relevant_gids.add(card["grp_id"])
+        casts_by_card = state.get("commander_casts") or {}
+        for gid in self.commanders:
+            if gid not in relevant_gids and not context.get("commander_return"):
+                continue
+            card = self.catalog.get(gid) or {}
+            casts = casts_by_card.get(gid, casts_by_card.get(str(gid)))
+            tax = (
+                f"{{{2 * casts}}} ({casts} prior casts)"
+                if isinstance(casts, int) and not isinstance(casts, bool) and casts >= 0
+                else "UNKNOWN"
+            )
+            lines.append(
+                f"Live commander recovery cost — {card.get('name', 'Unknown')} [grp:{gid}]: "
+                f"printed {card.get('mana_cost') or 'UNKNOWN'} + tax {tax}."
+            )
+
         if "mulligan" in kinds:
             from arenamcp.mulligan_policy import free_mulligans_from_state, mulligans_from_state
 
@@ -662,7 +830,9 @@ class DeckPlaybook:
 
     def export(self, *, include_study: bool = True) -> dict:
         data = (
-            self.data if include_study else {key: value for key, value in self.data.items() if key != "study"}
+            self.data
+            if include_study
+            else {key: value for key, value in self.data.items() if key not in ("study", "study_chapters")}
         )
         return {
             "version": self.version if include_study else LEGACY_PLAYBOOK_VERSION,
@@ -672,19 +842,29 @@ class DeckPlaybook:
             "commanders": self.commanders,
         }
 
-    def with_current_study(self, study):
-        from arenamcp.deck_study import current_study_sources_match, validate_study
+    def with_current_study(self, study, chapters=None):
+        from arenamcp.deck_study import (
+            current_study_sources_match,
+            validate_study,
+            validate_study_chapters,
+        )
 
+        target_chapters = chapters if chapters is not None else self.data.get("study_chapters")
         try:
             if current_study_sources_match(self.catalog):
                 validate_study(study, self.catalog)
-                if self.data.get("study") is study:
+                if target_chapters is not None:
+                    validate_study_chapters(target_chapters, self.catalog)
+                if self.data.get("study") is study and self.data.get("study_chapters") is target_chapters:
                     return self
-                return replace(self, data={**self.data, "study": study})
+                new_data = {**self.data, "study": study}
+                if target_chapters is not None:
+                    new_data["study_chapters"] = target_chapters
+                return replace(self, data=new_data)
         except (ValueError, TypeError, KeyError, OSError):
             # The validated legacy playbook remains available without inference.
             pass
-        data = {key: value for key, value in self.data.items() if key != "study"}
+        data = {key: value for key, value in self.data.items() if key not in ("study", "study_chapters")}
         return replace(self, data=data, study_withheld=True)
 
     @classmethod
@@ -692,7 +872,10 @@ class DeckPlaybook:
         data = saved.get("data")
         if not isinstance(data, dict):
             raise ValueError("Deck playbook has no content")
-        version = PLAYBOOK_VERSION if "study" in data else LEGACY_PLAYBOOK_VERSION
+        if "study" in data:
+            version = PLAYBOOK_VERSION if "study_chapters" in data else STUDY_PLAYBOOK_VERSION
+        else:
+            version = LEGACY_PLAYBOOK_VERSION
         if (
             type(saved.get("version")) is not int
             or saved["version"] != version
@@ -703,9 +886,9 @@ class DeckPlaybook:
         expected = set(state.get("deck_cards") or []) | set(commander_ids(state))
         if not expected or set(catalog) != expected:
             raise ValueError("Saved playbook catalog differs from the current deck")
-        legacy = {key: value for key, value in data.items() if key != "study"}
+        legacy = {key: value for key, value in data.items() if key not in ("study", "study_chapters")}
         book = cls.parse(json.dumps(legacy), catalog, commander_ids(state), saved["identity"])
-        return book.with_current_study(data["study"]) if "study" in data else book
+        return book.with_current_study(data["study"], data.get("study_chapters")) if "study" in data else book
 
 
 DECISION_KINDS = {

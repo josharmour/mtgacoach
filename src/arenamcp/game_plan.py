@@ -383,6 +383,9 @@ class GamePlan:
     route_state: dict = field(default_factory=dict)
     engines: dict = field(default_factory=dict)
     next_steps: list[str] = field(default_factory=list)
+    live_synergies: list[dict] = field(default_factory=list)
+    one_step_synergies: list[dict] = field(default_factory=list)
+    active_switches: list[dict] = field(default_factory=list)
 
     def is_empty(self) -> bool:
         return not (self.win_conditions or self.path or self.develop_next or self.turn_plan)
@@ -433,6 +436,27 @@ class GamePlan:
         lines.extend(f"  Recheck assumption: {item}" for item in self.assumptions)
         lines.extend(f"  Lesson so far: {item}" for item in self.lessons)
         lines.extend(f"  Plan update: {item}" for item in self.updates[-4:])
+        if self.live_synergies:
+            lines.append(
+                "  Live synergies: "
+                + "; ".join(
+                    f"{' + '.join(s.get('names') or ())} ({s.get('outcome', '')})"
+                    for s in self.live_synergies[:4]
+                )
+            )
+        if self.one_step_synergies:
+            step_parts = []
+            for s in self.one_step_synergies[:4]:
+                missing_desc = ", ".join(s.get("missing_names") or ()) or f"{s.get('mana_shortfall', 0)} mana"
+                step_parts.append(f"{' + '.join(s.get('names') or ())} [missing: {missing_desc}]")
+            lines.append("  One step away: " + "; ".join(step_parts))
+        if self.active_switches:
+            lines.append(
+                "  Active matchup switch: "
+                + "; ".join(
+                    f"{sw.get('threat_class', '')}: {sw.get('rule', '')}" for sw in self.active_switches[:3]
+                )
+            )
         lines.append(
             "  Develop toward this win, but treat the plan as conditional guidance. "
             "The current board, stack, legal choices and immediate survival/lethal "
@@ -476,6 +500,9 @@ class GamePlan:
             "route_state": dict(self.route_state),
             "engines": dict(self.engines),
             "next_steps": list(self.next_steps),
+            "live_synergies": [dict(item) for item in self.live_synergies],
+            "one_step_synergies": [dict(item) for item in self.one_step_synergies],
+            "active_switches": [dict(item) for item in self.active_switches],
         }
 
 
@@ -5098,6 +5125,42 @@ class GamePlanManager:
         if new_role and new_role != old_role:
             self._apply_role_update(new_role, "board assessment", turn, old_role=old_role)
 
+    def _update_plan_synergies_locked(self, plan: GamePlan, game_state: dict) -> None:
+        """Compute live/1-step synergies and active matchup switches deterministically from study/board."""
+        source = getattr(self, "_playbook_source", None)
+        if not callable(source) or not isinstance(game_state, dict):
+            return
+        try:
+            book = source()
+        except Exception:
+            return
+        if book is None or not isinstance(getattr(book, "data", None), dict):
+            return
+        try:
+            from arenamcp.synergy_tracker import entries_from_playbook, evaluate_synergies
+
+            entries = entries_from_playbook(book, deck_cards=game_state.get("deck_cards") or ())
+            if entries:
+                snap = evaluate_synergies(entries, game_state, catalog=getattr(book, "catalog", None))
+                plan.live_synergies = [dict(x) for x in snap.live]
+                plan.one_step_synergies = [dict(x) for x in snap.one_step_away]
+            else:
+                plan.live_synergies = []
+                plan.one_step_synergies = []
+            chapters = book.data.get("study_chapters")
+            switches = chapters.get("switches") if isinstance(chapters, dict) else None
+            if isinstance(switches, dict):
+                active = self._opponent_read.threat_classes(game_state)
+                plan.active_switches = [
+                    {"threat_class": tc, **switches[tc]}
+                    for tc in active
+                    if isinstance(switches.get(tc), dict)
+                ]
+            else:
+                plan.active_switches = []
+        except Exception as error:
+            logger.debug("plan synergy update skipped: %s", error)
+
     def _refresh_upkeep_state_locked(self, game_state: dict) -> None:
         """Recompute the structured upkeep snapshot from the live board.
 
@@ -5116,6 +5179,7 @@ class GamePlanManager:
         plan.route_state = snapshot["route_state"]
         plan.engines = snapshot["engines"]
         plan.next_steps = snapshot["next_steps"]
+        self._update_plan_synergies_locked(plan, game_state)
 
     def _tricks(self) -> Any:
         """The opponent-trick table service, or None when it can't be had."""
@@ -5301,6 +5365,8 @@ class GamePlanManager:
 
         plan = self._plan
         state = game_state if isinstance(game_state, dict) else None
+        if plan is not None and state is not None:
+            self._update_plan_synergies_locked(plan, state)
         assessment = assess(state) if state is not None else None
         risk = opponent_interaction(state, self._tricks()) if state is not None else None
         verdict = risk.verdict_line() if risk is not None and risk.known else ""

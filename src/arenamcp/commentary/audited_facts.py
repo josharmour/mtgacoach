@@ -182,6 +182,7 @@ def binding(scope, tracked, sources, observation, text):
                 "state:game_read",
                 "private:deck_plan",
                 "private:library",
+                "private:synergies",
                 "state:revealed_opposing_hand",
             }
             and key in deps

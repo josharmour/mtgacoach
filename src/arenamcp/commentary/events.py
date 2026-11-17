@@ -218,6 +218,9 @@ class ObservationAdapter:
                 inventory = snapshot.get("commentary_library_inventory")
                 if matched and isinstance(inventory, list):
                     private_state["library_inventory"] = inventory
+                synergies = snapshot.get("commentary_synergies")
+                if matched and isinstance(synergies, dict):
+                    private_state["synergies"] = synergies
                 revealed = snapshot.get("revealed_cards")
                 if matched and isinstance(revealed, list):
                     seen = [

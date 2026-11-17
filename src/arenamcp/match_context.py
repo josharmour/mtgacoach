@@ -51,45 +51,37 @@ STRATEGIC_POLICY_PARTS: tuple[tuple[str | None, str], ...] = (
         "Follow the deck's win conditions and current game plan, but reassess every decision against "
         "the live board, stack, mana and legal options. A plan is conditional, not a forced script. "
         "Survival, a changed threat, new information or an immediate winning line can override it. "
-        "For removal, compare acting now with holding interaction, the target's actual impact, protection, "
-        "and the resource trade. Before spending development mana, budget the intended removal plus "
-        "all ward costs; if both lines do not fit, explain which interaction window is being given up. "
-        "For a transformation, check the answer's speed, activation costs that move the target, and "
-        "the later face's protection/target eligibility. Holding a sorcery-speed answer does not "
-        "allow responding on the opponent's turn. ",
+        "For removal, budget ward costs with development mana and weigh acting now against target impact and timing. "
+        "Count lethal lines, crack-back exposure and open mana before committing permanent resources. ",
     ),
     (
         None,
         "Do not tutor a habitual favorite or spend removal merely "
         "because it is payable. Library composition does not reveal draw order or guarantee a draw. "
-        "An unknown library count or missing deck inventory does not mean the library is empty; "
-        "never reject a fetch/tutor or predict decking based on missing observations. ",
+        "Unknown library counts do not mean the library is empty; judge search options when shown. "
+        "Track opponent revealed cards, open colors and combat tricks before overextending into sweepers or blowouts. ",
     ),
     (
         None,
-        "Apply the deck playbook's relevant mechanisms and conditions to each choice, including combat, "
-        "sacrifices, discards, commander zones and mana use. Equal combat stats do not imply equal "
-        "strategic value. Compare preserving an ongoing engine with spending a recoverable resource "
-        "to replay a supported trigger; account for the surviving board, colored mana, commander tax, "
-        "timing, summoning sickness and opportunity cost. Do not count a sacrificed source toward its "
-        "own recovery or assume a token has the original's cast/enter/zone options. Neither commanders "
-        "nor tokens are automatically expendable. Before choosing, compare the strongest legal "
-        "alternative and name the relevant mechanism or the live constraint that makes deviating better. "
-        "Use only effects supported by the supplied Oracle text: cast, enter, attack, death and zone "
-        "changes are different events. A static material/combat score does not price these strategic effects.",
+        "Compare preserving an ongoing engine with replaying a trigger using live mana, commander tax, "
+        "summoning sickness and timing. Neither commanders nor tokens are automatically expendable. "
+        "Before choosing, compare the strongest alternative and name the decisive constraint or mechanism. "
+        "Cast, enter, attack, death and zone changes are distinct Oracle events.",
     ),
     (
         "library",
-        "\nFor tutors, choose an eligible card still available for the current "
-        "need: survival/interaction, mana, engine, protection, or closing the game. Account for the "
-        "tutor's destination, restrictions, X and the cost/timing of using the found card. Recheck actual "
-        "search options when they arrive. ",
+        "\nFor tutors and library searches, pick an available target matching the current need "
+        "(stabilizing against lethal pressure, hitting an urgent land drop or missing color, assembling a "
+        "two-card synergy, finding protection for an engine, or closing the game), accounting for whether "
+        "the card enters the battlefield, hand or top of library, enters tapped or untapped, and whether "
+        "its mana value fits this turn's remaining mana and timing window. ",
     ),
     (
         "library",
-        "A fetch land that sacrifices itself for one land replaces a land; it is not net land ramp. "
-        "Evaluate its life cost, needed colors/mana, timing and actual synergies; deck thinning alone "
-        "is not a reason to crack it immediately.",
+        "A fetch land that sacrifices itself replaces a land drop on board rather than accelerating total mana; "
+        "evaluate life total, untapped-land life cost, fixing needs, deck thinning and landfall triggers before cracking it, "
+        "hold the fetch when holding up instant interaction, hiding color information, or waiting for opponent's end step, "
+        "and time it around topdeck manipulation, brainstorm effects, or shuffling.",
     ),
 )
 STRATEGIC_POLICY_CORE = compose_rules(STRATEGIC_POLICY_PARTS, frozenset())
@@ -256,7 +248,86 @@ def _starting_rows(deck, catalog, *, group_types):
     )
 
 
-def _visible_grp_ids(state: dict, catalog: dict[int, dict]) -> list[int]:
+_GY_EXILE_PLAY_RE = re.compile(
+    r"\b(?:flashback|escape|unearth|disturb|harmonize|embalm|eternalize|jump-start|retrace|"
+    r"aftermath|encore|plot|foretell|adventure|airbend|warp|dredge)\b"
+    r"|\bfrom (?:your|a) graveyard\b|\bin your graveyard\b|\bfrom exile\b|\bexiled with\b",
+    re.I,
+)
+_GY_EXILE_CARE_RE = re.compile(
+    r"\b(?:graveyard|exiled with|exile[sd]? card|delirium|threshold|descend|undergrowth|"
+    r"escape|flashback|unearth)\b",
+    re.I,
+)
+
+
+def _is_basic_mana_land(info: dict | None) -> bool:
+    """True for a Basic Land with only reminder/basic mana text."""
+    if not isinstance(info, dict):
+        return False
+    tline = str(info.get("type_line") or "").lower()
+    if "basic" not in tline or "land" not in tline:
+        return False
+    stripped = re.sub(r"\([^)]*\)", "", str(info.get("oracle_text") or "")).strip()
+    if not stripped:
+        return True
+    return bool(re.fullmatch(r"(?:\{o?[T]\}:\s*Add\s+\{o?[WUBRGC]\}\.?\s*)+", stripped, re.I))
+
+
+def _has_graveyard_or_exile_play(info: dict | None) -> bool:
+    """True when the card's own text grants or references graveyard/exile use."""
+    if not isinstance(info, dict):
+        return False
+    if info.get("castable_from_exile"):
+        return True
+    texts = [str(info.get("oracle_text") or ""), str(info.get("type_line") or "")]
+    for face in info.get("related_faces") or ():
+        if isinstance(face, dict):
+            texts.append(str(face.get("oracle_text") or ""))
+            texts.append(str(face.get("type_line") or ""))
+    joined = "\n".join(texts)
+    return bool(joined and _GY_EXILE_PLAY_RE.search(joined))
+
+
+def _state_uses_graveyard_or_exile(
+    state: dict, catalog: dict[int, dict] | None = None, offered: Iterable[int] = ()
+) -> bool:
+    """True when the live window or an active card references graveyards or exile."""
+    context = state.get("decision_context")
+    context = context if isinstance(context, dict) else {}
+    raw_ctx = context.get("raw") if isinstance(context.get("raw"), dict) else {}
+    header = " ".join(
+        str(v or "")
+        for v in (
+            context.get("type"),
+            context.get("context"),
+            raw_ctx.get("groupContext"),
+            state.get("pending_decision"),
+            state.get("_bridge_request_type"),
+        )
+    )
+    if re.search(r"\b(?:graveyard|exile)\b", header, re.I):
+        return True
+    cat = catalog or state.get("deck_catalog") or {}
+    for gid in offered or ():
+        info = cat.get(gid) or cat.get(str(gid)) or {}
+        if _GY_EXILE_CARE_RE.search(str(info.get("oracle_text") or "")):
+            return True
+    for zone_name in ("hand", "battlefield", "stack", "command"):
+        for card in _zone(state, zone_name):
+            text = str(card.get("oracle_text") or "")
+            if text and _GY_EXILE_CARE_RE.search(text):
+                return True
+    return any(card.get("castable_from_exile") for card in _zone(state, "exile"))
+
+
+def _visible_grp_ids(
+    state: dict,
+    catalog: dict[int, dict],
+    *,
+    exclude_inert: bool = False,
+    uses_gy_exile: bool = True,
+) -> list[int]:
     """Deck cards in a visible zone now (either side's copy), in zone order."""
     out: list[int] = []
     for zone_name in _ZONES:
@@ -264,6 +335,16 @@ def _visible_grp_ids(state: dict, catalog: dict[int, dict]) -> list[int]:
             for key in ("grp_id", "original_grp_id", "base_grp_id"):
                 gid = card.get(key)
                 if isinstance(gid, int) and gid in catalog and gid not in out:
+                    if exclude_inert:
+                        info = catalog[gid]
+                        if _is_basic_mana_land(info):
+                            continue
+                        if (
+                            zone_name in ("graveyard", "exile")
+                            and not uses_gy_exile
+                            and not _has_graveyard_or_exile_play(info)
+                        ):
+                            continue
                     out.append(gid)
     return out
 
@@ -661,7 +742,12 @@ def prepare_match_context(
     if full_rules:
         quoted = sorted(deck)
     else:
-        quoted = _rules_order(state, catalog, _visible_grp_ids(state, catalog))
+        compact_inert = bool(compact_decision and source_ids_complete)
+        uses_gy_exile = _state_uses_graveyard_or_exile(state, catalog, offered) if compact_inert else True
+        visible_now = _visible_grp_ids(
+            state, catalog, exclude_inert=compact_inert, uses_gy_exile=uses_gy_exile
+        )
+        quoted = _rules_order(state, catalog, visible_now)
         # grp ids a pending decision offers (tutor candidates and the like):
         # quoted for this call only, appended after the cards already seen so
         # the stable reference and these per-window lines can be separated
@@ -691,22 +777,14 @@ def prepare_match_context(
             # keep full raw rules; verified inactive and visible non-option cards
             # use compact CardFacts summaries when shorter. Missing evidence keeps
             # the original bytes.
-            from arenamcp.card_facts.client import warm_memory_from_disk
-            from arenamcp.card_facts.prompt_render import candidate_fact_hashes, compact_history_rules
+            from arenamcp.card_facts.prompt_render import compact_history_rules
 
-            visible_set = set(_visible_grp_ids(state, catalog))
+            visible_set = set(visible_now)
             inactive = set(quoted) - offered - scope - visible_set
             compact_targets = set(quoted) - offered - scope
             if compact_targets:
                 target_catalog = {gid: catalog[gid] for gid in compact_targets}
-                alt_hashes = [
-                    digest
-                    for card in target_catalog.values()
-                    if isinstance(card, dict)
-                    for digest in candidate_fact_hashes(card)
-                ]
-                warm_memory_from_disk(target_catalog.values(), alt_hashes=alt_hashes)
-                compact_rules = compact_history_rules(target_catalog)
+                compact_rules = compact_history_rules(target_catalog, warm=True)
         reference.extend(
             _card_line(
                 catalog[gid],

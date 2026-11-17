@@ -299,7 +299,7 @@ def compact_context(system, context, *, reply_system=None, pair_for=None):
     for key, fact in facts.items():
         if key.startswith("private:hand:"):
             related.extend(f"card:{c['grp_id']}" for c in fact.get("cards", ()) if c.get("grp_id"))
-    order += ["state:game_read", "state:battlefield", "private:deck_plan"] + related
+    order += ["state:game_read", "state:battlefield", "private:deck_plan", "private:synergies"] + related
     order += [
         f"card:{c['grp_id']}" for c in facts.get("state:board", {}).get("objects", []) if c.get("grp_id")
     ]
