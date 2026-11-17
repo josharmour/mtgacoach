@@ -211,10 +211,12 @@ def entries_from_playbook(
     """Extract SynergyEntry list from a DeckPlaybook (study interactions, else mechanisms + links)."""
     if playbook is None:
         return []
-    data = (
-        getattr(playbook, "data", playbook) if isinstance(getattr(playbook, "data", playbook), dict) else {}
-    )
-    catalog = getattr(playbook, "catalog", {}) or {}
+    raw_data = getattr(playbook, "data", playbook)
+    if not isinstance(raw_data, dict):
+        return []
+    data = raw_data
+    raw_cat = getattr(playbook, "catalog", None)
+    catalog = raw_cat if isinstance(raw_cat, dict) else {}
     entries: list[SynergyEntry] = []
     seen_sigs: set[tuple[int, ...]] = set()
 
@@ -263,10 +265,14 @@ def entries_from_playbook(
         return entries
 
     # Fallback when only legacy playbook / mechanisms + reviewed notes / CardFacts exist.
-    deck_set = {int(g) for g in deck_cards if type(g) is int and g > 4} or {
+    deck_iter = deck_cards if isinstance(deck_cards, (list, tuple, set, dict)) else ()
+    deck_set = {int(g) for g in deck_iter if type(g) is int and g > 4} or {
         int(g) for g in catalog if isinstance(g, int) or str(g).isdigit()
     }
-    commanders = set(getattr(playbook, "commanders", ()) or ())
+    raw_cmds = getattr(playbook, "commanders", ())
+    commanders = {
+        int(c) for c in (raw_cmds if isinstance(raw_cmds, (list, tuple, set)) else ()) if type(c) is int
+    }
     for idx, mech in enumerate(data.get("mechanisms") or (), 1):
         if not isinstance(mech, dict):
             continue
@@ -364,7 +370,8 @@ def evaluate_synergies(
     if type(turn_num) is not int or turn_num < 1:
         turn_num = 1
 
-    cat = catalog or game_state.get("deck_catalog") or {}
+    raw_cat = catalog if isinstance(catalog, dict) else game_state.get("deck_catalog")
+    cat = raw_cat if isinstance(raw_cat, dict) else {}
 
     def _card_info(gid: int) -> dict[str, Any]:
         return cat.get(gid) or cat.get(str(gid)) or {}
@@ -658,17 +665,26 @@ def player_synergy_facts(coach: Any, state: dict[str, Any]) -> dict[str, Any] | 
     """Build privacy-scoped live / 1-step synergy facts for commentary when allowed."""
     if coach is None or not isinstance(state, dict):
         return None
-    raw_pb = getattr(coach, "_deck_playbook", None)
-    playbook = raw_pb() if callable(raw_pb) else raw_pb
-    if playbook is None and getattr(coach, "_coach", None) is not None:
-        inner = getattr(coach._coach, "_deck_playbook", None)
-        playbook = inner() if callable(inner) else inner
-    if playbook is None:
+    try:
+        playbook = None
+        for holder in (coach, getattr(coach, "_coach", None)):
+            if holder is None:
+                continue
+            raw_pb = getattr(holder, "_deck_playbook", None)
+            cand = raw_pb() if callable(raw_pb) else raw_pb
+            if cand is not None and isinstance(getattr(cand, "data", cand), dict):
+                playbook = cand
+                break
+        if playbook is None:
+            return None
+        raw_cat = getattr(playbook, "catalog", None)
+        cat = raw_cat if isinstance(raw_cat, dict) else None
+        entries = entries_from_playbook(playbook, deck_cards=state.get("deck_cards") or ())
+        if not entries:
+            return None
+        snap = evaluate_synergies(entries, state, catalog=cat)
+    except Exception:
         return None
-    entries = entries_from_playbook(playbook, deck_cards=state.get("deck_cards") or ())
-    if not entries:
-        return None
-    snap = evaluate_synergies(entries, state, catalog=getattr(playbook, "catalog", None))
     if not snap.live and not snap.one_step_away:
         return None
     return {

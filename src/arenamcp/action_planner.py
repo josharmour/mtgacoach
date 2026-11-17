@@ -858,16 +858,20 @@ class ActionPlanner(_ActionLegalityMixin):
 
     def _with_live_synergies(self, game_state: dict[str, Any]) -> dict[str, Any]:
         """Attach live G4 synergy piece groups so board search explores full synergy lines."""
-        playbook = self._deck_playbook()
-        if playbook is None or not isinstance(game_state, dict):
+        if not isinstance(game_state, dict):
             return game_state
         try:
+            playbook = self._deck_playbook()
+            if playbook is None or not isinstance(getattr(playbook, "data", None), dict):
+                return game_state
             from arenamcp.synergy_tracker import entries_from_playbook, evaluate_synergies
 
+            raw_cat = getattr(playbook, "catalog", None)
+            catalog = raw_cat if isinstance(raw_cat, dict) else None
             entries = entries_from_playbook(playbook, deck_cards=game_state.get("deck_cards") or ())
             if not entries:
                 return game_state
-            snap = evaluate_synergies(entries, game_state, catalog=getattr(playbook, "catalog", None))
+            snap = evaluate_synergies(entries, game_state, catalog=catalog)
             groups = [s["pieces"] for s in snap.live if len(s.get("pieces") or ()) >= 2]
             if groups:
                 return {**game_state, "_synergy_groups": groups}

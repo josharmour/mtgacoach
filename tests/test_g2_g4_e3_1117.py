@@ -7,7 +7,9 @@ import json
 import os
 import sys
 import time
+from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -869,7 +871,7 @@ def test_g4_upgrade_metrics_synergy_execution(tmp_path, monkeypatch):
 
     spec = importlib.util.spec_from_file_location(
         "upgrade_metrics",
-        "/private/tmp/fable-nov/batch-a-1117/tools/upgrade_metrics.py",
+        Path(__file__).resolve().parents[1] / "tools" / "upgrade_metrics.py",
     )
     assert spec and spec.loader
     um = importlib.util.module_from_spec(spec)
@@ -1192,3 +1194,12 @@ def test_g4_synergy_tracker_dork_mana_library_and_activation_costs():
     snap_short = evaluate_synergies([entry_with_cost], sick_state, catalog=catalog)
     assert snap_short.live == ()
     assert len(snap_short.one_step_away) == 1 and snap_short.one_step_away[0]["mana_shortfall"] == 1
+
+    # Mock / raising playbook providers must degrade safely without crashing
+    assert entries_from_playbook(Mock()) == []
+    assert player_synergy_facts(Mock(), {"local_seat_id": 1}) is None
+    raising_planner = ActionPlanner(
+        backend=Mock(),
+        deck_playbook_fn=lambda: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+    assert raising_planner._with_live_synergies({"local_seat_id": 1}) == {"local_seat_id": 1}
