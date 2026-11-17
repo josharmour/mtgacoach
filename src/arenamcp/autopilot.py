@@ -16,6 +16,7 @@ import logging
 import re
 import threading
 import time
+import uuid
 from collections import deque
 from collections.abc import Callable
 from typing import Any
@@ -4131,12 +4132,14 @@ class AutopilotEngine(
             legal_actions = self._filter_rolled_back_casts(legal_actions, game_state)
             decision_context = game_state.get("decision_context")
 
+            corr_id = f"req_{uuid.uuid4().hex[:12]}"
             logger.info(
                 f"Autopilot planning: trigger={trigger}, "
                 f"legal_actions={len(legal_actions or [])} "
                 f"({legal_actions[:3] if legal_actions else []}{'...' if legal_actions and len(legal_actions) > 3 else ''}), "
                 f"decision={decision_context.get('type') if decision_context else None}, "
-                f"bridge={game_state.get('_bridge_request_type')}"
+                f"bridge={game_state.get('_bridge_request_type')}, "
+                f"correlation_id={corr_id}"
             )
 
             if decision_context and decision_context.get("type") == "declare_attackers":
@@ -4174,23 +4177,30 @@ class AutopilotEngine(
             # A different request appearing mid-call cancels the model call,
             # as on the typed path; the next cycle plans the new request.
             cancel = threading.Event()
+            cancel._cancel_source = "request_changed"
             unwatch = self._cancel_on_window_change(pre_window_identity, cancel)
             set_cancel = getattr(self._planner, "set_decision_cancel_event", None)
+            set_corr = getattr(self._planner, "set_decision_correlation_id", None)
             if callable(set_cancel):
                 set_cancel(cancel)
+            if callable(set_corr):
+                set_corr(corr_id)
             try:
                 plan = self._plan_with_trace(game_state, trigger, legal_actions, decision_context)
             finally:
+                if callable(set_corr):
+                    set_corr(None)
                 if callable(set_cancel):
                     set_cancel(None)
                 unwatch()
             if cancel.is_set():
                 self._note_cancelled_combat(game_state)
                 logger.info(
-                    "Autopilot: request changed during planning (%s gsid=%s); model call cancelled, "
+                    "Autopilot: request changed during planning (%s gsid=%s correlation_id=%s); model call cancelled, "
                     "yielding for a fresh decision",
                     pre_window_identity[1],
                     pre_window_identity[0],
+                    corr_id,
                 )
                 self._state = AutopilotState.IDLE
                 return True
@@ -5786,11 +5796,16 @@ class AutopilotEngine(
             except Exception as e:
                 logger.debug(f"pre-plan game key capture failed: {e}")
 
+        corr_id = f"req_{uuid.uuid4().hex[:12]}"
         cancel = threading.Event()
+        cancel._cancel_source = "request_changed"
         unwatch = self._cancel_on_request_change(decision, fp, cancel)
         set_cancel = getattr(self._planner, "set_decision_cancel_event", None)
+        set_corr = getattr(self._planner, "set_decision_correlation_id", None)
         if callable(set_cancel):
             set_cancel(cancel)
+        if callable(set_corr):
+            set_corr(corr_id)
         try:
             if decision.request_type == "SelectN" and decision.max_select == 0:
                 # A look selection ("Click OK to continue") has one legal answer:
@@ -5805,11 +5820,16 @@ class AutopilotEngine(
                 option_ids = self._planner.plan_decision_options(decision, game_state)
         finally:
             game_state.pop("_native_sole_pass_request", None)
+            if callable(set_corr):
+                set_corr(None)
             if callable(set_cancel):
                 set_cancel(None)
             unwatch()
         if cancel.is_set():
-            logger.info("typed-decision: request changed during planning; model call cancelled, yielding")
+            logger.info(
+                "typed-decision: request changed during planning; model call cancelled, yielding (correlation_id=%s)",
+                corr_id,
+            )
             self._state = AutopilotState.IDLE
             return True
         # #711: the game can end while this decision is being planned. Check
@@ -5849,7 +5869,10 @@ class AutopilotEngine(
             or (sole_pass is not None and native_sole_pass_request(fresh_poll) != sole_pass)
         ):
             self._request_tracker.observe(fresh_fp, request_window(game_state))
-            logger.info("typed-decision: request changed during planning; yielding for a fresh decision")
+            logger.info(
+                "typed-decision: request changed during planning; yielding for a fresh decision (correlation_id=%s)",
+                corr_id,
+            )
             self._state = AutopilotState.IDLE
             return True
         if self._abort_event.is_set():

@@ -4,16 +4,19 @@ from __future__ import annotations
 
 import argparse
 import collections
+import concurrent.futures
 import contextlib
 import dataclasses
 import gzip
 import hashlib
+import inspect
 import json
 import logging
 import math
 import os
 import re
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -850,20 +853,233 @@ class NoModel:
         raise BackendInterfaceUnsupported()
 
 
-def replay(case):
+_DEFAULT_EMPTY_FACTS_SHA256 = hashlib.sha256(b"{}").hexdigest()
+_VALID_CASE_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
+_VALID_THINKING_CHOICES = ("default", "none", "low", "high")
+
+
+def _case_decision(case: dict) -> dict:
+    decision = case.get("decision")
+    return decision if isinstance(decision, dict) else case.get("pending_decision") or {}
+
+
+def _load_report_helper(name: str):
+    try:
+        return __import__(f"tools.{name}", fromlist=[name])
+    except ImportError:
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(name, Path(__file__).resolve().parent / f"{name}.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+
+def load_cases_file(path: Path) -> tuple[list[dict], str]:
+    raw = path.read_bytes()
+    corpus_sha256 = hashlib.sha256(raw).hexdigest()
+    payload = json.loads(raw.decode("utf-8"))
+    if isinstance(payload, dict) and isinstance(payload.get("cases"), list):
+        cases = list(payload["cases"])
+    elif isinstance(payload, list):
+        cases = list(payload)
+    else:
+        raise ValueError("cases file must contain a JSON list or {'cases': [...]}")
+    return cases, corpus_sha256
+
+
+def load_labels(path: Path) -> tuple[dict[str, dict], str]:
+    raw = path.read_bytes()
+    labels_sha256 = hashlib.sha256(raw).hexdigest()
+    payload = json.loads(raw.decode("utf-8"))
+    mapping = (
+        payload.get("labels")
+        if isinstance(payload, dict) and isinstance(payload.get("labels"), dict)
+        else payload
+    )
+    if not isinstance(mapping, dict):
+        raise ValueError("labels file must be a dict or {'labels': {...}}")
+    active = {
+        str(cid): row
+        for cid, row in mapping.items()
+        if isinstance(row, dict) and row.get("status") != "abstain"
+    }
+    return active, labels_sha256
+
+
+def load_card_facts_dir(path: Path | None) -> tuple[dict[str, dict], str]:
+    if path is None:
+        return {}, _DEFAULT_EMPTY_FACTS_SHA256
+    if not path.is_dir():
+        raise ValueError(f"card-facts directory not found: {path}")
+    from arenamcp.card_facts.schema import card_facts_from_dict
+
+    records: dict[str, dict] = {}
+    file_hashes: dict[str, str] = {}
+    for item in sorted(path.glob("*.json")):
+        if not _VALID_CASE_HEX_RE.fullmatch(item.stem):
+            continue
+        raw = item.read_bytes()
+        data = json.loads(raw.decode("utf-8"))
+        if isinstance(data, dict) and "record" in data:
+            if data.get("status") not in (None, "ok"):
+                continue
+            record = data.get("record")
+        else:
+            record = data
+        if not isinstance(record, dict):
+            continue
+        digest = record.get("rules_hash")
+        if not isinstance(digest, str) or not _VALID_CASE_HEX_RE.fullmatch(digest):
+            continue
+        if digest != item.stem or not record.get("name"):
+            continue
+        try:
+            card_facts_from_dict(record)
+        except (TypeError, ValueError, KeyError):
+            continue
+        records[digest] = record
+        file_hashes[digest] = hashlib.sha256(raw).hexdigest()
+    if not records:
+        return {}, _DEFAULT_EMPTY_FACTS_SHA256
+    facts_sha256 = hashlib.sha256(
+        json.dumps(file_hashes, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return records, facts_sha256
+
+
+@contextlib.contextmanager
+def _patched_card_facts(records_by_hash: dict[str, dict] | None):
     from unittest.mock import patch
 
+    from arenamcp.card_facts.client import hash_for_card
+
+    facts_map = dict(records_by_hash or {})
+
+    def lookup(cards, *, memory_only: bool = False):
+        if not facts_map or not cards:
+            return {}
+        out = {}
+        for card in cards:
+            digest = hash_for_card(card)
+            if digest and digest in facts_map:
+                out[digest] = facts_map[digest]
+        return out
+
+    def warm(cards, *, alt_hashes=()):
+        if not facts_map:
+            return 0
+        hits = {digest for card in (cards or ()) if (digest := hash_for_card(card)) and digest in facts_map}
+        hits.update(h for h in (alt_hashes or ()) if isinstance(h, str) and h in facts_map)
+        return len(hits)
+
+    with (
+        patch("arenamcp.card_facts.client.facts_for", side_effect=lookup),
+        patch("arenamcp.line_search_moves.facts_for", side_effect=lookup),
+        patch("arenamcp.card_facts.client.warm_memory_from_disk", side_effect=warm),
+        patch("arenamcp.card_facts.client.prefetch_grp_ids", return_value=None),
+    ):
+        yield
+
+
+@contextlib.contextmanager
+def _scoped_thinking_env(thinking: str):
+    key = "ARENAMCP_THINKING_ROWS"
+    had_prev = key in os.environ
+    prev = os.environ.get(key)
+    if thinking in {"none", "low", "high"}:
+        os.environ[key] = json.dumps({"*": {"decision": thinking, "plan": thinking}})
+    elif had_prev:
+        os.environ.pop(key, None)
+    try:
+        yield
+    finally:
+        if had_prev:
+            os.environ[key] = prev
+        else:
+            os.environ.pop(key, None)
+
+
+class BenchmarkModelBackend:
+    """Thread-safe per-case wrapper enforcing priority and thinking overrides."""
+
+    def __init__(self, inner_or_factory, *, priority: int | None = 10, thinking: str = "default"):
+        self._inner_obj = inner_or_factory() if callable(inner_or_factory) else inner_or_factory
+        self._priority = priority
+        self._thinking = thinking
+        self._lock = threading.Lock()
+        self.generation_attempts = 0
+        self.interface_errors = 0
+
+    def _inner(self):
+        return self._inner_obj
+
+    @property
+    def model(self):
+        return getattr(self._inner(), "model", None)
+
+    @property
+    def last_request_metrics(self):
+        return getattr(self._inner(), "last_request_metrics", None)
+
+    @property
+    def last_served_model(self):
+        return getattr(self._inner(), "last_served_model", None)
+
+    @property
+    def last_served_alias(self):
+        return getattr(self._inner(), "last_served_alias", None)
+
+    def available(self) -> bool:
+        inner = self._inner()
+        fn = getattr(inner, "available", None)
+        return fn() if callable(fn) else True
+
+    def degraded(self) -> bool:
+        inner = self._inner()
+        fn = getattr(inner, "degraded", None)
+        return fn() if callable(fn) else False
+
+    def complete(self, *args, **kwargs):
+        with self._lock:
+            self.generation_attempts += 1
+        inner = self._inner()
+        call_kwargs = dict(kwargs)
+        candidate_extras: dict[str, object] = {}
+        if self._priority is not None:
+            candidate_extras["priority"] = self._priority
+        if self._thinking in {"none", "low", "high"}:
+            candidate_extras["enable_thinking"] = self._thinking != "none"
+            candidate_extras["reasoning_effort"] = self._thinking
+        if candidate_extras:
+            try:
+                sig = inspect.signature(inner.complete)
+                accepts_var_kw = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+                for k, v in candidate_extras.items():
+                    if accepts_var_kw or k in sig.parameters:
+                        call_kwargs[k] = v
+            except (TypeError, ValueError):
+                call_kwargs.update(candidate_extras)
+        return inner.complete(*args, **call_kwargs)
+
+    def __getattr__(self, name: str):
+        if name.startswith("_"):
+            raise AttributeError(name)
+        with self._lock:
+            self.interface_errors += 1
+        raise BackendInterfaceUnsupported(name)
+
+
+def replay(case, *, patch_facts: bool = True):
     from arenamcp.action_planner import ActionPlanner
     from arenamcp.decision_snapshot import game_state_from_snapshot
 
-    decision = typed_decision(case["decision"])
+    decision = typed_decision(_case_decision(case))
     start = time.perf_counter()
     result = {"case_id": case["case_id"], "status": "withheld", "chosen": []}
     # No cached or remote facts silently change the benchmark input.
-    with (
-        patch("arenamcp.card_facts.client.facts_for", return_value={}),
-        patch("arenamcp.line_search_moves.facts_for", return_value={}),
-    ):
+    facts_ctx = _patched_card_facts(None) if patch_facts else contextlib.nullcontext()
+    with facts_ctx:
         try:
             backend = NoModel()
             planner = ActionPlanner(backend)
@@ -892,6 +1108,47 @@ def replay(case):
     return result
 
 
+def replay_model_case(
+    case,
+    backend_factory,
+    *,
+    planning_timeout: float = 30.0,
+    patch_facts: bool = True,
+    records_by_hash: dict[str, dict] | None = None,
+):
+    from arenamcp.action_planner import ActionPlanner
+    from arenamcp.decision_snapshot import game_state_from_snapshot
+
+    decision = typed_decision(_case_decision(case))
+    start = time.perf_counter()
+    result = {"case_id": case["case_id"], "status": "error", "chosen": []}
+    backend = backend_factory()
+    facts_ctx = _patched_card_facts(records_by_hash) if patch_facts else contextlib.nullcontext()
+    llm_failure = ""
+    with facts_ctx:
+        try:
+            planner = ActionPlanner(backend, timeout=planning_timeout)
+            chosen = planner.plan_decision_options(decision, game_state_from_snapshot(case["snapshot"]))
+            llm_failure = str(getattr(planner, "last_llm_failure", "") or "")
+            if backend.interface_errors:
+                result.update(status="error", error="BackendInterfaceUnsupported", chosen=[])
+            elif llm_failure == "unavailable":
+                result.update(status="error", error="ModelUnavailable", chosen=[])
+            elif decision.selection_is_valid(chosen):
+                result.update(status="answered", chosen=list(chosen))
+            else:
+                result.update(status="invalid", chosen=[])
+        except BackendInterfaceUnsupported:
+            result.update(status="error", error="BackendInterfaceUnsupported", chosen=[])
+        except Exception as error:
+            result.update(status="error", error=type(error).__name__, chosen=[])
+    result["interface_errors"] = backend.interface_errors
+    result["generation_attempts"] = backend.generation_attempts
+    result["llm_failure"] = llm_failure
+    result["seconds"] = time.perf_counter() - start
+    return result
+
+
 def score(chosen, label):
     """A label enumerates acceptable selections, not individual interchangeable IDs."""
     key = sorted(chosen)
@@ -900,6 +1157,213 @@ def score(chosen, label):
     if key in [sorted(selection) for selection in label.get("acceptable", [])]:
         return "acceptable"
     return "unlabelled_choice"
+
+
+def _score_row(row: dict, labels: dict[str, dict] | None) -> str:
+    if row.get("status") != "answered" or not labels or row["case_id"] not in labels:
+        return "not_scored"
+    return score(row["chosen"], labels[row["case_id"]])
+
+
+def _selection_sha256(row: dict) -> str:
+    payload = sorted(row["chosen"]) if row.get("status") == "answered" else []
+    return hashlib.sha256(json.dumps(payload, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def build_v1_report(
+    *,
+    results: list[dict],
+    corpus_sha256: str,
+    configuration_sha256: str,
+    facts_sha256: str,
+    labels_sha256: str,
+    model_layer: str,
+    labels: dict[str, dict] | None = None,
+) -> dict:
+    report_mod = _load_report_helper("benchmark_report")
+    v1_rows = [
+        {
+            "case_id": row["case_id"],
+            "status": row["status"],
+            "selection_sha256": _selection_sha256(row),
+            "seconds": float(row["seconds"]),
+            "generation_attempts": int(row["generation_attempts"]),
+            "score": _score_row(row, labels),
+        }
+        for row in results
+    ]
+    report = {
+        "version": 1,
+        "corpus_sha256": corpus_sha256,
+        "configuration_sha256": configuration_sha256,
+        "facts_sha256": facts_sha256,
+        "labels_sha256": labels_sha256,
+        "model_layer": model_layer,
+        "results": v1_rows,
+    }
+    report_mod.validate(report)
+    return report
+
+
+def _repeat_outcome(row: dict, labels: dict[str, dict]) -> str:
+    status = row.get("status")
+    if status == "answered":
+        return score(row["chosen"], labels[row["case_id"]])
+    if status == "withheld":
+        return "withheld"
+    return "error"
+
+
+def summarize_benchmark_repeats(
+    *,
+    cases: list[dict],
+    repeat_runs: list[list[dict]],
+    corpus_sha256: str,
+    configuration_sha256: str,
+    labels_sha256: str,
+    labels: dict[str, dict],
+) -> dict:
+    repeats_mod = _load_report_helper("benchmark_repeats")
+    labelled_ids = [c["case_id"] for c in cases if c["case_id"] in labels]
+    labelled_set = set(labelled_ids)
+    trials = [
+        {
+            "case_id": row["case_id"],
+            "repeat": repeat_idx,
+            "outcome": _repeat_outcome(row, labels),
+            "seconds": float(row["seconds"]),
+        }
+        for repeat_idx, rows in enumerate(repeat_runs)
+        for row in rows
+        if row["case_id"] in labelled_set
+    ]
+    return repeats_mod.summarize_repeats(
+        case_ids=labelled_ids,
+        repeats=len(repeat_runs),
+        trials=trials,
+        corpus_sha256=corpus_sha256,
+        labels_sha256=labels_sha256,
+        configuration_sha256=configuration_sha256,
+    )
+
+
+def _proxy_backend_factory(*, model: str):
+    from arenamcp.backends.proxy import ProxyBackend, resolve_online_base_url
+    from arenamcp.settings import get_settings
+
+    settings = get_settings()
+    license_key = str(settings.get("license_key") or "")
+    base_url = resolve_online_base_url(settings.get("gateway_url"))
+    if not license_key:
+        raise RuntimeError("license_key missing in Coach settings for proxy benchmark")
+    tls = threading.local()
+
+    def get_inner():
+        inner = getattr(tls, "backend", None)
+        if inner is None:
+            inner = ProxyBackend.create_online(
+                model=model,
+                license_key=license_key,
+                base_url=base_url,
+            )
+            tls.backend = inner
+        return inner
+
+    return get_inner
+
+
+def run_benchmark(
+    cases: list[dict],
+    *,
+    corpus_sha256: str,
+    labels: dict[str, dict] | None = None,
+    labels_sha256: str = "",
+    records_by_hash: dict[str, dict] | None = None,
+    facts_sha256: str = _DEFAULT_EMPTY_FACTS_SHA256,
+    backend_mode: str = "none",
+    model: str = "current",
+    thinking: str = "default",
+    priority: int = 10,
+    repeats: int = 1,
+    workers: int = 1,
+    planning_timeout: float = 30.0,
+    inner_backend_factory=None,
+) -> tuple[list[list[dict]], dict, dict | None]:
+    """Run code-only or model-layer benchmark (1 or more repeats) offline-safe for card facts."""
+    if repeats < 1 or repeats > 100:
+        raise ValueError("repeats must be 1..100")
+    if workers < 1 or workers > 16:
+        raise ValueError("workers must be 1..16")
+    if thinking not in _VALID_THINKING_CHOICES:
+        raise ValueError(f"unsupported thinking policy: {thinking}")
+
+    config_payload = {
+        "backend": backend_mode,
+        "model": model if backend_mode == "proxy" else "none",
+        "thinking": thinking if backend_mode == "proxy" else "none",
+        "priority": priority if backend_mode == "proxy" else None,
+        "planning_timeout": planning_timeout if backend_mode == "proxy" else None,
+    }
+    configuration_sha256 = hashlib.sha256(
+        json.dumps(config_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+    effective_labels_sha = labels_sha256 or _DEFAULT_EMPTY_FACTS_SHA256
+    model_layer = "not_run" if backend_mode == "none" else "run"
+
+    if backend_mode == "proxy":
+        raw_factory = inner_backend_factory or _proxy_backend_factory(model=model)
+
+        def case_backend_factory():
+            return BenchmarkModelBackend(raw_factory, priority=priority, thinking=thinking)
+
+        def run_one(case):
+            return replay_model_case(
+                case,
+                case_backend_factory,
+                planning_timeout=planning_timeout,
+                patch_facts=False,
+            )
+    else:
+
+        def run_one(case):
+            return replay(case, patch_facts=False)
+
+    repeat_runs: list[list[dict]] = []
+    with (
+        _patched_card_facts(records_by_hash),
+        _scoped_thinking_env(thinking if backend_mode == "proxy" else "default"),
+    ):
+        for _ in range(repeats):
+            if workers == 1:
+                rows = [run_one(case) for case in cases]
+            else:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+                    rows = list(pool.map(run_one, cases))
+            repeat_runs.append(rows)
+
+    v1_report = build_v1_report(
+        results=repeat_runs[0],
+        corpus_sha256=corpus_sha256,
+        configuration_sha256=configuration_sha256,
+        facts_sha256=facts_sha256,
+        labels_sha256=effective_labels_sha,
+        model_layer=model_layer,
+        labels=labels,
+    )
+    repeats_summary = None
+    if repeats >= 2:
+        if not labels:
+            raise ValueError("--labels required to compute --repeats-report across >=2 repeats")
+        repeats_summary = summarize_benchmark_repeats(
+            cases=cases,
+            repeat_runs=repeat_runs,
+            corpus_sha256=corpus_sha256,
+            configuration_sha256=configuration_sha256,
+            labels_sha256=effective_labels_sha,
+            labels=labels,
+        )
+    return repeat_runs, v1_report, repeats_summary
 
 
 def diff_reports(before, after):
@@ -1011,11 +1475,24 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bundles", type=Path)
     parser.add_argument("--cases", type=Path)
+    parser.add_argument("--cases-file", type=Path, help="explicit JSON cases file (e.g. blinded.local.json)")
+    parser.add_argument("--labels", type=Path, help="official B3 labels JSON file")
     parser.add_argument(
         "--aggregate-only", action="store_true", help="in-memory code replay; no case files or private output"
     )
     parser.add_argument("--code-only", action="store_true")
+    parser.add_argument("--backend", choices=("none", "proxy"), default="none")
+    parser.add_argument("--model", default="current")
+    parser.add_argument("--thinking", choices=_VALID_THINKING_CHOICES, default="default")
+    parser.add_argument("--priority", type=int, default=10)
+    parser.add_argument("--repeats", type=int, default=1)
+    parser.add_argument("--workers", type=int, default=1)
+    parser.add_argument("--planning-timeout", type=float, default=30.0)
+    parser.add_argument("--card-facts-dir", type=Path, default=None)
+    parser.add_argument("--limit", type=int, default=None, help="cap number of cases replayed (smoke test)")
     parser.add_argument("--report", type=Path)
+    parser.add_argument("--v1-report", type=Path, help="write strict benchmark_report v1 JSON")
+    parser.add_argument("--repeats-report", type=Path, help="write benchmark_repeats aggregate JSON")
     parser.add_argument(
         "--native-combat",
         action="store_true",
@@ -1037,26 +1514,76 @@ def main(argv=None):
             parser.exit(2, "offline aggregate replay failed; no cases exported\n")
         print(json.dumps(value, sort_keys=True))
         return
-    if args.cases is None:
-        parser.exit(2, "cases directory required outside aggregate-only mode\n")
-    if args.bundles:
+    if args.cases is None and args.cases_file is None:
+        parser.exit(2, "cases directory or --cases-file required outside aggregate-only mode\n")
+    if args.bundles and args.cases is not None:
         cases, manifest, counts = build_cases(args.bundles.glob("*.json.gz"))
         args.cases.mkdir(parents=True, exist_ok=True)
         (args.cases / "cases.json").write_text(json.dumps(cases))
         (args.cases / "private-source-manifest.json").write_text(json.dumps(manifest, indent=2))
         print(json.dumps(counts))
-    if args.code_only:
-        cases = json.loads((args.cases / "cases.json").read_text())
-        results = [replay(case) for case in cases]
-        report = {
-            "results": results,
-            "counts": dict(collections.Counter(r["status"] for r in results)),
-            "seconds": sum(r["seconds"] for r in results),
-            "model_layer": "not_run",
-        }
+
+    if args.code_only or args.backend == "proxy" or args.v1_report or args.repeats_report:
+        if args.cases_file is not None:
+            cases, corpus_sha256 = load_cases_file(args.cases_file)
+        else:
+            cases_path = args.cases / "cases.json"
+            cases, corpus_sha256 = load_cases_file(cases_path)
+        if args.limit is not None:
+            cases = cases[: max(0, args.limit)]
+            corpus_sha256 = hashlib.sha256(
+                json.dumps(cases, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            ).hexdigest()
+        labels_map = None
+        labels_sha = _DEFAULT_EMPTY_FACTS_SHA256
+        if args.labels is not None:
+            labels_map, labels_sha = load_labels(args.labels)
+        records_by_hash, facts_sha = load_card_facts_dir(args.card_facts_dir)
+        backend_mode = "none" if args.code_only else args.backend
+        repeat_runs, v1_report, repeats_summary = run_benchmark(
+            cases,
+            corpus_sha256=corpus_sha256,
+            labels=labels_map,
+            labels_sha256=labels_sha,
+            records_by_hash=records_by_hash,
+            facts_sha256=facts_sha,
+            backend_mode=backend_mode,
+            model=args.model,
+            thinking=args.thinking,
+            priority=args.priority,
+            repeats=args.repeats,
+            workers=args.workers,
+            planning_timeout=args.planning_timeout,
+        )
+        results = repeat_runs[0]
         if args.report:
+            report = {
+                "results": results,
+                "counts": dict(collections.Counter(r["status"] for r in results)),
+                "seconds": sum(r["seconds"] for r in results),
+                "model_layer": v1_report["model_layer"],
+            }
             args.report.write_text(json.dumps(report, indent=2))
-        print(json.dumps({k: v for k, v in report.items() if k != "results"}))
+        if args.v1_report:
+            args.v1_report.write_text(json.dumps(v1_report, indent=2))
+        if args.repeats_report and repeats_summary is not None:
+            args.repeats_report.write_text(json.dumps(repeats_summary, indent=2))
+        report_mod = _load_report_helper("benchmark_report")
+        summary_out = {
+            "counts": dict(collections.Counter(r["status"] for r in results)),
+            "llm_failures": dict(collections.Counter((r.get("llm_failure") or "none") for r in results)),
+            "seconds": sum(r["seconds"] for r in results),
+            "model_layer": v1_report["model_layer"],
+            "v1_summary": report_mod.summary(v1_report),
+        }
+        if repeats_summary is not None:
+            summary_out["repeats_summary"] = {
+                "repeats": repeats_summary["repeats"],
+                "spread": repeats_summary["spread"],
+                "observed_trials": repeats_summary["observed_trials"],
+                "expected_trials": repeats_summary["expected_trials"],
+            }
+        print(json.dumps(summary_out, indent=2))
 
 
 if __name__ == "__main__":

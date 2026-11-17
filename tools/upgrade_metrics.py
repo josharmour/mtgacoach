@@ -642,6 +642,130 @@ def redundant_pass_cycles(coach_lines):
     return wasted_s
 
 
+def _proxy_cancelled_record(line: str, metrics: dict) -> dict | None:
+    """Extract bounded cancellation/drop fields from a proxy Request metrics row."""
+    status = metrics.get("status")
+    if status not in {"cancelled", "dropped"}:
+        return None
+    call_id = metrics.get("call_id")
+    if isinstance(call_id, str) and call_id:
+        receipt = hashlib.sha256(f"call_id:{call_id}".encode()).hexdigest()
+    elif COACH_TS_RE.match(line) or metrics.get("response_id") or metrics.get("request_started_unix_s"):
+        receipt = hashlib.sha256(line.encode()).hexdigest()
+    else:
+        receipt = None
+    corr = metrics.get("correlation_id")
+    if not (isinstance(corr, str) and re.fullmatch(r"[A-Za-z0-9_.:-]{1,96}", corr)):
+        corr = None
+    total_ms = metrics.get("total_ms")
+    if type(total_ms) not in (int, float) or not math.isfinite(total_ms) or total_ms < 0:
+        total_ms = None
+    started = metrics.get("request_started_unix_s")
+    if type(started) not in (int, float) or not math.isfinite(started) or started < 0:
+        started = None
+    src = metrics.get("cancel_source")
+    if src not in {"request_changed", "hedge_loser", "timeout"}:
+        src = None
+    return {
+        "receipt": receipt,
+        "call_id": call_id if isinstance(call_id, str) and call_id else None,
+        "call_class": str(metrics.get("call_class") or "unknown"),
+        "status": str(status),
+        "cancel_source": src,
+        "correlation_id": corr,
+        "request_started_unix_s": float(started) if started is not None else None,
+        "total_ms": float(total_ms) if total_ms is not None else None,
+    }
+
+
+def _merged_interval_seconds(records: list[dict]) -> float:
+    """Wall-clock union duration in seconds across overlapping calls in one request."""
+    intervals: list[tuple[float, float]] = []
+    untimed_s: list[float] = []
+    for rec in records:
+        ms = rec.get("total_ms")
+        dur_s = (ms / 1000.0) if ms is not None else None
+        start = rec.get("request_started_unix_s")
+        if start is not None and dur_s is not None:
+            intervals.append((start, start + dur_s))
+        elif dur_s is not None:
+            untimed_s.append(dur_s)
+    if not intervals:
+        return max(untimed_s, default=0.0)
+    intervals.sort()
+    merged: list[list[float]] = []
+    for start, end in intervals:
+        if not merged or start > merged[-1][1]:
+            merged.append([start, end])
+        elif end > merged[-1][1]:
+            merged[-1][1] = end
+    return sum(end - start for start, end in merged)
+
+
+def summarize_correlated_cancellations(records: list[dict]) -> dict:
+    """Attribute proxy cancellations via per-request correlation IDs without double-counting hedges."""
+    deduped: list[dict] = []
+    seen_keys: set[tuple[str, str]] = set()
+    for rec in records:
+        if rec.get("call_id"):
+            key = ("call_id", rec["call_id"])
+        elif rec.get("receipt"):
+            key = ("receipt", rec["receipt"])
+        else:
+            deduped.append(rec)
+            continue
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        deduped.append(rec)
+
+    by_corr: dict[str, list[dict]] = defaultdict(list)
+    request_changed_calls = 0
+    request_changed_uncorrelated = 0
+    hedge_loser_calls = 0
+    hedge_loser_s = 0.0
+    timeout_cancelled_calls = 0
+    uncorrelated_by_class: dict[str, dict] = {}
+
+    for rec in deduped:
+        src = rec.get("cancel_source")
+        corr = rec.get("correlation_id")
+        cc = rec.get("call_class") or "unknown"
+        dur_s = (rec["total_ms"] / 1000.0) if rec.get("total_ms") is not None else 0.0
+        if src == "request_changed" and cc.startswith("decision."):
+            if corr is not None:
+                request_changed_calls += 1
+                by_corr[corr].append(rec)
+            else:
+                request_changed_uncorrelated += 1
+        elif src == "hedge_loser":
+            hedge_loser_calls += 1
+            hedge_loser_s += dur_s
+        elif src == "timeout":
+            timeout_cancelled_calls += 1
+        elif src is None:
+            bucket = uncorrelated_by_class.setdefault(cc, {"calls": 0, "total_s": 0.0})
+            bucket["calls"] += 1
+            bucket["total_s"] += dur_s
+
+    attributable_s = (
+        round(sum(_merged_interval_seconds(group) for group in by_corr.values()), 3) if by_corr else None
+    )
+    return {
+        "unique_requests": len(by_corr),
+        "request_changed_calls": request_changed_calls,
+        "request_changed_uncorrelated_calls": request_changed_uncorrelated,
+        "attributable_duration_s": attributable_s,
+        "hedge_loser_calls": hedge_loser_calls,
+        "hedge_loser_total_s": round(hedge_loser_s, 3),
+        "timeout_cancelled_calls": timeout_cancelled_calls,
+        "uncorrelated_proxy_cancelled_by_class": {
+            cls: {"calls": row["calls"], "total_s": round(row["total_s"], 3)}
+            for cls, row in sorted(uncorrelated_by_class.items())
+        },
+    }
+
+
 def t1_bundle_metrics(bundle):
     """T1 clock measurements for one bundle (plan section T1, item 1)."""
     coach_lines = ((bundle.get("coach_log") or {}).get("lines")) or []
@@ -649,12 +773,21 @@ def t1_bundle_metrics(bundle):
     local_seat = final_state.get("local_seat_id")
     clock = gre_clock_timeline(((bundle.get("player_log") or {}).get("events")) or [])
     events, unanswered = surfaced_request_events(coach_lines, clock, local_seat)
+    cancelled_proxy = []
+    for line in coach_lines:
+        metrics = parse_request_metrics(line)
+        if metrics is None:
+            continue
+        rec = _proxy_cancelled_record(line, metrics)
+        if rec is not None:
+            cancelled_proxy.append(rec)
     return {
         "events": events,
         "unanswered_by_type": dict(unanswered),
         "hop_waits_s": hop_limit_waits(coach_lines),
         "cancellation_marker_families": cancellation_marker_families(coach_lines),
         "redundant_pass_cycles_s": redundant_pass_cycles(coach_lines),
+        "cancelled_proxy_calls": cancelled_proxy,
         "local_seat": local_seat,
         "final_timers_by_seat": final_rope_seconds(clock),
     }
@@ -700,6 +833,7 @@ def summarize_bundle(bundle):
             "hop_waits_s": [],
             "cancellation_marker_families": [],
             "redundant_pass_cycles_s": [],
+            "cancelled_proxy_calls": [],
         },
     }
 
@@ -707,11 +841,16 @@ def summarize_bundle(bundle):
         metrics = parse_request_metrics(line)
         if metrics is not None:
             # Overlapping archive tails can contain the same timestamped request.
-            # Without an identifying timestamp/receipt, count independent observations.
-            identified = (
+            # Without an identifying call_id/timestamp/receipt, count independent observations.
+            call_id = metrics.get("call_id")
+            if isinstance(call_id, str) and call_id:
+                receipt = hashlib.sha256(f"call_id:{call_id}".encode()).digest()
+            elif (
                 COACH_TS_RE.match(line) or metrics.get("response_id") or metrics.get("request_started_unix_s")
-            )
-            receipt = hashlib.sha256(line.encode()).digest() if identified else None
+            ):
+                receipt = hashlib.sha256(line.encode()).digest()
+            else:
+                receipt = None
             record = {
                 k: metrics.get(k)
                 for k in (
@@ -789,8 +928,13 @@ def _merge(dst, src):
     t1_dst, t1_src = dst["t1"], src["t1"]
     t1_dst["events"].extend(t1_src["events"])
     t1_dst["unanswered_by_type"].update(t1_src["unanswered_by_type"])
-    for key in ("hop_waits_s", "cancellation_marker_families", "redundant_pass_cycles_s"):
-        t1_dst[key].extend(t1_src[key])
+    for key in (
+        "hop_waits_s",
+        "cancellation_marker_families",
+        "redundant_pass_cycles_s",
+        "cancelled_proxy_calls",
+    ):
+        t1_dst[key].extend(t1_src.get(key) or [])
     dst["games"] += 1
 
 
@@ -810,7 +954,7 @@ def _stat_block(values):
 def aggregate_t1(match_folds):
     """Aggregate the per-match T1 folds into the report's clock section."""
     by_type = defaultdict(lambda: {"answered": 0, "unanswered": 0, "ask_to_ans_s": [], "rope_left_s": []})
-    hop, cancels, cycles = [], [], []
+    hop, cancels, cycles, proxy_cancels = [], [], [], []
     per_match = {}
     for match_id, fold in match_folds.items():
         t1 = fold["t1"]
@@ -823,6 +967,7 @@ def aggregate_t1(match_folds):
                 "hop_waits_s": [],
                 "cancellation_marker_families": [],
                 "redundant_pass_cycles_s": [],
+                "cancelled_proxy_calls": [],
             },
         )
         for ev in t1["events"]:
@@ -840,9 +985,11 @@ def aggregate_t1(match_folds):
             ("hop_waits_s", hop),
             ("cancellation_marker_families", cancels),
             ("redundant_pass_cycles_s", cycles),
+            ("cancelled_proxy_calls", proxy_cancels),
         ):
-            dst_list.extend(t1[key])
-            pm[key].extend(t1[key])
+            rows = t1.get(key) or []
+            dst_list.extend(rows)
+            pm[key].extend(rows)
 
     by_type_out = {}
     for etype, row in by_type.items():
@@ -870,6 +1017,7 @@ def aggregate_t1(match_folds):
             "events_by_type": {},
             "hop_waits": _stat_block(pm["hop_waits_s"]),
             "cancellation_markers": cancellation_summary(pm["cancellation_marker_families"]),
+            "correlated_cancellations": summarize_correlated_cancellations(pm["cancelled_proxy_calls"]),
             "redundant_pass_cycles": _stat_block(pm["redundant_pass_cycles_s"]),
         }
         for etype, evs in pm["events_by_type"].items():
@@ -893,6 +1041,7 @@ def aggregate_t1(match_folds):
         "by_event_type": by_type_out,
         "hop_limit_watchdog_waits": _stat_block(hop),
         "cancellation_markers": cancellation_summary(cancels),
+        "correlated_cancellations": summarize_correlated_cancellations(proxy_cancels),
         "redundant_pass_cycles": cycles_block,
         "per_match": per_match_out,
     }
@@ -957,6 +1106,7 @@ def aggregate(summaries):
                     "hop_waits_s": [],
                     "cancellation_marker_families": [],
                     "redundant_pass_cycles_s": [],
+                    "cancelled_proxy_calls": [],
                 },
                 "_latest": None,
             },
@@ -1200,6 +1350,32 @@ def render_report(agg):
         "  marker families: "
         + ", ".join(f"{name}={count}" for name, count in sorted(cancels.get("families", {}).items()))
     )
+    corr = t1.get("correlated_cancellations") or {}
+    if (
+        corr.get("unique_requests")
+        or corr.get("hedge_loser_calls")
+        or corr.get("timeout_cancelled_calls")
+        or corr.get("request_changed_uncorrelated_calls")
+    ):
+        dur_str = (
+            f"{corr['attributable_duration_s']:.1f} s wall-clock union"
+            if corr.get("attributable_duration_s") is not None
+            else "n/a"
+        )
+        out.append(
+            f"  correlated request-change cancellations: {corr.get('unique_requests', 0)} unique requests "
+            f"({corr.get('request_changed_calls', 0)} calls, {dur_str}); "
+            f"hedge loser: {corr.get('hedge_loser_calls', 0)} calls ({corr.get('hedge_loser_total_s', 0.0):.1f} s); "
+            f"timeout: {corr.get('timeout_cancelled_calls', 0)} calls"
+        )
+    uncorr_cls = corr.get("uncorrelated_proxy_cancelled_by_class") or {}
+    if uncorr_cls:
+        out.append(
+            "  uncorrelated proxy cancelled/dropped by class: "
+            + ", ".join(
+                f"{cls}={row['calls']} ({row['total_s']:.1f}s)" for cls, row in sorted(uncorr_cls.items())
+            )
+        )
     out.append(
         f"Candidate redundant model calls on unchanged pass windows: "
         f"{cycles.get('n', 0)} cycles / "

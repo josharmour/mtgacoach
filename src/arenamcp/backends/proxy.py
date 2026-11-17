@@ -11,6 +11,7 @@ import socket
 import sys
 import threading
 import time
+import uuid
 from dataclasses import dataclass, field
 
 from arenamcp import llm_trace
@@ -947,6 +948,17 @@ class CompletionUsage:
     output_tokens: int | None = None
 
 
+_VALID_CORRELATION_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,96}$")
+_CANCEL_SOURCES = frozenset({"request_changed", "hedge_loser", "timeout"})
+
+
+def _valid_correlation_id(value) -> str | None:
+    """Accept only bounded ASCII correlation identifiers; never log free text."""
+    if isinstance(value, str) and _VALID_CORRELATION_ID_RE.fullmatch(value):
+        return value
+    return None
+
+
 @dataclass
 class _CallContext:
     """Per-call settings shared by complete(), its attempts and its metrics."""
@@ -957,6 +969,10 @@ class _CallContext:
     handle: _CallHandle
     first_token_timeout_s: float | None = None
     priority: int | None = None
+    call_id: str = field(default_factory=lambda: uuid.uuid4().hex[:16])
+    correlation_id: str | None = None
+    cancel_reason: str | None = None
+    cancel_source: str | None = None
     first_token_at: float | None = None
     started_unix_s: float = field(default_factory=time.time)
     first_content_at: float | None = None
@@ -1321,6 +1337,7 @@ class ProxyBackend:
         selective_thinking: bool = False,
         idle_playbook: bool = False,
         completion_usage: CompletionUsage | None = None,
+        correlation_id: str | None = None,
     ) -> str:
         """Get completion from the API endpoint.
 
@@ -1409,6 +1426,7 @@ class ProxyBackend:
             max_tokens=max_tokens,
             budget_s=budget,
             handle=_CallHandle(resolved_class, cancel_event),
+            correlation_id=_valid_correlation_id(correlation_id),
             completion_usage=completion_usage,
             first_token_timeout_s=_positive_or_none(first_token_timeout_s),
             background=is_background,
@@ -1764,6 +1782,12 @@ class ProxyBackend:
         raise_on_error: bool,
     ) -> str:
         """A cancelled/superseded/dropped call: logged, never a backend failure."""
+        call.cancel_reason = reason
+        if reason == "cancelled":
+            ext = getattr(call.handle, "_external", None)
+            src = getattr(ext, "_cancel_source", None)
+            if isinstance(src, str) and src in _CANCEL_SOURCES:
+                call.cancel_source = src
         self._record_request_metrics(
             params,
             request_started=request_started,
@@ -1946,6 +1970,10 @@ class ProxyBackend:
             max_tokens = params.get("max_tokens") or params.get("max_completion_tokens")
         metrics = {
             "model": self.model,
+            "call_id": call.call_id if call is not None else None,
+            "correlation_id": call.correlation_id if call is not None else None,
+            "cancel_reason": call.cancel_reason if call is not None else None,
+            "cancel_source": call.cancel_source if call is not None else None,
             "request_started_unix_s": call.started_unix_s if call is not None else None,
             "response_id": call.response_id if call is not None else None,
             "client_setup_ms": round(call.client_setup_ms, 1) if call is not None else None,

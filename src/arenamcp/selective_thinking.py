@@ -124,6 +124,12 @@ def race(ask, parse, message, *, deadline, trace, cancel_event=None):
     finally:
         for leg, event in cancels.items():
             if leg != winner:
+                if getattr(event, "_cancel_source", None) is None:
+                    event._cancel_source = (
+                        "request_changed"
+                        if (cancel_event is not None and cancel_event.is_set())
+                        else ("hedge_loser" if winner is not None else "timeout")
+                    )
                 event.set()
         with condition:
             trace["selected_leg"] = winner

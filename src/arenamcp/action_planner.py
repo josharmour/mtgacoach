@@ -809,6 +809,17 @@ class ActionPlanner(_ActionLegalityMixin):
         """
         self._decision_cancel_event = event
 
+    def set_decision_correlation_id(self, correlation_id: str | None) -> None:
+        """Attach a bounded correlation ID to decision calls for the active window."""
+        self._decision_correlation_id = correlation_id
+
+    @staticmethod
+    def _mark_and_set_cancel(event: threading.Event, source: str) -> None:
+        """Tag a local hedge cancel event with its source if untagged, then set it."""
+        if getattr(event, "_cancel_source", None) is None:
+            event._cancel_source = source
+        event.set()
+
     def set_game_plan_source(self, source: Callable[..., str] | None, *, step_source=None) -> None:
         """Render the strategy block per decision from the live snapshot.
 
@@ -1155,6 +1166,9 @@ class ActionPlanner(_ActionLegalityMixin):
             cancel_event = getattr(self, "_decision_cancel_event", None)
         if cancel_event is not None and call_class.startswith("decision."):
             extras["cancel_event"] = cancel_event
+        corr_id = getattr(self, "_decision_correlation_id", None)
+        if corr_id and call_class.startswith("decision."):
+            extras["correlation_id"] = corr_id
         extras = _accepted_extras(complete, extras)
         try:
             try:
@@ -1249,6 +1263,7 @@ class ActionPlanner(_ActionLegalityMixin):
             raise concurrent.futures.TimeoutError()
         pool = concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="planner-llm")
         cancels = [threading.Event(), threading.Event()]
+        winner_leg: str | None = None
         try:
             pending = {
                 "high": pool.submit(complete, "decision.plan", "high", cancel_event=cancels[0]),
@@ -1269,6 +1284,7 @@ class ActionPlanner(_ActionLegalityMixin):
                         answers[leg] = answer
                         valid = usable(answer) if usable is not None else bool(answer)
                         if valid:
+                            winner_leg = leg
                             logger.info(
                                 "Declaration plan: %s won in %.0f ms; other effort not awaited",
                                 leg,
@@ -1288,6 +1304,7 @@ class ActionPlanner(_ActionLegalityMixin):
                 )
             for leg in ("high", "low"):
                 if leg in answers:
+                    winner_leg = leg
                     return answers[leg]
             if errors:
                 raise errors.get("high", next(iter(errors.values())))
@@ -1295,8 +1312,14 @@ class ActionPlanner(_ActionLegalityMixin):
         finally:
             # Stop outstanding network work after a winner, timeout or
             # request change; shutdown(wait=False) alone only stops waiting.
+            outer = getattr(self, "_decision_cancel_event", None)
+            source = (
+                "request_changed"
+                if (outer is not None and outer.is_set())
+                else ("hedge_loser" if winner_leg is not None else "timeout")
+            )
             for cancel in cancels:
-                cancel.set()
+                self._mark_and_set_cancel(cancel, source)
             pool.shutdown(wait=False, cancel_futures=True)
 
     def _llm_unavailable_plan(
@@ -1608,19 +1631,36 @@ class ActionPlanner(_ActionLegalityMixin):
                 logger.info("E4 call metrics: %s", json.dumps(event, sort_keys=True))
             return answer
 
+        def _cancel_source_for_error(
+            outer_ev: threading.Event | None, err: BaseException | None
+        ) -> str | None:
+            if outer_ev is not None and outer_ev.is_set():
+                src = getattr(outer_ev, "_cancel_source", None)
+                return src if isinstance(src, str) and src else "request_changed"
+            if err is not None and (
+                isinstance(err, concurrent.futures.TimeoutError) or is_time_budget_error(err)
+            ):
+                return "timeout"
+            return None
+
         def _bounded_complete(call_class: str = "decision.plan") -> str:
             # A future timeout stops only the waiter. Cancel the underlying
             # call too, as the typed/declaration hedges already do, so it does
             # not compete with the next live request. Repair gets a fresh token
             # but shares the original (possibly Arena-clamped) deadline.
+            outer = getattr(self, "_decision_cancel_event", None)
             cancel = threading.Event()
             try:
                 return self._bounded_call(
                     lambda: _complete(call_class, cancel_event=cancel),
                     timeout_s=model_deadline - time.monotonic(),
                 )
-            except BaseException:
-                cancel.set()
+            except BaseException as err:
+                source = _cancel_source_for_error(outer, err)
+                if source:
+                    self._mark_and_set_cancel(cancel, source)
+                else:
+                    cancel.set()
                 raise
 
         # Ledger #159 (be1a945f T10): declarations ran at low effort with 25 power against their
@@ -9811,7 +9851,7 @@ class ActionPlanner(_ActionLegalityMixin):
                 while not done():
                     if outer is not None and outer.is_set():
                         for event in cancels.values():
-                            event.set()
+                            self._mark_and_set_cancel(event, "request_changed")
                         # Ledger #226(b): a leg that already finished holds a
                         # valid answer to THIS window — the request changed
                         # underneath it, not the options. Return it (the
@@ -9858,7 +9898,7 @@ class ActionPlanner(_ActionLegalityMixin):
                 doubt_deadline = min(high_deadline, time.monotonic() + self._DOUBT_AFTER_LOW_S)
                 wait_until(doubt_deadline, lambda: "high" in results)
             elif not doubt:
-                cancels["high"].set()
+                self._mark_and_set_cancel(cancels["high"], "hedge_loser")
                 why = (
                     f"high not awaited: the low answer is the board-math play, {agreed}"
                     if agreed
@@ -9875,7 +9915,7 @@ class ActionPlanner(_ActionLegalityMixin):
                     }
                 return low_data, low_ids
         if ok("high"):
-            cancels["low"].set()
+            self._mark_and_set_cancel(cancels["low"], "hedge_loser")
             high, low = results["high"], results.get("low")
             if low is not None and low[0] == "ok":
                 same = low[1][1] == high[1][1]
@@ -9896,7 +9936,10 @@ class ActionPlanner(_ActionLegalityMixin):
                         wait_after_low_ms=round(max(0.0, high[2] - low[2])),
                     )
             return high[1]
-        cancels["high"].set()
+        self._mark_and_set_cancel(
+            cancels["high"],
+            "request_changed" if (outer is not None and outer.is_set()) else "timeout",
+        )
         if not ok("low"):
             wait_until(started + legs["low"][1] + self._HEDGE_GRACE_S, lambda: "low" in results)
         high, low = results.get("high"), results.get("low")
@@ -9938,7 +9981,10 @@ class ActionPlanner(_ActionLegalityMixin):
             if isinstance(trace, dict):
                 trace["hedge"] = {"winner": "low", "low_ms": round(low[2]), "why": why[:160]}
             return low[1]
-        cancels["low"].set()
+        self._mark_and_set_cancel(
+            cancels["low"],
+            "request_changed" if (outer is not None and outer.is_set()) else "timeout",
+        )
         errors = [r[1] for r in (high, low) if r is not None and r[0] == "error"]
         slow = next((e for e in errors if is_time_budget_error(e)), None)
         if slow is not None or len(errors) < 2:
@@ -10689,12 +10735,23 @@ class ActionPlanner(_ActionLegalityMixin):
                         }
                     )
                 return answer
-            except Exception:
-                request_cancel.set()
+            except Exception as err:
+                if outer is not None and outer.is_set():
+                    src = getattr(outer, "_cancel_source", None)
+                    self._mark_and_set_cancel(
+                        request_cancel, src if isinstance(src, str) and src else "request_changed"
+                    )
+                elif isinstance(err, concurrent.futures.TimeoutError) or is_time_budget_error(err):
+                    self._mark_and_set_cancel(request_cancel, "timeout")
+                else:
+                    request_cancel.set()
                 raise
             finally:
                 if outer is not None and outer.is_set():
-                    request_cancel.set()
+                    src = getattr(outer, "_cancel_source", None)
+                    self._mark_and_set_cancel(
+                        request_cancel, src if isinstance(src, str) and src else "request_changed"
+                    )
 
         def parse(response: str) -> tuple[dict, list[str]]:
             # P1-1: models prose-prefix the JSON despite "reply ONLY with JSON"
