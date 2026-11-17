@@ -3060,7 +3060,7 @@ def analyze_draft_pool() -> dict[str, Any]:
     if not pool_grp_ids:
         return {"pool_size": 0, "message": "No picked cards to analyze."}
 
-    from arenamcp.card_facts.limited_roles import reviewed_event_set, with_role
+    from arenamcp.card_facts.limited_roles import reviewed_event_set, set_record, with_role
 
     role_set = reviewed_event_set(draft_state.event_name, draft_state.set_code)
     pool_cards = [
@@ -3074,6 +3074,7 @@ def analyze_draft_pool() -> dict[str, Any]:
     return {
         "pool_size": len(pool_cards),
         "set_code": draft_state.set_code,
+        "reviewed_set_record": set_record(role_set) if role_set else None,
         "pool_cards": pool_cards,
         "editor_basis": draft_state.editor_basis,
         "editor_cards": [

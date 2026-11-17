@@ -367,6 +367,68 @@ def test_a_threat_on_their_turn_supersedes_the_inflight_reform(monkeypatch, plan
     assert mgr.plan_status(after)["last_outcome"] == "ok"
 
 
+def test_truncated_line_search_does_not_fabricate_lethal_flip_but_board_lethal_still_flips(
+    monkeypatch, plan_threads
+):
+    import arenamcp.line_search as ls
+    import arenamcp.line_search_moves as lsm
+
+    now = [100.0]
+    monkeypatch.setattr("arenamcp.game_plan.time.monotonic", lambda: now[0])
+    before, after, _ours = _lyra_boards()
+    gates = [threading.Event() for _ in range(3)]
+    backend = ScriptedBackend([T10_PLAN] * 3, gates=gates)
+    mgr = GamePlanManager(backend)
+    earlier = deepcopy(before)
+    earlier["turn"].update(turn_number=8, active_player=US, priority_player=US)
+    _with_prior_plan(mgr, earlier, 8)
+    truncate = [False]
+    tick = [0.0]
+    real_perf = lsm.time.perf_counter
+
+    def _perf():
+        if not truncate[0]:
+            return real_perf()
+        tick[0] += 0.5
+        return tick[0]
+
+    monkeypatch.setattr(lsm.time, "perf_counter", _perf)
+    monkeypatch.setattr(ls.time, "perf_counter", _perf)
+    try:
+        assert mgr.request_reform(deepcopy(after))
+        assert backend.entered[0].wait(timeout=2)
+        now[0] += 2.0
+        more = deepcopy(after)
+        more["battlefield"].append(card(391, "Inspiring Overseer", THEM, turn_entered_battlefield=9))
+        assert mgr.request_reform(deepcopy(more))
+        assert backend.entered[1].wait(timeout=2)
+        now[0] += 3.0
+        burst = deepcopy(more)
+        burst["battlefield"].append(card(392, "Inspiring Overseer", THEM, turn_entered_battlefield=9))
+        assert mgr.request_reform(deepcopy(burst))
+        assert backend.entered[2].wait(timeout=2)
+        now[0] += mgr._YIELD_GRACE_S + 1.0
+        last = deepcopy(burst)
+        last["battlefield"].append(card(393, "Inspiring Overseer", THEM, turn_entered_battlefield=9))
+        truncate[0] = True
+        ba._CACHE.clear()
+        # Hard-deadline search truncation must NOT fabricate a lethal/role flip.
+        assert not mgr.request_reform(last)
+        assert not backend.calls[2][1]["cancel_event"].is_set()
+
+        # Contrary control: real board lethal (opp_lethal_on_board=True) still flips even when truncated.
+        last_lethal = deepcopy(last)
+        last_lethal["players"][1]["life_total"] = 10
+        ba._CACHE.clear()
+        assert mgr.request_reform(last_lethal)
+        assert backend.calls[2][1]["cancel_event"].is_set()
+    finally:
+        for gate in gates:
+            gate.set()
+    for thread in plan_threads:
+        thread.join(timeout=3)
+
+
 def test_no_supersede_on_our_turn_but_the_prompt_flags_the_late_plan(monkeypatch, plan_threads, caplog):
     before, after, ours_now = _lyra_boards()
     gate = threading.Event()

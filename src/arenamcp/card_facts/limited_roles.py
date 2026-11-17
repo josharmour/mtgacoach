@@ -31,17 +31,59 @@ def reviewed_event_set(event_name, set_code):
     return declared if declared.lower() in SUPPORTED_SETS and declared == str(set_code).upper() else ""
 
 
-@lru_cache(maxsize=2)
-def _records(set_code) -> dict:
-    if set_code not in SUPPORTED_SETS:
+@lru_cache(maxsize=8)
+def _corpus_cached(code: str) -> dict:
+    if code not in SUPPORTED_SETS:
         return {}
     try:
-        raw = Path(__file__).with_name(f"limited_{set_code}.json").read_bytes()
+        raw = Path(__file__).with_name(f"limited_{code}.json").read_bytes()
     except OSError:
         return {}
-    if hashlib.sha256(raw).hexdigest() != _CORPUS_SHA256[set_code]:
+    if hashlib.sha256(raw).hexdigest() != _CORPUS_SHA256[code]:
         return {}
-    return json.loads(raw)["prints"]
+    return json.loads(raw)
+
+
+def _corpus(set_code) -> dict:
+    return _corpus_cached(str(set_code or "").lower())
+
+
+def _records(set_code) -> dict:
+    return _corpus(set_code).get("prints") or {}
+
+
+_records.cache_clear = _corpus_cached.cache_clear  # type: ignore[attr-defined]
+
+
+def set_record(set_code) -> dict | None:
+    """Return verified set-level mechanics and two-color archetypes, or ``None``."""
+    code = str(set_code or "").lower()
+    if code not in SUPPORTED_SETS:
+        return None
+    corpus = _corpus(code)
+    if not corpus:
+        return None
+    return {
+        "set_code": code,
+        "mechanics": copy.deepcopy(corpus.get("mechanics") or []),
+        "archetypes": copy.deepcopy(corpus.get("archetypes") or {}),
+    }
+
+
+def archetype_role(role: dict | None, lane: str) -> dict | None:
+    """Return the reviewed archetype entry matching ``lane`` (two colors), or ``None``."""
+    if not isinstance(role, dict) or not isinstance(lane, str):
+        return None
+    lane_colors = {c for c in lane.upper() if c in "WUBRG"}
+    if len(lane_colors) != 2:
+        return None
+    for entry in role.get("archetypes") or ():
+        if (
+            isinstance(entry, dict)
+            and {c for c in str(entry.get("colors") or "").upper() if c in "WUBRG"} == lane_colors
+        ):
+            return copy.deepcopy(entry)
+    return None
 
 
 def print_role(set_code, grp_id, name, oracle, *, type_line, mana_cost):

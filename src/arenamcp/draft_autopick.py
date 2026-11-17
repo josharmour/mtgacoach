@@ -818,10 +818,24 @@ def rank_pack(
             for g in pool
             if primer and primer.card(g) is not None and not is_ordinary_basic(primer.card(g).name)
         ]
-    from arenamcp.card_facts.limited_roles import partner_reason, role_note
+    from arenamcp.card_facts.limited_roles import archetype_role, partner_reason, role_note
 
     limited_roles = limited_roles or {}
     reviewed_pool = {g: limited_roles[g]["name"] for g in pool if g in limited_roles}
+
+    def _is_reviewed_enabler(g: int) -> bool:
+        r = limited_roles.get(g)
+        if not isinstance(r, dict):
+            return False
+        if r.get("archetypes"):
+            return (archetype_role(r, lane.colors) or {}).get("role") == "enabler"
+        if len(lane.colors) == 2 and "enabler" in (r.get("roles") or ()):
+            pc = primer.card(g) if primer else None
+            pc_colors = getattr(pc, "colors", "") if pc is not None else ""
+            return bool(pc_colors) and set(pc_colors).issubset(set(lane.colors))
+        return False
+
+    lane_enablers = sum(1 for g in pool if _is_reviewed_enabler(g))
     scores: dict[int, PickScore] = {}
     for grp_id in pack:
         if grp_id in scores:
@@ -1017,11 +1031,40 @@ def rank_pack(
             reviewed = limited_roles.get(grp_id)
             if reviewed:
                 link = partner_reason(reviewed, reviewed_pool, lane.colors)
+                arch = archetype_role(reviewed, lane.colors)
                 if link and not opening and in_deck and not rarely:
                     parts["notes"] += 0.25
                     reasons.insert(1, link)
+                elif arch and not opening and in_deck and not rarely:
+                    if arch.get("role") == "enabler":
+                        parts["notes"] += 0.15
+                        reasons.insert(1, f"{arch['colors']} {arch['theme']} enabler")
+                    elif arch.get("role") == "payoff":
+                        if lane_enablers >= 2:
+                            parts["notes"] += 0.2
+                            reasons.insert(
+                                1, f"{arch['colors']} {arch['theme']} payoff ({lane_enablers} enablers)"
+                            )
+                        elif pack_number >= 2 and lane_enablers == 0:
+                            parts["notes"] -= 0.15
+                            reasons.insert(
+                                1, f"{arch['colors']} {arch['theme']} payoff without reviewed enablers"
+                            )
+                        elif note := role_note(reviewed):
+                            reasons.insert(1, note)
+                    elif note := role_note(reviewed):
+                        reasons.insert(1, note)
                 elif note := role_note(reviewed):
                     reasons.insert(1, note)
+                if (
+                    not opening
+                    and in_deck
+                    and not rarely
+                    and reviewed.get("removal") == "unconditional"
+                    and reviewed.get("interaction") in ("", None, "removal")
+                ):
+                    parts["notes"] += 0.15
+                    reasons.append("unconditional removal")
             parts["notes"] = min(parts["notes"], 0.6)
             # Opening picks have no deck hypothesis or need bonuses. After
             # that window, keep the existing pool-size ramp for sparse pools.

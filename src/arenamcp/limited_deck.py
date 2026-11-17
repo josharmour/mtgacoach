@@ -4,11 +4,12 @@ import html
 import logging
 import re
 from collections import Counter
+from collections.abc import Sequence
 from itertools import combinations
 from types import SimpleNamespace
 from typing import Any
 
-from arenamcp.card_facts.limited_roles import rebind_attached_role
+from arenamcp.card_facts.limited_roles import rebind_attached_role, set_record
 from arenamcp.draft_guidance import normalize_card
 from arenamcp.limited_rules import rules_profile, synergy_evidence
 
@@ -225,6 +226,56 @@ def validate_deck(payload: dict, pool: list[dict], *, source: str) -> dict[str, 
     return result
 
 
+def _reviewed_set_record(pool: Sequence[dict]) -> dict | None:
+    codes = {
+        role.get("set_code")
+        for card in pool
+        if isinstance(role := card.get("limited_role"), dict) and role.get("set_code")
+    }
+    if len(codes) != 1:
+        return None
+    return set_record(next(iter(codes)))
+
+
+def _is_orphan_reviewed_payoff(card: dict, chosen: Sequence[dict], colors: tuple[str, ...]) -> dict | None:
+    """Return an unsupported reviewed payoff archetype entry when ``card`` lacks enablers in ``chosen``."""
+    role = card.get("limited_role")
+    if not isinstance(role, dict):
+        return None
+    on_color_archs = [
+        ar
+        for ar in (role.get("archetypes") or ())
+        if isinstance(ar, dict) and set(ar.get("colors") or "").issubset(colors)
+    ]
+    if (
+        not on_color_archs
+        or any(ar.get("role") == "enabler" for ar in on_color_archs)
+        or "enabler" in (role.get("roles") or ())
+        or _role_removal(card)
+    ):
+        return None
+    payoff_archs = [ar for ar in on_color_archs if ar.get("role") == "payoff"]
+    if not payoff_archs:
+        return None
+    others = [other for other in chosen if other.get("grp_id") != card.get("grp_id")]
+    for ar in payoff_archs:
+        ar_colors = set(ar.get("colors") or "")
+        partners = set(ar.get("partners") or ())
+        if any(
+            other.get("grp_id") in partners
+            or any(
+                isinstance(oar, dict)
+                and oar.get("role") == "enabler"
+                and set(oar.get("colors") or "") == ar_colors
+                for oar in ((other.get("limited_role") or {}).get("archetypes") or ())
+            )
+            or any(edge.get("payoff_id") == card.get("grp_id") for edge in synergy_evidence(other, card))
+            for other in others
+        ):
+            return None
+    return payoff_archs[0]
+
+
 def _limited_checks(pool, kept):
     from arenamcp.card_facts.limited_roles import partner_reason
 
@@ -248,14 +299,22 @@ def _limited_checks(pool, kept):
                 notes.append(
                     f"{card['name']} rewards {ar['theme'].lower()}; its named example enabler is absent."
                 )
-    return {
+    orphan_payoffs = [c["name"] for c in chosen if _is_orphan_reviewed_payoff(c, chosen, colors) is not None]
+    srec = _reviewed_set_record(pool)
+    main_key = "".join(color for color in "WUBRG" if color in main)
+    result = {
         "colors": "".join(colors),
         "early_bodies": sum(_early_body(card, colors) for card in chosen),
         "early_target": min(6, sum(_early_body(card, colors) for card in available)),
         "removal": sum(_role_removal(card) for card in chosen),
         "removal_target": min(3, sum(_role_removal(card) for card in available)),
         "payoffs": notes,
+        "orphan_payoffs": orphan_payoffs,
     }
+    if srec is not None:
+        result["set_archetype"] = (srec.get("archetypes") or {}).get(main_key, "")
+        result["set_mechanics"] = srec.get("mechanics") or []
+    return result
 
 
 RARITY_PRIOR = {"mythic": 6.0, "rare": 4.0, "uncommon": 1.0}
@@ -732,6 +791,52 @@ def _fill_role_slots(chosen, remaining, colors, preset):
         remaining.remove(add)
         remaining.append(drop)
 
+    # Swap out unsupported reviewed payoffs when remaining cards avoid creating or keeping orphans
+    # without worsening early-body or removal targets.
+    early = sum(roles[c["grp_id"]][0] for c in chosen)
+    removal = sum(roles[c["grp_id"]][1] for c in chosen)
+    for _ in range(len(chosen)):
+        orphans = [
+            (idx, c)
+            for idx, c in enumerate(chosen)
+            if c not in preset
+            and (_gih(c) or 0) < BOMB_GIH
+            and _is_orphan_reviewed_payoff(c, chosen, colors) is not None
+        ]
+        if not orphans or not remaining:
+            break
+        base_orphans = len(orphans)
+        best_swap = None
+        for drop_idx, drop in orphans:
+            de, dr = roles[drop["grp_id"]]
+            drop_val = _card_value(drop)
+            for add in remaining:
+                if _card_value(add) < drop_val - 3.0:
+                    continue
+                ae, ar = roles[add["grp_id"]]
+                ne, nr = early + ae - de, removal + ar - dr
+                if deficit(ne, nr) > deficit(early, removal):
+                    continue
+                trial = [*chosen[:drop_idx], add, *chosen[drop_idx + 1 :]]
+                if _is_orphan_reviewed_payoff(add, trial, colors) is not None:
+                    continue
+                new_orphans = sum(
+                    _is_orphan_reviewed_payoff(c, trial, colors) is not None
+                    for c in trial
+                    if c not in preset and (_gih(c) or 0) < BOMB_GIH
+                )
+                if new_orphans >= base_orphans:
+                    continue
+                key = (base_orphans - new_orphans, _card_value(add) - drop_val)
+                if best_swap is None or key > best_swap[0]:
+                    best_swap = (key, add, drop, drop_idx, ne, nr)
+        if best_swap is None:
+            break
+        _, add, drop, drop_idx, early, removal = best_swap
+        chosen[drop_idx] = add
+        remaining.remove(add)
+        remaining.append(drop)
+
 
 def deck_quality(
     chosen: list[dict],
@@ -742,6 +847,7 @@ def deck_quality(
     splash: tuple[str, ...] = (),
     fixing: int = 0,
     strategy: DeckStrategy | None = None,
+    reviewed_set: dict | None = None,
 ) -> dict:
     """Whole-deck evaluation: card quality, bombs, removal, bodies, curve, archetype data, splash cost.
 
@@ -800,6 +906,11 @@ def deck_quality(
         score += sum(strategy.fit_points(card, main) for card in chosen)
         coherence, plan_info = strategy.coherence(chosen, main)
         score += coherence
+    if "archetype" not in plan_info:
+        if (srec := reviewed_set or _reviewed_set_record(chosen)) and (
+            arch_name := (srec.get("archetypes") or {}).get(key)
+        ):
+            plan_info["archetype"] = arch_name
     return {
         **plan_info,
         "colors": key,
@@ -828,6 +939,7 @@ def candidate_decks(
     """The best few two-color builds, plus supported splashes, each scored as a whole deck."""
     weights = FORMAT_WEIGHTS.get(fmt, FORMAT_WEIGHTS["draft"])
     nonbasics = _nonbasics(pool)
+    reviewed_set = _reviewed_set_record(pool)
     spells = [card for card in nonbasics if "land" not in card.get("type_line", "").lower()]
     lands = [card for card in nonbasics if "land" in card.get("type_line", "").lower()]
     ranked = []
@@ -840,7 +952,14 @@ def candidate_decks(
                 "colors": colors,
                 "splash": (),
                 "chosen": base,
-                "quality": deck_quality(base, colors, pair_win_rates, fmt=fmt, strategy=strategy),
+                "quality": deck_quality(
+                    base,
+                    colors,
+                    pair_win_rates,
+                    fmt=fmt,
+                    strategy=strategy,
+                    reviewed_set=reviewed_set,
+                ),
             }
         )
         weakest = min(_card_value(card) for card in base)
@@ -885,6 +1004,7 @@ def candidate_decks(
                         splash=(color,),
                         fixing=fixing,
                         strategy=strategy,
+                        reviewed_set=reviewed_set,
                     ),
                 }
             )
@@ -1009,6 +1129,8 @@ def _build_candidate(pool: list[dict], candidate: dict) -> dict:
             reason = "basics make this deck's colors more reliably than this land"
         elif not _castable(card, colors):
             reason = "outside the chosen colors without a supported mana base"
+        elif _is_orphan_reviewed_payoff(card, chosen, colors) is not None:
+            reason = "payoff lacks enablers in this pool"
         elif normalize_card(card).cmc >= 5:
             reason = "reduce expensive cards and preserve earlier plays"
         else:

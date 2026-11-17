@@ -506,25 +506,27 @@ class DraftAdvisor:
 
     def recommend_deck(self, fallback: dict[str, Any]) -> dict[str, Any]:
         """Model review of the counted build: compares the scored candidates, validated, one retry."""
-        from arenamcp.limited_deck import DECK_SYSTEM_PROMPT, validate_deck
+        from arenamcp.card_facts.limited_roles import rebind_attached_role
+        from arenamcp.limited_deck import DECK_SYSTEM_PROMPT, _reviewed_set_record, validate_deck
 
-        pool = fallback.get("pool_cards") or []
-        if not pool or (self._pending is not None and not self._pending.done()):
+        raw_pool = fallback.get("pool_cards") or []
+        if not raw_pool or (self._pending is not None and not self._pending.done()):
             return fallback
+        pool = [rebind_attached_role(card) for card in raw_pool]
         counts = Counter(card["grp_id"] for card in pool)
         unique = {card["grp_id"]: card for card in pool}
-        message = json.dumps(
-            {
-                "target_size": 40,
-                "previous_plan": self._plan,
-                "supported_synergies": synergy_graph(pool),
-                "set_strategy": fallback.get("set_strategy") or {},
-                "deck_plan": fallback.get("deck_plan") or {},
-                "scored_candidates": fallback.get("candidates") or [],
-                "pool": [{**_card_details(card), "count": counts[grp_id]} for grp_id, card in unique.items()],
-            },
-            ensure_ascii=False,
-        )
+        payload_input: dict[str, Any] = {
+            "target_size": 40,
+            "previous_plan": self._plan,
+            "supported_synergies": synergy_graph(pool),
+            "set_strategy": fallback.get("set_strategy") or {},
+            "deck_plan": fallback.get("deck_plan") or {},
+            "scored_candidates": fallback.get("candidates") or [],
+            "pool": [{**_card_details(card), "count": counts[grp_id]} for grp_id, card in unique.items()],
+        }
+        if srec := _reviewed_set_record(pool):
+            payload_input["reviewed_set_record"] = srec
+        message = json.dumps(payload_input, ensure_ascii=False)
         error: Exception | None = None
         for _attempt in range(2):
             prompt = message
@@ -551,6 +553,8 @@ class DraftAdvisor:
                     for count, target in (("early_bodies", "early_target"), ("removal", "removal_target")):
                         if checked[count] < min(baseline[count], checked[target]):
                             return fallback
+                    if len(checked.get("orphan_payoffs") or ()) > len(baseline.get("orphan_payoffs") or ()):
+                        return fallback
                 return {**fallback, **result}
             except concurrent.futures.TimeoutError as exc:
                 error = exc

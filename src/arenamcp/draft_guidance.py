@@ -370,6 +370,15 @@ def normalize_card(source: Any, stats: Any = None) -> CardData:
 
     types = _types_from_type_line(type_line)
     tags = _derive_tags(type_line, oracle_text, colors)
+    if isinstance(role, dict):
+        inter = role.get("interaction")
+        rem = role.get("removal")
+        if inter:
+            tags = (tags | frozenset({"removal"})) if inter == "removal" else (tags - frozenset({"removal"}))
+        elif rem in ("conditional", "unconditional"):
+            tags = tags | frozenset({"removal"})
+        elif rem == "none":
+            tags = tags - frozenset({"removal"})
     # A free, unconditional mana artifact was treated as an untagged rarity
     # prior below ordinary two-mana removal (Oct 25 Powered Cube). Match the
     # complete ability, not just "add mana": filters, sacrifice costs, imprint,
@@ -827,9 +836,44 @@ def evaluate_pack(
     by_wr = sorted(pack, key=lambda c: c.gih_wr_pct or 0.0, reverse=True)
     pack_rank = {c.grp_id: i for i, c in enumerate(by_wr)}
 
-    from arenamcp.card_facts.limited_roles import partner_reason, role_note
+    from arenamcp.card_facts.limited_roles import (
+        archetype_role,
+        partner_reason,
+        role_note,
+        set_record,
+    )
 
-    reviewed_pool = {card.grp_id: card.name for card in pool if card.limited_role}
+    role_sets = {
+        c.limited_role.get("set_code")
+        for c in (*pack, *pool)
+        if isinstance(c.limited_role, dict) and c.limited_role.get("set_code")
+    }
+    active_role_set = next(iter(role_sets)) if len(role_sets) == 1 else ""
+    reviewed_pool = {
+        card.grp_id: card.name
+        for card in pool
+        if card.limited_role and (not active_role_set or card.limited_role.get("set_code") == active_role_set)
+    }
+    srec = set_record(active_role_set) if active_role_set else None
+    lane_theme = ((srec or {}).get("archetypes") or {}).get(lane_pair, "")
+    lane_pair_set = set(lane_pair)
+
+    def _counts_as_lane_enabler(pc: CardData) -> bool:
+        role = pc.limited_role
+        if not isinstance(role, dict):
+            return False
+        if active_role_set and role.get("set_code") not in (None, "", active_role_set):
+            return False
+        if role.get("archetypes"):
+            return (archetype_role(role, lane_pair) or {}).get("role") == "enabler"
+        return (
+            bool(lane_pair_set)
+            and "enabler" in (role.get("roles") or ())
+            and bool(pc.colors)
+            and set(pc.colors).issubset(lane_pair_set)
+        )
+
+    lane_enablers = sum(1 for pc in pool if _counts_as_lane_enabler(pc))
     results: list[PickGuidance] = []
     for card in pack:
         reasons: list[str] = []
@@ -869,6 +913,8 @@ def evaluate_pack(
         # 4. Lane fit multiplier
         lane_mult, on_lane, lane_reason = _lane_fit(card, lane, pack_number, on_color_pool)
         if lane_reason:
+            if lane_theme and (phrase := lane.lane_phrase()) and phrase in lane_reason:
+                lane_reason = lane_reason.replace(phrase, f"{phrase} ({lane_theme})", 1)
             reasons.append(lane_reason)
 
         # 5. Castability pressure
@@ -888,14 +934,53 @@ def evaluate_pack(
         if wheel_reason:
             reasons.append(wheel_reason)
 
-        if card.limited_role:
+        if isinstance(card.limited_role, dict):
             # A verified link is a small tie-breaker once an actual pair has formed.
             linked = partner_reason(card.limited_role, reviewed_pool, lane_pair) if len(pool) >= 4 else ""
+            arch = archetype_role(card.limited_role, lane_pair) if lane_pair else None
+            roles_list = card.limited_role.get("roles") or []
+            rem_kind = card.limited_role.get("removal") or ""
+            inter_kind = card.limited_role.get("interaction") or ""
             if linked and on_lane:
-                bonus += 1
+                bonus += 1.0
                 reasons.insert(0, linked)
+            elif arch and on_lane and len(pool) >= 4:
+                if arch["role"] == "enabler":
+                    bonus += 0.75
+                    reasons.insert(0, f"{arch['colors']} {arch['theme']} enabler")
+                elif arch["role"] == "payoff":
+                    if lane_enablers >= 2:
+                        bonus += 0.75
+                        reasons.insert(
+                            0, f"{arch['colors']} {arch['theme']} payoff ({lane_enablers} enablers in pool)"
+                        )
+                    elif pack_number >= 2 and lane_enablers == 0:
+                        bonus -= 1.0
+                        reasons.insert(
+                            1, f"{arch['colors']} {arch['theme']} payoff — no reviewed enablers yet"
+                        )
+                    else:
+                        reasons.insert(
+                            1, role_note(card.limited_role) or f"{arch['colors']} {arch['theme']} payoff"
+                        )
+                elif note := role_note(card.limited_role):
+                    reasons.insert(1, note)
             elif note := role_note(card.limited_role):
                 reasons.insert(1, note)
+            if inter_kind in ("", "removal"):
+                if rem_kind == "unconditional":
+                    bonus += 0.75
+                    reasons.append("Unconditional removal")
+                elif rem_kind == "conditional":
+                    reasons.append("Conditional removal")
+            elif inter_kind == "tempo":
+                reasons.append("Tempo interaction")
+            if on_lane and "finisher" in roles_list and needs.heavy_drops < 2 and pack_number >= 2:
+                bonus += 0.5
+                reasons.append("Reviewed finisher — pool wants a closer")
+            elif roles_list == ["filler"]:
+                bonus -= 0.5
+                reasons.append("Reviewed curve filler")
 
         score = (base + bonus) * lane_mult * cast_mult * comp_mult * wheel_mult
         score = max(0.0, min(100.0, score))

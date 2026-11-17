@@ -6046,14 +6046,28 @@ class GamePlanManager:
         facts = None
         if assessment is not None:
             dead_in = getattr(assessment, "dead_in", None)
-            facts = (
-                getattr(assessment, "role", ""),
-                bool(
-                    getattr(assessment, "lethal_now", False) or getattr(assessment, "lethal_next_turn", False)
-                ),
-                bool(getattr(assessment, "opp_lethal_on_board", False)),
-                dead_in is not None and dead_in <= 2,
+            role = getattr(assessment, "role", "")
+            our_lethal = bool(
+                getattr(assessment, "lethal_now", False) or getattr(assessment, "lethal_next_turn", False)
             )
+            opp_lethal = bool(getattr(assessment, "opp_lethal_on_board", False))
+            dead_soon = dead_in is not None and dead_in <= 2
+            truncated = bool(getattr(getattr(assessment, "line_search", None), "truncated", False)) or bool(
+                (getattr(assessment, "search_stats", None) or {}).get("truncated")
+            )
+            if truncated and not our_lethal and not opp_lethal:
+                prev = (
+                    getattr(self, "_upkeep_key", None)
+                    or getattr(self, "_inflight_key", None)
+                    or getattr(self, "_last_key", None)
+                )
+                prev_facts = prev[0] if isinstance(prev, tuple) and prev else None
+                if isinstance(prev_facts, tuple) and len(prev_facts) >= 4:
+                    # A hard-deadline line-search truncation falls back to dead_in_greedy;
+                    # never let a transient CPU timeout fabricate a lethal or role flip.
+                    role = prev_facts[0]
+                    dead_soon = bool(prev_facts[3])
+            facts = (role, our_lethal, opp_lethal, dead_soon)
         return (facts, sig[12], sig[13], self._opposing_engines(game_state))
 
     def _normalized_for_key(self, game_state: dict[str, Any]) -> dict[str, Any]:

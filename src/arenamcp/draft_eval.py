@@ -482,7 +482,13 @@ def evaluate_pack(
         List of CardEvaluation sorted by score (highest first). Each
         evaluation includes per_pair_scores and a best_pair recommendation.
     """
-    from arenamcp.card_facts.limited_roles import bound_roles, partner_reason, reviewed_event_set, role_note
+    from arenamcp.card_facts.limited_roles import (
+        bound_roles,
+        partner_reason,
+        reviewed_event_set,
+        role_note,
+        set_record,
+    )
 
     def displayed_print(gid):
         card = scryfall.get_card_by_arena_id(gid)
@@ -490,9 +496,9 @@ def evaluate_pack(
             card = mtgadb.get_card(gid)
         return card
 
-    roles = bound_roles(
-        reviewed_event_set(event_name, set_code), cards_in_pack + picked_cards, displayed_print
-    )
+    reviewed_set = reviewed_event_set(event_name, set_code)
+    roles = bound_roles(reviewed_set, cards_in_pack + picked_cards, displayed_print)
+    srec = set_record(reviewed_set) if reviewed_set else None
     reviewed_pool = {g: roles[g]["name"] for g in picked_cards if g in roles}
 
     pick_depth = len(picked_cards)
@@ -656,13 +662,19 @@ def evaluate_pack(
                 pair_popularity=pair_mult,
             )
             weighted = pair_score + pair_affinities[pair] * commit_weight
-            if (
-                grp_id in roles
-                and pick_depth >= 4
-                and pair == anchor_pair
-                and partner_reason(roles[grp_id], reviewed_pool, pair)
-            ):
-                weighted += 1
+            if grp_id in roles:
+                if (
+                    pick_depth >= 4
+                    and pair == anchor_pair
+                    and partner_reason(roles[grp_id], reviewed_pool, pair)
+                ):
+                    weighted += 1
+                if (
+                    roles[grp_id].get("removal") == "unconditional"
+                    and roles[grp_id].get("interaction") in ("", None, "removal")
+                    and (not card_colors or card_colors.issubset(set(pair)))
+                ):
+                    weighted += 0.5
             per_pair[pair] = weighted
 
         best_pair = max(per_pair, key=per_pair.get) if per_pair else None
@@ -670,8 +682,9 @@ def evaluate_pack(
 
         ref_pair = anchor_pair or best_pair
         if ref_pair and card_colors:
+            theme = ((srec or {}).get("archetypes") or {}).get(ref_pair, "")
             if card_colors.issubset(set(ref_pair)):
-                reasons.append(f"fits {ref_pair}")
+                reasons.append(f"fits {ref_pair} ({theme})" if theme else f"fits {ref_pair}")
             elif card_colors & set(ref_pair):
                 reasons.append(f"splash in {ref_pair}")
             elif anchor_pair:
