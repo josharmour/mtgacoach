@@ -111,8 +111,14 @@ class _DeckLibraryMixin:
         library = getattr(self, "_deck_library", {}) or {}
         rows = [deck_payload(record, self.deck_strategy_status(record)) for record in library.values()]
         # Most recently played first; decks without a card list last.
-        rows.sort(key=lambda row: (not row["complete"], row["last_played"] == "", row["name"].lower()))
-        rows.sort(key=lambda row: row["last_played"], reverse=True)
+        rows.sort(
+            key=lambda row: (
+                not row["complete"],
+                not bool(row.get("last_played")),
+                str(row.get("name") or "").lower(),
+            )
+        )
+        rows.sort(key=lambda row: str(row.get("last_played") or ""), reverse=True)
         rows.sort(key=lambda row: not row["complete"])
         return rows
 
@@ -550,8 +556,43 @@ class _DeckLibraryMixin:
         def work() -> None:
             try:
                 library = getattr(self, "_deck_library", None) or self.collect_decks()[0]
-                for record in list(library.values()):
-                    if not record.complete or self.deck_strategy_status(record).get("status") == "ready":
+                records = [
+                    record
+                    for record in library.values()
+                    if record.complete and not getattr(record, "snapshot", False)
+                ]
+                records.sort(
+                    key=lambda r: (
+                        not bool(getattr(r, "last_played", None)),
+                        str(getattr(r, "name", "") or "").lower(),
+                    )
+                )
+                records.sort(key=lambda r: str(getattr(r, "last_played", None) or ""), reverse=True)
+
+                def _has_idle_playbook(rec: Any) -> bool:
+                    coach = getattr(self, "_coach", None)
+                    cached = getattr(coach, "_cached_playbook", None)
+                    if callable(cached) and hasattr(rec, "identity") and hasattr(rec, "game_state"):
+                        try:
+                            identity = rec.identity()
+                            gs = rec.game_state()
+                            if not identity:
+                                return False
+                            try:
+                                return cached(identity, gs, modes=("idle",)) is not None
+                            except TypeError:
+                                return cached(identity, gs) is not None
+                        except Exception as error:
+                            logger.debug(
+                                "Deck library: idle cache read failed for %s: %s",
+                                getattr(rec, "name", "?"),
+                                error,
+                            )
+                            return False
+                    return self.deck_strategy_status(rec).get("status") == "ready"
+
+                for record in records:
+                    if _has_idle_playbook(record):
                         continue
                     if self._deck_library_in_match():
                         logger.info("Deck strategy: analyze-all paused for the match")
@@ -560,7 +601,7 @@ class _DeckLibraryMixin:
                         if getattr(self, "_running", True) is False:
                             return
                         logger.info("Deck strategy: analyze-all resumes after the match")
-                        if self.deck_strategy_status(record).get("status") == "ready":
+                        if _has_idle_playbook(record):
                             continue
                     self._deck_library_emit(
                         "emit_deck_analysis", analyze_deck_record_safe(self, record, False)

@@ -8,6 +8,7 @@ cancelled, and cast / X=1 / cancel repeated until the turn ended.
 
 from __future__ import annotations
 
+from arenamcp.card_facts import client as cf_client
 from arenamcp.decisions import DecisionOption, PendingDecision, build_pending_decision
 from arenamcp.play_safety import affordable_x, exact_mana_total, filter_play_options
 
@@ -131,7 +132,7 @@ def test_source_falls_back_to_our_x_spell_on_the_stack():
 # --- the cap stays out of the way when the mana count is not exact ---------------
 
 
-def test_public_count_sources_are_bounded_but_unmodeled_sources_and_reducers_are_unknown():
+def test_public_count_sources_are_bounded_but_unmodeled_sources_and_reducers_are_unknown(monkeypatch):
     rofellos = {
         "instance_id": 560,
         "name": "Rofellos, Llanowar Emissary",
@@ -151,9 +152,29 @@ def test_public_count_sources_are_bounded_but_unmodeled_sources_and_reducers_are
         "instance_id": 470,
         "name": "Sol Ring",
         "controller_seat_id": ME,
+        "mana_cost": "{1}",
         "type_line": "Artifact",
         "oracle_text": "{T}: Add {C}{C}.",
     }
+    sol_hash = cf_client.hash_for_card(sol_ring)
+    sol_rec = {
+        "schema_version": 1,
+        "name": "Sol Ring",
+        "mana_cost": "{1}",
+        "type_line": "Artifact",
+        "rules_hash": sol_hash,
+        "modes": [
+            {"name": "cast", "cost": {"mana": "{1}"}, "cost_text": "{1}", "stays_on_battlefield": True},
+            {"name": "activate", "cost": {"tap": True}, "cost_text": "{T}", "stays_on_battlefield": True},
+        ],
+        "effects": [
+            {"trigger": "activated", "effect": {"effect_type": "AddMana", "mana": "{C}", "amount": 2}}
+        ],
+        "mana": [{"mana": "{C}{C}", "condition": ""}],
+        "confidence": "high",
+        "notes": "",
+    }
+    monkeypatch.setattr(cf_client, "facts_for", lambda cards, **kwargs: {sol_hash: sol_rec})
     sprawl = {
         "instance_id": 655,
         "name": "Utopia Sprawl",

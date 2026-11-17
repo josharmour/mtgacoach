@@ -22,6 +22,7 @@ import contextlib
 import gzip
 import json
 import logging
+import os
 import platform
 import re
 import threading
@@ -578,6 +579,65 @@ def _bug_report_entry(path: Path) -> dict[str, Any] | None:
     return {"file": Path(path).name, "report": report}
 
 
+_METRIC_MODEL_RE = re.compile(r"'model': '([^']*)'")
+_METRIC_SERVED_RE = re.compile(r"'served_model': '([^']*)'")
+_METRIC_CLASS_RE = re.compile(r"'call_class': '([^']*)'")
+
+
+def _code_revision() -> str:
+    """Resolve the active runtime commit SHA without running subprocesses."""
+    for env_key in ("MTGACOACH_SNAPSHOT_SHA", "MTGACOACH_DEV_COMMIT"):
+        value = os.environ.get(env_key, "").strip()
+        if re.fullmatch(r"[0-9a-fA-F]{40,64}", value):
+            return value.lower()
+    app_root = os.environ.get("MTGACOACH_APP_ROOT", "").strip()
+    if app_root:
+        try:
+            release_meta = json.loads((Path(app_root) / "coach-release.json").read_text(encoding="utf-8"))
+            commit = str(release_meta.get("commit") or "").strip()
+            if re.fullmatch(r"[0-9a-fA-F]{40,64}", commit):
+                return commit.lower()
+        except Exception:
+            pass
+    try:
+        from arenamcp.desktop.dev_source import source_revision
+
+        checkout = os.environ.get("MTGACOACH_DEV_CHECKOUT") or str(Path(__file__).resolve().parents[2])
+        revision = source_revision(checkout, short=False)
+        if re.fullmatch(r"[0-9a-fA-F]{40,64}", revision):
+            return revision.lower()
+    except Exception:
+        pass
+    return "unknown"
+
+
+def _served_model_from_log(coach_lines: list[str]) -> str | None:
+    """Identify the decision model served in this match ('mixed' when more than one)."""
+    distinct: set[str] = set()
+    for line in coach_lines:
+        if "Request metrics" not in line:
+            continue
+        m_class = _METRIC_CLASS_RE.search(line)
+        call_class = m_class.group(1) if m_class else ""
+        if not call_class.startswith("decision"):
+            continue
+        alias_match = _METRIC_MODEL_RE.search(line)
+        served_match = _METRIC_SERVED_RE.search(line)
+        alias = alias_match.group(1) if alias_match else ""
+        served = served_match.group(1) if served_match else ""
+        # Never substitute configured alias ('current') when no served identity arrived (e.g. error/timeout).
+        if not served:
+            continue
+        model_id = alias if alias.startswith("or-") else served
+        if model_id:
+            distinct.add(model_id)
+    if not distinct:
+        return None
+    if len(distinct) == 1:
+        return next(iter(distinct))
+    return "mixed"
+
+
 def _app_info() -> dict[str, str]:
     try:
         from arenamcp import __version__
@@ -590,6 +650,7 @@ def _app_info() -> dict[str, str]:
         "platform": platform.platform(),
         "python": platform.python_version(),
         "machine": platform.machine(),
+        "code_revision": _code_revision(),
     }
 
 
@@ -672,6 +733,7 @@ def build_bundle(
         "started_at": ctx.started_at,
         "result": result or "unknown",
         "app": _app_info(),
+        "served_model": _served_model_from_log(coach_lines),
         "settings_subset": settings_subset(settings if settings is not None else {}),
         "config": dict(config or {}),
         "packet": packet_dict,

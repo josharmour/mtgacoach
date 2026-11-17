@@ -189,12 +189,213 @@ _INEXACT_MANA = re.compile(
     r"|\badditional\b[^.]*\bmana\b"
     r"|\bcosts? (?:\{[^}]+\}|x|\d+|one|two|three) less\b"
     r"|\btwice\b|\bthree times\b"
+    r"|\{[0-9]+\},\s*\{t\}:\s*add\b"
 )
 _ENTERS_WITH_X = re.compile(r"\benters (?:the battlefield )?with x\b[^.]*\+1/\+1 counters?")
 
 
+def _enrich_card_for_facts(card: dict, state: dict | None = None) -> dict[str, Any] | None:
+    """Fill missing printed fields from ``deck_catalog`` without mutating ``card``."""
+    if not isinstance(card, dict) or not card.get("name"):
+        return None
+    if (
+        card.get("mana_cost") is not None
+        and card.get("type_line") is not None
+        and card.get("oracle_text") is not None
+    ):
+        return card
+    catalog = (state or {}).get("deck_catalog")
+    gid = card.get("grp_id")
+    cat = catalog.get(gid) if isinstance(catalog, dict) and type(gid) is int else None
+    if not isinstance(cat, dict):
+        return card
+    merged = dict(card)
+    for key in (
+        "mana_cost",
+        "type_line",
+        "oracle_text",
+        "single_face_source",
+        "layout",
+        "card_faces",
+        "related_faces",
+        "linked_face_ids",
+    ):
+        if merged.get(key) is None and cat.get(key) is not None:
+            merged[key] = cat[key]
+    return merged
+
+
+def _lookup_facts_memory(cards: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    from arenamcp.card_facts import client
+
+    try:
+        return client.facts_for(cards, memory_only=True)
+    except TypeError:
+        return client.facts_for(cards)
+
+
+def _record_for(card: Any, state: dict | None = None):
+    """Return an authenticated ``CardFacts`` record from memory when complete, else ``None``."""
+    from arenamcp.card_facts.prompt_render import (
+        _unknown,
+        candidate_fact_hashes,
+        normalized_scryfall_card,
+    )
+    from arenamcp.card_facts.schema import card_facts_from_dict
+
+    enriched = _enrich_card_for_facts(card, state)
+    if not isinstance(enriched, dict):
+        return None
+    if any(not isinstance(enriched.get(k), str) for k in ("name", "mana_cost", "type_line", "oracle_text")):
+        return None
+    hashes = candidate_fact_hashes(enriched)
+    if not hashes:
+        return None
+    norm = normalized_scryfall_card(enriched)
+    query_cards = [enriched, norm] if norm is not None else [enriched]
+    try:
+        results = _lookup_facts_memory(query_cards)
+    except Exception:
+        return None
+    if not isinstance(results, dict):
+        return None
+    raw = next((results[h] for h in hashes if h in results), None)
+    if not isinstance(raw, dict):
+        return None
+    try:
+        record = card_facts_from_dict(raw)
+    except Exception:
+        return None
+    if record.rules_hash not in hashes:
+        return None
+    if not isinstance(record.name, str) or record.name.casefold() != enriched["name"].casefold():
+        return None
+    if record.confidence not in ("", "high") or _unknown(record) or record.notes:
+        return None
+    return record
+
+
+def _record_has_unknown_effect(record: Any) -> bool:
+    return any(getattr(e.effect, "effect_type", "") in ("", "Unknown") for e in record.effects)
+
+
 def _plain_text(card: dict) -> str:
     return re.sub(r"<[^>]*>", "", _normalize_mana_symbols(str(card.get("oracle_text") or ""))).lower()
+
+
+def _add_mana_count(raw_mana: Any, amount: Any = 1) -> int | None:
+    """Count mana units produced by one ``AddMana`` or ``ManaProduced`` entry, or ``None`` if variable."""
+    raw = str(raw_mana or "").strip().upper()
+    if not raw:
+        return None
+    parts = [p.strip() for p in re.split(r"\s+OR\s+", raw) if p.strip()]
+    if len(parts) > 1:
+        counts = [_add_mana_count(part, 1) for part in parts]
+        if any(c is None for c in counts) or len(set(counts)) != 1:
+            return None
+        each = counts[0]
+        if each == 1 and type(amount) is int and amount >= 1:
+            return amount
+        return each if amount in (None, 1) else None
+    if raw in ("{ANY}", "ANY COLOR", "ANY", "ONE MANA OF ANY COLOR"):
+        return amount if (type(amount) is int and amount >= 1) else None
+    pips = re.findall(r"\{([WUBRGC])\}", raw)
+    if pips and "".join(f"{{{p}}}" for p in pips) == raw:
+        if len(pips) == 1 and type(amount) is int and amount >= 1:
+            return amount
+        if len(pips) >= 2 and amount in (None, 1, len(pips)):
+            return len(pips)
+    return None
+
+
+def _mana_delta_from_record(card: dict, state: dict, record: Any) -> int | None:
+    """Extra/filter mana delta from verified ``CardFacts``, or ``None`` if non-trivial/unexact."""
+    from arenamcp.ability_synthesizer import AddMana
+
+    turn_num = (state.get("turn") or {}).get("turn_number")
+    has_haste = any(str(k).lower() == "haste" for k in record.body.keywords) or has_combat_keyword(
+        card, "haste"
+    )
+    sick = (
+        "creature" in str(card.get("type_line") or "").lower()
+        and bool(card.get("summoning_sickness") or card.get("turn_entered_battlefield") == turn_num)
+        and not has_haste
+    )
+    add_effs = [e for e in record.effects if isinstance(e.effect, AddMana)]
+    act_adds = [
+        e for e in add_effs if str(e.trigger or "").strip().casefold() in ("", "activate", "activated")
+    ]
+    non_act_adds = [e for e in add_effs if e not in act_adds]
+    if any(
+        "tap" in str(e.trigger or "").lower() or "additional" in str(e.effect.mana or "").lower()
+        for e in non_act_adds
+    ):
+        return None
+    act_modes = [m for m in record.modes if str(m.name or "").strip().casefold() == "activate"]
+    if not act_adds:
+        if not record.mana and not non_act_adds:
+            return 0
+        if non_act_adds and not record.mana and not any(m.cost.tap for m in act_modes):
+            return 0
+        mana_amounts = [_add_mana_count(mp.mana) for mp in record.mana]
+        if (
+            record.mana
+            and all(a == 1 for a in mana_amounts)
+            and any(m.cost.tap is True and not m.cost.mana and m.cost.sacrifice is None for m in act_modes)
+            and all(not mp.condition for mp in record.mana)
+        ):
+            return 0
+        return None
+
+    # A tapped or summoning-sick permanent with tap-only activated abilities cannot add mana now.
+    if (card.get("is_tapped") or sick) and act_modes and all(m.cost.tap is True for m in act_modes):
+        return 0
+
+    eff_amounts = [_add_mana_count(e.effect.mana, e.effect.amount) for e in act_adds]
+    mana_amounts = [_add_mana_count(mp.mana) for mp in record.mana]
+    if any(a is None for a in eff_amounts) or any(a is None for a in mana_amounts):
+        return None
+
+    free_tap = [
+        m
+        for m in act_modes
+        if m.cost.tap is True
+        and not m.cost.mana
+        and m.cost.sacrifice is None
+        and not m.cost.life
+        and not m.cost.discard
+        and not m.cost.exile_from_graveyard
+    ]
+    if all(a == 1 for a in eff_amounts) and all(a == 1 for a in mana_amounts):
+        if (
+            len(act_modes) == 1
+            and act_modes[0].cost.tap is True
+            and act_modes[0].cost.sacrifice is None
+            and not act_modes[0].cost.life
+            and not act_modes[0].cost.discard
+            and not act_modes[0].cost.exile_from_graveyard
+            and act_modes[0].cost.mana
+            and mana_cost_to_cmc(_normalize_mana_symbols(act_modes[0].cost.mana)) >= 1
+        ):
+            return -1
+        if free_tap and any(
+            not e.conditions or "color identity" in " ".join(str(c) for c in e.conditions).lower()
+            for e in act_adds
+        ):
+            return 0
+        return None
+
+    if len(set(eff_amounts)) == 1 and len(act_modes) == 1 and len(free_tap) == 1:
+        produced = eff_amounts[0]
+        if (
+            produced >= 2
+            and all(a == produced for a in mana_amounts)
+            and all(not e.conditions for e in act_adds)
+        ):
+            allowed_cond = {"", "{T}", str(free_tap[0].cost_text or "").strip().upper()}
+            if all(str(mp.condition or "").strip().upper() in allowed_cond for mp in record.mana):
+                return produced - 1
+    return None
 
 
 def exact_mana_total(state: dict) -> int | None:
@@ -206,6 +407,13 @@ def exact_mana_total(state: dict) -> int | None:
     for card in state.get("battlefield") or []:
         if (card.get("controller_seat_id") or card.get("owner_seat_id")) != local:
             continue
+        rec = _record_for(card, state)
+        if rec is not None and not _record_has_unknown_effect(rec):
+            delta = _mana_delta_from_record(card, state, rec)
+            if delta is None:
+                return None
+            fixed_extra += delta
+            continue
         text = _plain_text(card)
         # A Channel ability's self-discount does not reduce the cost of a
         # spell being cast. In particular, battlefield Boseiju must not make
@@ -213,8 +421,7 @@ def exact_mana_total(state: dict) -> int | None:
         # costs less. Keep other sentences (including global reducers).
         if re.search(r"\bchannel\s*[—–-]", text):
             text = re.sub(r"\bthis ability costs?[^.]*\bless\b[^.]*\.", "", text)
-        paid_filter = re.fullmatch(r"\s*\{([0-9]+)\},\s*\{t\}:\s*add\s*\{[wubrgc]\}\.?\s*", text)
-        if not _INEXACT_MANA.search(text) and paid_filter is None:
+        if not _INEXACT_MANA.search(text):
             continue
         # A tapped producer or a sick mana creature cannot enlarge this turn's
         # budget. Static reducers/multipliers remain relevant even when tapped.
@@ -230,13 +437,6 @@ def exact_mana_total(state: dict) -> int | None:
             )
             if card.get("is_tapped") or sick:
                 continue
-        if paid_filter is not None:
-            # Paying one or more mana to produce one changes colors but
-            # cannot enlarge the total. The base pool counts this source
-            # once, so remove that phantom extra mana (only when ready).
-            if int(paid_filter[1]) > 0:
-                fixed_extra -= 1
-            continue
         # A single tap ability with output tied to a visible subtype count
         # is exact when every controlled object's current type is known.
         # Other variable/conditional or multiple mana abilities stay unknown.
@@ -270,13 +470,6 @@ def exact_mana_total(state: dict) -> int | None:
             attached = find_source(state, {"instanceId": card.get("attached_to_id")})
             if attached.get("is_tapped"):
                 continue
-        # The base pool counts each ready producer once. An entire Oracle
-        # text consisting of this unconditional tap ability has a known
-        # output; do not generalize to costly/conditional/restricted abilities.
-        fixed = re.fullmatch(r"\s*\{t\}:\s*add\s*((?:\{[wubrgc]\}){2,})\.?\s*", text)
-        if fixed:
-            fixed_extra += len(re.findall(r"\{[wubrgc]\}", fixed[1])) - 1
-            continue
         return None
     return int(RulesEngine._get_mana_pool(state, local).get("total") or 0) + fixed_extra
 
@@ -346,6 +539,29 @@ def numeric_option_source(state: dict, decision: Any) -> dict:
 
 def removal_lacks_opponent_target(card: dict, state: dict, *, activation: bool = False) -> bool:
     """Reject simple mandatory removal with no plausible opposing target."""
+    from arenamcp.ability_synthesizer import Destroy, Exile
+
+    rec = _record_for(card, state)
+    if rec is not None and not _record_has_unknown_effect(rec):
+        has_kicker = any(str(m.name or "").strip().casefold() == "kicker" for m in rec.modes)
+        if not has_kicker:
+            wanted_triggers = ("activate", "activated") if activation else ("", "cast")
+            matching = [e for e in rec.effects if str(e.trigger or "").strip().casefold() in wanted_triggers]
+            if not any(isinstance(e.effect, (Destroy, Exile)) for e in matching):
+                return False
+            if (
+                len(matching) == 1
+                and not matching[0].conditions
+                and isinstance(matching[0].effect, (Destroy, Exile))
+            ):
+                target = str(matching[0].effect.target or "").strip().lower()
+                if not target or any(
+                    phrase in target for phrase in ("up to", "any target", "target player", "choose ")
+                ):
+                    return False
+                verb = "destroy" if isinstance(matching[0].effect, Destroy) else "exile"
+                clause = f"{verb} {target if 'target' in target else 'target ' + target}."
+                return _lacks_opposing_target(clause, state)
     oracle = str(card.get("oracle_text") or "").lower()
     if activation:
         abilities = [line.split(":", 1)[1] for line in oracle.splitlines() if ":" in line]
@@ -378,13 +594,24 @@ def _kicker_affordable(card: dict, state: dict) -> bool:
     """Whether base cost plus kicker fits our untapped mana (True when either cost is unknown)."""
     from arenamcp.ward import available_mana
 
-    kicker = _KICKER_COST.search(str(card.get("oracle_text") or ""))
     cost = str(card.get("mana_cost") or "")
-    if not kicker or not cost:
+    kicker_mana = ""
+    if (rec := _record_for(card, state)) is not None:
+        kicker_mode = next(
+            (m for m in rec.modes if str(m.name or "").strip().casefold() == "kicker" and m.cost.mana),
+            None,
+        )
+        if kicker_mode is not None:
+            kicker_mana = str(kicker_mode.cost.mana)
+    if not kicker_mana:
+        kicker = _KICKER_COST.search(str(card.get("oracle_text") or ""))
+        if kicker:
+            kicker_mana = kicker.group(1)
+    if not kicker_mana or not cost:
         return True
     try:
         needed = mana_cost_to_cmc(_normalize_mana_symbols(cost)) + mana_cost_to_cmc(
-            _normalize_mana_symbols(kicker.group(1))
+            _normalize_mana_symbols(kicker_mana)
         )
     except Exception:
         return True
@@ -627,8 +854,90 @@ _FIXED_DAMAGE = re.compile(
 _VARIABLE_DAMAGE = ("x damage", "where x", "for each", "instead", "divided", "any target", "choose ", "up to")
 
 
+_TARGET_DAMAGE_RE = re.compile(
+    r"^(?:another )?target (?:attacking or blocking |attacking |blocking |tapped )?"
+    r"(?:creature or planeswalker|creature|planeswalker)$"
+)
+_EACH_CREATURE_DAMAGE_TARGETS = frozenset(
+    {
+        "each creature",
+        "each other creature",
+        "each creature they control",
+        "each creature your opponents control",
+        "each opponent and each creature",
+        "each opponent and each creature they control",
+    }
+)
+
+
+def _typed_cast_damage(record: Any, *, allow_permanent: bool = True) -> tuple[int, str, int] | None:
+    """Resolve ``(damage_to_targets, scope, each_opponent_damage)`` from clean ``CardFacts``."""
+    from arenamcp.ability_synthesizer import Damage
+
+    if not allow_permanent:
+        tl = str(record.type_line or "").lower()
+        if tl and not any(k in tl for k in ("instant", "sorcery")):
+            return None
+    if _record_has_unknown_effect(record):
+        return None
+    if any(str(m.name or "").strip().casefold() != "cast" for m in record.modes):
+        return None
+    if any(e.conditions for e in record.effects):
+        return None
+    cast_entries = [e for e in record.effects if str(e.trigger or "").strip().casefold() in ("", "cast")]
+    if len(cast_entries) != len(record.effects) or not cast_entries:
+        return None
+    if not all(
+        isinstance(e.effect, Damage) and type(e.effect.amount) is int and e.effect.amount > 0
+        for e in cast_entries
+    ):
+        return None
+    each_opp = sum(
+        e.effect.amount for e in cast_entries if "each opponent" in str(e.effect.target or "").lower()
+    )
+    if len(cast_entries) == 1:
+        eff = cast_entries[0].effect
+        t = str(eff.target or "").strip().lower()
+        if t == "any target":
+            return eff.amount, "any", each_opp
+        if t in _EACH_CREATURE_DAMAGE_TARGETS:
+            return eff.amount, "each", each_opp
+        if _TARGET_DAMAGE_RE.fullmatch(t):
+            return eff.amount, "target", each_opp
+        if t == "each opponent":
+            return 0, "face", eff.amount
+        return None
+    if len(cast_entries) == 2:
+        targets = {str(e.effect.target or "").strip().lower(): e.effect.amount for e in cast_entries}
+        opp_amt = targets.get("each opponent")
+        if opp_amt is not None:
+            for t, amt in targets.items():
+                if t != "each opponent" and t in _EACH_CREATURE_DAMAGE_TARGETS and amt == opp_amt:
+                    return amt, "each", opp_amt
+    return None
+
+
 def fixed_damage_removal(card: dict) -> tuple[int, bool] | None:
     """(damage, may target planeswalkers) for plain fixed-damage removal; None otherwise."""
+    from arenamcp.ability_synthesizer import Damage
+
+    rec = _record_for(card)
+    if rec is not None and not _record_has_unknown_effect(rec):
+        if any(str(m.name or "").strip().casefold() != "cast" for m in rec.modes):
+            return None
+        if len(rec.effects) != 1 or rec.effects[0].conditions:
+            return None
+        e = rec.effects[0]
+        if (
+            str(e.trigger or "").strip().casefold() in ("", "cast")
+            and isinstance(e.effect, Damage)
+            and type(e.effect.amount) is int
+            and e.effect.amount > 0
+        ):
+            t = str(e.effect.target or "").strip().lower()
+            if re.fullmatch(r"(?:another )?target (?:creature or planeswalker|creature|planeswalker)", t):
+                return e.effect.amount, "planeswalker" in t
+        return None
     oracle = "\n".join(
         line for line in str(card.get("oracle_text") or "").lower().splitlines() if ":" not in line
     )
@@ -705,6 +1014,18 @@ def damage_effect(
         if counted is not None:
             return counted
     else:
+        rec = _record_for(card, state)
+        if rec is not None and not _record_has_unknown_effect(rec):
+            tl = str(rec.type_line or "").lower()
+            if tl and not any(kind in tl for kind in ("instant", "sorcery")):
+                return None
+            if not any(str(m.name or "").strip().casefold() != "cast" for m in rec.modes) and not any(
+                e.conditions for e in rec.effects
+            ):
+                parsed = _typed_cast_damage(rec, allow_permanent=False)
+                if parsed is None or parsed[1] == "face":
+                    return None
+                return parsed[0], parsed[1]
         type_line = str(card.get("type_line") or "").lower()
         if type_line and not any(kind in type_line for kind in ("instant", "sorcery")):
             return None
@@ -838,16 +1159,29 @@ def our_stack_damage(state: dict, *, exclude: Any = None) -> StackDamage:
         iid = entry.get("instance_id")
         if (exclude is not None and iid == exclude) or iid in contested:
             continue  # a counter/answer aimed at this spell makes its damage uncertain
-        lines = [line.lower() for line in _rules_lines(entry.get("oracle_text")) if ":" not in line]
-        each_opponent = sum(int(m.group(1)) for line in lines for m in _EACH_OPPONENT_DAMAGE.finditer(line))
-        parsed = damage_effect(entry, kicked=False)
-        if parsed is None:
-            if each_opponent and len(lines) == 1 and _ONLY_EACH_OPPONENT.fullmatch(lines[0]):
-                face += each_opponent  # "deals 3 damage to each opponent." (Boltwave)
+        rec = _record_for(entry, state)
+        typed_entry = _typed_cast_damage(rec, allow_permanent=False) if rec is not None else None
+        if typed_entry is not None:
+            amt, scope, each_opponent = typed_entry
+            if scope == "face":
+                face += each_opponent
                 effects.append((iid, "face", [], True))
-            continue
+                continue
+            parsed = (amt, scope)
+            exact = True
+        else:
+            lines = [line.lower() for line in _rules_lines(entry.get("oracle_text")) if ":" not in line]
+            each_opponent = sum(
+                int(m.group(1)) for line in lines for m in _EACH_OPPONENT_DAMAGE.finditer(line)
+            )
+            parsed = damage_effect(entry, kicked=False)
+            if parsed is None:
+                if each_opponent and len(lines) == 1 and _ONLY_EACH_OPPONENT.fullmatch(lines[0]):
+                    face += each_opponent  # "deals 3 damage to each opponent." (Boltwave)
+                    effects.append((iid, "face", [], True))
+                continue
+            exact = damage_effect(entry, kicked=True) == parsed  # no kicker that could have added damage
         amount, scope = parsed
-        exact = damage_effect(entry, kicked=True) == parsed  # no kicker that could have added damage
         face += each_opponent
         if scope == "each":
             hit = [
@@ -890,11 +1224,28 @@ def _damage_protected(card: dict, *, targeted: bool) -> bool:
     source/color model, do not credit even conditional protection as a kill.
     Untargeted damage still gets through hexproof/shroud.
     """
-    text = _plain_text(card).lower()
     keywords = " ".join(str(k).lower() for k in card.get("keywords") or ())
-    return "protection" in text + keywords or bool(
-        targeted and any(has_combat_keyword(card, k) for k in ("hexproof", "shroud"))
-    )
+    if "protection" in keywords:
+        return True
+    if targeted and any(has_combat_keyword(card, k) for k in ("hexproof", "shroud")):
+        return True
+    rec = _record_for(card)
+    if rec is not None:
+        rec_kw = " ".join(str(k).lower() for k in rec.body.keywords)
+        if "protection" in rec_kw:
+            return True
+        if targeted and any(w in rec_kw for w in ("hexproof", "shroud")):
+            return True
+        unknown_txt = " ".join(
+            str(getattr(e.effect, "text", "") or "").lower()
+            for e in rec.effects
+            if getattr(e.effect, "effect_type", "") == "Unknown"
+        )
+        return "protection" in unknown_txt or (
+            targeted and any(w in unknown_txt for w in ("hexproof", "shroud"))
+        )
+    text = _plain_text(card).lower()
+    return "protection" in text
 
 
 def doomed_by_our_stack(state: dict, *, exclude: Any = None) -> frozenset:
@@ -1026,6 +1377,56 @@ def death_trigger_benefit(card: dict) -> str:
     misses what the kill gives back. Reminder text is ignored; a trigger
     that only hurts its controller is no benefit.
     """
+    from arenamcp.ability_synthesizer import (
+        Bounce,
+        CreateToken,
+        Damage,
+        Destroy,
+        Draw,
+        Exile,
+        GainLife,
+        PutCounters,
+        ReturnFromGraveyard,
+    )
+
+    rec = _record_for(card)
+    if rec is not None:
+        for kw in rec.body.keywords:
+            if _DEATH_KEYWORDS.search(str(kw).lower()):
+                return str(kw).lower()
+        name_low = rec.name.lower()
+        own_triggers = {
+            "dies",
+            "when this creature dies",
+            "when this permanent dies",
+            "when this token dies",
+            "when it dies",
+            *({f"when {name_low} dies", f"when {name_low.split(',')[0]} dies"} if name_low else ()),
+        }
+        has_unknown = False
+        for entry in rec.effects:
+            eff = entry.effect
+            if getattr(eff, "effect_type", "") == "Unknown":
+                has_unknown = True
+            trig = str(entry.trigger or "").strip().lower()
+            if trig not in own_triggers:
+                continue
+            if isinstance(
+                eff, (CreateToken, Draw, GainLife, PutCounters, ReturnFromGraveyard, Destroy, Exile, Bounce)
+            ):
+                return f"{trig}: {getattr(eff, 'effect_type', 'effect')}"
+            if isinstance(eff, Damage) and str(eff.target or "").strip().lower() not in (
+                "you",
+                "its controller",
+                "that player",
+            ):
+                return f"{trig}: damage {eff.target}"
+            if getattr(eff, "effect_type", "") == "Unknown" and _DEATH_BENEFIT.search(
+                str(getattr(eff, "text", "") or "").lower()
+            ):
+                return str(eff.text).lower()
+        if not has_unknown:
+            return ""
     text = re.sub(r"<[^>]*>", "", str(card.get("oracle_text") or "")).lower()
     text = re.sub(r"\([^()]*\)", "", text)
     name = str(card.get("name") or "").lower()
@@ -1080,24 +1481,9 @@ def card_facts_removal_reason(card: dict, state: dict, metadata: dict) -> str:
     not the card name or its presence in the hand, selects the lifecycle.
     """
     from arenamcp.ability_synthesizer import Damage, Destroy, Exile
-    from arenamcp.card_facts.client import facts_for, hash_for_card
-    from arenamcp.card_facts.schema import card_facts_from_dict
 
-    digest = hash_for_card(card)
-    if not digest:
-        return ""
-    try:
-        data = facts_for([card]).get(digest)
-        if data is None:
-            return ""
-        record = card_facts_from_dict(data)
-    except Exception:
-        return ""
-    # S3 authenticates cache records by rules hash; injected/corrupt records
-    # must not turn a different card's effect into a veto.
-    if record.rules_hash != digest:
-        return ""
-    if not isinstance(record.name, str) or record.name.casefold() != str(card.get("name", "")).casefold():
+    record = _record_for(card, state)
+    if record is None:
         return ""
     permanent = not any(t in str(card.get("type_line", "")).lower() for t in ("instant", "sorcery"))
     alternative = str(metadata.get("alternativeCostText") or "").strip().casefold()
@@ -1117,7 +1503,8 @@ def card_facts_removal_reason(card: dict, state: dict, metadata: dict) -> str:
     if not entries or any(
         e.conditions
         or not isinstance(e.trigger, str)
-        or e.trigger.upper() not in ("", "CAST", "ENTERS_THE_BATTLEFIELD", "ENTERS_THE_BATTLEFIELD_OR_EVOKE")
+        or e.trigger.upper()
+        not in ("", "CAST", "ETB", "ENTERS_THE_BATTLEFIELD", "ENTERS_THE_BATTLEFIELD_OR_EVOKE")
         for e in entries
     ):
         return ""
@@ -1317,8 +1704,43 @@ def power_only_debuff_wasted(card: dict, state: dict) -> str:
     counter mode needs an opposing spell on the stack NOW (see
     ``menu_proves_empty_stack``), not in a snapshot that trails the request.
     """
+    from arenamcp.ability_synthesizer import CounterSpell, Pump
+
+    def _evaluate_power_debuff(has_counter: bool) -> str:
+        if has_counter and opponent_spell_on_stack(state):
+            return ""
+        if power_debuff_has_combat_use(state):
+            return ""
+        if has_counter and menu_proves_empty_stack(state):
+            return (
+                "the stack is empty (a land play is on offer), so there is nothing to counter, and -N/-0 "
+                "outside combat never kills; hold it until a spell is cast or creatures attack or block"
+            )
+        return "-N/-0 only shrinks power for this turn's combat (it never kills); hold it until creatures attack or block"
+
     type_line = str(card.get("type_line") or "").lower()
-    text = re.sub(r"<[^>]*>", "", str(card.get("oracle_text") or ""))
+    raw_oracle = str(card.get("oracle_text") or "")
+    rec = _record_for(card, state)
+    if (
+        rec is not None
+        and not _record_has_unknown_effect(rec)
+        and "next turn" not in raw_oracle.lower()
+        and any(kind in str(rec.type_line or "").lower() for kind in ("instant", "sorcery"))
+    ):
+        counters = [
+            e
+            for e in rec.effects
+            if isinstance(e.effect, CounterSpell) and "spell" in str(e.effect.target or "").lower()
+        ]
+        others = [e for e in rec.effects if e not in counters]
+        if not others or any(
+            e.conditions or not isinstance(e.effect, Pump) or e.effect.power >= 0 or e.effect.toughness != 0
+            for e in others
+        ):
+            return ""
+        return _evaluate_power_debuff(bool(counters))
+
+    text = re.sub(r"<[^>]*>", "", raw_oracle)
     if not any(kind in type_line for kind in ("instant", "sorcery")) or not POWER_ONLY_DEBUFF.search(text):
         return ""
     effects = []
@@ -1330,16 +1752,7 @@ def power_only_debuff_wasted(card: dict, state: dict) -> str:
     others = [line for line in effects if line not in counters]
     if not others or any(not _POWER_ONLY_MODE.match(line) for line in others):
         return ""  # another effect (draw, damage, a second clause) may be the point
-    if counters and opponent_spell_on_stack(state):
-        return ""
-    if power_debuff_has_combat_use(state):
-        return ""
-    if counters and menu_proves_empty_stack(state):
-        return (
-            "the stack is empty (a land play is on offer), so there is nothing to counter, and -N/-0 "
-            "outside combat never kills; hold it until a spell is cast or creatures attack or block"
-        )
-    return "-N/-0 only shrinks power for this turn's combat (it never kills); hold it until creatures attack or block"
+    return _evaluate_power_debuff(bool(counters))
 
 
 def power_only_mode_label(label: str) -> bool:
@@ -1955,8 +2368,12 @@ def pending_ward_reserve_reason(state: dict, card: dict, action_type: str, metad
         return ""
     # Responses that interact with the ward/source need a tactical choice, not
     # a blanket ban (a counterspell may save the threatened spell itself).
-    text = str(card.get("oracle_text") or "").lower()
-    if "counter target" in text:
+    from arenamcp.ability_synthesizer import CounterSpell
+
+    rec = _record_for(card, state)
+    if rec is not None and any(isinstance(e.effect, CounterSpell) for e in rec.effects):
+        return ""
+    if (rec is None or _record_has_unknown_effect(rec)) and "counter target" in _plain_text(card):
         return ""
     if action_type == "cast":
         from arenamcp.board_assessment import face_damage

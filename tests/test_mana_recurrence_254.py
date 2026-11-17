@@ -7,6 +7,8 @@ from unittest.mock import Mock
 import pytest
 
 from arenamcp.autopilot import AutopilotEngine
+from arenamcp.card_facts import client as cf_client
+from arenamcp.card_facts.prompt_render import normalized_scryfall_card
 from arenamcp.decisions import DecisionOption, PendingDecision
 from arenamcp.play_safety import (
     affordable_x,
@@ -169,15 +171,38 @@ def test_own_omen_is_not_mistaken_for_manual_play():
     )
 
 
-def test_fixed_multi_mana_source_restores_exact_x_limit():
+def test_fixed_multi_mana_source_restores_exact_x_limit(monkeypatch):
     state = board()
-    state["battlefield"][2] = {
+    sol_ring = {
         "instance_id": 3,
         "controller_seat_id": 2,
+        "mana_cost": "{1}",
         "type_line": "Artifact",
         "name": "Sol Ring",
         "oracle_text": "{oT}: Add {oC}{oC}.",
     }
+    state["battlefield"][2] = sol_ring
+    norm = normalized_scryfall_card(sol_ring)
+    assert norm is not None
+    sol_hash = cf_client.hash_for_card(norm)
+    sol_rec = {
+        "schema_version": 1,
+        "name": "Sol Ring",
+        "mana_cost": "{1}",
+        "type_line": "Artifact",
+        "rules_hash": sol_hash,
+        "modes": [
+            {"name": "cast", "cost": {"mana": "{1}"}, "cost_text": "{1}", "stays_on_battlefield": True},
+            {"name": "activate", "cost": {"tap": True}, "cost_text": "{T}", "stays_on_battlefield": True},
+        ],
+        "effects": [
+            {"trigger": "activated", "effect": {"effect_type": "AddMana", "mana": "{C}", "amount": 2}}
+        ],
+        "mana": [{"mana": "{C}{C}", "condition": ""}],
+        "confidence": "high",
+        "notes": "",
+    }
+    monkeypatch.setattr(cf_client, "facts_for", lambda cards, **kwargs: {sol_hash: sol_rec})
     assert exact_mana_total(state) == 3
     assert affordable_x(state, {"mana_cost": "{X}{G}"}) == 2
     assert "largest affordable X is 2" in x_choice_reason(state, {"mana_cost": "{X}{G}"}, 3)
@@ -216,17 +241,41 @@ def test_conditional_or_costly_multi_mana_remains_unknown():
         assert exact_mana_total(state) is None
 
 
-def test_paid_single_mana_filter_does_not_create_extra_mana():
+def test_paid_single_mana_filter_does_not_create_extra_mana(monkeypatch):
     state = board()
-    state["battlefield"].append(
-        {
-            "instance_id": 6,
-            "controller_seat_id": 2,
-            "type_line": "Artifact",
-            "name": "Mana filter",
-            "oracle_text": "{1}, {T}: Add {G}.",
-        }
-    )
+    mana_filter = {
+        "instance_id": 6,
+        "controller_seat_id": 2,
+        "mana_cost": "{1}",
+        "type_line": "Artifact",
+        "name": "Mana filter",
+        "oracle_text": "{1}, {T}: Add {G}.",
+    }
+    state["battlefield"].append(mana_filter)
+    mf_hash = cf_client.hash_for_card(mana_filter)
+    mf_rec = {
+        "schema_version": 1,
+        "name": "Mana filter",
+        "mana_cost": "{1}",
+        "type_line": "Artifact",
+        "rules_hash": mf_hash,
+        "modes": [
+            {"name": "cast", "cost": {"mana": "{1}"}, "cost_text": "{1}", "stays_on_battlefield": True},
+            {
+                "name": "activate",
+                "cost": {"mana": "{1}", "tap": True},
+                "cost_text": "{1}, {T}",
+                "stays_on_battlefield": True,
+            },
+        ],
+        "effects": [
+            {"trigger": "activated", "effect": {"effect_type": "AddMana", "mana": "{G}", "amount": 1}}
+        ],
+        "mana": [{"mana": "{G}", "condition": "{1}, {T}"}],
+        "confidence": "high",
+        "notes": "",
+    }
+    monkeypatch.setattr(cf_client, "facts_for", lambda cards, **kwargs: {mf_hash: mf_rec})
     assert exact_mana_total(state) == 1  # Forest's one mana only changes color
     assert affordable_x(state, {"mana_cost": "{X}{G}"}) == 0
     state["battlefield"][1]["is_tapped"] = True
