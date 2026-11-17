@@ -73,6 +73,55 @@ def test_e4_default_off(monkeypatch):
 
     monkeypatch.delenv("ARENAMCP_PIVOTAL_THINKING", raising=False)
     assert not pivotal_enabled()
+    assert pivotal_enabled(default=True)
+    for disabled in ("0", "false", "FALSE", "no", "off"):
+        monkeypatch.setenv("ARENAMCP_PIVOTAL_THINKING", disabled)
+        assert not pivotal_enabled(default=True)
+
+
+def test_settings_and_standalone_enable_e4_pivotal_thinking_by_default(monkeypatch):
+    from tests.test_decision_layer_20261019 import TROSTANI_MENU, _Model, _planner, _reply, _trostani_board
+    from tests.test_planner_micro_wins_226 import _our_main
+
+    from arenamcp.decisions import DecisionOption, PendingDecision
+    from arenamcp.settings import DEFAULTS
+
+    assert DEFAULTS["pivotal_thinking"] is True
+    monkeypatch.delenv("ARENAMCP_PIVOTAL_THINKING", raising=False)
+
+    # Configured planner (e.g. StandaloneCoach default True) runs Mulligan and burn combos at high effort
+    model = _Model(_reply("keep", "low keep"), _reply("keep", "keep this hand"))
+    planner = _planner(model)
+    planner.pivotal_thinking = True
+    decision = PendingDecision(
+        (1, 2),
+        "Mulligan",
+        (DecisionOption("keep", "Keep"), DecisionOption("mulligan", "Mulligan")),
+        min_select=1,
+        max_select=1,
+    )
+    assert planner._llm_decision_options(decision, _our_main()) == ["keep"]
+    assert model.efforts == ["high"]
+    assert planner.get_last_decision_trace()["pivotal_thinking"]["high_calls"] == 1
+
+    # Preserves critical_decision burn combos inside E4 reasons
+    combo_model = _Model(
+        _reply("idx:1", "low"), _reply("idx:1", "Shock first, then Iroh's 4 kills Trostani.")
+    )
+    combo_planner = _planner(combo_model)
+    combo_planner.pivotal_thinking = True
+    combo_planner._llm_decision_options(TROSTANI_MENU, _trostani_board())
+    assert combo_model.efforts == ["high"]
+    assert any("Shock" in r for r in combo_planner.get_last_decision_trace()["pivotal_thinking"]["reasons"])
+
+    # Env override ARENAMCP_PIVOTAL_THINKING=0 still disables even when pivotal_thinking=True
+    monkeypatch.setenv("ARENAMCP_PIVOTAL_THINKING", "0")
+    off_model = _Model(_reply("keep", "keep"), _reply("keep", "keep"))
+    off_planner = _planner(off_model)
+    off_planner.pivotal_thinking = True
+    off_planner._llm_decision_options(decision, _our_main())
+    assert off_model.efforts == [None]
+    assert "pivotal_thinking" not in off_planner.get_last_decision_trace()
 
 
 def test_actual_typed_mulligan_uses_one_high_call(monkeypatch):

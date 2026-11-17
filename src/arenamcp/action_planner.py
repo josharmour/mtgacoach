@@ -697,6 +697,7 @@ class ActionPlanner(_ActionLegalityMixin):
     _DIAG_BUFFER_SIZE = 10
 
     separate_strategy_planning = False
+    pivotal_thinking = False
 
     def __init__(
         self,
@@ -706,6 +707,7 @@ class ActionPlanner(_ActionLegalityMixin):
         deck_strategy_fn: Callable[[], str | None] | None = None,
         deck_playbook_fn: Callable[[], Any] | None = None,
         separate_strategy_planning: bool = False,
+        pivotal_thinking: bool = False,
     ):
         """Initialize the action planner.
 
@@ -720,6 +722,7 @@ class ActionPlanner(_ActionLegalityMixin):
         """
         self._backend = backend
         self.separate_strategy_planning = separate_strategy_planning
+        self.pivotal_thinking = bool(pivotal_thinking)
         logger.info(
             "Planner mode: %s",
             "separate strategy (low-effort actions, concurrent background plans)"
@@ -1694,7 +1697,7 @@ class ActionPlanner(_ActionLegalityMixin):
             effort = None
         from arenamcp.selective_thinking import PivotalCallBudget, close_combat_reason, pivotal_enabled
 
-        if pivotal_enabled() and not self.separate_strategy_planning:
+        if pivotal_enabled(self.pivotal_thinking) and not self.separate_strategy_planning:
             from arenamcp.board_assessment import assess
 
             assessment = assess(game_state)
@@ -10528,12 +10531,23 @@ class ActionPlanner(_ActionLegalityMixin):
         )
         from arenamcp.selective_thinking import enabled as selective_enabled
 
-        e4_enabled = pivotal_enabled() and not self.separate_strategy_planning
+        explicit_e4 = os.environ.get("ARENAMCP_PIVOTAL_THINKING", "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        selective_requested = not explicit_e4 and selective_enabled(getattr(self._backend, "model", None))
+        e4_enabled = (
+            pivotal_enabled(self.pivotal_thinking)
+            and not self.separate_strategy_planning
+            and not selective_requested
+        )
         e4_reasons = ()
         if e4_enabled:
             from arenamcp.board_assessment import assess
 
-            e4_reasons = pivotal_evidence(
+            ev_reasons = pivotal_evidence(
                 decision,
                 tag_state,
                 assessment=assess(tag_state),
@@ -10541,8 +10555,8 @@ class ActionPlanner(_ActionLegalityMixin):
                 target_hints=target_hints,
                 unmodelled=unmodelled,
             )
+            e4_reasons = tuple(dict.fromkeys((*([critical] if critical else ()), *ev_reasons)))
             critical = "; ".join(e4_reasons)
-        selective_requested = not e4_enabled and selective_enabled(getattr(self._backend, "model", None))
         selective_reason = selection_reason(decision, game_state, critical) if selective_requested else ""
         if self.separate_strategy_planning:
             critical = ""

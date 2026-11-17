@@ -243,9 +243,12 @@ class PivotalCallBudget:
         )
 
 
-def pivotal_enabled():
-    """E4 is opt-in until E1 and real-match performance gates are accepted."""
-    return os.environ.get("ARENAMCP_PIVOTAL_THINKING", "").lower() in {"1", "true"}
+def pivotal_enabled(default: bool = False) -> bool:
+    """Whether E4 pivotal thinking is active; env ARENAMCP_PIVOTAL_THINKING overrides ``default``."""
+    raw = os.environ.get("ARENAMCP_PIVOTAL_THINKING")
+    if raw is not None and raw.strip() != "":
+        return raw.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(default)
 
 
 def pivotal_evidence(

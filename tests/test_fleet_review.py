@@ -9,7 +9,9 @@ Rule-boundary negatives are labelled as such.
 
 from __future__ import annotations
 
+import gzip
 import importlib.util
+import json
 import os
 import pathlib
 import sys
@@ -654,3 +656,21 @@ def test_collect_reviews_skips_live_context_json():
     assert len(reviews) == 100
     # The stray file previously manufactured this bogus row.
     assert ("unknown", "unknown") not in fr.aggregate(reviews)["by_deck"]
+
+
+def test_collect_reviews_walks_nested_server_bundle_tree(tmp_path):
+    """Server bundles live under <YYYY-MM-DD>/<owner_hash>/<install_id>/<match_id>.json.gz."""
+    nested_dir = tmp_path / "2026-11-16" / "owner_a" / "inst_1"
+    nested_dir.mkdir(parents=True)
+    with gzip.open(nested_dir / "m1.json.gz", "wt", encoding="utf-8") as fh:
+        json.dump(
+            _bundle("m1-nested", format_name="Ladder", turn=9, lives=(14, 0), last_game_result="win"), fh
+        )
+    (tmp_path / "2026-11-16" / "live_context.json").write_text('{"offset": 1}', encoding="utf-8")
+
+    reviews, skipped = fr.collect_reviews(str(tmp_path))
+    assert skipped == 1
+    assert len(reviews) == 1
+    agg = fr.aggregate(reviews)
+    assert agg["matches"] == 1
+    assert agg["by_deck"]["Ladder | unknown"]["wins"] == 1

@@ -45,6 +45,8 @@ DEFAULTS = {
     "auto_deck_strategy": True,
     # Optional experiment: high-effort background strategy, low-effort actions.
     "separate_strategy_planning": False,
+    # Spend high reasoning effort on pivotal decisions (E4); env ARENAMCP_PIVOTAL_THINKING overrides.
+    "pivotal_thinking": True,
     "auto_post_match_analysis": False,
     "voice_mode": "ptt",
     "device_index": None,

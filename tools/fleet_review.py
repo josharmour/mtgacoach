@@ -139,9 +139,14 @@ def load_bundle(path):
 
 
 def iter_bundle_paths(directory):
-    """Sorted bundle paths (*.json and *.json.gz) under ``directory``."""
-    names = sorted(n for n in os.listdir(directory) if n.endswith(".json") or n.endswith(".json.gz"))
-    return [os.path.join(directory, n) for n in names]
+    """Sorted bundle paths (*.json and *.json.gz) under ``directory`` (flat or nested)."""
+    paths = []
+    for root, dirs, files in os.walk(directory):
+        dirs.sort()
+        for name in sorted(files):
+            if name.endswith(".json") or name.endswith(".json.gz"):
+                paths.append(os.path.join(root, name))
+    return sorted(paths)
 
 
 def _bundle_day(bundle):

@@ -1129,6 +1129,7 @@ class StandaloneCoach(
                 deck_strategy_fn=self.get_deck_strategy,
                 deck_playbook_fn=self.get_deck_playbook,
                 separate_strategy_planning=bool(self.settings.get("separate_strategy_planning", False)),
+                pivotal_thinking=bool(self.settings.get("pivotal_thinking", True)),
             )
 
             config.autoplay_speech = self.settings.get("autoplay_speech", "actions")
