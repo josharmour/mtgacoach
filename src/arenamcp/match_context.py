@@ -838,3 +838,27 @@ def split_deck_reference(reference: str) -> tuple[str, str]:
         if line.startswith("RULES"):
             return "\n".join(lines[:index]).rstrip("\n"), "\n".join(lines[index:])
     return reference, ""
+
+
+def library_outs_summary(
+    state: dict[str, Any],
+    game: Any = None,
+    *,
+    allow_private: bool = False,
+    card_lookup: Any = None,
+) -> dict[str, Any] | None:
+    """Count exact remaining local library outs against the biggest opposing creature.
+
+    Private local library only when ``allow_private is True``; never estimates
+    the opponent's library. Returns ``None`` when incomplete or withheld.
+    """
+    if allow_private is not True or not isinstance(state, dict):
+        return None
+    from arenamcp.commentary.private_outs import private_removal_fact
+
+    return private_removal_fact(
+        state,
+        game,
+        allow_private=True,
+        card_lookup=card_lookup or (lambda grp_id: _local_card(grp_id, int(time.monotonic() // 30))),
+    )

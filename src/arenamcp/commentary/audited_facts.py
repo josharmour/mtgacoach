@@ -168,6 +168,7 @@ def binding(scope, tracked, sources, observation, text):
             and (fact.get("source"), fact.get("kind"))
             in {
                 ("reviewed_public_card_facts", "opponent_plan_inference"),
+                ("cached_public_card_facts", "opponent_plan_inference"),
                 ("native_public_prints", "opponent_revealed_rules"),
             }
             and fact.get("visibility") == "public"

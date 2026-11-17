@@ -113,6 +113,116 @@
   },
   {
     "grp_ids": [
+      77494,
+      77557,
+      80840,
+      92722,
+      104860,
+      105216
+    ],
+    "printed": {
+      "name": "Counterspell",
+      "mana_cost": "{U}{U}",
+      "type_line": "Instant",
+      "oracle_text": "Counter target spell."
+    },
+    "record": {
+      "name": "Counterspell",
+      "rules_hash": "c58e77433b4f2e5f0a16ed7e84595fe053b320ebb8c1b0c21bf443ea799cdec7",
+      "threat": {
+        "version": 1,
+        "plan": [
+          {
+            "text": "Two-blue instant hard counter that stops any target spell on the stack before it resolves.",
+            "origin": "model",
+            "evidence": [
+              {
+                "card": "Counterspell",
+                "quote": "Counter target spell."
+              }
+            ]
+          }
+        ],
+        "clock": [],
+        "answers": [
+          {
+            "text": "Uncounterable spells, abilities already on the stack, or opposing countermagic bypass Counterspell.",
+            "origin": "model",
+            "evidence": [
+              {
+                "card": "Counterspell",
+                "quote": "Counter target spell."
+              }
+            ]
+          }
+        ]
+      },
+      "relationships": {
+        "version": 1,
+        "links": []
+      },
+      "narrative_provenance": {
+        "source_text_sha256": {
+          "Counterspell": "6e7e3fa9bb231a1c1910cd956dc7e5c91bb22e9705b39ed61a2ebd23201950e4"
+        }
+      }
+    }
+  },
+  {
+    "grp_ids": [
+      82586,
+      92998
+    ],
+    "printed": {
+      "name": "Go for the Throat",
+      "mana_cost": "{1}{B}",
+      "type_line": "Instant",
+      "oracle_text": "Destroy target nonartifact creature."
+    },
+    "record": {
+      "name": "Go for the Throat",
+      "rules_hash": "1e8a39d8a95b79cc20ce183427cf42b2148c4a8206be002c74a087c3c88aad5c",
+      "threat": {
+        "version": 1,
+        "plan": [
+          {
+            "text": "Two-mana instant removal that destroys any target nonartifact creature.",
+            "origin": "model",
+            "evidence": [
+              {
+                "card": "Go for the Throat",
+                "quote": "Destroy target nonartifact creature."
+              }
+            ]
+          }
+        ],
+        "clock": [],
+        "answers": [
+          {
+            "text": "Artifact creatures, indestructible creatures, hexproof, and counterspells avoid destruction by Go for the Throat.",
+            "origin": "model",
+            "evidence": [
+              {
+                "card": "Go for the Throat",
+                "quote": "Destroy target nonartifact creature."
+              }
+            ]
+          }
+        ]
+      },
+      "relationships": {
+        "version": 1,
+        "links": []
+      },
+      "narrative_provenance": {
+        "source_text_sha256": {
+          "Go for the Throat": "a7e89cff45edd60bcb222798949ba5fe050df9d1fb033de09ab13b8fb6f416ff"
+        }
+      }
+    }
+  },
+  {
+    "grp_ids": [
       44125,
       86644
     ],
@@ -139,8 +249,30 @@
             ]
           }
         ],
-        "clock": [],
-        "answers": []
+        "clock": [
+          {
+            "text": "Griselbrand’s activated ability has no tap cost and can draw seven cards as long as its controller has at least 7 life to pay, while its flying, lifelink body swings life totals on combat damage.",
+            "origin": "model",
+            "evidence": [
+              {
+                "card": "Griselbrand",
+                "quote": "Flying\nLifelink\nPay 7 life: Draw seven cards."
+              }
+            ]
+          }
+        ],
+        "answers": [
+          {
+            "text": "Countering or discarding Griselbrand before it enters prevents any activation; targeted removal after it resolves still allows its controller to activate “Pay 7 life: Draw seven cards.” in response if they have 7 life.",
+            "origin": "model",
+            "evidence": [
+              {
+                "card": "Griselbrand",
+                "quote": "Pay 7 life: Draw seven cards."
+              }
+            ]
+          }
+        ]
       },
       "relationships": {
         "version": 1,
@@ -340,6 +472,65 @@
   },
   {
     "grp_ids": [
+      66903,
+      68066,
+      69973,
+      70705,
+      71236,
+      77304,
+      78553,
+      81658
+    ],
+    "printed": {
+      "name": "Plummet",
+      "mana_cost": "{1}{G}",
+      "type_line": "Instant",
+      "oracle_text": "Destroy target creature with flying."
+    },
+    "record": {
+      "name": "Plummet",
+      "rules_hash": "fc1ff3fccae582a013c70d58a062b6db9d1c1c800d4e46a6256a85f90112f2e1",
+      "threat": {
+        "version": 1,
+        "plan": [
+          {
+            "text": "Instant-speed creature removal restricted to a target creature with flying.",
+            "origin": "model",
+            "evidence": [
+              {
+                "card": "Plummet",
+                "quote": "Destroy target creature with flying."
+              }
+            ]
+          }
+        ],
+        "clock": [],
+        "answers": [
+          {
+            "text": "Giving the targeted flyer hexproof or removing its flying before resolution causes Plummet not to resolve, and indestructible prevents destruction.",
+            "origin": "model",
+            "evidence": [
+              {
+                "card": "Plummet",
+                "quote": "Destroy target creature with flying."
+              }
+            ]
+          }
+        ]
+      },
+      "relationships": {
+        "version": 1,
+        "links": []
+      },
+      "narrative_provenance": {
+        "source_text_sha256": {
+          "Plummet": "e53687c51d51cfe53d72d3cfc5cfa12eb4356043e6d22e46a5f484f696cb2bd7"
+        }
+      }
+    }
+  },
+  {
+    "grp_ids": [
       82159,
       82347,
       82352,
@@ -369,8 +560,30 @@
             ]
           }
         ],
-        "clock": [],
-        "answers": []
+        "clock": [
+          {
+            "text": "Sheoldred pressures life totals without attacking because each draw by an opponent causes them to lose 2 life while each draw by its controller gains 2 life.",
+            "origin": "model",
+            "evidence": [
+              {
+                "card": "Sheoldred, the Apocalypse",
+                "quote": "Whenever you draw a card, you gain 2 life.\nWhenever an opponent draws a card, they lose 2 life."
+              }
+            ]
+          }
+        ],
+        "answers": [
+          {
+            "text": "Removing or exiling Sheoldred before the next draw step stops additional draw triggers; in combat its deathtouch destroys any non-indestructible creature it deals combat damage to.",
+            "origin": "model",
+            "evidence": [
+              {
+                "card": "Sheoldred, the Apocalypse",
+                "quote": "Deathtouch\nWhenever you draw a card, you gain 2 life.\nWhenever an opponent draws a card, they lose 2 life."
+              }
+            ]
+          }
+        ]
       },
       "relationships": {
         "version": 1,
@@ -405,6 +618,140 @@
   },
   {
     "grp_ids": [
+      59771,
+      77489,
+      77552,
+      79885,
+      80863,
+      91870,
+      92450,
+      97617,
+      103707,
+      104057
+    ],
+    "printed": {
+      "name": "Swords to Plowshares",
+      "mana_cost": "{W}",
+      "type_line": "Instant",
+      "oracle_text": "Exile target creature. Its controller gains life equal to its power."
+    },
+    "record": {
+      "name": "Swords to Plowshares",
+      "rules_hash": "51dab6c9037fe13704afbfd43fc5d314732485bdc0601691112c573d096bd575",
+      "threat": {
+        "version": 1,
+        "plan": [
+          {
+            "text": "One-mana instant that exiles any target creature regardless of indestructible in exchange for life equal to its power.",
+            "origin": "model",
+            "evidence": [
+              {
+                "card": "Swords to Plowshares",
+                "quote": "Exile target creature. Its controller gains life equal to its power."
+              }
+            ]
+          }
+        ],
+        "clock": [],
+        "answers": [
+          {
+            "text": "Counterspells, hexproof, shroud, or protection stop the spell from exiling its target.",
+            "origin": "model",
+            "evidence": [
+              {
+                "card": "Swords to Plowshares",
+                "quote": "Exile target creature. Its controller gains life equal to its power."
+              }
+            ]
+          }
+        ]
+      },
+      "relationships": {
+        "version": 1,
+        "links": []
+      },
+      "narrative_provenance": {
+        "source_text_sha256": {
+          "Swords to Plowshares": "03c7ae8fb4c3ffc6452288ebefb73e42067962809d691be09e724ae120887155"
+        }
+      }
+    }
+  },
+  {
+    "grp_ids": [
+      77512,
+      77575
+    ],
+    "printed": {
+      "name": "Tainted Pact",
+      "mana_cost": "{1}{B}",
+      "type_line": "Instant",
+      "oracle_text": "Exile the top card of your library. You may put that card into your hand unless it has the same name as another card exiled this way. Repeat this process until you put a card into your hand or you exile two cards with the same name, whichever comes first."
+    },
+    "record": {
+      "name": "Tainted Pact",
+      "rules_hash": "bad1a070364823dbc4d319619b5ad7f3c4d37e844a6be5cc179945608de49eeb",
+      "threat": {
+        "version": 1,
+        "plan": [
+          {
+            "text": "Tainted Pact exiles cards from the top of its controller’s library one at a time until a card is put into hand or two exiled cards share a name, both finding a card and shrinking the library.",
+            "origin": "model",
+            "evidence": [
+              {
+                "card": "Tainted Pact",
+                "quote": "Exile the top card of your library. You may put that card into your hand unless it has the same name as another card exiled this way. Repeat this process until you put a card into your hand or you exile two cards with the same name, whichever comes first."
+              }
+            ]
+          }
+        ],
+        "clock": [],
+        "answers": [
+          {
+            "text": "Countering Tainted Pact leaves its controller’s library intact; two matching names exiled along the way stop the process before clearing the library.",
+            "origin": "model",
+            "evidence": [
+              {
+                "card": "Tainted Pact",
+                "quote": "Exile the top card of your library. You may put that card into your hand unless it has the same name as another card exiled this way. Repeat this process until you put a card into your hand or you exile two cards with the same name, whichever comes first."
+              }
+            ]
+          }
+        ]
+      },
+      "relationships": {
+        "version": 1,
+        "links": [
+          {
+            "card": "Thassa's Oracle",
+            "role": "payoff",
+            "claim": {
+              "text": "Tainted Pact can exile cards from its controller’s library down to zero or fewer cards than devotion to blue so Thassa’s Oracle’s enters-the-battlefield ability wins the game on resolution.",
+              "origin": "model",
+              "evidence": [
+                {
+                  "card": "Tainted Pact",
+                  "quote": "Exile the top card of your library. You may put that card into your hand unless it has the same name as another card exiled this way. Repeat this process until you put a card into your hand or you exile two cards with the same name, whichever comes first."
+                },
+                {
+                  "card": "Thassa's Oracle",
+                  "quote": "When this creature enters, look at the top X cards of your library, where X is your devotion to blue. Put up to one of them on top of your library and the rest on the bottom of your library in a random order. If X is greater than or equal to the number of cards in your library, you win the game."
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "narrative_provenance": {
+        "source_text_sha256": {
+          "Tainted Pact": "31a224b741478faf7581e65e562ea9759fb51cb25747e7399b02573e48c26984",
+          "Thassa's Oracle": "0ca64b18556b9ed8565637bd61cf01c8abae0780fa86c24681ef7569df0b9d76"
+        }
+      }
+    }
+  },
+  {
+    "grp_ids": [
       70584
     ],
     "printed": {
@@ -430,16 +777,58 @@
             ]
           }
         ],
-        "clock": [],
-        "answers": []
+        "clock": [
+          {
+            "text": "The alternate win condition resolves directly inside Thassa’s Oracle’s enters-the-battlefield ability without combat whenever its controller’s devotion to blue is greater than or equal to the cards left in their library.",
+            "origin": "model",
+            "evidence": [
+              {
+                "card": "Thassa's Oracle",
+                "quote": "When this creature enters, look at the top X cards of your library, where X is your devotion to blue. Put up to one of them on top of your library and the rest on the bottom of your library in a random order. If X is greater than or equal to the number of cards in your library, you win the game."
+              }
+            ]
+          }
+        ],
+        "answers": [
+          {
+            "text": "Countering the spell or countering its enters-the-battlefield ability stops the check; destroying or exiling Thassa’s Oracle after it enters while its enters-the-battlefield ability is on the stack still lets the trigger compare zero devotion against library count, winning with an empty library unless cards enter their library or forced draws happen.",
+            "origin": "model",
+            "evidence": [
+              {
+                "card": "Thassa's Oracle",
+                "quote": "When this creature enters, look at the top X cards of your library, where X is your devotion to blue. Put up to one of them on top of your library and the rest on the bottom of your library in a random order. If X is greater than or equal to the number of cards in your library, you win the game."
+              }
+            ]
+          }
+        ]
       },
       "relationships": {
         "version": 1,
-        "links": []
+        "links": [
+          {
+            "card": "Tainted Pact",
+            "role": "enabler",
+            "claim": {
+              "text": "Casting Tainted Pact before or in response to Thassa’s Oracle’s trigger lets a singleton-named library exile cards until almost none or zero remain, satisfying X >= library size on resolution.",
+              "origin": "model",
+              "evidence": [
+                {
+                  "card": "Thassa's Oracle",
+                  "quote": "When this creature enters, look at the top X cards of your library, where X is your devotion to blue. Put up to one of them on top of your library and the rest on the bottom of your library in a random order. If X is greater than or equal to the number of cards in your library, you win the game."
+                },
+                {
+                  "card": "Tainted Pact",
+                  "quote": "Exile the top card of your library. You may put that card into your hand unless it has the same name as another card exiled this way. Repeat this process until you put a card into your hand or you exile two cards with the same name, whichever comes first."
+                }
+              ]
+            }
+          }
+        ]
       },
       "narrative_provenance": {
         "source_text_sha256": {
-          "Thassa's Oracle": "0ca64b18556b9ed8565637bd61cf01c8abae0780fa86c24681ef7569df0b9d76"
+          "Thassa's Oracle": "0ca64b18556b9ed8565637bd61cf01c8abae0780fa86c24681ef7569df0b9d76",
+          "Tainted Pact": "31a224b741478faf7581e65e562ea9759fb51cb25747e7399b02573e48c26984"
         }
       }
     }
@@ -514,16 +903,58 @@
             ]
           }
         ],
-        "clock": [],
-        "answers": []
+        "clock": [
+          {
+            "text": "Each attacking non-Human creature controlled by Winota’s controller creates a separate declare-attackers trigger, so a board of non-Humans can put multiple Human attackers onto the battlefield tapped and attacking in one combat.",
+            "origin": "model",
+            "evidence": [
+              {
+                "card": "Winota, Joiner of Forces",
+                "quote": "Whenever a non-Human creature you control attacks, look at the top six cards of your library. You may put a Human creature card from among them onto the battlefield tapped and attacking. It gains indestructible until end of turn."
+              }
+            ]
+          }
+        ],
+        "answers": [
+          {
+            "text": "Removing Winota or non-Human attackers before attackers are declared prevents triggers; Humans put onto the battlefield by the ability gain indestructible until end of turn, so destruction removal does not clear them during that turn.",
+            "origin": "model",
+            "evidence": [
+              {
+                "card": "Winota, Joiner of Forces",
+                "quote": "Whenever a non-Human creature you control attacks, look at the top six cards of your library. You may put a Human creature card from among them onto the battlefield tapped and attacking. It gains indestructible until end of turn."
+              }
+            ]
+          }
+        ]
       },
       "relationships": {
         "version": 1,
-        "links": []
+        "links": [
+          {
+            "card": "Ball Lightning",
+            "role": "enabler",
+            "claim": {
+              "text": "If one player controls Winota and casts Ball Lightning (a non-Human Elemental with haste), Ball Lightning can attack that turn and trigger Winota’s top-six Human search before Ball Lightning’s end-step sacrifice.",
+              "origin": "model",
+              "evidence": [
+                {
+                  "card": "Winota, Joiner of Forces",
+                  "quote": "Whenever a non-Human creature you control attacks, look at the top six cards of your library. You may put a Human creature card from among them onto the battlefield tapped and attacking."
+                },
+                {
+                  "card": "Ball Lightning",
+                  "quote": "Trample\nHaste\nAt the beginning of the end step, sacrifice this creature."
+                }
+              ]
+            }
+          }
+        ]
       },
       "narrative_provenance": {
         "source_text_sha256": {
-          "Winota, Joiner of Forces": "f557c8c17ff4b30f53344d4184faaf264020a65082825d0f13f126cf94cbaa0c"
+          "Winota, Joiner of Forces": "f557c8c17ff4b30f53344d4184faaf264020a65082825d0f13f126cf94cbaa0c",
+          "Ball Lightning": "43b64b2d5c2b7d37656bdaea534fdcbda5d21a981124ebb175f06ec5a4e5ed3a"
         }
       }
     }

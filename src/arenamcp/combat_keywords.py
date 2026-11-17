@@ -245,7 +245,9 @@ def has_combat_keyword(card: dict, keyword: str) -> bool:
     """
     keyword = keyword.lower()
     oracle = card.get("oracle_text") or ""
-    if keyword in (card.get("keywords") or ()) or keyword in printed_combat_keywords(oracle):
+    if any(
+        str(kw).lower() == keyword for kw in (card.get("keywords") or ())
+    ) or keyword in printed_combat_keywords(oracle):
         return True
     if keyword in modified_conditional_keywords(oracle) and is_creature_modified(card):
         return True

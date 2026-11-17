@@ -2288,8 +2288,8 @@ class GameState(_GameStateAnnotationsMixin):
                     if value is not None and row.get(key) != value:
                         return None
                 printed_keywords = printed_combat_keywords(row.get("oracle_text") or "")
-                current_keywords = set(row.get("keywords") or ())
-                raw_keywords = set(obj.keywords)
+                current_keywords = {str(k).lower() for k in (row.get("keywords") or ())}
+                raw_keywords = {str(k).lower() for k in obj.keywords}
                 if current_keywords - (raw_keywords | printed_keywords) or raw_keywords - current_keywords:
                     return None
                 if obj.native_abilities_incomplete or set(obj.ability_grp_ids) != set(

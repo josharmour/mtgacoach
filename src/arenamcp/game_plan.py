@@ -3709,6 +3709,63 @@ _STOPPER_KEYWORDS = frozenset({"deathtouch", "first strike", "double strike"})
 _LIFE_GAIN_STALE = 3
 
 
+_MANA_ONLY_ORACLE_STOP = (
+    "damage",
+    "destroy",
+    "exile",
+    "counter",
+    "token",
+    "search",
+    "discard",
+    "sacrifice a ",
+    "sacrifice an ",
+    "sacrifice another",
+    "whenever you sacrifice",
+    "+1/+1",
+    "-1/-1",
+    "whenever",
+    "at the beginning",
+    "can't",
+    "cannot",
+    "cost",
+    "each opponent",
+    "you win",
+    "lose ",
+    "gain life",
+    "draw two",
+    "scry",
+    "surveil",
+    "mill",
+)
+
+
+def _is_pure_mana_source(card: dict) -> bool:
+    """True when non-empty oracle text describes mana production/filtering only."""
+    raw = str(card.get("oracle_text") or "").strip()
+    if not raw:
+        return False
+    cleaned = re.sub(r"<[^>]+>", "", raw)
+    cleaned = re.sub(r"\{o([^}]+)\}", r"{\1}", cleaned)
+    cleaned = re.sub(r"\([^)]*\)", "", cleaned).lower()
+    if any(word in cleaned for word in _MANA_ONLY_ORACLE_STOP):
+        return False
+    lines = [ln.strip() for ln in cleaned.splitlines() if ln.strip()]
+    if not lines:
+        return False
+    for ln in lines:
+        if (
+            re.search(r"\bthis (?:artifact|enchantment|permanent) enters tapped\b", ln)
+            or ("as this " in ln and "choose" in ln)
+            or (("{t}" in ln or re.search(r"sacrifice this [a-z ]+:\s*add\b", ln)) and "add " in ln)
+            or re.search(r"sacrifice this [a-z ]+:\s*draw a card", ln)
+            or "you may spend mana as though it were mana of any" in ln
+            or ("lands you control have" in ln and "add " in ln)
+        ):
+            continue
+        return False
+    return True
+
+
 def _is_engine(card: dict) -> bool:
     """A noncreature, nonland, nontoken artifact, enchantment, planeswalker or battle."""
     if card.get("is_token") or "token" in str(card.get("object_kind") or "").lower():
@@ -3718,7 +3775,30 @@ def _is_engine(card: dict) -> bool:
     ).lower()
     if "creature" in types or "land" in types:
         return False
-    return any(kind in types for kind in ("artifact", "enchantment", "planeswalker", "battle"))
+    if not any(kind in types for kind in ("artifact", "enchantment", "planeswalker", "battle")):
+        return False
+    if "planeswalker" not in types and "battle" not in types and _is_pure_mana_source(card):
+        return False
+    return True
+
+
+def _lethal_flag_appeared(old_key: tuple | None, new_key: tuple | None) -> bool:
+    """True when our_lethal/opp_lethal turns True, or dead_soon appears without lethal already active."""
+    old_facts = old_key[0] if isinstance(old_key, tuple) and old_key else None
+    new_facts = new_key[0] if isinstance(new_key, tuple) and new_key else None
+    if not isinstance(old_facts, tuple) or not isinstance(new_facts, tuple):
+        return True
+    old_flags = old_facts[1:]
+    new_flags = new_facts[1:]
+    if len(old_flags) < 3 or len(new_flags) < 3:
+        return any(bool(n) and not bool(w) for w, n in zip(old_flags, new_flags, strict=False))
+    our_old, opp_old, dead_old = bool(old_flags[0]), bool(old_flags[1]), bool(old_flags[2])
+    our_new, opp_new, dead_new = bool(new_flags[0]), bool(new_flags[1]), bool(new_flags[2])
+    if (our_new and not our_old) or (opp_new and not opp_old):
+        return True
+    if dead_new and not dead_old and not (our_old or opp_old or our_new or opp_new):
+        return True
+    return False
 
 
 def board_basis(state: dict | None) -> dict:
@@ -4883,6 +4963,8 @@ class GamePlanManager:
         # true never repeats the model call it already caused.
         self._switch_active: set[str] = set()
         self._switch_pending: set[str] = set()
+        self._last_dead_soon_turn: int = -99
+        self._suppressed_threat_turn: int = -99
         # Precise change text carried into the update request ("" = fresh plan).
         self._reform_change_detail = ""
 
@@ -4902,6 +4984,8 @@ class GamePlanManager:
             self._last_sig = None
             self._upkeep_key = None
             self._last_reform_turn = -1
+            self._last_dead_soon_turn = -99
+            self._suppressed_threat_turn = -99
             self._stall_count = 0
             self._stall_hint = ""
             self._match_id = None
@@ -5359,6 +5443,7 @@ class GamePlanManager:
                 and not game_state.get("stack")
                 and not game_state.get("game_over")
                 and self._key_change_reason(self._inflight_key, self._upkeep_key) == "lethal flip"
+                and _lethal_flag_appeared(self._inflight_key, self._upkeep_key)
             ):
                 self._plan_cancels += 1
                 self._plan_outcome = "superseded by a lethal change"
@@ -5408,6 +5493,29 @@ class GamePlanManager:
                 and self._threat_superseded_turn != sig[0]
             ):
                 return False  # one threat-driven reform per turn
+            if (
+                reason == "new opposing threat"
+                and self._plan is not None
+                and self._threat_turn > 0
+                and self._threat_superseded_turn != sig[0]
+                and not (sig[0] - self._threat_turn >= 6 and self._has_major_threat_addition(game_state))
+            ):
+                if sig[0] - self._threat_turn >= 6:
+                    # Window elapsed with only minor additions: absorb them cleanly.
+                    added = board_changes(self._plan.basis, self._live_basis, threats_only=True)
+                    self._plan.basis = dict(self._live_basis)
+                    if self._last_key is not None and key is not None:
+                        self._last_key = (*self._last_key[:3], key[3])
+                    summary = "; ".join(added[:3]) if added else "board development"
+                    self._plan.updates.append(f"T{sig[0]}: opposing threats ({summary}); strategy kept"[:160])
+                elif self._suppressed_threat_turn != sig[0]:
+                    # Keep self._plan.basis intact during [T+1..T+5] so any major
+                    # threat added in that window remains visible when 6 turns elapse.
+                    added = board_changes(self._plan.basis, self._live_basis, threats_only=True)
+                    summary = "; ".join(added[:3]) if added else "board development"
+                    self._plan.updates.append(f"T{sig[0]}: opposing threats ({summary}); strategy kept"[:160])
+                    self._suppressed_threat_turn = sig[0]
+                return False
             if (
                 our_turn
                 and reason not in self._OUR_TURN_REASONS
@@ -5664,6 +5772,14 @@ class GamePlanManager:
             )
             if not force and not reason:
                 return self._plan
+            if (
+                reason == "lethal flip"
+                and key is not None
+                and isinstance(key[0], tuple)
+                and len(key[0]) >= 4
+                and key[0][3]
+            ):
+                self._last_dead_soon_turn = turn_num
             seed = self._seed
             stall_count = self._stall_count
             plan_turn = self._plan_turn(game_state)
@@ -5832,7 +5948,34 @@ class GamePlanManager:
                 else None
             )
             now = tuple(key[0][1:]) if key is not None and isinstance(key[0], tuple) else None
-            return fire("lethal flip", f"the lethal flags flipped {was} -> {now}")
+            if not _lethal_flag_appeared(self._last_key, key):
+                if now is not None and len(now) >= 3 and not now[2] and turn_num > self._last_dead_soon_turn:
+                    # Distinct clock cleared on a subsequent turn: allow a fresh
+                    # two-turn clock later in the match to trigger one reform.
+                    self._last_dead_soon_turn = -99
+                if self._last_key is not None and key is not None:
+                    self._last_key = (key[0], *self._last_key[1:])
+                if self._plan is not None:
+                    self._plan.updates.append(
+                        f"T{turn_num}: lethal/clock flags cleared {was} -> {now}; strategy kept"[:160]
+                    )
+                change = ""
+            elif (
+                was is not None
+                and now is not None
+                and len(was) >= 3
+                and len(now) >= 3
+                and not (now[0] and not was[0])
+                and not (now[1] and not was[1])
+                and self._last_dead_soon_turn >= 0
+            ):
+                if self._last_key is not None and key is not None:
+                    self._last_key = (key[0], *self._last_key[1:])
+                if self._plan is not None:
+                    self._plan.updates.append(f"T{turn_num}: two-turn clock persists; strategy kept"[:160])
+                change = ""
+            else:
+                return fire("lethal flip", f"the lethal flags flipped {was} -> {now}")
         if removal_board_changed(self._plan, state):
             return "removal board changed"
         if board and plan_attackers_gone(self._plan, basis=board):
@@ -5885,8 +6028,14 @@ class GamePlanManager:
                 "the opponent added a threat the plan was not written from: "
                 + "; ".join(board_changes(self._plan.basis, board, threats_only=True)),
             )
-        if change:
-            return fire(change, f"the strategic picture changed ({change})")
+        if change == "new opposing permanent":
+            if key is not None and self._last_key is not None:
+                self._last_key = (*self._last_key[:3], key[3])
+            if self._plan is not None:
+                self._plan.basis = board or self._plan.basis
+                self._plan.updates.append(
+                    f"T{turn_num}: non-threat opposing permanent noted; strategy kept"[:160]
+                )
         # A step that names cards we no longer have is broken; replan it. A turn
         # with no step at all is fine — the strategy block plus the live board
         # facts carry those decisions (2026-11-10 corpus: 26 of 746 reforms were
@@ -6098,6 +6247,38 @@ class GamePlanManager:
                 )
             battlefield.append(card)
         return dict(game_state, turn=turn, battlefield=battlefield, stack=[])
+
+    def _has_major_threat_addition(self, game_state: dict[str, Any]) -> bool:
+        """True when opposing additions since plan.basis include a big threat, planeswalker, or commander."""
+        if self._plan is None or not self._live_basis:
+            return False
+        added = board_changes(self._plan.basis, self._live_basis, threats_only=True)
+        if len(added) >= 2:
+            return True
+        old_ids = {
+            str(c.get("id")) for c in (self._plan.basis or {}).get("creatures") or [] if isinstance(c, dict)
+        }
+        old_eng_ids = {
+            str(e.get("id")) for e in (self._plan.basis or {}).get("engines") or [] if isinstance(e, dict)
+        }
+        local = game_state.get("local_seat_id") or self._local_seat(game_state)
+        for card in game_state.get("battlefield") or []:
+            if not isinstance(card, dict):
+                continue
+            ctrl = card.get("controller_seat_id") or card.get("owner_seat_id")
+            if ctrl is None or ctrl == local:
+                continue
+            cid = str(card.get("instance_id") or card.get("name") or "")
+            if cid in old_ids or cid in old_eng_ids:
+                continue
+            if card.get("is_commander"):
+                return True
+            types = str(card.get("type_line") or "").lower()
+            if "planeswalker" in types or "battle" in types:
+                return True
+            if _round(card.get("power")) >= 5:
+                return True
+        return False
 
     def _opposing_engines(self, game_state: dict[str, Any]) -> frozenset:
         """Instance ids of the opponent's noncreature, nonland, nontoken permanents."""

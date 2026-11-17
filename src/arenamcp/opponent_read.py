@@ -112,6 +112,7 @@ class OpponentRead:
 
     def __init__(self):
         self._games = OrderedDict()
+        self._printed_cards = OrderedDict()
         self._lock = Lock()
 
     def observation_facts(self, observation):
@@ -182,6 +183,17 @@ class OpponentRead:
 
                 rules = " ".join(oracle_lines(card["oracle_text"]))
                 if rules and len(rules) <= 620:
+                    meta = {
+                        "name": card["name"],
+                        "mana_cost": card.get("mana_cost") or "",
+                        "type_line": card.get("type_line") or "",
+                        "oracle_text": card.get("oracle_text") or "",
+                    }
+                    with self._lock:
+                        self._printed_cards[(card["grp_id"], digest)] = meta
+                        self._printed_cards.move_to_end((card["grp_id"], digest))
+                        if len(self._printed_cards) > 512:
+                            self._printed_cards.popitem(last=False)
                     current.setdefault(
                         (card["grp_id"], digest),
                         (
@@ -209,6 +221,11 @@ class OpponentRead:
                 self._games.popitem(last=False)
             evidence = {name: sight for name, sight in seen.items() if sight[0] <= seq}
             command_times = {key: when for key, when in first_command.items() if when <= seq}
+            ordered_printed = {
+                key: dict(self._printed_cards[key])
+                for key, value in evidence.items()
+                if value[3] is not None and key in self._printed_cards
+            }
         reviewed = {key: value for key, value in evidence.items() if value[3] is None}
         facts = _inferences(reviewed, opponent)
         # Ask about the newest public evidence, including a permanent that left
@@ -232,6 +249,7 @@ class OpponentRead:
             recent.append(next((row for row in others[1:] if not row[1][3][2]), others[1]))
         selected = {key for key, _ in command[:2] + recent}
         observed = [row for row in ordered if row[0] in selected]
+        facts.update(self._card_facts_inferences(ordered, evidence, opponent, ordered_printed))
         if observed:
             references, rules = [], []
             for (gid, digest), (when, _, zone, (name, text, _)) in observed:
@@ -251,6 +269,174 @@ class OpponentRead:
                 "evidence": references,
             }
         return facts
+
+    @staticmethod
+    def _card_facts_inferences(ordered, seen, opponent, printed_map=None):
+        """Build evidence-backed inferences from cached CardFacts threat/relationship layers."""
+        if not ordered:
+            return {}
+        try:
+            from arenamcp.card_facts.client import facts_for
+            from arenamcp.card_facts.prompt_render import candidate_fact_hashes, normalized_scryfall_card
+        except Exception:
+            return {}
+        printed_map = printed_map or {}
+        seen_names = {
+            value[3][0] if value[3] is not None else key
+            for key, value in seen.items()
+            if isinstance(key, str) or value[3] is not None
+        }
+        # Reconstruct flat seen name -> metadata for public prints.
+        by_name = {}
+        query_cards = []
+        norm_digest_by_key = {}
+        for key, value in ordered:
+            gid, digest = key
+            when, _, zone, payload = value
+            if payload is not None:
+                by_name[payload[0]] = (when, gid, zone, digest, payload[1])
+                meta = printed_map.get(key)
+                if isinstance(meta, dict):
+                    query_cards.append(meta)
+                    norm = normalized_scryfall_card(meta)
+                    if norm is not None:
+                        query_cards.append(norm)
+                        digests = candidate_fact_hashes(meta)
+                        if len(digests) > 1:
+                            norm_digest_by_key[key] = digests[1]
+        seen_names |= set(by_name)
+        if not query_cards:
+            return {}
+        try:
+            records = facts_for(query_cards, memory_only=True)
+        except Exception:
+            return {}
+        if not isinstance(records, dict) or not records:
+            return {}
+        inferences = {}
+        for name in sorted(by_name):
+            when, gid, zone, digest, _rules = by_name[name]
+            norm_digest = norm_digest_by_key.get((gid, digest))
+            rec = records.get(digest) or (records.get(norm_digest) if norm_digest else None)
+            if not isinstance(rec, dict) or rec.get("rules_hash") not in {digest, norm_digest}:
+                continue
+            ev = [
+                {
+                    "name": name,
+                    "rules_hash": digest,
+                    "grp_id": gid,
+                    "observed_zone": zone,
+                    "source_sequence": when,
+                }
+            ]
+            threat = rec.get("threat") or {}
+            if isinstance(threat, dict):
+                for field in ("plan", "answers"):
+                    for i, item in enumerate((threat.get(field) or [])[:2]):
+                        text = item.get("text", "") if isinstance(item, dict) else str(item or "")
+                        if text.strip():
+                            key = f"state:opponent_read:cf_{field}:{gid}:{i}"
+                            inferences[key] = {
+                                "kind": "opponent_plan_inference",
+                                "source": "cached_public_card_facts",
+                                "visibility": "public",
+                                "opponent_seat": opponent,
+                                "text": f"Inference from {name}: {text.strip()}",
+                                "evidence": list(ev),
+                            }
+            rels = rec.get("relationships") or {}
+            if isinstance(rels, dict):
+                for link in (rels.get("links") or [])[:4]:
+                    if not isinstance(link, dict):
+                        continue
+                    partner = str(link.get("card") or "").strip()
+                    claim = link.get("claim")
+                    claim_text = (
+                        claim.get("text", "") if isinstance(claim, dict) else str(claim or "")
+                    ).strip()
+                    if not partner or not claim_text:
+                        continue
+                    key = f"state:opponent_read:cf_pair:{gid}:{partner.lower().replace(' ', '_')[:24]}"
+                    if partner in seen_names:
+                        prefix = (
+                            f"Inference: Both {name} and {partner} have appeared publicly. "
+                            f"Possible interaction: "
+                        )
+                    else:
+                        prefix = (
+                            f"Inference: {partner} is a possible unseen partner for {name}; "
+                            f"no confirmed public sighting in this game. "
+                        )
+                    inferences[key] = {
+                        "kind": "opponent_plan_inference",
+                        "source": "cached_public_card_facts",
+                        "visibility": "public",
+                        "opponent_seat": opponent,
+                        "text": prefix + claim_text,
+                        "evidence": list(ev),
+                    }
+        return inferences
+
+    def threat_classes(self, state: dict | None) -> list[str]:
+        """Return active public opponent threat categories for G4 strategy switches.
+
+        Derived purely from public opposing zone objects and card text/facts —
+        never reads hidden hands or unknown opponent library cards.
+        """
+        if not isinstance(state, dict):
+            return []
+        local = state.get("local_seat_id")
+        if type(local) is not int or local not in (1, 2):
+            return []
+        opponent = 3 - local
+        zones = state.get("zones")
+        if not isinstance(zones, dict):
+            zones = state
+        classes: set[str] = set()
+        for zone, card in _public_cards(zones, opponent):
+            type_line = str(card.get("type_line") or "").lower()
+            oracle = str(card.get("oracle_text") or "").lower()
+            kws = {str(k).lower() for k in (card.get("keywords") or ())}
+            has_flying_kw = "flying" in kws or bool(re.search(r"(?:^|\n|, )flying\b", oracle))
+            if has_flying_kw and "creature" in type_line:
+                classes.add("flyers")
+            if (
+                zone == "graveyard"
+                and any(
+                    kw in oracle
+                    for kw in ("flashback", "escape", "unearth", "disturb", "from your graveyard")
+                )
+            ) or any(kw in oracle for kw in ("return target", "from your graveyard", "reanimate", "mill")):
+                classes.add("graveyard")
+            if "counter target" in oracle:
+                classes.add("counterspells")
+            if "you win the game" in oracle or (
+                any(kw in oracle for kw in ("search your library", "storm", "cascade", "discover"))
+                and not re.search(
+                    r"search your library for (?:a |up to \w+ )?(?:basic )?(?:land|plains|island|swamp|mountain|forest)",
+                    oracle,
+                )
+            ):
+                classes.add("fast_combo")
+            if any(kw in oracle for kw in ("deals 3 damage", "deals 2 damage", "haste")) and (
+                "instant" in type_line or "sorcery" in type_line or "creature" in type_line
+            ):
+                classes.add("aggro_burn")
+        # Include opponent tokens on public battlefield when detecting wide boards.
+        creature_count = sum(
+            1
+            for card in zones.get("battlefield") or ()
+            if isinstance(card, dict)
+            and (card.get("controller_seat_id") or card.get("owner_seat_id")) == opponent
+            and not card.get("face_down")
+            and "creature"
+            in (
+                " ".join([str(t) for t in card.get("card_types") or ()] + [str(card.get("type_line") or "")])
+            ).lower()
+        )
+        if creature_count >= 4:
+            classes.add("wide_board")
+        return sorted(classes)
 
 
 def _inferences(seen, opponent):

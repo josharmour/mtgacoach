@@ -13,7 +13,7 @@ from importlib.resources import files
 from .source_identity import single_face_source
 from .validate import PrintedCard
 
-_CORPUS_SHA256 = "a43fde431a32b1f74f7185609a4016c5132cbba1549ff25cea73753a7ff96763"
+_CORPUS_SHA256 = "ea260fefecbd70fc9cb60a6513391c8a68c77bc0802771fa718169e0e8188397"
 
 
 @lru_cache(maxsize=1)
