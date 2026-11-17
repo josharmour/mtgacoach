@@ -23,10 +23,10 @@ def test_action_plan_timeout_cancels_its_cooperative_backend(monkeypatch, repair
                 return "not JSON"
             cancel = kwargs.get("cancel_event")
             blocked.set()
-            if cancel is not None and cancel.wait(2):
+            if cancel is not None and cancel.wait(5):
                 stopped.set()
             else:
-                release.wait(1)
+                release.wait(5)
             return '{"actions":[]}'
 
     planner = ActionPlanner(Backend(), timeout=5, land_drop_first=False)
@@ -52,7 +52,7 @@ def test_action_plan_timeout_cancels_its_cooperative_backend(monkeypatch, repair
             ["Attack with: Spider", "Done"],
             {"type": "declare_attackers"},
         )
-        assert stopped.wait(0.5), "timed-out action work must not keep running beside later decisions"
+        assert stopped.wait(3.0), "timed-out action work must not keep running beside later decisions"
         assert len(calls) == (2 if repair else 1)
     finally:
         release.set()

@@ -941,17 +941,33 @@ class AutoQueueNavigator:
 
     def _new_match(self, state: dict) -> bool:
         match_id = state.get("match_id")
+        if not match_id or match_id in self._seen_ends:
+            return False
+        turn = state.get("turn") or state.get("turn_info") or {}
+        if (
+            not state.get("pending_decision")
+            and (turn.get("turn_number") or 0) == 0
+            and bool(state.get("last_game_result"))
+        ):
+            return False
+        with contextlib.suppress(Exception):
+            from arenamcp.server import get_completed_match_for_navigation
+
+            completed = get_completed_match_for_navigation()
+            if (
+                isinstance(completed, dict)
+                and completed.get("match_complete") is True
+                and completed.get("match_id") == match_id
+            ):
+                return False
         return bool(
-            match_id
-            and (
-                ((self._ended_match_id or self._idle_grind) and match_id != self._ended_match_id)
-                # Idle navigation has no authoritative completion. The same ID
-                # can be the active room captured before mulligans at restart.
-                or (
-                    self._idle_grind
-                    and self._recent_mode
-                    and (state.get("pending_decision") or not state.get("last_game_result"))
-                )
+            ((self._ended_match_id or self._idle_grind) and match_id != self._ended_match_id)
+            # Idle navigation has no authoritative completion. The same ID
+            # can be the active room captured before mulligans at restart.
+            or (
+                self._idle_grind
+                and self._recent_mode
+                and (state.get("pending_decision") or not state.get("last_game_result"))
             )
         )
 

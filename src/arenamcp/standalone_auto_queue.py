@@ -597,25 +597,44 @@ class _AutoQueueMixin(AutoQuestMixin):
             match_id = completed.get("match_id")
             current_id = state.get("match_id")
             turn = state.get("turn") or state.get("turn_info") or {}
+            queue_joined = getattr(navigator, "queue_joined", False) is True
             if (
                 current_id
                 and current_id != match_id
-                and (turn.get("turn_number", 0) > 0 or state.get("pending_decision"))
+                and (
+                    turn.get("turn_number", 0) > 0
+                    or state.get("pending_decision")
+                    or (queue_joined and not state.get("last_game_result"))
+                )
             ):
                 # Log replay during startup also parses old completion events.
-                # Only queue after observing this game active in this session.
+                # Only queue after observing this game active in this session
+                # (or once our own queue submission entered a live Turn-0 room).
                 self._auto_queue_observed_match = current_id
+            observed_id = getattr(self, "_auto_queue_observed_match", None)
+            since = getattr(self, "_auto_queue_since", float("inf"))
+            arena_completed_at = completed.get("arena_completed_at")
             if (
                 match_id
-                and match_id == getattr(self, "_auto_queue_observed_match", None)
-                and completed.get("completed_at", 0) >= getattr(self, "_auto_queue_since", float("inf"))
+                and completed.get("completed_at", 0) >= since
                 and match_id != getattr(self, "_auto_queue_last_noted", None)
+                and (
+                    match_id == observed_id
+                    or (queue_joined and match_id != getattr(navigator, "_ended_match_id", None))
+                    or (
+                        observed_id is not None
+                        and isinstance(arena_completed_at, (int, float))
+                        and not isinstance(arena_completed_at, bool)
+                        and float(arena_completed_at) > since
+                    )
+                )
             ):
                 quest = getattr(self, "_auto_quest", None)
                 if quest and quest.get("target"):
                     completed = {**completed, **quest["target"]}
                 navigator.note_match_end(completed, confirmed_match_end=True)
                 self._auto_queue_last_noted = match_id
+                self._auto_queue_observed_match = match_id
             owns_input = navigator.process_tick(state)
             if navigator.paused_reason and not navigator.retry_scheduled:
                 inhibitor.stop()
