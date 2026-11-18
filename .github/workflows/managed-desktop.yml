@@ -15,6 +15,8 @@ on:
       version:
         description: Existing v4.0.x tag matching a published master build (stable only)
         required: false
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 permissions:
   contents: read
   actions: read
@@ -82,7 +84,7 @@ jobs:
         include:
           - {os: windows-latest, rid: win-x64}
           - {os: ubuntu-22.04, rid: linux-x64}
-          - {os: macos-latest, rid: osx-arm64}
+          - {os: macos-15, rid: osx-arm64}
     permissions:
       contents: write
       actions: read

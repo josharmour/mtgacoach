@@ -8,6 +8,8 @@ on:
       lane: {type: string, required: true}
       version: {type: string, required: true}
       cache_epoch: {type: string, required: true}
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 jobs:
   build:
     runs-on: ${{ inputs.os }}
@@ -39,6 +41,7 @@ jobs:
         id: compiler
         shell: bash
         run: |
+          [[ "$(uname -m)" == arm64 ]]
           python - <<'PYCODE' >> "$GITHUB_OUTPUT"
           import hashlib, subprocess
           version = subprocess.check_output(['clang++', '--version']) + subprocess.check_output(['xcrun', '--show-sdk-version'])

@@ -1,0 +1,66 @@
+name: Retry unacquired hosted runners
+
+on:
+  workflow_run:
+    workflows: [Managed desktop releases, publish-pypi]
+    types: [completed]
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+permissions:
+  actions: write
+  checks: read
+  contents: read
+
+jobs:
+  retry:
+    if: github.event.workflow_run.conclusion != 'success' && github.event.workflow_run.conclusion != 'skipped' && github.event.workflow_run.run_attempt < 3 && github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Rerun failed jobs only when hosted runner was never acquired
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+        run: |
+          python3 - <<'PY'
+          import json, os, subprocess
+
+          repo = os.environ["REPO"]
+          run_id = os.environ["RUN_ID"]
+          attempt = os.environ["ATTEMPT"]
+          pages = json.loads(
+              subprocess.check_output(
+                  ["gh", "api", "--paginate", "--slurp", f"repos/{repo}/actions/runs/{run_id}/jobs?per_page=100"],
+                  text=True,
+              )
+          )
+          jobs = [job for page in pages for job in page.get("jobs", [])]
+          found_unacquired = False
+          for job in jobs:
+              conclusion = job.get("conclusion")
+              if conclusion in ("success", "skipped", "neutral"):
+                  continue
+              if conclusion not in ("cancelled", "failure") or job.get("steps") or (job.get("runner_name") or ""):
+                  print(f"Job {job.get('name')} ended with {conclusion} after running; not retrying.")
+                  raise SystemExit(0)
+              annotations = json.loads(
+                  subprocess.check_output(
+                      ["gh", "api", f"repos/{repo}/check-runs/{job['id']}/annotations"],
+                      text=True,
+                  )
+              )
+              if any("not acquired by Runner" in (a.get("message") or "") for a in annotations):
+                  found_unacquired = True
+              else:
+                  print(f"Job {job.get('name')} has no unacquired-runner annotation; not retrying.")
+                  raise SystemExit(0)
+          if found_unacquired:
+              print(f"Retrying run {run_id} (attempt {attempt}): hosted runner was not acquired.")
+              subprocess.check_call(["gh", "run", "rerun", run_id, "--failed", "-R", repo])
+          else:
+              print(f"Run {run_id} had no unacquired hosted runner jobs; leaving as-is.")
+          PY
