@@ -2262,13 +2262,15 @@ def _event_landfall_mana(record: Any, card: dict) -> bool:
     if record is None or not _landfall_mana_card(card) or len(record.effects) != 1:
         return False
 
+    # _landfall_mana_card(card) full-matches complete oracle text, and real
+    # compiled Lotus Cobra records (e.g., tests/fixtures/f3_pilot_20261114/lotus_cobra.json)
+    # carry explanatory compiler notes, whereas _record_semantics still rejects record.notes.
     if (
         record.confidence != "high"
         or _has_unknown_fields(record)
         or record.relationships
         or record.limited
         or record.threat
-        or record.notes
     ):
         return False
     entry = record.effects[0]

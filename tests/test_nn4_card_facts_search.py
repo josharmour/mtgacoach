@@ -1246,7 +1246,9 @@ def test_rejected_records_do_not_leak_and_noncreature_permanent_gets_variants(mo
 
 
 def test_landfall_metadata_and_nonland_mana_conditions_abstain():
-    # Finding #4: _event_landfall_mana rejects notes and mismatched type_line.
+    # _event_landfall_mana tolerates explanatory compiler notes (e.g., Lotus Cobra),
+    # while _record_semantics still rejects record.notes and _event_landfall_mana rejects
+    # mismatched type_line or non-empty reserved semantic fields.
     cobra_card = {
         "name": "Lotus Cobra",
         "mana_cost": "{1}{G}",
@@ -1274,8 +1276,18 @@ def test_landfall_metadata_and_nonland_mana_conditions_abstain():
     with_notes["notes"] = "caveat"
     bad_type = deepcopy(base_cobra)
     bad_type["type_line"] = "Enchantment"
-    assert lsm._event_landfall_mana(card_facts_from_dict(with_notes), cobra_card) is False
+    with_threat = deepcopy(base_cobra)
+    with_threat["threat"] = {"note": "x"}
+    with_notes_rec = card_facts_from_dict(with_notes)
+    assert lsm._event_landfall_mana(with_notes_rec, cobra_card) is True
+    assert lsm._record_semantics(with_notes_rec, "Lotus Cobra", cobra_card) is None
     assert lsm._event_landfall_mana(card_facts_from_dict(bad_type), cobra_card) is False
+    assert lsm._event_landfall_mana(card_facts_from_dict(with_threat), cobra_card) is False
+
+    # _record_semantics rejects notes on a cast-time/activated mana card.
+    elf_with_notes = deepcopy(_llanowar_elves_record())
+    elf_with_notes["notes"] = "caveat"
+    assert lsm._record_semantics(card_facts_from_dict(elf_with_notes), "Llanowar Elves") is None
 
     # Finding #5: Nonland with conditional record.mana abstains even if effect itself looks clean.
     cond_elf = deepcopy(_llanowar_elves_record())

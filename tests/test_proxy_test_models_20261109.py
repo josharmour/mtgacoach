@@ -101,7 +101,10 @@ def test_switch_reaches_the_autopilot_backend_and_is_not_saved(monkeypatch):
 def test_effort_by_call_class_for_the_alias_and_test_models():
     from arenamcp.backends.proxy import _alias_effort
 
-    assert _alias_effort("current", "decision.typed", "low") == "none"
+    # NN2: "current" (GLM) caps decision thinking at "low" while keeping "none" off.
+    assert _alias_effort("current", "decision.typed", "none") == "none"
+    assert _alias_effort("current", "decision.typed", "low") == "low"
+    assert _alias_effort("current", "decision.typed", "high") == "low"
     assert _alias_effort("current", "background.game_plan", "high") == "low"
     assert _alias_effort("or-gemma-4-26b", "decision.typed", "low") == "none"
     # A test model's plan call ran 17-43 s with thinking on (match eedf1ae3).
