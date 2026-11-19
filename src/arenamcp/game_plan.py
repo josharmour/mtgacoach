@@ -5084,6 +5084,7 @@ class GamePlanManager:
             self._match_id = None
             self._observed_turn = 0
             self._ledger.reset()
+            self._opponent_read = OpponentRead()
             self._plan_outcome = ""
             self._plan_attempts = 0
             self._plan_cancels = 0
@@ -5140,6 +5141,10 @@ class GamePlanManager:
                 self._plan_upkeep_locked(game_state)
             except Exception as error:  # upkeep is advisory, never fatal
                 logger.debug("game plan upkeep skipped: %s", error)
+            try:
+                self._opponent_read.observe_posture(game_state)
+            except Exception as error:  # posture tracking is advisory
+                logger.debug("opponent posture observe skipped: %s", error)
             self._observe_tricks(game_state, turn)
 
     def _plan_upkeep_locked(self, game_state: dict) -> None:
@@ -5454,6 +5459,19 @@ class GamePlanManager:
         assessment = assess(state) if state is not None else None
         risk = opponent_interaction(state, self._tricks()) if state is not None else None
         verdict = risk.verdict_line() if risk is not None and risk.known else ""
+        posture_lines: tuple[str, ...] = ()
+        if state is not None:
+            try:
+                posture = self._opponent_read.opponent_posture(state, trick=risk)
+                include_inter = not bool(verdict) or (
+                    bool(posture.pass_signals) and (risk is None or not risk.known or risk.p_any >= 0.10)
+                )
+                posture_lines = posture.constraint_lines(
+                    assessment,
+                    include_interaction=include_inter,
+                )
+            except Exception as error:
+                logger.debug("adversarial posture unavailable: %s", error)
         from arenamcp.damage_decisions import strategy_facts
         from arenamcp.loyalty_removal import loyalty_strategy_context
 
@@ -5462,6 +5480,7 @@ class GamePlanManager:
                 None,
                 (
                     strategy_facts(state) if state else "",
+                    *posture_lines,
                     f"  OPP INTERACTION: {verdict}" if verdict else "",
                     self._opponent_read.plan_block(state),
                     loyalty_strategy_context(state) if state else "",
@@ -6643,6 +6662,14 @@ class GamePlanManager:
         read = self._opponent_read.plan_block(game_state)
         if read:
             user_parts.append(read)
+        try:
+            posture = self._opponent_read.opponent_posture(game_state)
+            posture_lines = posture.constraint_lines(assessment)
+        except Exception as error:
+            logger.debug("adversarial posture in reform skipped: %s", error)
+            posture_lines = ()
+        if posture_lines:
+            user_parts.append("\n".join(posture_lines))
         user_parts.append(_plan_availability_block(game_state, self._plan))
         if assessment is not None:
             logger.info(

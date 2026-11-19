@@ -933,11 +933,21 @@ def _int(value: Any) -> int | None:
 
 
 def _seats(state: dict) -> tuple[int | None, int | None]:
-    players = [p for p in state.get("players") or [] if isinstance(p, dict)]
-    local = state.get("local_seat_id") or next((p.get("seat_id") for p in players if p.get("is_local")), None)
-    opponent = state.get("opponent_seat_id") or next(
-        (p.get("seat_id") for p in players if p.get("seat_id") not in (None, local)), None
+    raw_players = state.get("players")
+    players = (
+        [p for p in raw_players if isinstance(p, dict)] if isinstance(raw_players, (list, tuple)) else []
     )
+    local = _int(state.get("local_seat_id"))
+    if local is None:
+        local = next((_int(p.get("seat_id")) for p in players if p.get("is_local")), None)
+    opponent = _int(state.get("opponent_seat_id"))
+    if opponent is None:
+        opponent = next(
+            (seat for p in players if (seat := _int(p.get("seat_id"))) is not None and seat != local),
+            None,
+        )
+    if opponent is None and local in (1, 2) and not players:
+        opponent = 3 - local
     return local, opponent
 
 
@@ -1033,6 +1043,36 @@ def relevant_kinds(state: dict) -> frozenset[str]:
     return frozenset(kinds)
 
 
+_PUBLIC_POSTURE_ZONES = ("command", "battlefield", "stack", "graveyard", "exile")
+_PURE_MULTI_MANA = re.compile(
+    r"(?:^|\n)\s*\(?\{t\}(?:,\s*[^:{}]+)?:\s*add\s+((?:\{[wubrgc]\})+)\s*(?:\.|\)|$|\n)",
+    re.I,
+)
+
+
+def _public_zone_cards(state: dict, zone: str) -> list[dict]:
+    """Read cards from a strictly public zone, checking ``zones[zone]`` then top-level."""
+    if zone not in _PUBLIC_POSTURE_ZONES:
+        return []
+    zones = state.get("zones")
+    if isinstance(zones, dict) and isinstance(zones.get(zone), (list, tuple)):
+        return [c for c in zones[zone] if isinstance(c, dict)]
+    top = state.get(zone)
+    if isinstance(top, (list, tuple)):
+        return [c for c in top if isinstance(c, dict)]
+    return []
+
+
+def _card_tapped(card: dict) -> bool:
+    if "is_tapped" in card and card["is_tapped"] is not None:
+        return bool(card["is_tapped"])
+    return bool(card.get("tapped"))
+
+
+def _card_hidden(card: dict) -> bool:
+    return bool(card.get("face_down") or card.get("isFacedown") or card.get("face_down_reason"))
+
+
 def _mana_sources(state: dict, opponent: Any) -> list[SimpleNamespace]:
     """The opponent's open mana: untapped sources that can tap now, then their pool."""
     turn = state.get("turn") or {}
@@ -1042,8 +1082,8 @@ def _mana_sources(state: dict, opponent: Any) -> list[SimpleNamespace]:
     # creature that entered at or after it is still summoning sick.
     latest = number if their_turn else number - 1
     sources = []
-    for card in state.get("battlefield") or []:
-        if not isinstance(card, dict) or _controller(card) != opponent or card.get("is_tapped"):
+    for card in _public_zone_cards(state, "battlefield"):
+        if _controller(card) != opponent or _card_tapped(card) or _card_hidden(card):
             continue
         if card.get("is_phased_out"):
             continue
@@ -1058,18 +1098,39 @@ def _mana_sources(state: dict, opponent: Any) -> list[SimpleNamespace]:
             )
             if entered is not None and entered >= 0 and entered >= latest and not haste:
                 continue
-        sources.append(
-            SimpleNamespace(
-                produces=source_colors(card),
-                name=str(card.get("name") or ""),
-                instance_id=card.get("instance_id"),
-                # Heartwood Crafter, Gideon's Memorial: their mana can't cast spells from hand.
-                restricted=bool(_RESTRICTED_MANA.search(text)),
+        restricted = bool(_RESTRICTED_MANA.search(text))
+        name = str(card.get("name") or "")
+        instance_id = card.get("instance_id")
+        multi_pips: list[str] = []
+        for match in _PURE_MULTI_MANA.finditer(text):
+            pips = re.findall(r"\{([wubrgc])\}", match.group(1), re.I)
+            if len(pips) > len(multi_pips):
+                multi_pips = [p.upper() for p in pips]
+        if len(multi_pips) >= 2:
+            for pip in multi_pips:
+                sources.append(
+                    SimpleNamespace(
+                        produces=frozenset({pip}),
+                        name=name,
+                        instance_id=instance_id,
+                        restricted=restricted,
+                    )
+                )
+        else:
+            sources.append(
+                SimpleNamespace(
+                    produces=source_colors(card),
+                    name=name,
+                    instance_id=instance_id,
+                    # Heartwood Crafter, Gideon's Memorial: their mana can't cast spells from hand.
+                    restricted=restricted,
+                )
             )
-        )
-    player = next(
-        (p for p in state.get("players") or [] if isinstance(p, dict) and p.get("seat_id") == opponent), {}
+    raw_players = state.get("players")
+    players = (
+        [p for p in raw_players if isinstance(p, dict)] if isinstance(raw_players, (list, tuple)) else []
     )
+    player = next((p for p in players if _int(p.get("seat_id")) == opponent), {})
     pool = player.get("mana_pool") or {}
     if isinstance(pool, dict):
         entries = list(pool.items())
@@ -1106,8 +1167,8 @@ def _public_cards(state: dict, opponent: Any) -> list[dict]:
     """The opponent's own non-token cards in public zones (each physical card once)."""
     cards = []
     for zone in ("battlefield", "graveyard", "exile", "stack"):
-        for card in state.get(zone) or []:
-            if not isinstance(card, dict) or _is_token(card) or _is_ability(card):
+        for card in _public_zone_cards(state, zone):
+            if _is_token(card) or _is_ability(card):
                 continue
             if _owner(card) == opponent:
                 cards.append(card)
@@ -1867,3 +1928,461 @@ def _default_color_ratings(set_code: str) -> list[dict] | None:
 
     # The split rows: pure pairs, "+ Splash" and the class summaries.
     return DraftStatsCache().get_color_rows(set_code, combine_splash=False)
+
+
+# --- format-agnostic public adversarial posture (NN8) -------------------------
+
+_SWEEPER_COLORS = frozenset({"W", "B", "R"})
+_REACTIVE_COLORS = frozenset({"U", "W", "B", "R"})
+_SWEEPER_TEXT = re.compile(
+    r"\b(?:destroy|exile) (?:all|each) (?:other )?(?:creatures|nonland permanents|permanents)\b"
+    r"|\ball (?:other )?creatures get [-−–](?:\d+|x)/[-−–](?:\d+|x)"
+    r"|\bdeals? (?:\d+|x) damage to each (?:other )?creature\b"
+    r"|\beach player sacrifices all creatures\b"
+    r"|\breturn all (?:nonland permanents|creatures) to (?:their|the) owners?'? hands?\b",
+    re.I,
+)
+
+
+def public_opponent_hand_count(state: dict | None) -> int | None:
+    """Opponent's public hand count; never inspects hidden hand or library contents."""
+    if not isinstance(state, dict):
+        return None
+    zones = state.get("zones")
+    candidates: list[Any] = [state.get("opponent_hand_count")]
+    if isinstance(zones, dict):
+        candidates.append(zones.get("opponent_hand_count"))
+    _, opponent = _seats(state)
+    raw_players = state.get("players")
+    players = (
+        [p for p in raw_players if isinstance(p, dict)] if isinstance(raw_players, (list, tuple)) else []
+    )
+    opp_player = next(
+        (
+            p
+            for p in players
+            if (opponent is not None and _int(p.get("seat_id")) == opponent)
+            or (opponent is None and p.get("is_local") is False)
+        ),
+        None,
+    )
+    if isinstance(opp_player, dict):
+        candidates.extend((opp_player.get("hand_size"), opp_player.get("hand_count")))
+    for value in candidates:
+        count = _int(value)
+        if count is not None:
+            return max(0, count)
+    return None
+
+
+def _format_color_summary(sources: list[SimpleNamespace]) -> str:
+    """Compact mana breakdown like '2W/2U', 'W/B', '2W/any', or ''."""
+    if not sources:
+        return ""
+    mono: Counter[str] = Counter()
+    multi: Counter[str] = Counter()
+    for src in sources:
+        produces = getattr(src, "produces", frozenset({"C"})) or frozenset({"C"})
+        if len(produces) == 1:
+            color = next(iter(produces))
+            mono[color] += 1
+        elif frozenset(COLORS) <= produces:
+            multi["any"] += 1
+        else:
+            letters = "".join(c for c in COLORS if c in produces) or "C"
+            multi[letters] += 1
+    parts = [f"{mono[c]}{c}" if mono[c] > 1 else c for c in "WUBRGC" if mono[c] > 0]
+    for label in sorted(multi, key=lambda key: (key == "any", key)):
+        count = multi[label]
+        parts.append(f"{count}{label}" if count > 1 else label)
+    return "/".join(parts)
+
+
+def opponent_open_mana(state: dict | None) -> dict[str, Any]:
+    """Summarize opponent's untapped public spell mana and available colors."""
+    if not isinstance(state, dict):
+        return {
+            "open_mana": 0,
+            "total_mana": 0,
+            "open_colors": (),
+            "color_counts": {},
+            "color_summary": "",
+        }
+    _, opponent = _seats(state)
+    if opponent is None:
+        return {
+            "open_mana": 0,
+            "total_mana": 0,
+            "open_colors": (),
+            "color_counts": {},
+            "color_summary": "",
+        }
+    all_sources = _mana_sources(state, opponent)
+    spell_sources = _spell_sources(all_sources)
+    color_counts = {
+        c: sum(1 for src in spell_sources if c in src.produces)
+        for c in "WUBRGC"
+        if any(c in src.produces for src in spell_sources)
+    }
+    open_colors = tuple(c for c in "WUBRGC" if color_counts.get(c, 0) > 0)
+    return {
+        "open_mana": len(spell_sources),
+        "total_mana": len(all_sources),
+        "open_colors": open_colors,
+        "color_counts": color_counts,
+        "color_summary": _format_color_summary(spell_sources),
+    }
+
+
+def _our_creature_count(state: dict, local: int | None) -> int:
+    if local is None:
+        return 0
+    count = 0
+    for card in _public_zone_cards(state, "battlefield"):
+        if _controller(card) != local or card.get("is_phased_out") or _card_hidden(card):
+            continue
+        if "creature" in _types(card):
+            count += 1
+    return count
+
+
+def _public_posture_sightings(state: dict, opponent: int | None) -> tuple[bool, bool, bool]:
+    """Scan strictly visible public opponent cards for sweeper, counterspell, and flash/instant evidence."""
+    if opponent is None:
+        return False, False, False
+    from arenamcp.commentary.observations import card_identity_visible
+
+    sweeper_seen = False
+    counter_seen = False
+    flash_or_instant_seen = False
+    for zone in _PUBLIC_POSTURE_ZONES:
+        for card in _public_zone_cards(state, zone):
+            if _is_ability(card) or not card_identity_visible(card, zone):
+                continue
+            seat = _controller(card) if zone == "battlefield" else _owner(card)
+            if type(seat) is not int or seat != opponent:
+                continue
+            oracle = _rules(str(card.get("oracle_text") or ""))
+            types = _types(card)
+            if _SWEEPER_TEXT.search(oracle):
+                sweeper_seen = True
+            if "counter target" in oracle:
+                counter_seen = True
+            has_flash = "flash" in {str(k).lower() for k in (card.get("keywords") or ())} or bool(
+                _FLASH_LINE.search(oracle)
+            )
+            if has_flash or (zone in ("stack", "graveyard", "exile") and "instant" in types):
+                flash_or_instant_seen = True
+    return sweeper_seen, counter_seen, flash_or_instant_seen
+
+
+def _is_behind_or_survival(assessment: Any) -> bool:
+    if assessment is None:
+        return False
+    if getattr(assessment, "lethal_now", False):
+        return False
+    if getattr(assessment, "survival_mode", False):
+        return True
+    role = str(getattr(assessment, "role", "") or "").lower()
+    race = str(getattr(assessment, "race", "") or "").lower()
+    if role in ("defender", "control/stabilize") or race == "behind":
+        return True
+    if getattr(assessment, "opp_lethal_on_board", False):
+        return True
+    dead_in = getattr(assessment, "dead_in", None)
+    if dead_in is not None and dead_in <= 2:
+        return True
+    our_clock = getattr(assessment, "our_clock", None)
+    their_clock = getattr(assessment, "their_clock", None)
+    board_adv = int(getattr(assessment, "board_advantage", 0) or 0)
+    if our_clock is None and board_adv < 0:
+        return True
+    if race == "stalled":
+        their_creatures = int(getattr(assessment, "their_creatures", 0) or 0)
+        our_creatures = int(getattr(assessment, "our_creatures", 0) or 0)
+        if their_creatures >= our_creatures and board_adv < 0:
+            return True
+    return bool(their_clock is not None and (our_clock is None or their_clock < our_clock))
+
+
+def _is_ahead_on_clock_or_board(assessment: Any) -> bool:
+    if assessment is None or _is_behind_or_survival(assessment):
+        return False
+    if getattr(assessment, "lethal_now", False):
+        return False
+    role = str(getattr(assessment, "role", "") or "").lower()
+    race = str(getattr(assessment, "race", "") or "").lower()
+    our_creatures = int(getattr(assessment, "our_creatures", 0) or 0)
+    their_creatures = int(getattr(assessment, "their_creatures", 0) or 0)
+    our_clock = getattr(assessment, "our_clock", None)
+    their_clock = getattr(assessment, "their_clock", None)
+    if our_creatures < 2:
+        return False
+    if race == "ahead" or role == "aggressor":
+        return True
+    if our_clock is not None and our_clock <= 4 and (their_clock is None or our_clock <= their_clock):
+        return True
+    return our_creatures >= their_creatures + 1 and int(getattr(assessment, "board_advantage", 0) or 0) >= 1
+
+
+@dataclass(frozen=True)
+class AdversarialPosture:
+    """Format-agnostic public opponent posture (open mana, hand count, pass signals, sweepers)."""
+
+    known: bool = False
+    tapped_out: bool = False
+    open_mana: int = 0
+    open_colors: tuple[str, ...] = ()
+    color_summary: str = ""
+    color_counts: dict[str, int] = field(default_factory=dict)
+    opp_hand: int | None = None
+    our_creatures: int = 0
+    sweeper_risk: str = "none"  # "high" | "moderate" | "none"
+    interaction_risk: str = "none"  # "high" | "moderate" | "low" | "none"
+    pass_signals: tuple[str, ...] = ()
+    public_signals: tuple[str, ...] = ()
+    evidence_text: str = ""
+    trick_risk: TrickRisk | None = None
+
+    def constraint_lines(
+        self, assessment: Any = None, *, include_interaction: bool = True
+    ) -> tuple[str, ...]:
+        """Render 0-2 compact, race-aware posture/constraint lines (no card names)."""
+        if not self.known or self.tapped_out or self.opp_hand == 0:
+            return ()
+        if self.opp_hand is None:
+            if self.interaction_risk == "high" and include_interaction:
+                return (
+                    f"  OPP POSTURE: interaction risk high — {self.evidence_text}; "
+                    "expect visible instant-speed option.",
+                )
+            return ()
+        if getattr(assessment, "lethal_now", False):
+            if self.interaction_risk == "high" and include_interaction:
+                return (
+                    f"  OPP POSTURE: interaction risk high — {self.evidence_text}; "
+                    "check instant responses before committing lethal.",
+                )
+            return ()
+        if _is_behind_or_survival(assessment):
+            if self.sweeper_risk != "none" or (self.interaction_risk == "high" and include_interaction):
+                evidence = self.evidence_text.replace("opp holding ", "opp has ", 1)
+                return (
+                    f"  OPP POSTURE: {evidence} — "
+                    "behind on race: keep deploying and contesting board to stabilize.",
+                )
+            return ()
+        if _is_ahead_on_clock_or_board(assessment):
+            if self.sweeper_risk != "none":
+                clock = getattr(assessment, "our_clock", None)
+                clock_note = f" (clock {clock})" if clock is not None else ""
+                return (
+                    f"  OPP POSTURE: sweeper risk {self.sweeper_risk} — {self.evidence_text}.",
+                    f"  OPP CONSTRAINT: ahead on board with {self.our_creatures} creatures{clock_note}; "
+                    "maintain lethal pressure and force an answer without overcommitting redundant threats into a sweeper.",
+                )
+            if self.interaction_risk == "high" and include_interaction:
+                return (
+                    f"  OPP POSTURE: interaction risk high — {self.evidence_text}.",
+                    "  OPP CONSTRAINT: ahead on board; press existing threats without walking key pieces or "
+                    "stacked buffs into open instant mana.",
+                )
+            if self.interaction_risk == "moderate" and include_interaction:
+                return (f"  OPP POSTURE: interaction risk moderate — {self.evidence_text}.",)
+            return ()
+        if self.sweeper_risk != "none":
+            return (f"  OPP POSTURE: sweeper risk {self.sweeper_risk} — {self.evidence_text}.",)
+        if self.interaction_risk == "high" and include_interaction:
+            return (
+                f"  OPP POSTURE: interaction risk high — {self.evidence_text}; "
+                "expect instant-speed response or counterspell.",
+            )
+        if (
+            self.interaction_risk == "moderate"
+            and include_interaction
+            and (self.pass_signals or self.public_signals)
+        ):
+            return (f"  OPP POSTURE: interaction risk moderate — {self.evidence_text}.",)
+        return ()
+
+    def as_payload(self) -> dict[str, Any]:
+        return {
+            "known": self.known,
+            "tapped_out": self.tapped_out,
+            "open_mana": self.open_mana,
+            "open_colors": list(self.open_colors),
+            "color_summary": self.color_summary,
+            "color_counts": dict(self.color_counts),
+            "opp_hand": self.opp_hand,
+            "our_creatures": self.our_creatures,
+            "sweeper_risk": self.sweeper_risk,
+            "interaction_risk": self.interaction_risk,
+            "pass_signals": list(self.pass_signals),
+            "public_signals": list(self.public_signals),
+            "evidence_text": self.evidence_text,
+        }
+
+
+def opponent_posture(
+    state: dict | None,
+    *,
+    table: TrickTable | None = None,
+    trick: TrickRisk | None = None,
+    threat_classes: Iterable[str] = (),
+    pass_signals: Iterable[str] = (),
+    public_signals: Iterable[str] = (),
+) -> AdversarialPosture:
+    """Evaluate opponent open mana, hand count, pass signals, and sweeper/interaction posture.
+
+    Works format-agnostically across Constructed, Brawl, and Limited (and integrates
+    Limited ``TrickRisk`` when a ``TrickTable`` or ``trick`` is available). Strictly public
+    inputs only: never reads hidden hand or library cards, and never invents card names.
+    """
+    if not isinstance(state, dict):
+        return AdversarialPosture(known=False)
+    local, opponent = _seats(state)
+    if opponent is None:
+        return AdversarialPosture(known=False)
+    mana = opponent_open_mana(state)
+    open_mana = int(mana["open_mana"])
+    open_colors = tuple(mana["open_colors"])
+    color_counts = dict(mana["color_counts"])
+    color_summary = str(mana["color_summary"])
+    opp_hand = public_opponent_hand_count(state)
+    our_creatures = _our_creature_count(state, local)
+
+    if trick is None and table is not None:
+        trick = trick_risk(state, table)
+    trick_known = trick is not None and bool(getattr(trick, "known", False))
+
+    tapped_out = open_mana == 0 or opp_hand == 0
+    if tapped_out:
+        if open_mana == 0:
+            ev = "opp tapped out (0 open mana)"
+        else:
+            mana_desc = f"{open_mana} open mana" + (f" ({color_summary})" if color_summary else "")
+            ev = f"opp empty-handed (0 cards in hand, {mana_desc})"
+        return AdversarialPosture(
+            known=True,
+            tapped_out=True,
+            open_mana=open_mana,
+            open_colors=open_colors,
+            color_summary=color_summary,
+            color_counts=color_counts,
+            opp_hand=opp_hand,
+            our_creatures=our_creatures,
+            sweeper_risk="none",
+            interaction_risk="none",
+            pass_signals=(),
+            public_signals=(),
+            evidence_text=ev,
+            trick_risk=trick if trick_known else None,
+        )
+
+    classes = set(threat_classes)
+    sweeper_seen, counter_seen, flash_seen = _public_posture_sightings(state, opponent)
+    counter_seen = counter_seen or ("counterspells" in classes)
+    passes = tuple(dict.fromkeys(str(s).strip() for s in pass_signals if str(s).strip()))
+    pub_sigs: list[str] = [str(s).strip() for s in public_signals if str(s).strip()]
+    if sweeper_seen and "public sweeper sighting" not in pub_sigs:
+        pub_sigs.append("public sweeper sighting")
+    if counter_seen and "public counterspell sighting" not in pub_sigs:
+        pub_sigs.append("public counterspell sighting")
+    if flash_seen and "public instant/flash sighting" not in pub_sigs:
+        pub_sigs.append("public instant/flash sighting")
+    if trick_known and trick.p_any >= 0.05:
+        pct = f"limited trick risk ~{round(trick.p_any * 100)}%"
+        if pct not in pub_sigs:
+            pub_sigs.append(pct)
+    pub_tuple = tuple(dict.fromkeys(pub_sigs))
+
+    if opp_hand is None:
+        # Unknown hand count: only flag visible on-board/graveyard Limited options, never guess hidden hand.
+        has_certain = trick_known and any(c.get("relevant") for c in (trick.certain or ()))
+        return AdversarialPosture(
+            known=True,
+            tapped_out=False,
+            open_mana=open_mana,
+            open_colors=open_colors,
+            color_summary=color_summary,
+            color_counts=color_counts,
+            opp_hand=None,
+            our_creatures=our_creatures,
+            sweeper_risk="none",
+            interaction_risk="high" if has_certain else "none",
+            pass_signals=passes,
+            public_signals=pub_tuple,
+            evidence_text=f"opp holding {open_mana} open mana"
+            + (f" ({color_summary})" if color_summary else ""),
+            trick_risk=trick if trick_known else None,
+        )
+
+    has_sweeper_color = bool(_SWEEPER_COLORS & set(open_colors))
+    has_reactive_color = bool(_REACTIVE_COLORS & set(open_colors))
+    control_evidence = sweeper_seen or counter_seen or bool(passes)
+
+    # Sweeper posture: 4+ open mana in W/B/R with >=2 cards (or >=1 with sweeper/control/pass evidence) and >=2 creatures.
+    sweeper_risk = "none"
+    if our_creatures >= 2 and open_mana >= 4 and has_sweeper_color:
+        if (opp_hand >= 3) or (opp_hand >= 2 and (control_evidence or open_mana >= 5)):
+            sweeper_risk = "high"
+        elif opp_hand >= 2 or (opp_hand >= 1 and control_evidence):
+            sweeper_risk = "moderate"
+
+    # Instant interaction posture: format-agnostic + Limited TrickRisk integration.
+    interaction_risk = "none"
+    if open_mana >= 2:
+        if (opp_hand >= 2 and (bool(passes) or counter_seen or flash_seen)) or (
+            open_mana >= 4 and has_reactive_color and opp_hand >= 2 and control_evidence
+        ):
+            interaction_risk = "high"
+        elif has_reactive_color or opp_hand >= 2 or bool(passes) or flash_seen:
+            interaction_risk = "moderate"
+        else:
+            interaction_risk = "low"
+    elif open_mana == 1:
+        if has_reactive_color and (counter_seen or flash_seen or bool(passes)):
+            interaction_risk = "moderate"
+        elif has_reactive_color:
+            interaction_risk = "low"
+
+    if trick_known:
+        has_certain = any(c.get("relevant") for c in (trick.certain or ()))
+        if has_certain or trick.p_any >= 0.25:
+            interaction_risk = "high"
+        elif trick.p_any >= 0.10 and interaction_risk in ("none", "low"):
+            interaction_risk = "moderate"
+        elif trick.p_any < 0.10 and not has_certain:
+            if passes or counter_seen or flash_seen:
+                if interaction_risk == "high":
+                    interaction_risk = "moderate"
+            elif trick.p_any > 0.0 and interaction_risk == "none":
+                interaction_risk = "low"
+            elif trick.p_any <= 0.0 and open_mana <= 1:
+                interaction_risk = "none"
+
+    color_note = f" ({color_summary})" if color_summary else ""
+    hand_word = "card" if opp_hand == 1 else "cards"
+    parts = [f"opp holding {open_mana} open mana{color_note}, {opp_hand} {hand_word} in hand"]
+    if passes:
+        parts.append("; ".join(passes))
+    if pub_tuple:
+        parts.append("; ".join(pub_tuple))
+    evidence_text = "; ".join(parts)
+
+    return AdversarialPosture(
+        known=True,
+        tapped_out=False,
+        open_mana=open_mana,
+        open_colors=open_colors,
+        color_summary=color_summary,
+        color_counts=color_counts,
+        opp_hand=opp_hand,
+        our_creatures=our_creatures,
+        sweeper_risk=sweeper_risk,
+        interaction_risk=interaction_risk,
+        pass_signals=passes,
+        public_signals=pub_tuple,
+        evidence_text=evidence_text,
+        trick_risk=trick if trick_known else None,
+    )

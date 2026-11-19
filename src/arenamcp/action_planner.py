@@ -788,6 +788,9 @@ class ActionPlanner(_ActionLegalityMixin):
         # Our own recent typed decisions (this match): prompt memory, reversal
         # detection and the game-plan reform's action feed (decision_memory.py).
         self._decision_memory: DecisionMemory | None = DecisionMemory()
+        from arenamcp.opponent_read import OpponentRead
+
+        self._opponent_read = OpponentRead()
         # Active multi-step turn plan: the ordered list of user-visible plays
         # we intend to make this turn. Parsed from a "turn_plan" key requested
         # on the first own-turn action call (one merged LLM call), then
@@ -1153,6 +1156,39 @@ class ActionPlanner(_ActionLegalityMixin):
             "a lethal crackback."
         )
 
+    def _opponent_reader(self):
+        reader = getattr(self, "_opponent_read", None)
+        if reader is None:
+            from arenamcp.opponent_read import OpponentRead
+
+            reader = OpponentRead()
+            self._opponent_read = reader
+        return reader
+
+    def _adversarial_posture_note(self, game_state: dict[str, Any], *, grounded: str = "") -> str:
+        """Race-aware public opponent posture/constraint lines for the volatile decision tail."""
+        if not isinstance(game_state, dict):
+            return ""
+        try:
+            posture = self._opponent_reader().opponent_posture(game_state)
+        except Exception as error:
+            logger.debug("adversarial posture note skipped: %s", error)
+            return ""
+        if not posture.known or posture.tapped_out:
+            return ""
+        if "OPP POSTURE:" in grounded or "OPP CONSTRAINT:" in grounded:
+            missing_passes = [sig for sig in posture.pass_signals if sig not in grounded]
+            return ("OPP TEMPO: " + "; ".join(missing_passes)) if missing_passes else ""
+        try:
+            from arenamcp.board_assessment import assess
+
+            assessment = assess(game_state)
+        except Exception as error:
+            logger.debug("adversarial posture assessment skipped: %s", error)
+            assessment = None
+        lines = posture.constraint_lines(assessment, include_interaction="OPP INTERACTION:" not in grounded)
+        return "\n".join(line.lstrip() for line in lines)
+
     # Decision calls give up on a server that has produced no first token by
     # then (bug_20261006_185403: saturated, no token in 30 s / 12 s). Proxies
     # without first-token support ignore it and keep the overall budget.
@@ -1429,6 +1465,10 @@ class ActionPlanner(_ActionLegalityMixin):
             ActionPlan with structured actions to execute.
         """
         start = time.perf_counter()
+        try:
+            self._opponent_reader().observe_posture(game_state)
+        except Exception as error:
+            logger.debug("opponent posture observe skipped: %s", error)
         from arenamcp.decision_clock import model_deadline as arena_model_deadline
 
         arena_deadline = arena_model_deadline(game_state)
@@ -4097,6 +4137,9 @@ class ActionPlanner(_ActionLegalityMixin):
         self._last_plan_block = grounded or ""
         if grounded:
             parts.append(grounded)
+        posture_note = self._adversarial_posture_note(game_state, grounded=grounded)
+        if posture_note:
+            parts.append(posture_note)
 
         # 2026-10-11: the attack window followed a plan formed before this
         # turn's casts (a haste creature that dies at end step, a pump on
@@ -4714,6 +4757,9 @@ class ActionPlanner(_ActionLegalityMixin):
         ]
         if grounded:
             volatile_lines.append(grounded)
+        posture_note = self._adversarial_posture_note(game_state, grounded=grounded)
+        if posture_note:
+            volatile_lines.append(posture_note)
         volatile_lines.extend(["", "Should you pay this optional cost?"])
         volatile_block = "\n".join(line for line in volatile_lines if line is not None)
         if "\n\n\n" in volatile_block:
@@ -4848,6 +4894,10 @@ class ActionPlanner(_ActionLegalityMixin):
         and the background game-plan reform both read.
         """
         self._bound_decision_evidence = None
+        try:
+            self._opponent_reader().observe_posture(game_state)
+        except Exception as error:
+            logger.debug("opponent posture observe skipped: %s", error)
         game_state = self._state_with_our_burn_marks(game_state)
         try:
             self.sync_turn_plan_from_game_plan(game_state)
@@ -10779,6 +10829,9 @@ class ActionPlanner(_ActionLegalityMixin):
         self._last_plan_block = grounded or ""
         if grounded:
             lines.append(grounded)
+        posture_note = self._adversarial_posture_note(game_state, grounded=grounded)
+        if posture_note:
+            lines.append(posture_note)
         aggression = self._limited_aggression_note(game_state)
         if aggression:
             lines.append(aggression)

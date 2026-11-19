@@ -64,6 +64,7 @@ import json
 import logging
 import re
 import time
+import zlib
 from dataclasses import dataclass, field
 from itertools import combinations, permutations, product
 from types import SimpleNamespace
@@ -71,13 +72,22 @@ from typing import Any, Protocol
 
 from arenamcp.ability_synthesizer import (
     AddMana,
+    CreateToken,
     Damage,
+    Draw,
     Exile,
     GainLife,
+    Pump,
+    PutCounters,
     UnknownEffect,
     cast_time_entries,
     record_cast_text,
     render_effect_sentence,
+)
+from arenamcp.afterstate import (
+    VerifiedTrigger,
+    extract_verified_triggers,
+    is_verified_card_facts,
 )
 from arenamcp.attack_potential import annotated, attack_round
 from arenamcp.board_assessment import (
@@ -100,6 +110,7 @@ from arenamcp.board_assessment import (
     _is_land,
     _kills,
     _lifelink,
+    _mana_source,
     _name,
     _protected_from,
     _reach_or_flying,
@@ -108,6 +119,7 @@ from arenamcp.board_assessment import (
     _spell_value,
     _text,
     _types,
+    _untargetable,
     burn_damage,
     card_role,
     engine_role,
@@ -135,6 +147,7 @@ from arenamcp.cost_reduction import parse_cost_reduction, reduced_mana_value, re
 from arenamcp.entry_draw_transition import (
     EngineAvailability,
     draw_engine,
+    draw_punisher,
 )
 from arenamcp.entry_draw_transition import (
     resolve as resolve_entry_draw,
@@ -202,6 +215,8 @@ _ATTACK_RELEVANT = re.compile(
 )
 # Ids of countered bodies (a fresh id per body and count, below the token ids).
 _COUNTER_IDS = 800_000_000
+# Ids of Aura-buffed bodies (a fresh id per body and buff delta).
+_BUFF_IDS = 850_000_000
 # Ids of their attackers pumped by landfall for one attack (``Moves._pumped``).
 _PUMP_IDS = 700_000_000
 # "For every 3 life you gained this game, create an additional one of those tokens."
@@ -1547,6 +1562,12 @@ class Variant:
     imprint_rock: bool = False
     payment: tuple[int, ...] = ()  # exact hand indexes exiled; chosen before set evaluation
     rock_produces: frozenset[str] = frozenset()  # explicit rock colours when supplied by a record
+    aura_pump: tuple[int, int] = (0, 0)  # persistent +P/+T granted by a verified buff Aura
+    temp_pump: tuple[int, int] = (0, 0)  # until-end-of-turn +P/+T granted by a verified Pump spell
+    requires_our_creature: bool = False
+    has_fact_triggers: bool = False
+    fact_draws: int = 0
+    stays_on_battlefield: bool = True
 
 
 @dataclass(eq=False)
@@ -1614,6 +1635,10 @@ class Node:
     opponent_loss: LossState = LossState()
     opponent_discards: int = 0  # cumulative known cards paid, never identities
     draws: int = 0  # public cards drawn this line; identities are never invented
+    fact_permanents: tuple[
+        tuple[int, int], ...
+    ] = ()  # ((spell_idx, host_fid), ...); host_fid=0 if unattached
+    risk_penalty: float = 0.0  # bounded conservative 2-for-1 blowout penalty from turn T
 
     @property
     def terminal(self) -> bool:
@@ -1629,7 +1654,7 @@ class Mid:
         "attack_first", "applied", "modes", "targets", "cycles", "cast_names", "keys", "gained", "walkers",
         "pumps", "persistent", "their_tapped", "responses", "response_case", "response_cache",
         "public_response", "opponent_discards", "entry_draw_used", "entry_draw_branches", "draws",
-        "entry_draw_blocked",
+        "entry_draw_blocked", "fact_permanents", "fact_triggers_used", "fragile_investments", "risk_penalty",
     )  # fmt: skip
 
     def copy(self) -> Mid:
@@ -2796,6 +2821,219 @@ def _record_semantics(record: Any, name: str, card: dict | None = None) -> dict 
     }
 
 
+_OPP_COLOR_NAMES = {
+    "white": "W",
+    "blue": "U",
+    "black": "B",
+    "red": "R",
+    "green": "G",
+    "colorless": "C",
+    "1": "W",
+    "2": "U",
+    "3": "B",
+    "4": "R",
+    "5": "G",
+    "6": "C",
+}
+
+
+def _opponent_open_mana(model: BoardModel) -> tuple[int, frozenset[str]]:
+    """Public opponent untapped spell-castable mana count and produced color set."""
+    opp_seat = model.opponent
+    opp_permanents = [
+        c
+        for c in model.battlefield
+        if isinstance(c, dict) and _controller(c) == opp_seat and not c.get("is_phased_out")
+    ]
+    if not opp_permanents:
+        return 0, frozenset()
+    opp_latest = model.turn if not model.our_turn else max(0, model.turn - 1)
+    # _mana_source treats entered >= turn as sick; pass check_turn = model.turn on our turn
+    # only if we check opp creature sickness explicitly with opp_latest first.
+    count = 0
+    colors: set[str] = set()
+    for card in opp_permanents:
+        if card.get("is_tapped") or card.get("tapped"):
+            continue
+        if card.get("face_down") or card.get("isFacedown") or card.get("face_down_reason"):
+            continue
+        if _is_creature(card):
+            entered = _int(card.get("turn_entered_battlefield"))
+            if entered is not None and entered >= opp_latest and not has_combat_keyword(card, "haste"):
+                continue
+        src = _mana_source(card, 10**6 if _is_creature(card) else model.turn, opp_permanents)
+        if src is None:
+            continue
+        count += 1
+        raw_prod = card.get("color_production") or ()
+        if raw_prod:
+            for item in raw_prod:
+                c = _OPP_COLOR_NAMES.get(str(item).strip().lower().removeprefix("manacolor_"))
+                if c:
+                    colors.add(c)
+        else:
+            colors.update(src.produces)
+    return count, frozenset(colors)
+
+
+def _valid_simple_cast_modes(record: Any, *, stays: bool) -> bool:
+    """Verify modes contain only a standard cast mode matching printed mana_cost."""
+    if not record.modes:
+        return True
+    if len(record.modes) != 1:
+        return False
+    mode = record.modes[0]
+    return bool(
+        (mode.name or "").strip().casefold() == "cast"
+        and mode.stays_on_battlefield is stays
+        and _no_extra_cost(mode.cost)
+        and (mode.cost.mana or "") == (record.mana_cost or "")
+        and _cost_mana_value(mode.cost.mana or "") is not None
+    )
+
+
+def _supported_self_etb_trigger(trig: VerifiedTrigger, *, is_creature: bool) -> bool:
+    """True only when a SELF_ETB VerifiedTrigger can be completely represented on Variant."""
+    if trig.event != "SELF_ETB":
+        return True
+    eff = trig.effect
+    if isinstance(eff, (GainLife, Draw)):
+        return True
+    if isinstance(eff, Damage):
+        return trig.target_hint in ("opponent", "any_target", "opp_creatures", "target_creature")
+    if isinstance(eff, PutCounters):
+        return is_creature or trig.target_hint != "self"
+    if isinstance(eff, CreateToken):
+        return Moves._fact_token_spec(eff.spec) is not None
+    return False
+
+
+def _card_facts_buff_aura(
+    record: Any, card: dict
+) -> tuple[tuple[int, int], tuple[VerifiedTrigger, ...]] | None:
+    """Bounded verified buff Aura ((+P, +T), permanent/ETB triggers), else None."""
+    if record is None or "aura" not in _types(card) or not is_verified_card_facts(record, card):
+        return None
+    if not _valid_simple_cast_modes(record, stays=True):
+        return None
+    oracle_low = _text(card)
+    if re.search(
+        r"\b(?:opponent controls|you don't control|enchant land|can't attack|can't block|loses all abilities)\b",
+        oracle_low,
+    ):
+        return None
+    pump_p = pump_t = 0
+    for entry in record.effects:
+        trig = str(entry.trigger or "").strip().casefold()
+        if trig in ("", "static"):
+            eff = entry.effect
+            if (
+                not entry.conditions
+                and isinstance(eff, Pump)
+                and type(eff.power) is int
+                and type(eff.toughness) is int
+                and 0 <= eff.power <= 10
+                and 0 <= eff.toughness <= 10
+                and (eff.power > 0 or eff.toughness > 0)
+                and " ".join(str(eff.target or "").casefold().split())
+                in ("enchanted creature", "enchanted creature you control")
+            ):
+                pump_p += eff.power
+                pump_t += eff.toughness
+            else:
+                return None
+        elif trig in ("cast", "resolves", "activated", "activate"):
+            return None
+    if pump_p <= 0 and pump_t <= 0:
+        return None
+    triggers = extract_verified_triggers(record, card)
+    # Fail closed if any non-static entry failed extraction or uses an unmodelled SELF_ETB
+    non_static = [e for e in record.effects if str(e.trigger or "").strip().casefold() not in ("", "static")]
+    if (non_static and len(triggers) < len(non_static)) or not all(
+        _supported_self_etb_trigger(t, is_creature=False) for t in triggers
+    ):
+        return None
+    return (pump_p, pump_t), triggers
+
+
+def _card_facts_pump_spell(record: Any, card: dict) -> tuple[tuple[int, int], int, int, int, int, int] | None:
+    """Bounded verified Instant/Sorcery pump ((+P, +T), counters, gain, face_dmg, alt_dmg, draws), else None."""
+    types = _types(card)
+    if (
+        record is None
+        or "aura" in types
+        or not re.search(r"\b(?:instant|sorcery)\b", types)
+        or not is_verified_card_facts(record, card)
+    ):
+        return None
+    if not _valid_simple_cast_modes(record, stays=False) or not record.effects:
+        return None
+    pump_p = pump_t = counters = gain = face = alt_dmg = draws = 0
+    for entry in record.effects:
+        if entry.conditions or str(entry.trigger or "").strip().casefold() not in ("", "cast", "resolves"):
+            return None
+        eff = entry.effect
+        if isinstance(eff, Pump):
+            target = " ".join(str(eff.target or "").casefold().split())
+            if (
+                type(eff.power) is not int
+                or type(eff.toughness) is not int
+                or not 0 <= eff.power <= 10
+                or not 0 <= eff.toughness <= 10
+                or (eff.power <= 0 and eff.toughness <= 0)
+                or target not in ("target creature", "target creature you control")
+            ):
+                return None
+            pump_p += eff.power
+            pump_t += eff.toughness
+        elif isinstance(eff, PutCounters):
+            if eff.counter_type != "+1/+1" or type(eff.count) is not int or not 0 < eff.count <= 10:
+                return None
+            counters += eff.count
+        elif isinstance(eff, GainLife):
+            if type(eff.amount) is not int or not 0 < eff.amount <= 20:
+                return None
+            gain += eff.amount
+        elif isinstance(eff, Damage):
+            target = " ".join(str(eff.target or "").casefold().split())
+            if type(eff.amount) is not int or not 0 < eff.amount <= 20:
+                return None
+            if target in ("each opponent", "target opponent", "target player"):
+                face += eff.amount
+            elif target == "any target":
+                alt_dmg += eff.amount
+            else:
+                return None
+        elif isinstance(eff, Draw):
+            if type(eff.count) is not int or not 0 < eff.count <= 5:
+                return None
+            draws += eff.count
+        else:
+            return None
+    if pump_p <= 0 and pump_t <= 0 and counters <= 0:
+        return None
+    return (pump_p, pump_t), counters, gain, face, alt_dmg, draws
+
+
+def _card_facts_models_permanent(record: Any, card: dict) -> tuple[VerifiedTrigger, ...] | None:
+    """Verified permanent triggers covering every effect entry on a non-aura permanent, else None."""
+    if record is None or not _is_permanent(card) or "aura" in _types(card):
+        return None
+    if not is_verified_card_facts(record, card) or not _valid_simple_cast_modes(record, stays=True):
+        return None
+    if any(
+        str(e.trigger or "").strip().casefold() in ("", "cast", "resolves", "static", "activated", "activate")
+        for e in record.effects
+    ):
+        return None
+    triggers = extract_verified_triggers(record, card)
+    if not triggers or not all(
+        _supported_self_etb_trigger(t, is_creature=_is_creature(card)) for t in triggers
+    ):
+        return None
+    return triggers
+
+
 def _record_eligible_reason(card: dict, reason: str) -> bool:
     if reason == "its triggered ability":
         return True
@@ -2816,18 +3054,31 @@ def unmodelled_effect(card: dict | None, result: Any = None) -> str:
     Records fill bounded gaps: permanents whose own enters trigger the text parser
     cannot value (``"its triggered ability"``), and non-aura, non-planeswalker
     instants/sorceries whose cast effect the text parser left unmodelled
-    (``"its effect"``). When the record exists and every effect and mode is
-    representable (``_record_represents``), ``Moves._variants`` adopts its exact
-    semantics so the gap stops counting as unmodelled. Every other gap keeps
-    today's reason.
+    (``"its effect"``), plus verified permanent trigger engines, buff Auras,
+    and targeted Pump spells. When the record exists and every effect and mode is
+    representable, ``Moves._variants`` adopts its exact semantics so the gap stops
+    counting as unmodelled. Every other gap keeps today's reason.
     """
     reason = _unmodelled_effect_reasons(card, result)
-    if isinstance(card, dict) and _record_eligible_reason(card, reason):
+    if isinstance(card, dict) and reason:
         name = str(card.get("name") or "")
         record = _known_record(*_record_key(card))
-        if record is not None and _record_represents(record, name, card):
-            _log_record_use(name)
-            return ""
+        if record is not None:
+            if _record_eligible_reason(card, reason) and _record_represents(record, name, card):
+                _log_record_use(name)
+                return ""
+            if reason == "its triggered ability" and _card_facts_models_permanent(record, card) is not None:
+                _log_record_use(name)
+                return ""
+            if reason == "its effect" and (
+                _card_facts_buff_aura(record, card) is not None
+                or _card_facts_models_permanent(record, card) is not None
+            ):
+                _log_record_use(name)
+                return ""
+            if reason == "a combat trick" and _card_facts_pump_spell(record, card) is not None:
+                _log_record_use(name)
+                return ""
     return reason
 
 
@@ -2971,6 +3222,10 @@ def _modelled(var: Variant) -> bool:
         or var.face
         or var.rock
         or var.sweep
+        or var.aura_pump != (0, 0)
+        or var.temp_pump != (0, 0)
+        or var.has_fact_triggers
+        or var.fact_draws > 0
     )
 
 
@@ -3206,6 +3461,22 @@ class Moves:
         self._their_creature_ids = {_int((b.get("_card") or b).get("instance_id")) for b in model.theirs}
         self._turn_growth_memo: dict = {}
         self._leaves_memo: dict = {}
+        self._buff_memo: dict = {}
+        self._fact_token_memo: dict = {}
+        self._fact_token_id = 900_000_000
+        self._fact_triggers: dict[int, tuple[VerifiedTrigger, ...]] = {}
+        self._spell_fact_triggers: dict[int, tuple[VerifiedTrigger, ...]] = {}
+        self._spell_fact_source_ids: dict[int, int] = {}
+        self._root_noncreature_triggers: tuple[int, ...] = ()
+        self.opp_open_mana, self.opp_open_colors = _opponent_open_mana(model)
+        self.opp_hand_count = int(model.their_hand) if isinstance(model.their_hand, int) else 0
+        self._has_draw_punisher = any(
+            draw_punisher(c) is not None
+            for c in model.battlefield
+            if isinstance(c, dict) and _controller(c) == model.opponent
+        )
+        self._fact_triggers_possible = False
+        self._has_death_fact_triggers = False
         self._prepare()
         # compare_modes: the spell whose mode it applies before T is being cast now, so its cast
         # triggers pump T's attack like any cast of the line's (ledger #94).
@@ -3243,18 +3514,20 @@ class Moves:
         count = len(bodies)
         out = []
         for body in bodies:
-            base = self._scale_base.get(body["instance_id"])
+            base = self._scale_base.get(body["instance_id"]) or self._scale_base.get(self._fact_iid(body))
             if base is None:
                 out.append(body)
                 continue
             base_p, base_t, per_p, per_t, other = base
             counted = max(0, count - (1 if other else 0))
             shift = body.get("_counter_shift", 0)
-            power, toughness = base_p + per_p * counted + shift, base_t + per_t * counted + shift
+            aura_p, aura_t = body.get("_aura_p", 0), body.get("_aura_t", 0)
+            power = base_p + per_p * counted + shift + aura_p
+            toughness = base_t + per_t * counted + shift + aura_t
             if (power, toughness) == (body["power"], body["toughness"]):
                 out.append(body)
                 continue
-            key = (body["instance_id"], body.get("_counter_shift", 0), power, toughness)
+            key = (body["instance_id"], shift, power, toughness)
             found = self._scaled_memo.get(key)
             if found is None:
                 found = self._scaled_memo[key] = {**body, "power": power, "toughness": toughness}
@@ -3278,10 +3551,116 @@ class Moves:
             found = self._named_memo[key] = (var, self._tokens(specs))
         return found[1]
 
+    @staticmethod
+    def _fact_iid(body: dict) -> int:
+        fid = body.get("_fact_iid")
+        if fid is not None:
+            return int(fid)
+        raw = body.get("_card")
+        if isinstance(raw, dict):
+            rid = _int(raw.get("instance_id"))
+            if rid:
+                return rid
+        return _int(body.get("instance_id")) or 0
+
+    def _buffed(self, body: dict, dp: int, dt: int) -> dict:
+        """Apply a persistent Aura buff (+P/+T) onto a body with a deterministic fresh id."""
+        fid = self._fact_iid(body)
+        key = (body["instance_id"], dp, dt)
+        found = self._buff_memo.get(key)
+        if found is None:
+            digest = zlib.crc32(f"{body['instance_id']}:{dp}:{dt}".encode())
+            found = self._buff_memo[key] = {
+                **body,
+                "power": body["power"] + dp,
+                "toughness": max(1, body["toughness"] + dt),
+                "instance_id": _BUFF_IDS + 1_000_000_000 + digest,
+                "_fact_iid": fid,
+                "_aura_p": body.get("_aura_p", 0) + dp,
+                "_aura_t": body.get("_aura_t", 0) + dt,
+            }
+        return found
+
+    def _filter_fact_triggers(
+        self, card: dict, trigs: tuple[VerifiedTrigger, ...]
+    ) -> tuple[VerifiedTrigger, ...]:
+        """Drop SELF_ETB and deduplicate CAST_SPELL Pump triggers already handled by cast_pumps."""
+        existing_pumps = cast_pumps(card)
+        out = []
+        for trig in trigs:
+            if trig.event == "SELF_ETB":
+                continue
+            if trig.event == "CAST_SPELL" and isinstance(trig.effect, Pump):
+                norm_filter = (trig.spell_filter or "any").replace("_", " ")
+                key = (norm_filter, trig.effect.power, trig.effect.toughness, trig.target_hint)
+                if key in existing_pumps:
+                    continue
+            out.append(trig)
+        return tuple(out)
+
+    def _register_card_fact_triggers(self, card: dict, record: Any = None) -> tuple[VerifiedTrigger, ...]:
+        if not isinstance(card, dict):
+            return ()
+        rec = record if record is not None else _known_record(*_record_key(card))
+        if rec is None:
+            return ()
+        trigs = extract_verified_triggers(rec, card)
+        if not trigs:
+            return ()
+        return self._filter_fact_triggers(card, trigs)
+
+    @staticmethod
+    def _fact_token_spec(spec: Any) -> tuple | None:
+        types = [t.casefold() for t in (getattr(spec, "types", ()) or ())]
+        if "creature" not in types:
+            return None
+        keywords = tuple(k.casefold() for k in (getattr(spec, "keywords", ()) or ()))
+        return (
+            int(spec.count),
+            int(spec.power or 0),
+            int(spec.toughness or 0),
+            keywords,
+            str(spec.name or "Token"),
+        )
+
+    def _fact_tokens(self, source_fid: int, trig_idx: int, seq: int, spec: Any) -> tuple[dict, ...]:
+        tok_spec = self._fact_token_spec(spec)
+        if tok_spec is None:
+            return ()
+        key = (source_fid, trig_idx, seq, tok_spec)
+        found = self._fact_token_memo.get(key)
+        if found is None:
+            start_id = (
+                _TOKEN_IDS
+                + 7_000_000_000
+                + zlib.crc32(f"{source_fid}:{trig_idx}:{seq}:{tok_spec}".encode()) * 16
+            )
+            bodies = make_tokens((tok_spec,), self.model.turn, self.model.our_rules, start_id)
+            raw_types = [str(t) for t in (getattr(spec, "types", ()) or ())]
+            for b in bodies:
+                b["_card"]["controller_seat_id"] = self.model.local
+                if raw_types:
+                    b["_card"]["type_line"] = " ".join(["Token", *raw_types])
+            found = self._fact_token_memo[key] = bodies
+        return found
+
     def _prepare(self) -> None:
         model = self.model
         for body in model.ours:
             self._register_scaling(body, len(model.ours))
+            if trigs := self._register_card_fact_triggers(body.get("_card") or body):
+                self._fact_triggers[self._fact_iid(body)] = trigs
+        for body in model.our_stack_bodies:
+            if trigs := self._register_card_fact_triggers(body.get("_card") or body):
+                self._fact_triggers[self._fact_iid(body)] = trigs
+        root_nc: list[int] = []
+        for idx, card in enumerate(model.our_permanents):
+            if isinstance(card, dict) and not _is_creature(card):
+                if trigs := self._register_card_fact_triggers(card):
+                    fid = _int(card.get("instance_id")) or -(10_000 + idx)
+                    self._fact_triggers[fid] = trigs
+                    root_nc.append(fid)
+        self._root_noncreature_triggers = tuple(root_nc)
         theirs = list(model.theirs)
         # Copies of one name in hand share a key; a commander (zone "command") keeps its own.
         lowest: dict[tuple[str, str], int] = {}
@@ -3359,6 +3738,10 @@ class Moves:
             or any(self.cast_pump(body) for body in (*model.ours, *model.our_stack_bodies))
             or any(cast_pumps(hs.spell.card) for hs in self.spells if _is_creature(hs.spell.card))
         )
+        all_fact_trigs = [t for trigs in self._fact_triggers.values() for t in trigs]
+        all_fact_trigs.extend(t for trigs in self._spell_fact_triggers.values() for t in trigs)
+        self._fact_triggers_possible = bool(all_fact_trigs)
+        self._has_death_fact_triggers = any(t.event in ("SELF_DIES", "CREATURE_DIES") for t in all_fact_trigs)
 
     def _walker_vars(self, hs: HandSpell) -> tuple:
         """Its damage aimed at one of their planeswalkers, one per cast variant (per mode)."""
@@ -3657,6 +4040,188 @@ class Moves:
             plain = dataclasses.replace(
                 plain, gain=0 if self.engines and self.engines.no_gain else int(fixed["gain"] or 0)
             )
+        if record is not None and not oracle_modes and not spell.has_x and spell.role != "counter":
+            fact_aura = (
+                _card_facts_buff_aura(record, card) if not creature and "aura" in _types(card) else None
+            )
+            fact_pump = _card_facts_pump_spell(record, card) if not creature and fact_aura is None else None
+            fact_perm = (
+                _card_facts_models_permanent(record, card)
+                if fact_aura is None and fact_pump is None and _is_permanent(card)
+                else None
+            )
+            no_gain = bool(self.engines and self.engines.no_gain)
+
+            def _collect_fact_etb(
+                trigs: tuple[VerifiedTrigger, ...], *, is_creature: bool
+            ) -> tuple[int, int, int, int, int, int, int, list[tuple], dict | None]:
+                etb_gain = etb_face = etb_alt = etb_sweep = 0
+                etb_self_counters = etb_target_counters = etb_draws = 0
+                etb_toks: list[tuple] = []
+                etb_fact_reach = None
+                for trig in trigs:
+                    if trig.event != "SELF_ETB":
+                        continue
+                    eff = trig.effect
+                    if isinstance(eff, GainLife):
+                        etb_gain += eff.amount
+                    elif isinstance(eff, Damage):
+                        if trig.target_hint == "opponent":
+                            etb_face += eff.amount
+                        elif trig.target_hint == "any_target":
+                            etb_alt += eff.amount
+                            if etb_fact_reach is None and plain.reach is None:
+                                etb_fact_reach = {
+                                    "name": spell.name,
+                                    "oracle_text": render_effect_sentence(eff) or "",
+                                    "type_line": "",
+                                    "_source_types": _types(card),
+                                    "_source_colors": colors,
+                                    "_source_controller_seat_id": card.get("controller_seat_id"),
+                                }
+                        elif trig.target_hint == "opp_creatures":
+                            etb_sweep += eff.amount
+                        elif (
+                            trig.target_hint == "target_creature"
+                            and etb_fact_reach is None
+                            and plain.reach is None
+                        ):
+                            etb_fact_reach = {
+                                "name": spell.name,
+                                "oracle_text": render_effect_sentence(eff) or "",
+                                "type_line": "",
+                                "_source_types": _types(card),
+                                "_source_colors": colors,
+                                "_source_controller_seat_id": card.get("controller_seat_id"),
+                            }
+                    elif isinstance(eff, PutCounters):
+                        if is_creature and trig.target_hint == "self":
+                            etb_self_counters += eff.count
+                        else:
+                            etb_target_counters += eff.count
+                    elif isinstance(eff, Draw):
+                        etb_draws += eff.count
+                    elif isinstance(eff, CreateToken) and (ts := self._fact_token_spec(eff.spec)):
+                        etb_toks.append(ts)
+                return (
+                    etb_gain,
+                    etb_face,
+                    etb_alt,
+                    etb_sweep,
+                    etb_self_counters,
+                    etb_target_counters,
+                    etb_draws,
+                    etb_toks,
+                    etb_fact_reach,
+                )
+
+            if fact_aura is not None:
+                aura_pump, aura_trigs = fact_aura
+                ongoing = self._filter_fact_triggers(card, aura_trigs)
+                if ongoing:
+                    fid = _int(card.get("instance_id")) or (450_000_000 + hs.index)
+                    self._spell_fact_triggers[hs.index] = ongoing
+                    self._spell_fact_source_ids[hs.index] = fid
+                (
+                    etb_gain,
+                    etb_face,
+                    etb_alt,
+                    etb_sweep,
+                    _etb_self_counters,
+                    etb_counters,
+                    etb_draws,
+                    etb_toks,
+                    etb_fact_reach,
+                ) = (
+                    _collect_fact_etb(aura_trigs, is_creature=False)
+                    if (self.enters_triggers or not creature)
+                    else (0, 0, 0, 0, 0, 0, 0, [], None)
+                )
+                alt = alt or etb_alt
+                plain = dataclasses.replace(
+                    plain,
+                    aura_pump=aura_pump,
+                    requires_our_creature=True,
+                    gain=0 if no_gain else (plain.gain or etb_gain),
+                    face=plain.face or etb_face,
+                    sweep=plain.sweep or etb_sweep,
+                    reach=plain.reach or etb_fact_reach,
+                    counter=plain.counter or etb_counters,
+                    fact_draws=plain.fact_draws or etb_draws,
+                    tokens=plain.tokens or (self._tokens(etb_toks) if etb_toks else ()),
+                    has_fact_triggers=bool(ongoing),
+                    stays_on_battlefield=True,
+                )
+            elif fact_pump is not None:
+                temp_pump, f_counters, f_gain, f_face, f_alt, f_draws = fact_pump
+                alt = alt or f_alt
+                plain_reach = plain.reach
+                if f_alt and plain_reach is None:
+                    plain_reach = {
+                        "name": spell.name,
+                        "oracle_text": f"{spell.name} deals {f_alt} damage to any target.",
+                        "type_line": "",
+                        "_source_types": _types(card),
+                        "_source_colors": colors,
+                        "_source_controller_seat_id": card.get("controller_seat_id"),
+                    }
+                plain = dataclasses.replace(
+                    plain,
+                    temp_pump=temp_pump,
+                    requires_our_creature=True,
+                    reach=plain_reach,
+                    counter=plain.counter or f_counters,
+                    gain=0 if no_gain else (plain.gain or f_gain),
+                    face=plain.face or f_face,
+                    fact_draws=plain.fact_draws or f_draws,
+                    stays_on_battlefield=False,
+                )
+            elif fact_perm is not None:
+                ongoing = self._filter_fact_triggers(card, fact_perm)
+                (
+                    etb_gain,
+                    etb_face,
+                    etb_alt,
+                    etb_sweep,
+                    etb_self_counters,
+                    etb_target_counters,
+                    etb_draws,
+                    etb_toks,
+                    etb_fact_reach,
+                ) = (
+                    _collect_fact_etb(fact_perm, is_creature=creature)
+                    if (self.enters_triggers or not creature)
+                    else (0, 0, 0, 0, 0, 0, 0, [], None)
+                )
+                if creature and body is not None:
+                    fid = _int(card.get("instance_id")) or (450_000_000 + hs.index)
+                    if ongoing:
+                        self._fact_triggers[fid] = ongoing
+                    if etb_self_counters and enters_counters(card) == 0:
+                        from arenamcp.combat_infect import counter_change
+
+                        body = {**counter_change(body, plus=etb_self_counters), "_fact_iid": fid}
+                        self._register_scaling(body, None)
+                    elif ongoing:
+                        body = {**body, "_fact_iid": fid}
+                elif ongoing:
+                    fid = _int(card.get("instance_id")) or (450_000_000 + hs.index)
+                    self._spell_fact_triggers[hs.index] = ongoing
+                    self._spell_fact_source_ids[hs.index] = fid
+                alt = alt or etb_alt
+                plain = dataclasses.replace(
+                    plain,
+                    body=body,
+                    gain=0 if no_gain else (plain.gain or etb_gain),
+                    face=plain.face or etb_face,
+                    sweep=plain.sweep or etb_sweep,
+                    reach=plain.reach or etb_fact_reach,
+                    counter=plain.counter or etb_target_counters,
+                    fact_draws=plain.fact_draws or etb_draws,
+                    tokens=plain.tokens or (self._tokens(etb_toks) if etb_toks else ()),
+                    has_fact_triggers=bool(ongoing),
+                    stays_on_battlefield=True,
+                )
         if spell.has_x or spell.role == "counter" or spell.uncastable:
             plain, variants = None, []  # never cast proactively (or can't be cast now)
         elif (
@@ -4074,7 +4639,8 @@ class Moves:
                 node.persistent,
             )
             + PUNISH_CARD_VALUE * node.opponent_discards
-            + DRAW_CARD_VALUE * node.draws,
+            + DRAW_CARD_VALUE * node.draws
+            - node.risk_penalty,
         )
 
     def sick(self, body, k, abs_turn, entered) -> bool:
@@ -4090,6 +4656,18 @@ class Moves:
         """Keep non-creature rocks plus creature mana sources still alive on our board."""
         alive = {b["instance_id"] for b in ours}
         return [r for r in rocks if getattr(r, "creature_iid", None) is None or r.creature_iid in alive]
+
+    @staticmethod
+    def _live_fact_permanents(
+        fact_permanents: tuple[tuple[int, int], ...], ours
+    ) -> tuple[tuple[int, int], ...]:
+        """Keep unattached permanent triggers (host_fid == 0) plus Auras whose host still lives."""
+        if not fact_permanents:
+            return ()
+        live_fids = {Moves._fact_iid(b) for b in ours}
+        return tuple(
+            (s_idx, host_fid) for s_idx, host_fid in fact_permanents if host_fid == 0 or host_fid in live_fids
+        )
 
     def sources(self, node: Node, land: Land | None) -> tuple[list, list]:
         """(sources before this line's rocks, all sources) on our turn ``node.k``."""
@@ -4288,12 +4866,18 @@ class Moves:
             value = _spell_value(hs.spell, survival=self.survival, theirs=list(theirs))
         elif var.rock and (var.imprint_rock or var.rock_produces or _plain_rock_supported(hs.spell.card)):
             value = 1.5
+        elif var.aura_pump != (0, 0):
+            value = 1.5 * var.aura_pump[0] + 0.75 * var.aura_pump[1]
+        elif var.temp_pump != (0, 0) or var.counter:
+            value = 0.65 * var.temp_pump[0] + 0.3 * var.temp_pump[1] + 1.5 * var.counter
         elif var.reach is None and not var.gain and not var.tokens and not var.life_tokens:
-            value = 1.0
+            value = 1.5 if var.has_fact_triggers else 1.0
         for token in var.tokens:  # a token is worth what the same creature spell would be
             pseudo = _Spell(token["_card"], token["name"], "creature", 0, (), False)
             value += _spell_value(pseudo, survival=self.survival, theirs=list(theirs))
         value += 0.5 * var.face
+        if var.fact_draws and not self._has_draw_punisher:
+            value += DRAW_CARD_VALUE * var.fact_draws
         if var.reach is not None and target is not None:
             pseudo = _Spell(
                 var.reach, hs.name, "bounce" if var.bounce else "removal", var.mana_value, var.pips, False
@@ -4306,7 +4890,7 @@ class Moves:
         self._value_memo[key] = value
         return value
 
-    def choice_value(self, choice, theirs, gained: int = 0, ours=()) -> float:
+    def choice_value(self, choice, theirs, gained: int = 0, ours=(), *, estimate_risk: bool = False) -> float:
         """The items' values; a life-scaled token maker counts the life ``gained`` this turn
         before it plus what the rest of the set gains (``_apply_casts`` casts the gains first);
         a board-counted one (Hare Apparent) counts ``ours`` plus the set's bodies before it."""
@@ -4362,7 +4946,240 @@ class Moves:
                 for token in self._life_bodies(var, x):
                     pseudo = _Spell(token["_card"], token["name"], "creature", 0, (), False)
                     value += _spell_value(pseudo, survival=self.survival, theirs=list(theirs))
+        if self._fact_triggers_possible and choice:
+            value += self._fact_trigger_bonus(choice, ours, theirs)
+        if estimate_risk and self.opp_open_mana > 0 and self.opp_hand_count > 0 and choice:
+            value -= self._estimate_choice_blowout_risk(choice, ours)
         return value
+
+    @staticmethod
+    def _matches_spell_filter(spell_filter: str, kinds: frozenset, card: dict) -> bool:
+        types_s = _types(card)
+        is_creat = _is_creature(card)
+        if spell_filter in ("", "any"):
+            return True
+        if spell_filter == "noncreature":
+            return "noncreature" in kinds or not is_creat
+        if spell_filter == "creature":
+            return is_creat
+        if spell_filter == "instant":
+            return "instant" in kinds or "instant" in types_s
+        if spell_filter == "sorcery":
+            return "sorcery" in kinds or "sorcery" in types_s
+        if spell_filter == "instant_or_sorcery":
+            return "instant" in kinds or "sorcery" in kinds or "instant" in types_s or "sorcery" in types_s
+        return False
+
+    def _fact_trigger_bonus(self, choice: tuple, ours: tuple, theirs: tuple) -> float:
+        """Order-sensitive expected value from verified CardFacts triggers across ``choice``."""
+        active: list[tuple[int, tuple[VerifiedTrigger, ...]]] = []
+        seen_fids: set[int] = set()
+        for b in ours:
+            fid = self._fact_iid(b)
+            if fid in self._fact_triggers and fid not in seen_fids:
+                seen_fids.add(fid)
+                active.append((fid, self._fact_triggers[fid]))
+        for fid in self._root_noncreature_triggers:
+            if fid not in seen_fids:
+                seen_fids.add(fid)
+                active.append((fid, self._fact_triggers[fid]))
+        creature_fids: set[int] = {self._fact_iid(b) for b in ours}
+        has_creature = bool(ours)
+        used_once: set[tuple[int, int]] = set()
+        bonus = 0.0
+        no_gain = bool(self.engines and self.engines.no_gain)
+
+        def score_event(
+            event: str,
+            *,
+            card: dict | None = None,
+            kinds: frozenset = frozenset(),
+            entering_fid: int | None = None,
+            entering_is_creature: bool = False,
+        ) -> None:
+            nonlocal bonus, has_creature
+            types_s = _types(card) if card is not None else ""
+            for fid, trigs in list(active):
+                for ti, trig in enumerate(trigs):
+                    if trig.event != event:
+                        continue
+                    if event == "CAST_SPELL" and (
+                        card is None or not self._matches_spell_filter(trig.spell_filter, kinds, card)
+                    ):
+                        continue
+                    if event == "CAST_ENCHANTMENT" and "enchantment" not in types_s:
+                        continue
+                    if event == "ENCHANTMENT_ENTERS":
+                        if not trig.include_self and entering_fid == fid:
+                            continue
+                        if entering_is_creature and not self.enters_triggers:
+                            continue
+                    if event == "CREATURE_ENTERS":
+                        if not self.enters_triggers:
+                            continue
+                        if not trig.include_self and entering_fid == fid:
+                            continue
+                    if trig.once_per_turn:
+                        if (fid, ti) in used_once:
+                            continue
+                        used_once.add((fid, ti))
+                    eff = trig.effect
+                    if isinstance(eff, PutCounters):
+                        if trig.target_hint == "self":
+                            if fid in creature_fids:
+                                bonus += 1.5 * eff.count
+                        elif has_creature:
+                            bonus += 1.5 * eff.count
+                    elif isinstance(eff, Pump):
+                        if (trig.target_hint == "self" and fid in creature_fids) or (
+                            trig.target_hint != "self" and has_creature
+                        ):
+                            bonus += 0.65 * eff.power + 0.3 * eff.toughness
+                    elif isinstance(eff, CreateToken):
+                        ts = self._fact_token_spec(eff.spec)
+                        if ts is not None:
+                            bonus += max(1.0, (ts[1] + 0.5 * ts[2]) * ts[0])
+                            has_creature = True
+                    elif isinstance(eff, GainLife) and not no_gain:
+                        bonus += 1.0 + (0.5 * eff.amount if self.survival else 0.0)
+                    elif isinstance(eff, Damage):
+                        if trig.target_hint in ("opponent", "any_target", "each_player"):
+                            bonus += 0.6 * eff.amount
+                        elif theirs:
+                            bonus += 1.5
+                    elif isinstance(eff, Draw) and not self._has_draw_punisher:
+                        bonus += DRAW_CARD_VALUE * eff.count
+
+        for var, _target in choice:
+            if var.kind != "cast":
+                continue
+            card = self.spells[var.spell].spell.card
+            kinds = self.kinds(var.spell)
+            types_s = _types(card)
+            score_event("CAST_SPELL", card=card, kinds=kinds)
+            if "enchantment" in types_s:
+                score_event("CAST_ENCHANTMENT", card=card, kinds=kinds)
+            if var.body is not None and not var.ephemeral:
+                has_creature = True
+                bfid = self._fact_iid(var.body)
+                creature_fids.add(bfid)
+                if bfid in self._fact_triggers and bfid not in seen_fids:
+                    seen_fids.add(bfid)
+                    active.append((bfid, self._fact_triggers[bfid]))
+                if "enchantment" in types_s:
+                    score_event("ENCHANTMENT_ENTERS", card=card, entering_fid=bfid, entering_is_creature=True)
+                score_event("CREATURE_ENTERS", card=card, entering_fid=bfid)
+            else:
+                sfid = None
+                if var.stays_on_battlefield and var.spell in self._spell_fact_triggers:
+                    sfid = self._spell_fact_source_ids[var.spell]
+                    if sfid not in seen_fids:
+                        seen_fids.add(sfid)
+                        active.append((sfid, self._spell_fact_triggers[var.spell]))
+                if var.stays_on_battlefield and "enchantment" in types_s:
+                    score_event(
+                        "ENCHANTMENT_ENTERS", card=card, entering_fid=sfid, entering_is_creature=False
+                    )
+            for tok in var.tokens:
+                has_creature = True
+                tfid = self._fact_iid(tok)
+                if "enchantment" in _types(tok.get("_card") or tok):
+                    score_event("ENCHANTMENT_ENTERS", entering_fid=tfid, entering_is_creature=True)
+                score_event("CREATURE_ENTERS", entering_fid=tfid)
+        return bonus
+
+    def _estimate_choice_blowout_risk(self, choice: tuple, ours: tuple) -> float:
+        """Fast conservative 2-for-1 risk estimate for ``cast_sets`` ordering on turn T."""
+        if self.opp_open_mana <= 0 or self.opp_hand_count <= 0:
+            return 0.0
+        investments: list[tuple[str, int]] = []
+        created_targetable = 0
+        for var, _target in choice:
+            if var.kind != "cast":
+                continue
+            if var.aura_pump != (0, 0):
+                investments.append(("aura", var.mana_value))
+            elif var.temp_pump != (0, 0):
+                investments.append(("temp_pump", var.mana_value))
+            elif var.counter and var.body is None and not var.tokens:
+                investments.append(("counter", var.mana_value))
+            if var.body is not None and not var.ephemeral and not _untargetable(var.body):
+                created_targetable += 1
+            created_targetable += sum(1 for tok in var.tokens if not _untargetable(tok))
+        if not investments:
+            return 0.0
+        existing_targetable = [b for b in ours if not _untargetable(b)]
+        if not existing_targetable and not created_targetable:
+            return 0.0
+        targetable_total = len(existing_targetable) + created_targetable
+        host = max(ours, key=lambda b: (b["power"], b["toughness"], -b["instance_id"])) if ours else None
+        if host is not None and _untargetable(host):
+            return 0.0
+        avail = self.opp_open_mana - (self.ward(host) if host is not None else 0)
+        if avail <= 0:
+            return 0.0
+        mana_factor = 1.0 if avail >= 2 else 0.70
+        hand_factor = 1.0 if self.opp_hand_count >= 2 else 0.85
+        color_factor = 1.0 if (self.opp_open_colors & {"B", "W", "U", "R"}) else 0.80
+        survival_factor = 0.5 if self.survival else 1.0
+        exposure = 1.25 if targetable_total <= 1 else 0.55
+        total = 0.0
+        for kind, mv in investments:
+            if kind == "aura":
+                total += 2.05 + 0.15 * min(3, mv)
+            elif kind == "temp_pump":
+                total += 1.85
+            else:
+                total += 1.4
+        if len(investments) >= 2:
+            total += 0.9 * (len(investments) - 1)
+        return min(4.5, total * mana_factor * hand_factor * color_factor * survival_factor * exposure)
+
+    def _compute_blowout_risk(
+        self, mid: Mid, attack_ids: tuple[int, ...], pre_attack_ours: list[dict]
+    ) -> float:
+        """Bounded conservative turn-T 2-for-1 blowout risk for concentrated fragile investments."""
+        if (
+            mid.node.k != 0
+            or self.opp_open_mana <= 0
+            or self.opp_hand_count <= 0
+            or not mid.fragile_investments
+        ):
+            return 0.0
+        targetable_count = sum(1 for b in pre_attack_ours if not _untargetable(b))
+        if not targetable_count:
+            return 0.0
+        attacked_fids = {self._fact_iid(b) for b in pre_attack_ours if b["instance_id"] in attack_ids}
+        hand_factor = 1.0 if self.opp_hand_count >= 2 else 0.85
+        color_factor = 1.0 if (self.opp_open_colors & {"B", "W", "U", "R"}) else 0.80
+        survival_factor = 0.5 if self.survival else 1.0
+        by_host: dict[int, list[tuple[str, int, int, bool]]] = {}
+        for host_fid, kind, mv, ward_val, untarget in mid.fragile_investments:
+            by_host.setdefault(host_fid, []).append((kind, mv, ward_val, untarget))
+        total_risk = 0.0
+        for host_fid, invs in by_host.items():
+            if all(untarget for _k, _mv, _w, untarget in invs):
+                continue
+            ward_val = max(w for _k, _mv, w, _u in invs)
+            avail = self.opp_open_mana - ward_val
+            if avail <= 0:
+                continue
+            mana_factor = 1.0 if avail >= 2 else 0.70
+            sole = targetable_count <= 1
+            att = host_fid in attacked_fids
+            exposure = 1.45 if (sole and att) else (1.25 if (sole or att) else 0.55)
+            host_base = 0.0
+            for kind, mv, _w, _u in invs:
+                if kind == "aura":
+                    host_base += 2.05 + 0.15 * min(3, mv)
+                elif kind == "temp_pump":
+                    host_base += 1.85
+                else:
+                    host_base += 1.4
+            if len(invs) >= 2:
+                host_base += 0.9 * (len(invs) - 1)
+            total_risk += host_base * mana_factor * hand_factor * color_factor * survival_factor * exposure
+        return min(4.5, total_risk)
 
     def sweep_value(self, var: Variant, theirs) -> float:
         """What a sweep (``Variant.sweep``) is worth: each creature of theirs it kills by itself."""
@@ -4458,15 +5275,17 @@ class Moves:
         return out
 
     def _countered(self, body: dict, n: int) -> dict:
-        """``body`` with ``n`` more +1/+1 counters: a fresh id (the combat memo keys on ids)."""
+        """``body`` with ``n`` more +1/+1 counters: a deterministic fresh id."""
         key = (body["instance_id"], body.get("_counter_shift", 0), n)
         found = self._counter_memo.get(key)
         if found is None:
             from arenamcp.combat_infect import counter_change
 
+            digest = zlib.crc32(f"{body['instance_id']}:{body.get('_counter_shift', 0)}:{n}".encode())
             found = self._counter_memo[key] = {
                 **counter_change(body, plus=n),
-                "instance_id": _COUNTER_IDS + len(self._counter_memo),
+                "instance_id": _COUNTER_IDS + 80_000_000_000 + digest,
+                "_fact_iid": self._fact_iid(body),
             }
         return found
 
@@ -4783,6 +5602,46 @@ class Moves:
             for v, t in choice
         )
 
+    def _has_fact_trigger_chain(self, casts: tuple) -> bool:
+        """True when a multi-cast choice can depend on cast order via CardFacts triggers or creature targeting."""
+        if len(casts) < 2 or len(casts) > 3:
+            return False
+        if any(var.kind != "cast" for var, _target in casts):
+            return False
+        if sum(target is not None for _var, target in casts) > 1:
+            return False
+        if any(var.requires_our_creature for var, _target in casts):
+            return True
+        if not self._fact_triggers_possible:
+            return False
+        return any(
+            var.has_fact_triggers
+            or (var.body is not None and self._fact_iid(var.body) in self._fact_triggers)
+            or var.spell in self._spell_fact_triggers
+            for var, _target in casts
+        )
+
+    def _legal_cast_order(self, ours: tuple, ordered: tuple) -> bool:
+        """Ensure targeted buff Auras/Pumps only run when a friendly creature is already present."""
+        creatures = len(ours)
+        for var, _target in ordered:
+            if var.requires_our_creature and creatures <= 0:
+                return False
+            if var.body is not None and not var.ephemeral:
+                creatures += 1
+            creatures += len(var.tokens)
+        return True
+
+    def _fact_trigger_orders(self, ours: tuple, choice: tuple) -> tuple[tuple, ...]:
+        if len(choice) < 2 or len(choice) > 3 or not self._has_fact_trigger_chain(choice):
+            return (choice,) if self._legal_cast_order(ours, choice) else ()
+        orders: list[tuple] = []
+        for order in permutations(range(len(choice))):
+            ordered = tuple(choice[index] for index in order)
+            if ordered not in orders and self._legal_cast_order(ours, ordered):
+                orders.append(ordered)
+        return tuple(orders)
+
     def cast_sets(self, node: Node, sources: list, *, instant_only: bool) -> list[tuple]:
         """Every affordable set of up to three spells (one variant each), best value first; () included.
 
@@ -4793,6 +5652,7 @@ class Moves:
         theirs, their_tapped = node.theirs, node.their_tapped
         bans = self.bans(node)
         marking = node.k == 0 and self.our_turn  # damage marked this turn still counts
+        estimate_risk = node.k == 0 and self.opp_open_mana > 0 and self.opp_hand_count > 0
         key = (
             node.hand,
             tuple(sorted("".join(sorted(s.produces)) for s in sources)),
@@ -4807,10 +5667,19 @@ class Moves:
             self.gained_at_start(node),
             ids_of(node.ours),  # legend replacements and named-token counts depend on our board
             tuple(b.get("_counter_shift", 0) for b in (*node.ours, *theirs)),
+            node.fact_permanents,
+            estimate_risk,
         )
         found = self._cast_memo.get(key)
         if found is not None:
             return found
+        can_produce_creature = bool(node.ours) or any(
+            (v.body is not None and not v.ephemeral) or v.tokens or v.life_tokens or v.named_tokens
+            for i in node.hand
+            for v in self.spells[i].variants
+            if v.mana_value <= len(sources)
+        )
+        post_combat_t = node.k == 0 and self.our_turn and self.model.t_casts_post_combat
         options: list[tuple[int, list]] = []
         for position, index in enumerate(node.hand):
             items = []
@@ -4821,6 +5690,16 @@ class Moves:
                 if (instant_only and not var.instant) or (var.mana_value > len(sources) and not reduced):
                     continue
                 if (banned and var.kind in ("cast", "sneak")) or var.loss >= node.our_life:
+                    continue
+                if var.requires_our_creature and not can_produce_creature:
+                    continue
+                if (
+                    post_combat_t
+                    and var.temp_pump != (0, 0)
+                    and not var.counter
+                    and not var.face
+                    and not var.tokens
+                ):
                     continue
                 if var.consumes and not self._consumable(node, var):
                     continue  # an alternate cost whose hand payment cannot be made now (#A1)
@@ -4893,23 +5772,42 @@ class Moves:
                         continue
                     if not self.supported_casts(node, choice):
                         continue
-                    value = self.choice_value(choice, theirs, self.gained_at_start(node), node.ours)
+                    value = self.choice_value(
+                        choice, theirs, self.gained_at_start(node), node.ours, estimate_risk=estimate_risk
+                    )
                     scored.append((choice, value, total))
         # The supported entry-draw chain is order-sensitive: keep every legal order of
         # the same set (engine before entrant), so removal-before-entry and entry-first
         # are compared from the same initial public state. ``begin`` preserves the
         # order for these sets and ``Step.sig`` keeps them distinct.
         expanded = []
+        gained0 = self.gained_at_start(node)
         for choice, value, total in scored:
             try:
-                orders = self._entry_draw_orders(choice) if node.abs_turn == self.first_turn else (choice,)
+                entry_orders = (
+                    self._entry_draw_orders(choice) if node.abs_turn == self.first_turn else (choice,)
+                )
             except UnsupportedContinuation as error:
                 self._unmodelled_response(choice, str(error))
                 continue
-            for ordered in orders:
-                if ordered != choice and not self.supported_casts(node, ordered):
-                    continue
-                expanded.append((ordered, value, total))
+            if len(entry_orders) > 1:
+                for ordered in entry_orders:
+                    if not self._legal_cast_order(node.ours, ordered):
+                        continue
+                    if ordered != choice and not self.supported_casts(node, ordered):
+                        continue
+                    expanded.append((ordered, value, total))
+            else:
+                fact_orders = self._fact_trigger_orders(node.ours, choice)
+                for ordered in fact_orders:
+                    if ordered != choice and not self.supported_casts(node, ordered):
+                        continue
+                    ord_value = (
+                        self.choice_value(ordered, theirs, gained0, node.ours, estimate_risk=estimate_risk)
+                        if len(fact_orders) > 1 or ordered != choice
+                        else value
+                    )
+                    expanded.append((ordered, ord_value, total))
         scored = expanded
         scored.sort(key=lambda item: (-round(item[1], 6), -item[2], self.choice_text(item[0])))
         result = self._cast_memo[key] = [item[0] for item in scored]
@@ -5004,12 +5902,12 @@ class Moves:
         from arenamcp.sacrifice_continuation import UnsupportedContinuation
 
         try:
-            order_sensitive = self._entry_draw_order(casts) is not None
+            order_sensitive = self._entry_draw_order(casts) is not None or self._has_fact_trigger_chain(casts)
         except UnsupportedContinuation as error:
             if getattr(self, "replay", False):
                 raise
             self._unmodelled_response(casts, str(error))
-            order_sensitive = False
+            order_sensitive = self._has_fact_trigger_chain(casts)
             entry_draw_blocked = True
         mid = Mid.__new__(Mid)
         if not order_sensitive and self.pumps_possible and len(casts) > 1:
@@ -5064,7 +5962,13 @@ class Moves:
         mid.modes, mid.targets, mid.cycles, mid.cast_names = [], [], [], []
         mid.walkers = {iid: (name, loyal) for iid, name, loyal in node.walkers}
         mid.pumps = dict(self.root_pumps) if node.k == 0 else {}
+        mid.fact_permanents = node.fact_permanents
+        mid.fact_triggers_used = set()
+        mid.fragile_investments = []
+        mid.risk_penalty = node.risk_penalty
         mid.keys = self.play_keys(land, casts)
+        if land is not None and self._fact_triggers_possible:
+            self._fire_fact_triggers(mid, "LANDFALL")
         alternate = mid.copy() if response_case is not None else None
         if not mid.attack_first:
             self._apply_casts(mid)
@@ -5302,6 +6206,298 @@ class Moves:
             "later turns are conditional."
         )
 
+    def _best_pump_target(self, mid: Mid) -> dict:
+        """Pick our creature best able to convert a temporary pump into combat impact this turn."""
+        k, abs_turn, entered, tapped = mid.node.k, mid.node.abs_turn, mid.entered, mid.our_tapped
+        return max(
+            mid.ours,
+            key=lambda b: (
+                bool(
+                    b.get("_can_attack")
+                    and b["instance_id"] not in tapped
+                    and not self.sick(b, k, abs_turn, entered)
+                ),
+                bool(not self.sick(b, k, abs_turn, entered)),
+                b["power"],
+                b["toughness"],
+                -b["instance_id"],
+            ),
+        )
+
+    def _replace_our_body(self, mid: Mid, old: dict, new: dict) -> None:
+        mid.ours = [new if b is old else b for b in mid.ours]
+        old_id, new_id = old["instance_id"], new["instance_id"]
+        if old_id in mid.pumps:
+            mid.pumps[new_id] = mid.pumps.pop(old_id)
+        if old_id in mid.entered:
+            mid.entered[new_id] = mid.entered.pop(old_id)
+        if old_id in mid.our_tapped:
+            mid.our_tapped.discard(old_id)
+            mid.our_tapped.add(new_id)
+        if id(old) in self._body_spell:
+            self._body_spell[id(new)] = self._body_spell[id(old)]
+
+    def _fire_fact_triggers(
+        self,
+        mid: Mid,
+        event: str,
+        *,
+        spell_card: dict | None = None,
+        spell_kinds: frozenset = frozenset(),
+        entering_fid: int | None = None,
+        entering_is_creature: bool = False,
+        is_token: bool = False,
+        dead_fid: int | None = None,
+        dead_controller: str = "",
+        extra_sources: tuple[tuple[int, tuple[VerifiedTrigger, ...]], ...] = (),
+        depth: int = 0,
+    ) -> None:
+        """Resolve verified CardFacts triggers for ``event`` on ``mid`` (cascade depth <= 2)."""
+        if not self._fact_triggers_possible or depth > 2:
+            return
+        sources: list[tuple[int, bool, tuple[VerifiedTrigger, ...]]] = []
+        seen_fids: set[int] = set()
+        live_fids = {self._fact_iid(b) for b in mid.ours}
+        for b in mid.ours:
+            fid = self._fact_iid(b)
+            if fid in self._fact_triggers and fid not in seen_fids:
+                seen_fids.add(fid)
+                sources.append((fid, True, self._fact_triggers[fid]))
+        for s_idx, host_fid in mid.fact_permanents:
+            if host_fid and host_fid not in live_fids:
+                continue
+            fid = self._spell_fact_source_ids[s_idx]
+            if fid not in seen_fids:
+                seen_fids.add(fid)
+                sources.append((fid, False, self._spell_fact_triggers[s_idx]))
+        for fid in self._root_noncreature_triggers:
+            if fid not in seen_fids:
+                seen_fids.add(fid)
+                sources.append((fid, False, self._fact_triggers[fid]))
+        for fid, trigs in extra_sources:
+            if fid not in seen_fids:
+                seen_fids.add(fid)
+                sources.append((fid, True, trigs))
+        if not sources:
+            return
+        no_gain = bool(self.engines and self.engines.no_gain)
+        types_s = _types(spell_card) if spell_card is not None else ""
+        for fid, is_creature_src, trigs in sources:
+            for ti, trig in enumerate(trigs):
+                if trig.event != event:
+                    continue
+                if event == "CAST_SPELL" and (
+                    spell_card is None
+                    or not self._matches_spell_filter(trig.spell_filter, spell_kinds, spell_card)
+                ):
+                    continue
+                if event == "CAST_ENCHANTMENT" and "enchantment" not in types_s:
+                    continue
+                if event == "ENCHANTMENT_ENTERS":
+                    if not trig.include_self and entering_fid == fid:
+                        continue
+                    if entering_is_creature and not self.enters_triggers:
+                        continue
+                if event == "CREATURE_ENTERS":
+                    if not self.enters_triggers:
+                        continue
+                    if not trig.include_self and entering_fid == fid:
+                        continue
+                    if trig.nontoken and is_token:
+                        continue
+                if event == "SELF_DIES":
+                    if dead_controller != "ours" or dead_fid != fid:
+                        continue
+                if event == "CREATURE_DIES":
+                    if trig.controller_scope == "ours" and dead_controller != "ours":
+                        continue
+                    if trig.controller_scope == "theirs" and dead_controller != "theirs":
+                        continue
+                    if dead_controller == "ours" and dead_fid == fid and not trig.include_self:
+                        continue
+                if trig.once_per_turn:
+                    okey = (fid, ti)
+                    if okey in mid.fact_triggers_used:
+                        continue
+                    mid.fact_triggers_used.add(okey)
+                eff = trig.effect
+                if isinstance(eff, PutCounters):
+                    if trig.target_hint == "self":
+                        target_b = (
+                            next((b for b in mid.ours if self._fact_iid(b) == fid), None)
+                            if is_creature_src
+                            else None
+                        )
+                    else:
+                        target_b = (
+                            max(mid.ours, key=lambda b: (b["power"], b["toughness"], -b["instance_id"]))
+                            if mid.ours
+                            else None
+                        )
+                    if target_b is not None:
+                        new = self._countered(target_b, eff.count)
+                        self._replace_our_body(mid, target_b, new)
+                        mid.ours = self.rescale(mid.ours)
+                elif isinstance(eff, Pump):
+                    dp, dt = eff.power, eff.toughness
+                    if trig.target_hint == "self":
+                        targets_b = (
+                            [b for b in mid.ours if self._fact_iid(b) == fid] if is_creature_src else []
+                        )
+                    elif trig.target_hint == "team":
+                        targets_b = list(mid.ours)
+                    elif trig.target_hint == "others":
+                        targets_b = [b for b in mid.ours if self._fact_iid(b) != fid]
+                    else:
+                        targets_b = [self._best_pump_target(mid)] if mid.ours else []
+                    for tb in targets_b:
+                        p, t = mid.pumps.get(tb["instance_id"], (0, 0))
+                        mid.pumps[tb["instance_id"]] = (p + dp, t + dt)
+                elif isinstance(eff, CreateToken):
+                    if self._fact_token_spec(eff.spec) is not None:
+                        existing_ids = {b["instance_id"] for b in mid.ours}
+                        seq = 0
+                        toks = self._fact_tokens(fid, ti, seq, eff.spec)
+                        while toks and any(t["instance_id"] in existing_ids for t in toks):
+                            seq += 1
+                            toks = self._fact_tokens(fid, ti, seq, eff.spec)
+                        for tok in toks:
+                            mid.ours.append(tok)
+                            mid.entered[tok["instance_id"]] = mid.node.abs_turn
+                            if self.consuls:
+                                mid.opp_life += self._enters_under_them(tok, mid.our_tapped)
+                        mid.ours = self.rescale(mid.ours)
+                        if depth < 2:
+                            for tok in toks:
+                                tfid = self._fact_iid(tok)
+                                if "enchantment" in _types(tok.get("_card") or tok):
+                                    self._fire_fact_triggers(
+                                        mid,
+                                        "ENCHANTMENT_ENTERS",
+                                        entering_fid=tfid,
+                                        entering_is_creature=True,
+                                        depth=depth + 1,
+                                    )
+                                self._fire_fact_triggers(
+                                    mid,
+                                    "CREATURE_ENTERS",
+                                    entering_fid=tfid,
+                                    is_token=True,
+                                    depth=depth + 1,
+                                )
+                elif isinstance(eff, GainLife):
+                    if not no_gain:
+                        mid.our_life += eff.amount
+                        mid.gained += eff.amount
+                elif isinstance(eff, Damage):
+                    if trig.target_hint in ("opponent", "any_target"):
+                        mid.opp_life -= eff.amount
+                    elif trig.target_hint == "each_player":
+                        mid.opp_life -= eff.amount
+                        mid.our_life -= eff.amount
+                    elif trig.target_hint == "opp_creatures":
+                        killed = [
+                            b
+                            for b in mid.theirs
+                            if b["toughness"] <= eff.amount and not has_combat_keyword(b, "indestructible")
+                        ]
+                        if killed:
+                            killed_ids = {b["instance_id"] for b in killed}
+                            mid.theirs = [b for b in mid.theirs if b["instance_id"] not in killed_ids]
+                            mid.theirs.extend(self.death_bodies(killed))
+                            mid.persistent.extend(self.return_engines(killed))
+                            if depth < 2 and self._has_death_fact_triggers:
+                                for kb in killed:
+                                    self._fire_fact_triggers(
+                                        mid,
+                                        "CREATURE_DIES",
+                                        dead_fid=self._fact_iid(kb),
+                                        dead_controller="theirs",
+                                        depth=depth + 1,
+                                    )
+                    elif trig.target_hint == "target_creature":
+                        victim = next(
+                            (
+                                b
+                                for b in sorted(mid.theirs, key=self._threat_order)
+                                if b["toughness"] <= eff.amount
+                                and not _untargetable(b)
+                                and not has_combat_keyword(b, "indestructible")
+                            ),
+                            None,
+                        )
+                        if victim is not None:
+                            mid.theirs = [b for b in mid.theirs if b is not victim]
+                            mid.theirs.extend(self.death_bodies([victim]))
+                            mid.persistent.extend(self.return_engines([victim]))
+                            if depth < 2 and self._has_death_fact_triggers:
+                                self._fire_fact_triggers(
+                                    mid,
+                                    "CREATURE_DIES",
+                                    dead_fid=self._fact_iid(victim),
+                                    dead_controller="theirs",
+                                    depth=depth + 1,
+                                )
+                elif isinstance(eff, Draw):
+                    if not self._has_draw_punisher:
+                        mid.draws += eff.count
+
+    def _fire_combat_death_triggers(self, mid: Mid, our_died: list[dict], their_died: list[dict]) -> None:
+        if not self._has_death_fact_triggers:
+            return
+        extra = tuple(
+            (self._fact_iid(b), self._fact_triggers[self._fact_iid(b)])
+            for b in our_died
+            if self._fact_iid(b) in self._fact_triggers
+        )
+        for ob in our_died:
+            fid = self._fact_iid(ob)
+            self._fire_fact_triggers(
+                mid, "SELF_DIES", dead_fid=fid, dead_controller="ours", extra_sources=extra
+            )
+            self._fire_fact_triggers(
+                mid, "CREATURE_DIES", dead_fid=fid, dead_controller="ours", extra_sources=extra
+            )
+        for tb in their_died:
+            self._fire_fact_triggers(
+                mid,
+                "CREATURE_DIES",
+                dead_fid=self._fact_iid(tb),
+                dead_controller="theirs",
+                extra_sources=extra,
+            )
+
+    def _apply_fact_death_triggers_policy(
+        self,
+        our_died: list[dict],
+        their_died: list[dict],
+        ours_after: list[dict],
+        life: int,
+        opp_life: int,
+        entered: dict,
+        turn: int,
+        persistent: list,
+        fact_permanents: tuple[tuple[int, int], ...] = (),
+    ) -> tuple[int, int, list[dict], dict]:
+        if not self._has_death_fact_triggers or (not our_died and not their_died):
+            return life, opp_life, ours_after, entered
+        scratch = Mid.__new__(Mid)
+        scratch.node = SimpleNamespace(abs_turn=turn)
+        scratch.ours = list(ours_after)
+        scratch.theirs = []
+        scratch.our_life = life
+        scratch.opp_life = opp_life
+        scratch.gained = 0
+        scratch.draws = 0
+        scratch.our_tapped = set()
+        scratch.entered = dict(entered)
+        scratch.pumps = {}
+        scratch.persistent = list(persistent)
+        scratch.fact_permanents = tuple(fact_permanents)
+        scratch.fact_triggers_used = set()
+        self._fire_combat_death_triggers(scratch, our_died, their_died)
+        return scratch.our_life, scratch.opp_life, scratch.ours, scratch.entered
+
     def _apply_casts(self, mid: Mid, start: int = 0, chipped: dict[int, int] | None = None) -> None:
         # Evoke's sacrifice is only a plain disappearance when no visible
         # death/replacement/return interaction exists. Do not simulate a false
@@ -5380,22 +6576,49 @@ class Moves:
                     mid.their_tapped.add(target["instance_id"])
             if self.pumps_possible:  # its cast triggers resolve first: the bodies already in play
                 self._cast_triggers(mid, var.spell)
+            if self._fact_triggers_possible:
+                card_ = hs.spell.card
+                self._fire_fact_triggers(
+                    mid, "CAST_SPELL", spell_card=card_, spell_kinds=self.kinds(var.spell)
+                )
+                if "enchantment" in _types(card_):
+                    self._fire_fact_triggers(
+                        mid, "CAST_ENCHANTMENT", spell_card=card_, spell_kinds=self.kinds(var.spell)
+                    )
             if var.mode_text:
                 mid.modes.append((hs.name, var.mode_text))
             if var.aim and not var.walker:  # (a planeswalker target is named below)
                 mid.targets.append((hs.name, var.aim))
             mid.our_life -= var.loss
             mid.opp_life -= var.face
+            if var.fact_draws and not self._has_draw_punisher:
+                mid.draws += var.fact_draws
             if var.counter and mid.ours:
                 old = max(mid.ours, key=lambda b: (b["power"], b["toughness"], -b["instance_id"]))
                 new = self._countered(old, var.counter)
-                mid.ours = [new if b is old else b for b in mid.ours]
-                if old["instance_id"] in mid.pumps:
-                    mid.pumps[new["instance_id"]] = mid.pumps[old["instance_id"]]
-                if old["instance_id"] in mid.entered:
-                    mid.entered[new["instance_id"]] = mid.entered[old["instance_id"]]
-                if old["instance_id"] in mid.our_tapped:
-                    mid.our_tapped.add(new["instance_id"])
+                self._replace_our_body(mid, old, new)
+                if mid.node.k == 0 and var.body is None and not var.tokens:
+                    mid.fragile_investments.append(
+                        (self._fact_iid(new), "counter", var.mana_value, self.ward(new), _untargetable(new))
+                    )
+            host_fid = 0
+            if var.aura_pump != (0, 0) and mid.ours:
+                old = max(mid.ours, key=lambda b: (b["power"], b["toughness"], -b["instance_id"]))
+                new = self._buffed(old, *var.aura_pump)
+                self._replace_our_body(mid, old, new)
+                host_fid = self._fact_iid(new)
+                if mid.node.k == 0:
+                    mid.fragile_investments.append(
+                        (host_fid, "aura", var.mana_value, self.ward(new), _untargetable(new))
+                    )
+            if var.temp_pump != (0, 0) and mid.ours:
+                old = self._best_pump_target(mid)
+                p, t = mid.pumps.get(old["instance_id"], (0, 0))
+                mid.pumps[old["instance_id"]] = (p + var.temp_pump[0], t + var.temp_pump[1])
+                if mid.node.k == 0:
+                    mid.fragile_investments.append(
+                        (self._fact_iid(old), "temp_pump", var.mana_value, self.ward(old), _untargetable(old))
+                    )
             made = list(var.tokens) + list(self._life_bodies(var, mid.gained))
             if made and not mid.entry_draw_blocked:
                 reason = self._token_entry_draw_reason(mid, var, tuple(made))
@@ -5433,6 +6656,44 @@ class Moves:
             alive = {b["instance_id"] for b in mid.ours}
             mid.entered = {iid: turn for iid, turn in mid.entered.items() if iid in alive}
             mid.our_tapped.intersection_update(alive)
+            if var.body is None and var.stays_on_battlefield and var.spell in self._spell_fact_triggers:
+                if var.aura_pump == (0, 0) or host_fid != 0:
+                    fp_entry = (var.spell, host_fid)
+                    if fp_entry not in mid.fact_permanents:
+                        mid.fact_permanents = (*mid.fact_permanents, fp_entry)
+            mid.fact_permanents = self._live_fact_permanents(mid.fact_permanents, mid.ours)
+            if self._fact_triggers_possible:
+                card_ = hs.spell.card
+                types_s = _types(card_)
+                if var.body is not None and not var.ephemeral:
+                    bfid = self._fact_iid(var.body)
+                    if "enchantment" in types_s:
+                        self._fire_fact_triggers(
+                            mid,
+                            "ENCHANTMENT_ENTERS",
+                            entering_fid=bfid,
+                            entering_is_creature=True,
+                        )
+                    self._fire_fact_triggers(mid, "CREATURE_ENTERS", entering_fid=bfid, is_token=False)
+                elif var.stays_on_battlefield:
+                    sfid = self._spell_fact_source_ids.get(var.spell)
+                    if "enchantment" in types_s:
+                        self._fire_fact_triggers(
+                            mid,
+                            "ENCHANTMENT_ENTERS",
+                            entering_fid=sfid,
+                            entering_is_creature=False,
+                        )
+                for tok in made + list(named):
+                    tfid = self._fact_iid(tok)
+                    if "enchantment" in _types(tok.get("_card") or tok):
+                        self._fire_fact_triggers(
+                            mid,
+                            "ENCHANTMENT_ENTERS",
+                            entering_fid=tfid,
+                            entering_is_creature=True,
+                        )
+                    self._fire_fact_triggers(mid, "CREATURE_ENTERS", entering_fid=tfid, is_token=True)
             if target is not None and var.walker:  # burn at one of their planeswalkers
                 iid = target["instance_id"]
                 if iid in mid.walkers:
@@ -5473,6 +6734,14 @@ class Moves:
                 died = [b for b in before_spell if b["instance_id"] not in remaining]
                 mid.theirs.extend(self.death_bodies(died))
                 mid.persistent.extend(self.return_engines(died))
+                if self._has_death_fact_triggers and died:
+                    for dead_b in died:
+                        self._fire_fact_triggers(
+                            mid,
+                            "CREATURE_DIES",
+                            dead_fid=self._fact_iid(dead_b),
+                            dead_controller="theirs",
+                        )
             mid.our_life += var.gain
             mid.gained += var.gain
             if var.rock:
@@ -5666,6 +6935,7 @@ class Moves:
         node = mid.node
         ids = attack[1]
         attackers = [b for b in mid.ours if b["instance_id"] in ids]
+        pre_combat_ours = list(mid.ours)
         opp_after = None
         opponent_loss, opponent_terminal = node.opponent_loss, node.opponent_loss.lost
         # "at:<walker>:<attackers>": those attackers go at one of their planeswalkers.
@@ -5771,7 +7041,8 @@ class Moves:
             opp_after = mid.opp_life
             combat_dead = [b for b in mid.ours if b["instance_id"] in dead_ours]
             combat_dead += [b for b in mid.theirs if b["instance_id"] in dead_theirs]
-            mid.persistent.extend(self.return_engines([b for b in mid.ours if b["instance_id"] in dead_ours]))
+            our_died = [b for b in mid.ours if b["instance_id"] in dead_ours]
+            mid.persistent.extend(self.return_engines(our_died))
             mid.ours = self.rescale(
                 self._combat_counters(
                     [b for b in mid.ours if b["instance_id"] not in dead_ours], counter_deltas
@@ -5784,6 +7055,8 @@ class Moves:
                 apply_deltas([b for b in mid.theirs if b["instance_id"] not in dead_theirs], counter_deltas)
                 + replacement
             )
+            if self._has_death_fact_triggers and (our_died or died):
+                self._fire_combat_death_triggers(mid, our_died, died)
             if not opponent_terminal:
                 mid.ours, mid.theirs, mid.entered = self.sacrifice_after_combat(
                     mid.ours,
@@ -5810,6 +7083,8 @@ class Moves:
             )
         if not mid.applied:
             self._apply_casts(mid)
+            pre_combat_ours = list(mid.ours)
+        mid.fact_permanents = self._live_fact_permanents(mid.fact_permanents, mid.ours)
         step = {
             "k": node.k,
             "turn": node.abs_turn,
@@ -5832,7 +7107,10 @@ class Moves:
             "keys": frozenset(mid.keys | {("attack", frozenset(ids)) if ids else ("noattack",)}),
             "plays": (mid.land, tuple(mid.casts), ids),
             "post_combat": post_combat,
-            "order_sensitive": not mid.entry_draw_blocked and self._entry_draw_order(mid.casts) is not None,
+            "order_sensitive": (
+                not mid.entry_draw_blocked
+                and (self._entry_draw_order(mid.casts) is not None or self._has_fact_trigger_chain(mid.casts))
+            ),
             "at_walkers": tuple(sorted(at_walkers)),
             "walker_attack": attack[0] if at else "",
         }
@@ -5850,20 +7128,27 @@ class Moves:
             "rocks": tuple(mid.rocks),
             "persistent": tuple(mid.persistent),
             "walkers": tuple((iid, name, loyal) for iid, (name, loyal) in sorted(mid.walkers.items())),
+            "fact_permanents": tuple(mid.fact_permanents),
+            "risk_penalty": node.risk_penalty,
         }
         if mid.opp_life <= 0 or opponent_terminal:
             return dataclasses.replace(
                 node, **carry, history=node.history + (Step(**step),), win_at=node.k + 1,
                 win_turn=node.abs_turn, overkill=max(0, -mid.opp_life),
             )  # fmt: skip
+        if node.k == 0 and mid.fragile_investments:
+            mid.risk_penalty = node.risk_penalty + self._compute_blowout_risk(mid, ids, pre_combat_ours)
+            carry["risk_penalty"] = mid.risk_penalty
         # Our end step (Fleeting Effigy goes back to the hand), then their turn's life gains.
         self._end_step(mid)
+        mid.fact_permanents = self._live_fact_permanents(mid.fact_permanents, mid.ours)
         # An offered free exile cast proves permission now, not after this turn.
         mid.hand = [i for i in mid.hand if not self.spells[i].spell.card.get("_current_exile_offer")]
         carry.update(
             ours=tuple(mid.ours),
             hand=tuple(mid.hand),
             rocks=tuple(self._live_rocks(mid.rocks, mid.ours)),
+            fact_permanents=mid.fact_permanents,
         )
         if opponent_loss.draw_loses:
             return dataclasses.replace(
@@ -5898,6 +7183,7 @@ class Moves:
             landfall=True,
             gains=gains,
             persistent=tuple(mid.persistent),
+            fact_permanents=tuple(mid.fact_permanents),
         )
         hit = self.their_attack(**attack_args)
         if (
@@ -5951,6 +7237,7 @@ class Moves:
             theirs=tuple([*hit["theirs"], *spawned]), hand=hit["hand"], walkers=walkers,
             rocks=tuple(self._live_rocks(carry["rocks"], rescaled_ours)),
             persistent=tuple(hit["persistent"]),
+            fact_permanents=self._live_fact_permanents(hit["fact_permanents"], rescaled_ours),
         )  # fmt: skip
         return dataclasses.replace(
             node,
@@ -6023,7 +7310,15 @@ class Moves:
         attack first, then Enlightened Confidant and Valgavoth after combat."""
         if var.kind != "cast" or var.body is None or self.haste:
             return False
-        if var.reach is not None or var.face or var.counter or var.life_tokens or var.named_tokens:
+        if (
+            var.reach is not None
+            or var.face
+            or var.counter
+            or var.life_tokens
+            or var.named_tokens
+            or var.has_fact_triggers
+            or var.fact_draws
+        ):
             return False
         found = self._neutral_memo.get(id(var))
         if found is None:
@@ -6345,7 +7640,7 @@ class Moves:
         index, turn, next_k, next_abs, fixed=None, variant="best", crack_exclude=frozenset(), tag="",
         blocks_locked=False, landfall=False, drops=None, crack_sources=None, spells=True, gains=0, drain_now=True,
         combat_counters=True, stress_cast=False,
-        after_upkeep=False, persistent=(), our_loss=LossState(), opponent_loss=LossState(),
+        after_upkeep=False, persistent=(), our_loss=LossState(), opponent_loss=LossState(), fact_permanents=(),
     ) -> dict:  # fmt: skip
         """Their attack: any lethal policy kills us; else the non-suicidal one worst for us, and
         their most damaging one when every policy leaves them dead to our next turn anyway.
@@ -6433,6 +7728,7 @@ class Moves:
                         persistent=persistent,
                         our_loss=our_loss,
                         opponent_loss=opponent_loss,
+                        fact_permanents=fact_permanents,
                     )
                 )
         held = tuple(sorted(self.spells[v.spell].name for v in flash))
@@ -6451,6 +7747,7 @@ class Moves:
                 persistent=persistent,
                 our_loss=our_loss,
                 opponent_loss=opponent_loss,
+                fact_permanents=fact_permanents,
             )
             outcomes.append(none)
             safe = [] if none["suicidal"] else [none]
@@ -6464,7 +7761,7 @@ class Moves:
 
     def _policy(
         self, name, attackers, hand, life, opp_life, ours, theirs, defenders, removal, entered, keep_tapped,
-        returning, index, next_k, next_abs, tag, left=0, landfall=0, crack_sources=(), *, stress_cast=False, drain=0, persistent=(), our_loss=LossState(), opponent_loss=LossState(),
+        returning, index, next_k, next_abs, tag, left=0, landfall=0, crack_sources=(), *, stress_cast=False, drain=0, persistent=(), our_loss=LossState(), opponent_loss=LossState(), fact_permanents=(),
     ) -> dict:  # fmt: skip
         persistent = list(persistent)
         declared = sorted(attackers, key=lambda b: b["instance_id"])
@@ -6602,17 +7899,30 @@ class Moves:
             + bounced
         )
         theirs_after += made + self.death_bodies([b for b in theirs if b["instance_id"] in dead_att])
+        our_blk_died = [b for b in ours if b["instance_id"] in dead_blk]
+        their_att_died = [b for b in theirs if b["instance_id"] in dead_att]
         ours_after, theirs_after, entered = self.sacrifice_after_combat(
             ours_after,
             theirs_after,
-            [b for b in ours if b["instance_id"] in dead_blk]
-            + [b for b in theirs if b["instance_id"] in dead_att],
+            our_blk_died + their_att_died,
             active=self.model.opponent,
             turn=next_abs - 1,
             life=after,
             opp_life=opp_life,
             entered=entered,
         )
+        if self._has_death_fact_triggers and (our_blk_died or their_att_died):
+            after, opp_life, ours_after, entered = self._apply_fact_death_triggers_policy(
+                our_blk_died,
+                their_att_died,
+                ours_after,
+                after,
+                opp_life,
+                entered,
+                next_abs - 1,
+                persistent,
+                fact_permanents=fact_permanents,
+            )
         alive = {b["instance_id"] for b in theirs_after}
         # Their non-vigilance attackers stay tapped through our next turn.
         their_tapped = (
@@ -6702,6 +8012,7 @@ class Moves:
             "hand": hand,
             "entered": entered,
             "persistent": tuple(persistent),
+            "fact_permanents": self._live_fact_permanents(fact_permanents, ours_after),
         }
 
     # -- the root ---------------------------------------------------------------------------

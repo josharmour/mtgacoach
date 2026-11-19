@@ -6,6 +6,7 @@ import re
 from collections import OrderedDict
 from functools import lru_cache
 from threading import Lock
+from typing import Any
 
 from arenamcp.card_facts.reviewed_notes import corpus, reviewed_print
 from arenamcp.card_facts.source_identity import legacy_lookup_hash
@@ -113,6 +114,7 @@ class OpponentRead:
     def __init__(self):
         self._games = OrderedDict()
         self._printed_cards = OrderedDict()
+        self._tempo = OrderedDict()
         self._lock = Lock()
 
     def observation_facts(self, observation):
@@ -437,6 +439,243 @@ class OpponentRead:
         if creature_count >= 4:
             classes.add("wide_board")
         return sorted(classes)
+
+    def observe_posture(self, state: dict | None) -> tuple[str, ...]:
+        """Record public turn-tempo pass signals under ``_lock`` and return active pass notes.
+
+        Strictly reads public battlefield, stack, graveyard, turn, and hand-count fields;
+        never reads hidden opponent hand or library contents.
+        """
+        if not isinstance(state, dict):
+            return ()
+        from arenamcp.board_model import canonical_phase_step
+        from arenamcp.opponent_tricks import (
+            _card_hidden,
+            _controller,
+            _int,
+            _is_ability,
+            _is_land,
+            _is_token,
+            _owner,
+            _public_zone_cards,
+            _seats,
+            _types,
+            opponent_open_mana,
+            public_opponent_hand_count,
+        )
+
+        local, opponent = _seats(state)
+        if local not in (1, 2) or opponent is None:
+            return ()
+        match = state.get("match_id")
+        raw_game = state.get("game_number")
+        if raw_game is not None and (type(raw_game) is not int or raw_game < 1):
+            return ()
+        game = 1 if raw_game is None else raw_game
+        if not isinstance(match, str) or not match.strip():
+            return ()
+
+        turn_info = state.get("turn") if isinstance(state.get("turn"), dict) else {}
+        turn_num = _int(turn_info.get("turn_number"))
+        active_player = _int(turn_info.get("active_player"))
+        priority_player = _int(turn_info.get("priority_player"))
+        phase, step = canonical_phase_step(turn_info)
+        seq = _snapshot_seq(state)
+
+        mana = opponent_open_mana(state)
+        open_mana = int(mana["open_mana"])
+        color_summary = str(mana["color_summary"])
+        opp_hand = public_opponent_hand_count(state)
+
+        def _is_flash(card: dict) -> bool:
+            kws = {str(k).lower() for k in (card.get("keywords") or ())}
+            if "flash" in kws:
+                return True
+            oracle = str(card.get("oracle_text") or "").lower()
+            return bool(re.search(r"(?m)^flash\b", oracle))
+
+        def _permanent_entered_on_turn(target_turn: int) -> bool:
+            for card in _public_zone_cards(state, "battlefield"):
+                if (
+                    _card_hidden(card)
+                    or card.get("is_phased_out")
+                    or not card_identity_visible(card, "battlefield")
+                ):
+                    continue
+                ctrl = _int(_controller(card))
+                if ctrl != opponent or _is_token(card):
+                    continue
+                if _is_land(card):
+                    continue
+                if _int(card.get("turn_entered_battlefield")) == target_turn and not _is_flash(card):
+                    return True
+            return False
+
+        stack_opp_sorcery = False
+        for card in _public_zone_cards(state, "stack"):
+            if _is_ability(card) or _card_hidden(card) or not card_identity_visible(card, "stack"):
+                continue
+            seat = _int(_controller(card) or _owner(card))
+            if seat != opponent:
+                continue
+            if "instant" not in _types(card) and not _is_flash(card):
+                stack_opp_sorcery = True
+                break
+
+        gy_sorcery_count = 0
+        for card in _public_zone_cards(state, "graveyard"):
+            if _is_ability(card) or _card_hidden(card) or not card_identity_visible(card, "graveyard"):
+                continue
+            if _int(_owner(card)) == opponent and "sorcery" in _types(card):
+                gy_sorcery_count += 1
+
+        saw_sorcery_now = False
+        if active_player == opponent and turn_num is not None and turn_num >= 1:
+            saw_sorcery_now = stack_opp_sorcery or _permanent_entered_on_turn(turn_num)
+
+        epoch = (match, game, local)
+        phase_rank = _PHASE_RANK.get(phase, 1)
+        pos = (turn_num, phase_rank, 1 if step == "Step_End" else 0) if turn_num is not None else None
+
+        with self._lock:
+            tempo = self._tempo.setdefault(
+                epoch,
+                {"turns": {}, "last_pos": None, "last_seq": None, "gy_sorcery_baseline": gy_sorcery_count},
+            )
+            self._tempo.move_to_end(epoch)
+            if len(self._tempo) > 8:
+                self._tempo.popitem(last=False)
+
+            turns: dict[int, dict] = tempo["turns"]
+            stale_snapshot = (
+                seq is not None and tempo["last_seq"] is not None and seq < tempo["last_seq"]
+            ) or (pos is not None and tempo["last_pos"] is not None and pos < tempo["last_pos"])
+
+            if not stale_snapshot and turn_num is not None and turn_num >= 1:
+                if active_player == opponent:
+                    prev_gy = tempo.get("last_gy_sorcery_turn")
+                    if prev_gy != turn_num:
+                        tempo["gy_sorcery_baseline"] = gy_sorcery_count
+                        tempo["last_gy_sorcery_turn"] = turn_num
+                    gy_grew_sorcery = gy_sorcery_count > int(
+                        tempo.get("gy_sorcery_baseline", gy_sorcery_count)
+                    )
+
+                    rec = turns.setdefault(
+                        turn_num,
+                        {
+                            "open_mana": open_mana,
+                            "color_summary": color_summary,
+                            "opp_hand": opp_hand,
+                            "saw_sorcery_play": False,
+                            "passed_with_mana": False,
+                            "pass_open_mana": 0,
+                            "pass_colors": "",
+                            "pass_seq": None,
+                        },
+                    )
+                    rec["open_mana"] = open_mana
+                    rec["color_summary"] = color_summary
+                    rec["opp_hand"] = opp_hand
+                    rec["saw_sorcery_play"] = rec["saw_sorcery_play"] or saw_sorcery_now or gy_grew_sorcery
+                    ended_main = phase == "Phase_Ending" or (
+                        phase == "Phase_Main2" and priority_player == local and not stack_opp_sorcery
+                    )
+                    if ended_main and not rec["saw_sorcery_play"] and open_mana >= 2 and (opp_hand or 0) >= 1:
+                        rec["passed_with_mana"] = True
+                        rec["pass_open_mana"] = open_mana
+                        rec["pass_colors"] = color_summary
+                        rec["pass_seq"] = seq
+                    elif rec["saw_sorcery_play"]:
+                        rec["passed_with_mana"] = False
+                else:
+                    # Transitioned out of an observed opponent turn to our turn: finalize the most recent opponent turn.
+                    prior_opp_turns = [t for t in turns if t < turn_num]
+                    if prior_opp_turns:
+                        prev_t = max(prior_opp_turns)
+                        prev_rec = turns[prev_t]
+                        if not prev_rec.get("finalized"):
+                            sorcery_grew_in_prev = tempo.get(
+                                "last_gy_sorcery_turn"
+                            ) == prev_t and gy_sorcery_count > int(
+                                tempo.get("gy_sorcery_baseline", gy_sorcery_count)
+                            )
+                            if _permanent_entered_on_turn(prev_t) or sorcery_grew_in_prev:
+                                prev_rec["saw_sorcery_play"] = True
+                                prev_rec["passed_with_mana"] = False
+                            elif (
+                                not prev_rec["passed_with_mana"]
+                                and not prev_rec["saw_sorcery_play"]
+                                and prev_rec["open_mana"] >= 2
+                                and (prev_rec["opp_hand"] or 0) >= 1
+                                and open_mana >= 2
+                                and (opp_hand or 0) >= 1
+                            ):
+                                prev_rec["passed_with_mana"] = True
+                                prev_rec["pass_open_mana"] = min(prev_rec["open_mana"], open_mana)
+                                prev_rec["pass_colors"] = color_summary or prev_rec["color_summary"]
+                                prev_rec["pass_seq"] = seq
+                            prev_rec["finalized"] = True
+
+                if len(turns) > 32:
+                    for old_t in sorted(turns)[: len(turns) - 32]:
+                        del turns[old_t]
+                if pos is not None and (tempo["last_pos"] is None or pos >= tempo["last_pos"]):
+                    tempo["last_pos"] = pos
+                if seq is not None and (tempo["last_seq"] is None or seq >= tempo["last_seq"]):
+                    tempo["last_seq"] = seq
+
+            if open_mana == 0 or opp_hand == 0:
+                return ()
+            signals: list[str] = []
+            for t in sorted(turns, reverse=True):
+                if turn_num is not None and (t > turn_num or turn_num - t > 2):
+                    continue
+                rec = turns[t]
+                if not rec.get("passed_with_mana"):
+                    continue
+                pseq = rec.get("pass_seq")
+                if seq is not None and pseq is not None and pseq > seq:
+                    continue
+                pm = int(rec.get("pass_open_mana") or rec.get("open_mana") or 0)
+                if pm < 2:
+                    continue
+                pc = str(rec.get("pass_colors") or rec.get("color_summary") or "")
+                color_note = f" ({pc})" if pc else ""
+                signals.append(f"passed turn {t} with {pm} open mana{color_note}")
+                break
+            return tuple(signals)
+
+    def opponent_posture(self, state: dict | None, *, table: Any = None, trick: Any = None):
+        """Return format-agnostic ``AdversarialPosture`` with public sightings and pass signals."""
+        from arenamcp.opponent_tricks import opponent_posture as _build_posture
+
+        pass_signals = self.observe_posture(state)
+        classes = self.threat_classes(state)
+        return _build_posture(
+            state,
+            table=table,
+            trick=trick,
+            threat_classes=classes,
+            pass_signals=pass_signals,
+        )
+
+
+_PHASE_RANK = {
+    "Phase_Beginning": 0,
+    "Phase_Main1": 1,
+    "Phase_Combat": 2,
+    "Phase_Main2": 3,
+    "Phase_Ending": 4,
+}
+
+
+def _snapshot_seq(state: dict) -> int | None:
+    for key in ("commentary_source_sequence", "game_state_id"):
+        val = state.get(key)
+        if type(val) is int and val >= 0:
+            return val
+    return None
 
 
 def _inferences(seen, opponent):

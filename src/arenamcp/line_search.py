@@ -90,6 +90,7 @@ from arenamcp.board_model import BoardModel, build_board_model
 from arenamcp.line_search_moves import (
     ALIVE,
     DEAD,
+    DRAW_CARD_VALUE,
     LABELS,
     NOTHING,
     PUNISH_CARD_VALUE,
@@ -613,8 +614,13 @@ class _Search(Moves):
                         continue  # nothing left to remove: kept in hand (the search holds it too)
                 life -= var.loss
                 choice.append((var, target))
-            # Cast order as the search enumerates it (hand order): the same T step has the same sig.
-            choice.sort(key=lambda item: node.hand.index(item[0].spell))
+            # Cast order as the search enumerates it (creatures/non-requiring spells before
+            # targeted Auras/pumps), then drop unplayable targeted casts before begin().
+            choice.sort(
+                key=lambda item: (bool(item[0].requires_our_creature), node.hand.index(item[0].spell))
+            )
+            if choice and not self._legal_cast_order(node.ours, tuple(choice)):
+                choice = [item for item in choice if not item[0].requires_our_creature]
             if not self.supported_casts(node, tuple(choice)):
                 choice = []
             mid = self.begin(node, land, tuple(choice))
@@ -671,6 +677,8 @@ class _Search(Moves):
                 alive.persistent,
             )
             + PUNISH_CARD_VALUE * alive.opponent_discards
+            + DRAW_CARD_VALUE * alive.draws
+            - alive.risk_penalty
         )
         race = 0.0 if self.past_soft() or self.truncated else self.race(alive)
         return float(value + race)
@@ -760,7 +768,9 @@ class _Search(Moves):
                 _base, sources = self.sources(node, land)
                 for casts in self.cast_sets(node, sources, instant_only=instant_only):
                     keys = frozenset(self.play_keys(land, casts) | self._synergy_keys(node, casts) | extra)
-                    value = self.choice_value(casts, node.theirs, self.gained_at_start(node), node.ours)
+                    value = self.choice_value(
+                        casts, node.theirs, self.gained_at_start(node), node.ours, estimate_risk=(node.k == 0)
+                    )
                     pairs.append((value, block, node, land, casts, keys))
         pairs.sort(key=lambda pair: (-round(pair[0], 6), self._pair_text(pair)))
         covered: set = set()
@@ -812,6 +822,7 @@ class _Search(Moves):
             tuple(sorted(s.name for s in node.played)), len(node.rocks), ids_of(node.returning),
             node.dead_at, node.win_at, node.overkill, node.block, node.walkers, node.our_loss, node.opponent_loss,
             node.opponent_discards, node.draws, bool(node.history and node.history[0].cast_trigger_lethal),
+            node.fact_permanents, round(node.risk_penalty, 4),
         )  # fmt: skip
 
     def _rank(self, group: _Group) -> tuple:
@@ -981,8 +992,7 @@ class _Search(Moves):
             cast_trigger_risk=any(g.node.history and g.node.history[0].cast_trigger_lethal for g in main),
         )
 
-    @staticmethod
-    def _pick_best(ranked: list[Line], baseline: Line) -> Line:
+    def _pick_best(self, ranked: list[Line], baseline: Line) -> Line:
         """The top line, unless it edges out the baseline's T step (then the baseline) by < LINE_TOL.
 
         The greedy line is pinned: another T step must beat the best line
@@ -991,24 +1001,24 @@ class _Search(Moves):
         way. Close calls (G1_T8: Theorix Metamage or Tetsuko first) keep
         today's pick.
         """
+        from arenamcp.combat_keywords import has_combat_keyword
 
         def dominates(a: Line, b: Line) -> bool:
-            # Keep hysteresis for real tradeoffs, not redundant burn (#263).
-            # Compare actual simulated resources and every intervening life
-            # total, not merely a small difference in the heuristic score.
+            # Keep hysteresis for real tradeoffs, not redundant burn or strictly better
+            # cast-order permutations of the same turn-T spell set (#263, NN7).
             x, y = a._leaf, b._leaf
             if x is None or y is None or a.cls != ALIVE or b.cls != ALIVE:
                 return False
             if len(a.steps) != len(b.steps) or not a.steps:
                 return False
+            if x.risk_penalty > y.risk_penalty:
+                return False
             equal = (
                 "k",
                 "abs_turn",
-                "ours",
                 "theirs",
                 "our_tapped",
                 "their_tapped",
-                "entered",
                 "lands",
                 "played",
                 "rocks",
@@ -1016,29 +1026,123 @@ class _Search(Moves):
                 "walkers",
                 "our_loss",
                 "opponent_loss",
+                "persistent",
             )
             if any(getattr(x, field) != getattr(y, field) for field in equal):
                 return False
             if not set(x.hand).issuperset(y.hand):
                 return False
-            for left, right in zip(a.steps, b.steps, strict=True):
+
+            def _kw_tuple(body):
+                return (
+                    *(
+                        has_combat_keyword(body, kw)
+                        for kw in (
+                            "flying",
+                            "lifelink",
+                            "deathtouch",
+                            "trample",
+                            "first strike",
+                            "double strike",
+                            "menace",
+                            "reach",
+                            "vigilance",
+                            "indestructible",
+                            "haste",
+                        )
+                    ),
+                    bool(body.get("_unblockable")),
+                    bool(body.get("_can_attack", True)),
+                    bool(body.get("_can_block", True)),
+                )
+
+            def _bodies_dominate(xs, ys, x_entered, y_entered):
+                if len(xs) < len(ys):
+                    return False
+                by_kw: dict[tuple[bool, ...], list[tuple[int, int, int, int, int]]] = {}
+                for idx, bx in enumerate(xs):
+                    fid = bx.get("_fact_iid", bx.get("instance_id"))
+                    by_kw.setdefault(_kw_tuple(bx), []).append(
+                        (idx, fid, bx["power"], bx["toughness"], x_entered.get(bx["instance_id"], -1))
+                    )
+                y_items = []
+                for by in ys:
+                    kw = _kw_tuple(by)
+                    fid = by.get("_fact_iid", by.get("instance_id"))
+                    y_ent = y_entered.get(by["instance_id"], -1)
+                    needs_fid = fid in self._fact_triggers
+                    candidates = [
+                        (0 if bx_fid == fid else 1, (p - by["power"]) + (t - by["toughness"]), idx)
+                        for idx, bx_fid, p, t, bx_ent in by_kw.get(kw, ())
+                        if p >= by["power"]
+                        and t >= by["toughness"]
+                        and bx_ent <= y_ent
+                        and (not needs_fid or bx_fid == fid)
+                    ]
+                    if not candidates:
+                        return False
+                    candidates.sort()
+                    y_items.append([idx for _, _, idx in candidates])
+                y_items.sort(key=len)
+                match_x: dict[int, int] = {}
+
+                def _dfs(yi, seen):
+                    for xi in y_items[yi]:
+                        if xi in seen:
+                            continue
+                        seen.add(xi)
+                        prev = match_x.get(xi)
+                        if prev is None or _dfs(prev, seen):
+                            match_x[xi] = yi
+                            return True
+                    return False
+
+                return all(_dfs(yi, set()) for yi in range(len(y_items)))
+
+            same_t_perm = (
+                a.steps[0].casts != b.steps[0].casts
+                and sorted(a.steps[0].casts) == sorted(b.steps[0].casts)
+                and len(x.ours) >= len(y.ours)
+                and sum(b["power"] for b in x.ours) >= sum(b["power"] for b in y.ours)
+                and sum(b["toughness"] for b in x.ours) >= sum(b["toughness"] for b in y.ours)
+                and _bodies_dominate(x.ours, y.ours, dict(x.entered), dict(y.entered))
+            )
+            if same_t_perm:
+                if not {s_idx for s_idx, _ in x.fact_permanents}.issuperset(
+                    {s_idx for s_idx, _ in y.fact_permanents}
+                ):
+                    return False
+            elif x.entered != y.entered or x.fact_permanents != y.fact_permanents:
+                return False
+            if x.ours != y.ours and not same_t_perm:
+                return False
+            for k_idx, (left, right) in enumerate(zip(a.steps, b.steps, strict=True)):
                 if (
                     left.life_after is None
                     or right.life_after is None
                     or left.life_after < right.life_after
                     or left.their_creatures_after != right.their_creatures_after
-                    or left.attack != right.attack
+                    or ((not same_t_perm or k_idx > 0) and left.attack != right.attack)
                     or (
-                        left.opp_life_after is not None
-                        and right.opp_life_after is not None
-                        and left.opp_life_after > right.opp_life_after
+                        right.opp_life_after is not None
+                        and (left.opp_life_after is None or left.opp_life_after > right.opp_life_after)
                     )
                 ):
                     return False
+            x_pt = sum(b["power"] + b["toughness"] for b in x.ours)
+            y_pt = sum(b["power"] + b["toughness"] for b in y.ours)
             return (
                 x.our_life >= y.our_life
                 and x.opp_life <= y.opp_life
-                and (x.our_life > y.our_life or x.opp_life < y.opp_life or set(x.hand) > set(y.hand))
+                and x.draws >= y.draws
+                and (
+                    x.our_life > y.our_life
+                    or x.opp_life < y.opp_life
+                    or x.draws > y.draws
+                    or set(x.hand) > set(y.hand)
+                    or len(x.ours) > len(y.ours)
+                    or x_pt > y_pt
+                )
             )
 
         def close(a: Line, b: Line) -> bool:
