@@ -32,9 +32,12 @@ _RECURSION_SOURCE_RE = re.compile(
     re.I,
 )
 _TUTOR_WINDOW_RE = re.compile(
-    r"\b(?:search|tutor|scry|surveil|mulligan|discard|select_n|selectn|select_from_groups|searchfromgroups|group|london)\b",
+    r"\b(?:search(?:fromgroups)?(?:req(?:uest)?)?|tutor|scry|surveil|"
+    r"(?:london)?mulligan|discard|select_?n(?:request)?|"
+    r"select_?from_?groups(?:req(?:uest)?)?|group(?:req(?:uest)?)?|london)\b",
     re.I,
 )
+_DISCARD_MULLIGAN_RE = re.compile(r"\b(?:discard|(?:london)?mulligan|bottom)\b", re.I)
 
 
 @dataclass(frozen=True)
@@ -96,7 +99,10 @@ def _owned_by_us(card: dict[str, Any], local: int | None) -> bool:
     if local is None:
         return True
     side = card.get("owner_seat_id")
-    return side in (None, local)
+    if side is not None:
+        return side == local
+    ctrl = card.get("controller_seat_id")
+    return ctrl in (None, local)
 
 
 def _parse_mana_cost_simple(mana_cost: str) -> tuple[int, dict[str, int]]:
@@ -630,6 +636,8 @@ def tutor_missing_piece_hints(
             request_type,
             context.get("type"),
             context.get("context"),
+            context.get("prompt"),
+            context.get("source_label"),
             state.get("pending_decision"),
             state.get("_bridge_request_type"),
         )
@@ -641,13 +649,18 @@ def tutor_missing_piece_hints(
         missing = item.get("missing_names") or ()
         if missing:
             copies = int(item.get("copies_in_library") or 0)
-            where = f"{copies} copy/copies in library" if copies > 0 else "need mana/source"
+            if copies > 0:
+                where = f"{copies} copy/copies in library"
+            elif not state.get("deck_cards") and not state.get("commentary_library_inventory"):
+                where = "not in known library"
+            else:
+                where = "need mana/source"
             held = [n for n in item.get("names", ()) if n not in missing]
             hints.append(
                 f"Missing synergy piece for {' + '.join(held)}: {', '.join(missing)} "
                 f"({where}) -> {item.get('outcome', '')}"
             )
-    if re.search(r"\b(?:discard|mulligan|bottom)\b", text, re.I):
+    if _DISCARD_MULLIGAN_RE.search(text):
         protect = sorted(
             {
                 name

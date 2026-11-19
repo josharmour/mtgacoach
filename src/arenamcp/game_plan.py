@@ -48,7 +48,7 @@ import time
 from collections import Counter, OrderedDict
 from collections.abc import Callable
 from copy import deepcopy
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -450,8 +450,18 @@ class GamePlan:
         if self.one_step_synergies:
             step_parts = []
             for s in self.one_step_synergies[:4]:
-                missing_desc = ", ".join(s.get("missing_names") or ()) or f"{s.get('mana_shortfall', 0)} mana"
-                step_parts.append(f"{' + '.join(s.get('names') or ())} [missing: {missing_desc}]")
+                missing_names = s.get("missing_names") or ()
+                if missing_names:
+                    copies = int(s.get("copies_in_library") or 0)
+                    lib_note = f" ({copies} in library)" if copies > 0 else ""
+                    detail = f"missing: {', '.join(missing_names)}{lib_note}"
+                elif int(s.get("mana_shortfall") or 0) > 0:
+                    detail = f"needs: +{int(s['mana_shortfall'])} mana"
+                elif int(s.get("turn_wait") or 0) > 0:
+                    detail = f"wait: {int(s['turn_wait'])} turn(s)"
+                else:
+                    detail = "missing: 0 mana"
+                step_parts.append(f"{' + '.join(s.get('names') or ())} [{detail}]")
             lines.append("  One step away: " + "; ".join(step_parts))
         if self.active_switches:
             lines.append(
@@ -468,6 +478,10 @@ class GamePlan:
             "Holding mana or passing is correct when it protects the stronger line."
         )
         return "\n".join(lines)
+
+    def render(self, *, with_role_and_turns: bool = True, state: dict | None = None) -> str:
+        """Render the plan block including live/1-step synergies (alias for :meth:`as_planner_block`)."""
+        return self.as_planner_block(with_role_and_turns=with_role_and_turns, state=state)
 
     def as_coach_intro(self) -> str:
         """One-line plan framing prepended to spoken coach advice."""
@@ -507,6 +521,10 @@ class GamePlan:
             "one_step_synergies": [dict(item) for item in self.one_step_synergies],
             "active_switches": [dict(item) for item in self.active_switches],
         }
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize the plan including synergies (alias for :meth:`as_payload`)."""
+        return self.as_payload()
 
 
 def step_text(step: dict) -> str:
@@ -5183,6 +5201,9 @@ class GamePlanManager:
         except Exception:
             return
         if book is None or not isinstance(getattr(book, "data", None), dict):
+            plan.live_synergies = []
+            plan.one_step_synergies = []
+            plan.active_switches = []
             return
         try:
             from arenamcp.synergy_tracker import entries_from_playbook, evaluate_synergies
@@ -5198,10 +5219,11 @@ class GamePlanManager:
             chapters = book.data.get("study_chapters")
             switches = chapters.get("switches") if isinstance(chapters, dict) else None
             if isinstance(switches, dict):
-                active = self._opponent_read.threat_classes(game_state)
+                active = set(game_state.get("active_threat_classes") or ())
+                active.update(self._opponent_read.threat_classes(game_state))
                 plan.active_switches = [
                     {"threat_class": tc, **switches[tc]}
-                    for tc in active
+                    for tc in sorted(active)
                     if isinstance(switches.get(tc), dict)
                 ]
             else:
@@ -5373,16 +5395,29 @@ class GamePlanManager:
             self._last_reform_turn = saved.get("last_reform_turn", -1)
             self._last_attempt_at = time.monotonic()
 
+    def _snapshot_plan_locked(self) -> tuple[GamePlan | None, Any]:
+        """Return a thread-safe shallow snapshot of the active plan and failure note."""
+        plan = self._plan
+        if plan is not None:
+            plan = replace(
+                plan,
+                live_synergies=list(plan.live_synergies),
+                one_step_synergies=list(plan.one_step_synergies),
+                active_switches=list(plan.active_switches),
+            )
+        return plan, getattr(self, "_refresh_failed", None)
+
     @property
     def current(self) -> GamePlan | None:
         return self._plan
 
     def plan_text(self) -> str:
         """Planner-prompt block for the current plan ("" if none yet), flagged when its re-plan failed."""
-        plan = self._plan
+        with self._lock:
+            plan, refresh_failed = self._snapshot_plan_locked()
         if not plan:
             return ""
-        refresh = plan_refresh_note(plan, getattr(self, "_refresh_failed", None))
+        refresh = plan_refresh_note(plan, refresh_failed)
         return plan.as_planner_block() + (f"\n{refresh}" if refresh else "")
 
     def coach_intro(self) -> str:
@@ -5411,10 +5446,11 @@ class GamePlanManager:
         """
         from arenamcp.board_assessment import assess
 
-        plan = self._plan
         state = game_state if isinstance(game_state, dict) else None
-        if plan is not None and state is not None:
-            self._update_plan_synergies_locked(plan, state)
+        with self._lock:
+            if self._plan is not None and state is not None:
+                self._update_plan_synergies_locked(self._plan, state)
+            plan, refresh_failed = self._snapshot_plan_locked()
         assessment = assess(state) if state is not None else None
         risk = opponent_interaction(state, self._tricks()) if state is not None else None
         verdict = risk.verdict_line() if risk is not None and risk.known else ""
@@ -5438,7 +5474,7 @@ class GamePlanManager:
             extra_facts=extra,
             state=state,
             with_lines=with_lines,
-            refresh_failed=getattr(self, "_refresh_failed", None),
+            refresh_failed=refresh_failed,
         )
         # The ledger's deterministic lessons reach every tactical prompt at
         # once, not only after the next reform echoes them into the plan.
@@ -5490,7 +5526,10 @@ class GamePlanManager:
         ``game_state`` so the card shows "behind on board" before the first
         model plan arrives; ``{}`` when there is neither a plan nor a board.
         """
-        payload: dict[str, Any] = dict(self._plan.as_payload()) if self._plan else {}
+        with self._lock:
+            if self._plan is not None and isinstance(game_state, dict):
+                self._update_plan_synergies_locked(self._plan, game_state)
+            payload: dict[str, Any] = dict(self._plan.as_payload()) if self._plan else {}
         payload["plan_status"] = self.plan_status(game_state)
         if isinstance(game_state, dict):
             try:
@@ -5970,6 +6009,10 @@ class GamePlanManager:
                     )
                 self._plan_outcome = "ok"
                 self._plan = plan
+                try:
+                    self._refresh_upkeep_state_locked(game_state)
+                except Exception as error:  # pragma: no cover - defensive
+                    logger.debug("plan upkeep refresh on adopt skipped: %s", error)
                 self._refresh_failed = None
                 self._consecutive_supersedes = 0
                 self._last_sig = sig

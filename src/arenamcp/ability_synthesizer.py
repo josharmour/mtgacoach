@@ -614,7 +614,47 @@ class AbilitySynthesizer:
 # values is introduced. The record is duck-typed here (``.modes``/``.effects``)
 # because :mod:`arenamcp.card_facts.schema` imports this module.
 
-_CAST_TIME_TRIGGERS = ("CAST", "ENTERS_THE_BATTLEFIELD")
+_CANONICAL_TRIGGER_ALIASES: dict[str, str] = {
+    "": "",
+    "cast": "CAST",
+    "resolves": "CAST",
+    "etb": "ENTERS_THE_BATTLEFIELD",
+    "enters": "ENTERS_THE_BATTLEFIELD",
+    "enters_the_battlefield": "ENTERS_THE_BATTLEFIELD",
+    "enters_the_battlefield_or_evoke": "ENTERS_THE_BATTLEFIELD_OR_EVOKE",
+    "activated": "ACTIVATED",
+    "activate": "ACTIVATED",
+}
+
+_CAST_TIME_TRIGGERS = frozenset(
+    {
+        "",
+        "CAST",
+        "ENTERS_THE_BATTLEFIELD",
+        "ENTERS_THE_BATTLEFIELD_OR_EVOKE",
+    }
+)
+
+_QUALIFIED_TARGET_RE = re.compile(
+    r"\b(?:attacking|blocking|tapped|untapped|with|without|colorless|multicolored|"
+    r"monocolored|white|blue|black|red|green)\b|\bnon[a-z]+\b"
+)
+
+
+def _canonicalize_trigger(trigger: Any) -> str | None:
+    """Exact case-insensitive mapping for known card-facts trigger tokens."""
+    if not isinstance(trigger, str):
+        return None
+    return _CANONICAL_TRIGGER_ALIASES.get(trigger.strip().casefold())
+
+
+def _format_target_sentence(verb: str, target: str, suffix: str = ".") -> str:
+    if target.startswith("target "):
+        target = target[len("target ") :]
+        return f"{verb} target {target}{suffix}"
+    if " target " in target:
+        return f"{verb} {target}{suffix}"
+    return f"{verb} target {target}{suffix}"
 
 
 def render_effect_sentence(effect: Effect) -> str:
@@ -625,28 +665,60 @@ def render_effect_sentence(effect: Effect) -> str:
     nothing: a record never invents a value the text parser wouldn't have.
     """
     if isinstance(effect, GainLife):
+        if isinstance(effect.amount, bool) or not isinstance(effect.amount, int) or effect.amount <= 0:
+            return ""
         return f"You gain {effect.amount} life."
     if isinstance(effect, Draw):
+        if isinstance(effect.count, bool) or not isinstance(effect.count, int) or effect.count <= 0:
+            return ""
         return f"Draw {effect.count} card{'' if effect.count == 1 else 's'}."
     if isinstance(effect, Damage):
-        target = (effect.target or "").lower()
+        if isinstance(effect.amount, bool) or not isinstance(effect.amount, int) or effect.amount <= 0:
+            return ""
+        target = " ".join(str(effect.target or "").lower().split())
+        if not target or target in ("you", "its controller", "that player", "each player"):
+            return ""
+        if "you control" in target:
+            return ""
+        if "each" in target:
+            if target == "each opponent":
+                return f"~ deals {effect.amount} damage to each opponent."
+            if target in ("each creature your opponents control", "each creature an opponent controls"):
+                return f"~ deals {effect.amount} damage to {target}."
+            return ""
+        if _QUALIFIED_TARGET_RE.search(target):
+            if target.startswith(("target ", "up to one target ")):
+                return f"~ deals {effect.amount} damage to {target}."
+            return ""
         if "planeswalker" in target and "creature" in target:
             return f"~ deals {effect.amount} damage to target creature or planeswalker."
         if "planeswalker" in target:
             return f"~ deals {effect.amount} damage to target planeswalker."
+        if target == "target creature or player":
+            return f"~ deals {effect.amount} damage to target creature or player."
         if "creature" in target:
             return f"~ deals {effect.amount} damage to target creature."
-        return f"~ deals {effect.amount} damage to any target."
+        if target in ("any target", "any other target"):
+            return f"~ deals {effect.amount} damage to any target."
+        if target in ("target player", "target opponent"):
+            return f"~ deals {effect.amount} damage to {target}."
+        return ""
     if isinstance(effect, Destroy):
-        target = (effect.target or "").lower()
-        return f"Destroy target {target}." if target else ""
+        target = " ".join(str(effect.target or "").lower().split())
+        if not target or "you control" in target or target.startswith(("all ", "each ")):
+            return ""
+        return _format_target_sentence("Destroy", target)
     if isinstance(effect, Bounce):
-        target = (effect.target or "").lower()
-        return f"Return target {target} to its owner's hand." if target else ""
+        target = " ".join(str(effect.target or "").lower().split())
+        if not target or "you control" in target or target.startswith(("all ", "each ")):
+            return ""
+        if any(word in target for word in ("library", "top", "bottom", "exile", "graveyard")):
+            return ""
+        return _format_target_sentence("Return", target, " to its owner's hand.")
     if isinstance(effect, CreateToken):
         spec = effect.spec
-        # ``token_specs`` reads tapped/attacking/copied tokens as unreadable; keep them out.
-        if spec.tapped or spec.attacking or spec.copy_of_self:
+        # ``token_specs`` reads tapped/attacking/copied/per-opponent tokens as unreadable; keep them out.
+        if spec.tapped or spec.attacking or spec.copy_of_self or spec.per_opponent:
             return ""
         count = spec.count or 1
         bits = [f"Create {count}"]
@@ -664,14 +736,14 @@ def render_effect_sentence(effect: Effect) -> str:
 def cast_time_entries(record: Any) -> tuple[Any, ...]:
     """The record's effect entries that act on casting or on the card's own entering.
 
-    An entry qualifies with an empty trigger (part of casting, or static) or a
-    ``CAST``/``ENTERS_THE_BATTLEFIELD`` tag in its trigger. Conditioned entries
-    are included; callers decide whether they can honour the condition.
+    An entry qualifies only when its trigger canonicalizes to ``""``, ``"CAST"``,
+    ``"ENTERS_THE_BATTLEFIELD"``, or ``"ENTERS_THE_BATTLEFIELD_OR_EVOKE"``.
+    Conditioned entries are included; callers decide whether they can honour the condition.
     """
     return tuple(
         entry
         for entry in getattr(record, "effects", ())
-        if not entry.trigger or any(tag in entry.trigger.upper() for tag in _CAST_TIME_TRIGGERS)
+        if _canonicalize_trigger(getattr(entry, "trigger", None)) in _CAST_TIME_TRIGGERS
     )
 
 

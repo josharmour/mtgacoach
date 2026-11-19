@@ -264,6 +264,54 @@ __all__ = [
 ]
 
 
+class _MemoStudyClient:
+    """Thread-safe per-attempt memoizer for shared deck study lookups."""
+
+    def __init__(self, inner: Any):
+        self._inner = inner
+        self._lock = threading.Lock()
+        self._cache: dict[tuple[str, int], Any] = {}
+
+    @classmethod
+    def wrap(cls, client: Any) -> Any:
+        if client is None or isinstance(client, cls):
+            return client
+        return cls(client)
+
+    def fetch_study(self, deck_hash: str, *, version: int | None = None) -> dict[str, Any] | None:
+        from arenamcp.deck_study import STUDY_VERSION
+
+        ver = STUDY_VERSION if version is None else int(version)
+        key = (deck_hash, ver)
+        with self._lock:
+            if key in self._cache:
+                return self._cache[key]
+        result = self._inner.fetch_study(deck_hash, version=ver)
+        with self._lock:
+            self._cache.setdefault(key, result)
+            return self._cache[key]
+
+    def upload_study(
+        self,
+        deck_hash: str,
+        payload: dict[str, Any],
+        *,
+        version: int | None = None,
+        model_id: str = "",
+    ) -> bool:
+        from arenamcp.deck_study import STUDY_VERSION
+
+        ver = STUDY_VERSION if version is None else int(version)
+        ok = self._inner.upload_study(deck_hash, payload, version=ver, model_id=model_id)
+        if ok:
+            with self._lock:
+                self._cache.pop((deck_hash, ver), None)
+        return ok
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
 # LLM Backend Protocol and Implementations
 
 
@@ -298,6 +346,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         # Playbooks by deck identity, reused across matches (plus a disk copy
         # for restarts), and the identity-keyed analyses currently running.
         self._playbook_cache: dict[str, Any] = {}
+        self._study_withheld_identities: set[str] = set()
         self._playbook_runs: dict[str, threading.Event] = {}
         self._playbook_cancels: dict[str, threading.Event] = {}
         # Why each pending build runs: "idle" (outside a match, thinking) or
@@ -889,6 +938,139 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                 if generation == self._deck_analysis_generation:
                     self._deck_strategy_pending = False
 
+    @staticmethod
+    def _playbook_needs_study(playbook, *, study_client=None, build_full_study: bool = False) -> bool:
+        """True when a G2 study/chapters upgrade is requested and missing (not withheld)."""
+        if playbook is None or getattr(playbook, "study_withheld", False):
+            return False
+        if not (study_client is not None or build_full_study):
+            return False
+        data = getattr(playbook, "data", None)
+        if not isinstance(data, dict):
+            return True
+        return not (isinstance(data.get("study"), dict) and isinstance(data.get("study_chapters"), dict))
+
+    def _refresh_saved_strategy_if_present(self, prior_playbook, updated_playbook) -> None:
+        """Keep an existing owner-saved strategy file synced when a shared/idle study is attached."""
+        if getattr(updated_playbook, "study_withheld", False):
+            return
+        identity = getattr(updated_playbook, "identity", "")
+        saved_path = self._saved_strategy_path(identity) if identity else None
+        if getattr(prior_playbook, "saved_strategy_sha256", "") or (
+            saved_path is not None and saved_path.is_file()
+        ):
+            self.save_deck_strategy(updated_playbook)
+
+    def _attach_study_with_idle_cancel(
+        self,
+        playbook,
+        game_state: dict,
+        identity: str,
+        cancel_event: threading.Event,
+        *,
+        study_client=None,
+        backend=None,
+        build_missing: bool = False,
+        in_match=None,
+    ):
+        """Attach a shared/built study while registering ``cancel_event`` for match-boundary aborts."""
+        with self._deck_analysis_lock:
+            self._playbook_cancels[identity] = cancel_event
+            self._playbook_cancel_modes[identity] = "idle"
+        try:
+            return self.attach_shared_study(
+                playbook,
+                game_state,
+                study_client=study_client,
+                backend=backend,
+                build_missing=build_missing,
+                cancel=cancel_event,
+                in_match=in_match,
+            )
+        finally:
+            with self._deck_analysis_lock:
+                if self._playbook_cancels.get(identity) is cancel_event:
+                    del self._playbook_cancels[identity]
+                    self._playbook_cancel_modes.pop(identity, None)
+
+    def _ensure_cached_study(
+        self,
+        playbook,
+        game_state: dict,
+        identity: str,
+        be: Any,
+        cancel_event: threading.Event,
+        wanted,
+        *,
+        study_client=None,
+        build_full_study: bool = False,
+        in_match=None,
+    ) -> tuple[Any, bool]:
+        """Upgrade a cached legacy playbook via fast server lookup or single-flight idle study build."""
+        if not self._playbook_needs_study(
+            playbook, study_client=study_client, build_full_study=build_full_study
+        ):
+            return playbook, False
+        if not wanted():
+            if build_full_study:
+                raise ValueError("Deck preparation paused for active play")
+            return playbook, False
+        playbook = self._attach_study_with_idle_cancel(
+            playbook,
+            game_state,
+            identity,
+            cancel_event,
+            study_client=study_client,
+            backend=be,
+            build_missing=False,
+            in_match=in_match,
+        )
+        if (
+            not self._playbook_needs_study(
+                playbook, study_client=study_client, build_full_study=build_full_study
+            )
+            or not build_full_study
+        ):
+            return playbook, False
+        if not wanted():
+            raise ValueError("Deck preparation paused for active play")
+        run, running = self._claim_playbook_run(identity)
+        if running is not None:
+            running.wait(self._PLAYBOOK_MODEL_WAIT_S + 2 * 300.0)
+            if not wanted():
+                raise ValueError("Deck preparation paused for active play")
+            refreshed = self._cached_playbook(identity, game_state, modes=("idle",))
+            if refreshed is not None:
+                playbook = refreshed
+            if self._playbook_needs_study(
+                playbook, study_client=study_client, build_full_study=build_full_study
+            ):
+                raise ValueError("The concurrent analysis of this deck produced no playbook")
+            return playbook, False
+        try:
+            refreshed = self._cached_playbook(identity, game_state, modes=("idle",))
+            if refreshed is not None:
+                playbook = refreshed
+            if not self._playbook_needs_study(
+                playbook, study_client=study_client, build_full_study=build_full_study
+            ):
+                return playbook, False
+            if not wanted():
+                raise ValueError("Deck preparation paused for active play")
+            updated = self._attach_study_with_idle_cancel(
+                playbook,
+                game_state,
+                identity,
+                cancel_event,
+                study_client=study_client,
+                backend=be,
+                build_missing=True,
+                in_match=in_match,
+            )
+            return updated, True
+        finally:
+            self._finish_playbook_run(identity, run)
+
     def prepare_playbook(
         self,
         game_state: dict,
@@ -914,34 +1096,63 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         if not identity:
             raise ValueError("The deck list is empty or unknown")
         be = backend or self._backend
-        playbook = None if refresh else self._cached_playbook(identity, game_state, modes=("idle",))
-        if playbook is not None:
-            if (study_client is not None or build_full_study) and (
-                "study" not in playbook.data or "study_chapters" not in playbook.data
-            ):
-                playbook = self.attach_shared_study(
-                    playbook,
-                    game_state,
-                    study_client=study_client,
-                    backend=be,
-                    build_missing=build_full_study,
-                    cancel=cancel,
-                )
-            if progress:
-                progress("cache")
-            return playbook
+        cancel_event = cancel or threading.Event()
+        if study_client is not None:
+            study_client = _MemoStudyClient.wrap(study_client)
+        elif build_full_study:
+            from arenamcp.deck_study import DeckStudyClient
+
+            study_client = _MemoStudyClient.wrap(DeckStudyClient())
 
         def wanted():
+            return not cancel_event.is_set() and not (in_match and in_match())
+
+        def wanted_for_build():
+            # Keep checking ``cancel`` (not ``cancel_event``): ``_build_playbook``
+            # observes ``cancel_event`` itself and must raise "cancelled" when it fires
+            # mid-build (tests/test_deck_analysis_cancel.py:42).
             return not (cancel and cancel.is_set()) and not (in_match and in_match())
+
+        playbook = None if refresh else self._cached_playbook(identity, game_state, modes=("idle",))
+        if playbook is not None:
+            playbook, built = self._ensure_cached_study(
+                playbook,
+                game_state,
+                identity,
+                be,
+                cancel_event,
+                wanted,
+                study_client=study_client,
+                build_full_study=build_full_study,
+                in_match=in_match,
+            )
+            if progress:
+                progress("done" if built else "cache")
+            return playbook
 
         if not wanted():
             raise ValueError("Deck preparation paused for active play")
         run, running = self._claim_playbook_run(identity)
         if running is not None:
             running.wait(self._PLAYBOOK_MODEL_WAIT_S + 2 * 300.0)
+            if not wanted():
+                raise ValueError("Deck preparation paused for active play")
             playbook = self._cached_playbook(identity, game_state, modes=("idle",))
             if playbook is None:
                 raise ValueError("The concurrent analysis of this deck produced no playbook")
+            playbook, built = self._ensure_cached_study(
+                playbook,
+                game_state,
+                identity,
+                be,
+                cancel_event,
+                wanted,
+                study_client=study_client,
+                build_full_study=build_full_study,
+                in_match=in_match,
+            )
+            if progress:
+                progress("done" if built else "cache")
             return playbook
         try:
             playbook = self._build_playbook(
@@ -949,23 +1160,33 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                 be,
                 identity,
                 -1,
-                wanted=wanted,
+                wanted=wanted_for_build,
                 progress=progress,
-                cancel=cancel,
+                cancel=cancel_event,
                 outside_match=True,
             )
+            if not wanted():
+                raise ValueError("Deck preparation paused for active play")
+            base_playbook = playbook
+            attached_stored = False
             if study_client is not None or build_full_study:
-                playbook = self.attach_shared_study(
-                    playbook,
+                playbook = self._attach_study_with_idle_cancel(
+                    base_playbook,
                     game_state,
+                    identity,
+                    cancel_event,
                     study_client=study_client,
                     backend=be,
                     build_missing=build_full_study,
-                    cancel=cancel,
+                    in_match=in_match,
                 )
-            if not wanted():
-                raise ValueError("Deck preparation paused for active play")
-            self._store_playbook(playbook, mode="idle")
+                if not wanted():
+                    raise ValueError("Deck preparation paused for active play")
+                attached_stored = bool(
+                    playbook is not base_playbook and not getattr(playbook, "study_withheld", False)
+                )
+            if not attached_stored and not getattr(playbook, "study_withheld", False):
+                self._store_playbook(playbook, mode="idle")
             if progress:
                 progress("done")
             return playbook
@@ -981,6 +1202,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         backend=None,
         build_missing: bool = False,
         cancel=None,
+        in_match=None,
     ):
         """Attach a validated server-cached (or freshly built) full G2 study onto ``playbook``."""
         from collections import Counter
@@ -994,6 +1216,14 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             validate_study_chapters,
         )
 
+        def _cancelled() -> bool:
+            return bool((cancel is not None and cancel.is_set()) or (in_match is not None and in_match()))
+
+        if _cancelled():
+            if build_missing:
+                raise ValueError("Deck preparation paused for active play")
+            return playbook
+
         client = study_client or DeckStudyClient()
         counts = Counter(
             gid for gid in (game_state.get("deck_cards") or []) if isinstance(gid, int) and gid > 4
@@ -1002,38 +1232,79 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             dhash = deck_study_hash(playbook.catalog, playbook.commanders, counts=dict(counts))
         except Exception:
             return playbook
+        if _cancelled():
+            if build_missing:
+                raise ValueError("Deck preparation paused for active play")
+            return playbook
         hit = client.fetch_study(dhash, version=STUDY_VERSION)
+        if _cancelled():
+            if build_missing:
+                raise ValueError("Deck preparation paused for active play")
+            return playbook
         if (
             isinstance(hit, dict)
             and isinstance(hit.get("study"), dict)
             and isinstance(hit.get("chapters"), dict)
         ):
+            updated = None
             try:
                 validate_study(hit["study"], playbook.catalog)
                 chapters = hit["chapters"]
                 validate_study_chapters(chapters, playbook.catalog)
                 updated = playbook.with_current_study(hit["study"], chapters)
-                if not updated.study_withheld:
-                    self._store_playbook(updated, mode="idle")
-                return updated
             except Exception as exc:
                 logger.info("Shared deck study invalid for %s: %s", dhash[:12], exc)
+            if updated is not None:
+                if _cancelled():
+                    if build_missing:
+                        raise ValueError("Deck preparation paused for active play")
+                    return playbook
+                self._record_study_attachment(playbook, updated, dhash)
+                return updated
         if not build_missing:
             return playbook
+        if _cancelled():
+            raise ValueError("Deck preparation paused for active play")
         be = backend or self._backend
-        result = build_deck_study(
-            playbook.catalog,
-            playbook.commanders,
-            be,
-            format_name=str(game_state.get("format_name") or ""),
-            deck_counts=dict(counts),
-            study_client=client,
-            cancel_check=(lambda: bool(cancel and cancel.is_set())),
-        )
+        try:
+            result = build_deck_study(
+                playbook.catalog,
+                playbook.commanders,
+                be,
+                format_name=str(game_state.get("format_name") or ""),
+                deck_counts=dict(counts),
+                study_client=client,
+                cancel_check=_cancelled,
+            )
+        except ValueError as exc:
+            if _cancelled():
+                raise ValueError("Deck preparation paused for active play") from exc
+            raise
+        if _cancelled():
+            raise ValueError("Deck preparation paused for active play")
         updated = playbook.with_current_study(result.study, result.chapters)
-        if not updated.study_withheld:
-            self._store_playbook(updated, mode="idle")
+        if _cancelled():
+            raise ValueError("Deck preparation paused for active play")
+        self._record_study_attachment(playbook, updated, dhash)
         return updated
+
+    def _record_study_attachment(self, prior_playbook, updated, dhash: str) -> None:
+        ident = getattr(updated, "identity", "") or getattr(prior_playbook, "identity", "")
+        if not getattr(updated, "study_withheld", False):
+            if ident:
+                with self._deck_analysis_lock:
+                    self._study_withheld_identities.discard(ident)
+            self._store_playbook(updated, mode="idle")
+            self._refresh_saved_strategy_if_present(prior_playbook, updated)
+            return
+        if ident:
+            with self._deck_analysis_lock:
+                self._study_withheld_identities.add(ident)
+        logger.warning(
+            "Deck study withheld for %s (native print source or schema validation mismatch); "
+            "skipping cache write",
+            dhash[:12],
+        )
 
     def _build_playbook(
         self,

@@ -104,6 +104,35 @@ def _faces(card):
     return faces
 
 
+_BASIC_LAND_MANA = {
+    "Plains": "W",
+    "Island": "U",
+    "Swamp": "B",
+    "Mountain": "R",
+    "Forest": "G",
+}
+
+
+def _basic_land_reminder_matches(printed: dict[str, Any], saved: dict[str, Any]) -> bool:
+    """Allow intrinsic Scryfall/MTGJSON basic-land mana reminder text over Arena's empty text."""
+    if printed.get("oracle_text") != "":
+        return False
+    type_line = str(printed.get("type_line") or "")
+    parts = re.split(r"\s+[—-]\s+", type_line, maxsplit=1)
+    head = set(parts[0].split())
+    if "Basic" not in head or "Land" not in head:
+        return False
+    saved_text = str(saved.get("oracle_text") or "").strip()
+    if len(parts) == 2:
+        subtypes = [tok for tok in parts[1].split() if tok in _BASIC_LAND_MANA]
+        if len(subtypes) == 1:
+            pip = _BASIC_LAND_MANA[subtypes[0]]
+            return saved_text in (f"({{T}}: Add {{{pip}}}.)", f"({{oT}}: Add {{{pip}}}.)")
+    if str(printed.get("name") or "").strip() == "Wastes":
+        return saved_text in ("{T}: Add {C}.", "({T}: Add {C}.)", "{oT}: Add {C}.", "({oT}: Add {C}.)")
+    return False
+
+
 def current_study_sources_match(catalog, *, allow_legacy_face_projection=False):
     """Read exact prints from the initialized Arena database without starting a lookup service."""
     from arenamcp.card_db import MTGADatabaseAdapter, initialized_card_database
@@ -137,6 +166,8 @@ def current_study_sources_match(catalog, *, allow_legacy_face_projection=False):
             if ids != printed["linked_face_ids"] or any(type(i) is not int for i in ids):
                 return False
             saved = {**saved, "linked_face_ids": ids}
+        if _basic_land_reminder_matches(printed, saved):
+            printed = {**printed, "oracle_text": saved["oracle_text"]}
         if study_source(printed) != study_source(saved):
             return False
     return True

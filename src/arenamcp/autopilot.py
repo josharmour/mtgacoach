@@ -5203,6 +5203,19 @@ class AutopilotEngine(
     _POST_CAST_PRIORITY_POLL_S = 1.0
     _POST_CAST_PRIORITY_POLL_INTERVAL_S = 0.25
     _MAX_POST_CAST_PRIORITY_HOPS = 1
+    _MAX_MECHANICAL_POST_CAST_HOPS = 3
+    _MECHANICAL_SUBSTEP_REQUEST_TYPES = frozenset(
+        {
+            "SelectTargets",
+            "CastingTimeOptions",
+            "Search",
+            "SearchFromGroups",
+            "SelectFromGroups",
+            "SelectN",
+            "OptionalAction",
+            "Group",
+        }
+    )
 
     # Set by the coaching runtime to BridgeDecisionPoller.watch_requests:
     # listener(response) runs on the bridge prefetch thread whenever the
@@ -5711,6 +5724,22 @@ class AutopilotEngine(
             return True
         if self._wait_for_search_identities(decision, game_state):
             return True
+        if depth > self._MAX_POST_CAST_PRIORITY_HOPS:
+            still_mechanical = (
+                decision.request_type in self._MECHANICAL_SUBSTEP_REQUEST_TYPES
+                or self._is_sole_pass_decision(decision)
+                or self._is_mechanical_own_stack_pass(decision, game_state)
+            )
+            if not still_mechanical:
+                logger.warning(
+                    "post-cast priority: request drifted to non-mechanical %s at hop %s/%s; "
+                    "yielding to the watchdog",
+                    decision.request_type,
+                    depth,
+                    self._MAX_MECHANICAL_POST_CAST_HOPS,
+                )
+                self._state = AutopilotState.IDLE
+                return True
         if decision.request_type == "ActionsAvailable":
             from arenamcp.play_safety import filter_play_options
 
@@ -6185,6 +6214,106 @@ class AutopilotEngine(
                 return True
         return False
 
+    @staticmethod
+    def _is_sole_pass_decision(decision: Any) -> bool:
+        """True when an ActionsAvailable window offers only a non-cancellable Pass action."""
+        options = getattr(decision, "options", ()) or ()
+        if (
+            getattr(decision, "request_type", None) != "ActionsAvailable"
+            or len(options) != 1
+            or options[0].option_id != "pass"
+            or getattr(decision, "can_pass", False) is not True
+            or getattr(decision, "can_cancel", False) is not False
+        ):
+            return False
+        try:
+            return bool(decision.selection_is_valid(["pass"]))
+        except Exception:
+            return False
+
+    def _is_mechanical_own_stack_pass(self, decision: Any, state: dict[str, Any]) -> bool:
+        """Side-effect-free check matching NN3 own-stack continuation for post-cast priority."""
+        if (
+            getattr(decision, "request_type", None) != "ActionsAvailable"
+            or getattr(decision, "can_pass", False) is not True
+            or getattr(decision, "can_cancel", False) is not False
+            or decision.find("pass") is None
+            or not isinstance(state, dict)
+            or not state.get("stack")
+        ):
+            return False
+        try:
+            from arenamcp.action_planner import _lethal_this_turn, own_stack_only
+            from arenamcp.decision_memory import _TURN_STEPS, lethal_reach, turn_window
+            from arenamcp.play_safety import (
+                aura_waits_for_creature,
+                find_source,
+                own_stack_reserved_option,
+            )
+
+            if not own_stack_only(decision, state):
+                return False
+            combat_windows = {
+                _TURN_STEPS.index(step)
+                for step in (
+                    "begincombat",
+                    "declareattack",
+                    "declareblock",
+                    "firststrikedamage",
+                    "combatdamage",
+                    "endcombat",
+                )
+            }
+            window = turn_window(state)
+            phase = str((state.get("turn") or {}).get("phase") or "").lower()
+            if (
+                (window is not None and window in combat_windows)
+                or "combat" in phase
+                or any(
+                    isinstance(card, dict) and (card.get("is_attacking") or card.get("is_blocking"))
+                    for card in state.get("battlefield") or []
+                )
+            ):
+                return False
+            if _lethal_this_turn(state) is True or lethal_reach(decision, state) is not None:
+                return False
+            payable = [o for o in decision.options if o.option_id != "pass" and o.payable is not False]
+            if not payable:
+                return True
+            planner = getattr(self, "_planner", None)
+            step_source = getattr(planner, "_plan_step_source", None) if planner is not None else None
+            raw_step = step_source(state) if callable(step_source) else None
+            is_real_step_source = callable(step_source) and (raw_step is None or isinstance(raw_step, dict))
+            plan_step = raw_step if isinstance(raw_step, dict) else None
+            plan_text_fn = getattr(planner, "_plan_text_now", None) if planner is not None else None
+            raw_text = (
+                plan_text_fn(state)
+                if callable(plan_text_fn)
+                else (getattr(planner, "_game_plan", "") if planner is not None else "")
+            )
+            plan_text = raw_text if isinstance(raw_text, str) else ""
+            for option in payable:
+                card = find_source(state, option.meta or {})
+                why = own_stack_reserved_option(
+                    option,
+                    card,
+                    state,
+                    plan_step=plan_step,
+                    plan_text=plan_text,
+                    step_source_active=is_real_step_source,
+                )
+                if (
+                    not why
+                    and (option.meta or {}).get("actionType") == "ActionType_Cast"
+                    and aura_waits_for_creature(state, card)
+                ):
+                    why = "waiting for our creature to resolve before casting its Aura"
+                if not why:
+                    return False
+            return True
+        except Exception:
+            return False
+
     def _surface_post_cast_priority(
         self,
         decision: Any,
@@ -6247,14 +6376,34 @@ class AutopilotEngine(
                 "post-cast priority: new %s request surfaced after our shouldStop play",
                 live.request_type,
             )
-            if depth + 1 > self._MAX_POST_CAST_PRIORITY_HOPS:
-                logger.warning(
-                    "post-cast priority: hop limit (%s) reached; leaving %s to the watchdog",
-                    self._MAX_POST_CAST_PRIORITY_HOPS,
-                    live.request_type,
+            state: dict[str, Any] | None = None
+            beyond_primary_limit = depth + 1 > self._MAX_POST_CAST_PRIORITY_HOPS
+            if beyond_primary_limit:
+                if depth + 1 > self._MAX_MECHANICAL_POST_CAST_HOPS:
+                    logger.warning(
+                        "post-cast priority: mechanical hop limit (%s/%s) reached; leaving %s to the watchdog",
+                        depth + 1,
+                        self._MAX_MECHANICAL_POST_CAST_HOPS,
+                        live.request_type,
+                    )
+                    return
+                substep = live.request_type in self._MECHANICAL_SUBSTEP_REQUEST_TYPES
+                sole_pass = self._is_sole_pass_decision(live)
+                stack_pass_candidate = (
+                    live.request_type == "ActionsAvailable"
+                    and live.can_pass is True
+                    and live.can_cancel is False
+                    and live.find("pass") is not None
                 )
-                return
-            self._notify("AUTOPILOT", "Holding priority — deciding on the next play.")
+                if not (substep or sole_pass or stack_pass_candidate):
+                    logger.warning(
+                        "post-cast priority: primary hop limit (%s) reached for non-mechanical %s (hop %s); "
+                        "leaving to the watchdog",
+                        self._MAX_POST_CAST_PRIORITY_HOPS,
+                        live.request_type,
+                        depth + 1,
+                    )
+                    return
             # Decide on a fresh snapshot: the request tracker settles the
             # previous submission against the game window (turn/phase/stack),
             # and a stale pre-cast board would read the follow-up request as
@@ -6269,9 +6418,36 @@ class AutopilotEngine(
                 # not plan a new request against the pre-cast snapshot.
                 logger.warning("post-cast priority: fresh snapshot unavailable; yielding for a fresh poll")
                 return
+            if beyond_primary_limit and not (substep or sole_pass):
+                caught_up = self._await_log_catch_up(latest, state)
+                if caught_up is None:
+                    logger.warning(
+                        "post-cast priority: log catch-up unavailable before mechanical stack check; "
+                        "yielding to the watchdog"
+                    )
+                    return
+                state = dict(caught_up)
             enrich_snapshot_from_pending_response(
                 state, latest, bridge_connected=getattr(self._gre_bridge, "connected", False)
             )
+            if beyond_primary_limit:
+                if not (substep or sole_pass) and not self._is_mechanical_own_stack_pass(live, state):
+                    logger.warning(
+                        "post-cast priority: primary hop limit (%s) reached for non-mechanical %s (hop %s); "
+                        "leaving to the watchdog",
+                        self._MAX_POST_CAST_PRIORITY_HOPS,
+                        live.request_type,
+                        depth + 1,
+                    )
+                    return
+                logger.info(
+                    "post-cast priority: continuing mechanical %s at hop %s/%s",
+                    live.request_type,
+                    depth + 1,
+                    self._MAX_MECHANICAL_POST_CAST_HOPS,
+                )
+            else:
+                self._notify("AUTOPILOT", "Holding priority — deciding on the next play.")
             self._progress_game_state = state
             try:
                 self._try_typed_decision_path(state, trigger, depth=depth + 1)

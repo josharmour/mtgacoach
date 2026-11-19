@@ -9,12 +9,72 @@ start with the strategy already on disk.
 
 from __future__ import annotations
 
+import inspect
 import logging
 import threading
 import time
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+def _playbook_has_study(playbook: Any) -> bool:
+    """Return True iff ``playbook`` carries a validated, unwithheld G2 study and chapters."""
+    if playbook is None or getattr(playbook, "study_withheld", False):
+        return False
+    data = getattr(playbook, "data", None)
+    if not isinstance(data, dict):
+        return False
+    return isinstance(data.get("study"), dict) and isinstance(data.get("study_chapters"), dict)
+
+
+def _coach_supports_study(coach: Any) -> bool:
+    """True when ``coach.prepare_playbook`` accepts G2 ``study_client`` / ``build_full_study``."""
+    prep = getattr(coach, "prepare_playbook", None)
+    if not callable(prep):
+        return False
+    try:
+        params = list(inspect.signature(prep).parameters.values())
+    except (TypeError, ValueError):
+        return False
+    names = {param.name for param in params}
+    has_varkw = any(param.kind is inspect.Parameter.VAR_KEYWORD for param in params)
+    return has_varkw or {"study_client", "build_full_study"} <= names
+
+
+def _call_prepare_playbook(
+    coach: Any,
+    state: dict[str, Any],
+    *,
+    backend: Any = None,
+    refresh: bool = False,
+    progress: Any = None,
+    cancel: threading.Event | None = None,
+    in_match: Any = None,
+    study_client: Any = None,
+    build_full_study: bool = False,
+) -> Any:
+    kwargs: dict[str, Any] = {
+        "backend": backend,
+        "refresh": refresh,
+        "progress": progress,
+        "cancel": cancel,
+        "in_match": in_match,
+    }
+    if _coach_supports_study(coach):
+        kwargs["study_client"] = study_client
+        kwargs["build_full_study"] = build_full_study
+        try:
+            return coach.prepare_playbook(state, **kwargs)
+        except TypeError as error:
+            msg = str(error)
+            if "unexpected keyword argument" not in msg or not (
+                "study_client" in msg or "build_full_study" in msg
+            ):
+                raise
+            kwargs.pop("study_client", None)
+            kwargs.pop("build_full_study", None)
+    return coach.prepare_playbook(state, **kwargs)
 
 
 class _DeckLibraryMixin:
@@ -173,6 +233,128 @@ class _DeckLibraryMixin:
 
         return create_backend(self._backend_name, model=self.model_name)
 
+    def _deck_study_client(self) -> Any:
+        client = getattr(self, "_study_client", None)
+        if client is not None:
+            return client
+        from arenamcp.deck_study import DeckStudyClient
+
+        return DeckStudyClient()
+
+    def _has_complete_idle_playbook(self, record: Any) -> bool:
+        """True when ``record`` already has a current idle playbook (including G2 study if supported)."""
+        coach = getattr(self, "_coach", None)
+        cached = getattr(coach, "_cached_playbook", None)
+        if callable(cached) and hasattr(record, "identity") and hasattr(record, "game_state"):
+            try:
+                identity = record.identity()
+                gs = record.game_state()
+                if not identity:
+                    return False
+                withheld_ids = getattr(coach, "_study_withheld_identities", None)
+                if isinstance(withheld_ids, set) and identity in withheld_ids:
+                    return True
+                try:
+                    playbook = cached(identity, gs, modes=("idle",))
+                except TypeError:
+                    playbook = cached(identity, gs)
+                if playbook is None:
+                    return False
+                if not _coach_supports_study(coach):
+                    return True
+                return _playbook_has_study(playbook) or bool(getattr(playbook, "study_withheld", False))
+            except Exception as error:
+                logger.debug(
+                    "Deck library: idle cache read failed for %s: %s",
+                    getattr(record, "name", "?"),
+                    error,
+                )
+                return False
+        return self.deck_strategy_status(record).get("status") == "ready"
+
+    def _prepare_playbook_with_study(
+        self,
+        state: dict[str, Any],
+        *,
+        cancel: threading.Event | None = None,
+        refresh: bool = False,
+        progress: Any = None,
+    ) -> Any:
+        """Ensure an idle playbook + G2 study exists, checking shared cache before creating an LLM backend."""
+        if (cancel is not None and cancel.is_set()) or self._deck_library_in_match():
+            return None
+        coach = getattr(self, "_coach", None)
+        if coach is None or not callable(getattr(coach, "prepare_playbook", None)):
+            return None
+
+        supports_study = _coach_supports_study(coach)
+        client = None
+        if supports_study:
+            from arenamcp.coach import _MemoStudyClient
+
+            client = _MemoStudyClient.wrap(self._deck_study_client())
+        cached_fn = getattr(coach, "_cached_playbook", None)
+
+        if not refresh and callable(cached_fn):
+            from arenamcp.deck_strategy import deck_identity
+
+            identity = deck_identity(state)
+            cached = None
+            if identity:
+                try:
+                    try:
+                        cached = cached_fn(identity, state, modes=("idle",))
+                    except TypeError:
+                        cached = cached_fn(identity, state)
+                except Exception as error:
+                    logger.debug("Deck library: idle cache read failed: %s", error)
+                    cached = None
+            if cached is not None:
+                if (
+                    _playbook_has_study(cached)
+                    or getattr(cached, "study_withheld", False)
+                    or not supports_study
+                ):
+                    if callable(progress):
+                        progress("cache")
+                    return cached
+                result = _call_prepare_playbook(
+                    coach,
+                    state,
+                    backend=None,
+                    refresh=False,
+                    progress=None,
+                    cancel=cancel,
+                    in_match=self._deck_library_in_match,
+                    study_client=client,
+                    build_full_study=False,
+                )
+                if _playbook_has_study(result) or getattr(result, "study_withheld", False):
+                    if callable(progress):
+                        progress("cache")
+                    return result
+
+        if (cancel is not None and cancel.is_set()) or self._deck_library_in_match():
+            return None
+
+        backend = self._deck_library_backend()
+        try:
+            return _call_prepare_playbook(
+                coach,
+                state,
+                backend=backend,
+                refresh=refresh,
+                progress=progress,
+                cancel=cancel,
+                in_match=self._deck_library_in_match,
+                study_client=client,
+                build_full_study=supports_study,
+            )
+        finally:
+            close = getattr(backend, "close", None)
+            if callable(close):
+                close()
+
     def _prepare_selected_deck(self, cancel: threading.Event) -> None:
         """Warm the exact deck selected for Grind, Recent Match or the last queue request."""
         from arenamcp.server import _queue_selection_from_log, get_last_queue_selection
@@ -200,21 +382,19 @@ class _DeckLibraryMixin:
             return
         state = record.game_state()
         self._deck_prep_identity = record.identity()
-        if (
-            self._coach._cached_playbook(self._deck_prep_identity, state, modes=("idle",)) is not None
-            or cancel.is_set()
-        ):
+        if self._has_complete_idle_playbook(record) or cancel.is_set():
             return
-        backend = self._deck_library_backend()
         try:
-            self._coach.prepare_playbook(
-                state, backend=backend, cancel=cancel, in_match=self._deck_library_in_match
-            )
-            logger.info("Pre-match playbook ready for %s", record.name)
-        finally:
-            close = getattr(backend, "close", None)
-            if callable(close):
-                close()
+            playbook = self._prepare_playbook_with_study(state, cancel=cancel)
+        except Exception:
+            if cancel.is_set() or self._deck_library_in_match():
+                return
+            raise
+        if playbook is not None and not cancel.is_set() and not self._deck_library_in_match():
+            if getattr(playbook, "study_withheld", False):
+                logger.info("Pre-match playbook built for %s (study withheld)", record.name)
+            else:
+                logger.info("Pre-match playbook ready for %s", record.name)
 
     def _build_missing_playbooks(self, cancel: threading.Event) -> None:
         """Idle sweep (Q3 2026-11): one thinking playbook per deck without one.
@@ -238,22 +418,23 @@ class _DeckLibraryMixin:
                 return
             state = record.game_state()
             identity = record.identity()
-            if not identity or self._coach._cached_playbook(identity, state, modes=("idle",)) is not None:
+            if not identity or self._has_complete_idle_playbook(record):
                 continue
-            backend = self._deck_library_backend()
             try:
-                self._coach.prepare_playbook(
-                    state, backend=backend, cancel=cancel, in_match=self._deck_library_in_match
-                )
-                logger.info("Idle playbook ready for %s", record.name)
+                playbook = self._prepare_playbook_with_study(state, cancel=cancel)
+                if playbook is None:
+                    if cancel.is_set() or self._deck_library_in_match():
+                        return
+                    continue
+                if not cancel.is_set() and not self._deck_library_in_match():
+                    if getattr(playbook, "study_withheld", False):
+                        logger.info("Idle playbook built for %s (study withheld)", record.name)
+                    else:
+                        logger.info("Idle playbook ready for %s", record.name)
             except Exception as error:
                 if cancel.is_set() or self._deck_library_in_match():
                     return
                 logger.warning("Idle playbook for %s failed: %s", record.name, error)
-            finally:
-                close = getattr(backend, "close", None)
-                if callable(close):
-                    close()
 
     def _poll_deck_preparation(self, idle: bool, state: dict | None = None) -> None:
         """Run at most one idle lookup off the coaching thread; live play takes precedence."""
@@ -263,7 +444,11 @@ class _DeckLibraryMixin:
             cancel_builds("match in progress")
         if not idle or not self._auto_deck_strategy:
             cancel = getattr(self, "_deck_prep_cancel", None)
-            if cancel is not None and not cancel.is_set() and worker is not None and worker.is_alive():
+            if (
+                cancel is not None
+                and not cancel.is_set()
+                and (not idle or (worker is not None and worker.is_alive()))
+            ):
                 # A match starting stops the idle build at once, even for the
                 # same deck (Q3 rework 2026-11): a thinking build can run for
                 # minutes, and live play must never wait on it. The match
@@ -302,7 +487,7 @@ class _DeckLibraryMixin:
                 self._prepare_selected_deck(cancel)
                 self._build_missing_playbooks(cancel)
             except Exception as error:
-                if not cancel.is_set():
+                if not cancel.is_set() and not self._deck_library_in_match():
                     logger.warning("Pre-match playbook unavailable: %s", error)
 
         self._deck_prep_thread = threading.Thread(target=prepare, name="pre-match-playbook", daemon=True)
@@ -336,13 +521,13 @@ class _DeckLibraryMixin:
             )
 
         try:
-            playbook = coach.prepare_playbook(
+            playbook = self._prepare_playbook_with_study(
                 record.game_state(),
-                backend=self._deck_library_backend(),
                 refresh=refresh,
                 progress=progress,
-                in_match=self._deck_library_in_match,
             )
+            if playbook is None:
+                raise ValueError("Deck preparation paused for active play")
             coach.save_deck_strategy(playbook)
             payload = {
                 "deck_id": record.deck_id,
@@ -570,26 +755,7 @@ class _DeckLibraryMixin:
                 records.sort(key=lambda r: str(getattr(r, "last_played", None) or ""), reverse=True)
 
                 def _has_idle_playbook(rec: Any) -> bool:
-                    coach = getattr(self, "_coach", None)
-                    cached = getattr(coach, "_cached_playbook", None)
-                    if callable(cached) and hasattr(rec, "identity") and hasattr(rec, "game_state"):
-                        try:
-                            identity = rec.identity()
-                            gs = rec.game_state()
-                            if not identity:
-                                return False
-                            try:
-                                return cached(identity, gs, modes=("idle",)) is not None
-                            except TypeError:
-                                return cached(identity, gs) is not None
-                        except Exception as error:
-                            logger.debug(
-                                "Deck library: idle cache read failed for %s: %s",
-                                getattr(rec, "name", "?"),
-                                error,
-                            )
-                            return False
-                    return self.deck_strategy_status(rec).get("status") == "ready"
+                    return self._has_complete_idle_playbook(rec)
 
                 for record in records:
                     if _has_idle_playbook(record):

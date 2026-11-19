@@ -71,7 +71,9 @@ from typing import Any, Protocol
 
 from arenamcp.ability_synthesizer import (
     AddMana,
+    Damage,
     Exile,
+    GainLife,
     UnknownEffect,
     cast_time_entries,
     record_cast_text,
@@ -121,6 +123,7 @@ from arenamcp.board_assessment import (
 from arenamcp.board_model import BoardModel, _regular_damage_part, cast_bans, spell_banned
 from arenamcp.card_facts.client import facts_for, hash_for_card
 from arenamcp.card_facts.schema import card_facts_from_dict
+from arenamcp.card_facts.search_adapter import canonicalize_trigger, search_record
 from arenamcp.card_facts.source_identity import single_face_source
 from arenamcp.cast_growth_risk import grown, per_cast_growth
 from arenamcp.cast_triggers import cast_pumps, spell_kinds
@@ -1543,6 +1546,7 @@ class Variant:
     # imprint), bound to the cards actually paid in ``_apply_casts`` (#A1 round 5).
     imprint_rock: bool = False
     payment: tuple[int, ...] = ()  # exact hand indexes exiled; chosen before set evaluation
+    rock_produces: frozenset[str] = frozenset()  # explicit rock colours when supplied by a record
 
 
 @dataclass(eq=False)
@@ -2080,8 +2084,6 @@ def _known_record(name: str, oracle_text: str, type_line: str, mana_cost: str) -
         return None
     if any(isinstance(entry.effect, UnknownEffect) for entry in record.effects):
         return None
-    from arenamcp.card_facts.search_adapter import search_record
-
     record = search_record(record, card)
     _KNOWN_RECORDS[key] = (payload, record)
     return record
@@ -2140,23 +2142,36 @@ _HAND_CONSUMPTION_RE = re.compile(
     r"(?P<color>white|blue|black|red|green)?\s*cards? from your hand\.?",
     re.IGNORECASE,
 )
+_ALT_CAST_EXILE_RE = re.compile(
+    r"you may exile (?P<rest>.+?) rather than pay this spell's mana cost\.?",
+    re.IGNORECASE,
+)
 _HAND_COUNT_WORDS = {"a": 1, "an": 1, "one": 1, "two": 2, "three": 3}
 _PIP_COLORS = {"W": "white", "U": "blue", "B": "black", "R": "red", "G": "green"}
 
 
-def _hand_consumption(text: str, *, exile_target: bool = False) -> tuple[int, str, frozenset] | None:
+def _hand_consumption(
+    text: str, *, exile_target: bool = False, mode_name: str = ""
+) -> tuple[int, str, frozenset] | None:
     """A cost or effect that consumes cards from your hand ("Exile a red card from your
-    hand.", "exile a nonartifact, nonland card from your hand"): ``(count, colour,
-    restrictions)``. None when the sentence mentions hand cards but cannot be parsed —
+    hand.", "Evoke—Exile a red card from your hand.", "You may exile a red card from your
+    hand rather than pay this spell's mana cost."): ``(count, colour, restrictions)``.
+    None when the sentence mentions hand cards or conditions that cannot be parsed —
     the search then stays conservative and offers no variant that would pay it.
     """
-    lowered = (text or "").lower().strip()
+    lowered = " ".join((text or "").lower().split())
     # Only Exile effect targets omit the verb. Alternate costs must explicitly
     # exile; discard/sacrifice/conditional costs have different game semantics.
     if not exile_target:
-        if not lowered.startswith("exile "):
-            return None
-        lowered = lowered[len("exile ") :]
+        if not mode_name or mode_name.strip().lower() == "evoke":
+            lowered = re.sub(r"^evoke\s*[—–-]\s*", "", lowered)
+        if lowered.startswith("exile "):
+            lowered = lowered[len("exile ") :]
+        else:
+            alt = _ALT_CAST_EXILE_RE.fullmatch(lowered)
+            if alt is None:
+                return None
+            lowered = alt.group("rest")
     match = _HAND_CONSUMPTION_RE.fullmatch(lowered)
     if match is None:
         return None
@@ -2191,6 +2206,19 @@ _LANDFALL_MANA_RE = re.compile(
 )
 
 
+def _has_unknown_fields(value: Any) -> bool:
+    """True when ``value`` or any nested dataclass/container retains unknown schema keys."""
+    if getattr(value, "_unknown_fields", None):
+        return True
+    if dataclasses.is_dataclass(value):
+        return any(_has_unknown_fields(getattr(value, field.name)) for field in dataclasses.fields(value))
+    if isinstance(value, (tuple, list)):
+        return any(_has_unknown_fields(item) for item in value)
+    if isinstance(value, dict):
+        return any(_has_unknown_fields(item) for item in value.values())
+    return False
+
+
 def _landfall_mana_card(card: dict | None) -> bool:
     # The current record trigger tag omits its subject. Bind it to complete oracle
     # text, not a substring, until the schema carries the triggering object.
@@ -2209,32 +2237,19 @@ def _event_landfall_mana(record: Any, card: dict) -> bool:
     if record is None or not _landfall_mana_card(card) or len(record.effects) != 1:
         return False
 
-    # New event admission cannot discard preserved future-schema obligations.
-    # Walk every nested dataclass, including body and mana metadata, rather
-    # than checking only the currently consumed effect/cost fields.
-    def unknown_fields(value):
-        if getattr(value, "_unknown_fields", None):
-            return True
-        if dataclasses.is_dataclass(value):
-            return any(unknown_fields(getattr(value, field.name)) for field in dataclasses.fields(value))
-        if isinstance(value, (tuple, list)):
-            return any(unknown_fields(item) for item in value)
-        if isinstance(value, dict):
-            return any(unknown_fields(item) for item in value.values())
-        return False
-
     if (
         record.confidence != "high"
-        or unknown_fields(record)
+        or _has_unknown_fields(record)
         or record.relationships
         or record.limited
         or record.threat
+        or record.notes
     ):
         return False
     entry = record.effects[0]
     trigger = str(entry.trigger).strip()
     if entry.conditions or not re.fullmatch(
-        r"(?:landfall\s*[—–-]\s*)?whenever a land you control enters(?: the battlefield)?",
+        r"(?:landfall\s*[—–-]\s*)?whenever a land you control enters(?: the battlefield)?(?:\s*\(landfall\))?",
         trigger,
         re.IGNORECASE,
     ):
@@ -2244,7 +2259,11 @@ def _event_landfall_mana(record: Any, card: dict) -> bool:
         return False
     if effect.mana.strip().casefold() not in ("any", "any color", "any colour"):
         return False
-    if record.name != _name(card) or record.mana_cost != str(card.get("mana_cost") or ""):
+    if (
+        record.name != _name(card)
+        or record.mana_cost != str(card.get("mana_cost") or "")
+        or (card.get("type_line") and record.type_line != str(card.get("type_line") or ""))
+    ):
         return False
     if len(record.modes) != 1:
         return False
@@ -2272,6 +2291,243 @@ def _cost_mana_value(mana: str) -> int | None:
     return sum(int(n) if n.isdigit() else 1 for n in re.findall(r"\{([^}]+)\}", upper))
 
 
+_ANY_MANA_PHRASES = frozenset(
+    {
+        "any",
+        "any color",
+        "any colour",
+        "{any}",
+        "one mana of any color",
+        "one mana of any colour",
+    }
+)
+_MANA_PIP_TOKEN_RE = re.compile(r"\{o?([wubrgc])\}", re.IGNORECASE)
+_BASIC_LAND_TYPES_RE = r"(?:plains|island|swamp|mountain|forest)"
+_LAND_MODE_COST_RE = re.compile(
+    rf"^\{{o?t\}}(?:\s*:\s*add [^.]+\.?|\.\s*activate only if you control (?:a|an) {_BASIC_LAND_TYPES_RE}"
+    rf"(?:\s+or\s+(?:a|an) {_BASIC_LAND_TYPES_RE})*\.?)?$",
+    re.IGNORECASE,
+)
+_NONLAND_TAP_MODE_COST_RE = re.compile(r"^\{o?t\}(?:\s*:\s*add [^.]+?\.?)?$", re.IGNORECASE)
+_NONLAND_FORBIDDEN_ORACLE_RE = re.compile(
+    r"\benters(?: the battlefield)? tapped\b|\bspend this mana only\b|\bactivate only\b"
+    r"|\bcan't\b|\bcan’t\b|\bunless\b|\bif\b|\bsacrifice\b|\bpay\b|\blose\b|\bdamage\b"
+    r"|\bwhen\b|\bwhenever\b",
+    re.IGNORECASE,
+)
+_LAND_FORBIDDEN_ORACLE_RE = re.compile(
+    r"\b(?:sacrifice|discard|exile|pay \d+ life|target|draw|seven|counter)\b",
+    re.IGNORECASE,
+)
+_BASIC_LAND_COND_RE = re.compile(
+    rf"^(?:activate only if )?you control (?:a|an) {_BASIC_LAND_TYPES_RE}"
+    rf"(?:\s+or\s+(?:a|an) {_BASIC_LAND_TYPES_RE})*\.?$",
+    re.IGNORECASE,
+)
+_COMMANDER_ID_COND_RE = re.compile(
+    r"^(?:the mana must be of a color in |one mana of any color in )?"
+    r"your commander['’]s color identity\.?$",
+    re.IGNORECASE,
+)
+_KICKER_COST_TEXT_RE = re.compile(
+    r"^kicker\s*(?:[—–-]\s*)?(?:\{o?(?:[0-9]+|[wubrg])\})+(?:\s*\([^)]*\))?\.?$",
+    re.IGNORECASE,
+)
+_CHOOSE_ONE_COND_RE = re.compile(r"^choose one\s*[—–-]\s*(?P<text>.+)$", re.IGNORECASE)
+_COST_REDUCTION_TEXT_RE = re.compile(r"^this spell costs \{[^}]+\} less to cast[^.]*\.$", re.IGNORECASE)
+
+
+def _no_extra_cost(cost: Any) -> bool:
+    return (
+        not cost.tap
+        and cost.sacrifice is None
+        and not cost.life
+        and not cost.discard
+        and not cost.exile_from_graveyard
+    )
+
+
+def _parse_add_mana_colors(mana: str, amount: Any, *, allow_multi: bool = False) -> frozenset[str] | None:
+    if type(amount) is not int or amount <= 0:
+        return None
+    cleaned = " ".join(str(mana or "").strip().split())
+    if not cleaned:
+        return None
+    if cleaned.casefold() in _ANY_MANA_PHRASES:
+        return frozenset("WUBRG") if (allow_multi or amount == 1) else None
+    parts = [p.strip() for p in re.split(r"\s*(?:,|\bor\b)\s*", cleaned, flags=re.IGNORECASE) if p.strip()]
+    if not parts:
+        return None
+    if len(parts) > 1:
+        if amount != 1:
+            return None
+        colors: set[str] = set()
+        for part in parts:
+            match = _MANA_PIP_TOKEN_RE.fullmatch(part)
+            if match is None:
+                return None
+            colors.add(match.group(1).upper())
+        return frozenset(colors)
+    if not re.fullmatch(r"(?:\{o?[wubrgc]\})+", parts[0], re.IGNORECASE):
+        return None
+    tokens = _MANA_PIP_TOKEN_RE.findall(parts[0])
+    if not allow_multi and (amount != 1 or len(tokens) != 1):
+        return None
+    if allow_multi and len(tokens) != amount:
+        return None
+    return frozenset(t.upper() for t in tokens)
+
+
+def _norm_mode_sentence(text: str) -> str:
+    lowered = " ".join(str(text or "").casefold().strip().rstrip(".").split())
+    lowered = re.sub(r"\bdraw a card\b", "draw 1 card", lowered)
+    return lowered
+
+
+def _mana_source_record_semantics(record: Any, card: dict | None) -> dict | None:
+    """Verified tap-only mana creatures/rocks and tap-only mana lands."""
+    if record.confidence != "high":
+        return None
+    type_head = record.type_line.split("—", 1)[0].casefold()
+    head_words = set(re.findall(r"[a-z]+", type_head))
+    is_land = "land" in head_words and "creature" not in head_words
+    if not is_land and record.mana_cost and _cost_mana_value(record.mana_cost) is None:
+        return None
+    if is_land and record.mana_cost:
+        return None
+
+    activate_modes = []
+    cast_modes = []
+    for mode in record.modes:
+        mname = (mode.name or "").strip().casefold()
+        if mname == "activate":
+            activate_modes.append(mode)
+        elif mname == "cast":
+            cast_modes.append(mode)
+        else:
+            return None
+    if not activate_modes or len(cast_modes) > 1:
+        return None
+    if not is_land and len(activate_modes) != 1:
+        return None
+    for cm in cast_modes:
+        if (
+            not cm.stays_on_battlefield
+            or not _no_extra_cost(cm.cost)
+            or cm.cost.mana != record.mana_cost
+            or (cm.cost_text or "").strip() != (record.mana_cost or "").strip()
+        ):
+            return None
+    for am in activate_modes:
+        cost = am.cost
+        if (
+            not am.stays_on_battlefield
+            or not cost.tap
+            or cost.mana
+            or cost.sacrifice is not None
+            or cost.life
+            or cost.discard
+            or cost.exile_from_graveyard
+        ):
+            return None
+        cost_text = " ".join((am.cost_text or "").strip().split())
+        pattern = _LAND_MODE_COST_RE if is_land else _NONLAND_TAP_MODE_COST_RE
+        if not pattern.fullmatch(cost_text):
+            return None
+        if not is_land and re.search(r"\b(?:only|if|spend|sacrifice|pay|discard|exile)\b", cost_text, re.I):
+            return None
+
+    oracle_clean = re.sub(r"<[^>]*>", "", str((card or {}).get("oracle_text") or "")).replace("{oT}", "{T}")
+    if card is not None:
+        if is_land and _LAND_FORBIDDEN_ORACLE_RE.search(oracle_clean):
+            return None
+        if not is_land and _NONLAND_FORBIDDEN_ORACLE_RE.search(oracle_clean):
+            return None
+
+    for prod in record.mana:
+        cond = " ".join(str(prod.condition or "").strip().split())
+        if cond:
+            if not is_land or not (
+                _COMMANDER_ID_COND_RE.fullmatch(cond) or _BASIC_LAND_COND_RE.fullmatch(cond)
+            ):
+                return None
+        m = " ".join(str(prod.mana or "").strip().split())
+        if not m:
+            return None
+        if m.casefold() in _ANY_MANA_PHRASES or m.casefold() == "{any}":
+            continue
+        if is_land:
+            if not (
+                re.fullmatch(r"(?:\{o?[wubrgc]\})+", m, re.IGNORECASE)
+                or _parse_add_mana_colors(m, 1, allow_multi=True) is not None
+            ):
+                return None
+        elif _parse_add_mana_colors(m, 1, allow_multi=False) is None:
+            return None
+
+    colors: set[str] = set()
+    mana_amount = 0
+    pain_damage = 0
+    etb_gain = 0
+    for entry in record.effects:
+        trig = canonicalize_trigger(entry.trigger)
+        eff = entry.effect
+        if trig == "ENTERS_THE_BATTLEFIELD":
+            if (
+                not is_land
+                or entry.conditions
+                or not isinstance(eff, GainLife)
+                or type(eff.amount) is not int
+                or eff.amount <= 0
+            ):
+                return None
+            etb_gain += eff.amount
+            continue
+        if trig != "ACTIVATED":
+            return None
+        if isinstance(eff, Damage):
+            if (
+                not is_land
+                or entry.conditions
+                or eff.target.strip().casefold() != "you"
+                or type(eff.amount) is not int
+                or eff.amount <= 0
+            ):
+                return None
+            pain_damage = max(pain_damage, eff.amount)
+            continue
+        if not isinstance(eff, AddMana):
+            return None
+        parsed = _parse_add_mana_colors(eff.mana, eff.amount, allow_multi=is_land)
+        if parsed is None:
+            return None
+        if entry.conditions:
+            if not is_land or len(entry.conditions) != 1:
+                return None
+            cond = " ".join(str(entry.conditions[0]).strip().split())
+            if not (_COMMANDER_ID_COND_RE.fullmatch(cond) or _BASIC_LAND_COND_RE.fullmatch(cond)):
+                return None
+        colors.update(parsed)
+        mana_amount = max(mana_amount, eff.amount)
+
+    if not colors:
+        return None
+    return {
+        "landfall_mana": False,
+        "rock": not is_land,
+        "rock_produces": frozenset(colors),
+        "imprint_rock": False,
+        "consume": None,
+        "modes": (),
+        "land_mana": is_land,
+        "pain_damage": pain_damage,
+        "etb_gain": etb_gain,
+        "mana_amount": mana_amount,
+        "cast_effects": (),
+        "kicked_effects": (),
+    }
+
+
 def _record_semantics(record: Any, name: str, card: dict | None = None) -> dict | None:
     """Bounded record semantics, or None when timing/payment cannot be represented.
 
@@ -2280,26 +2536,199 @@ def _record_semantics(record: Any, name: str, card: dict | None = None) -> dict 
     already-present creature, never used to reduce casting cost. Imprint is a
     chosen hand payment with produced colors bound to that exact card.
     """
+    if record is None or _has_unknown_fields(record):
+        return None
+    if record.threat or record.relationships or record.limited or record.notes:
+        return None
+    if any(isinstance(entry.effect, UnknownEffect) for entry in record.effects):
+        return None
+    if record.confidence not in ("", "high"):
+        return None
+    if (record.compiled_by or record.compiled_at) and record.confidence != "high":
+        return None
+    if card is not None and (
+        record.name != _name(card)
+        or record.mana_cost != str(card.get("mana_cost") or "")
+        or (card.get("type_line") and record.type_line != str(card.get("type_line") or ""))
+    ):
+        return None
+
+    if card is not None:
+        record = search_record(record, card)
+
+    # Dedicated tap-only mana source / verified tap-only mana land path
+    if any(canonicalize_trigger(e.trigger) == "ACTIVATED" for e in record.effects) and any(
+        (m.name or "").strip().casefold() == "activate" for m in record.modes
+    ):
+        return _mana_source_record_semantics(record, card)
+
     entries = cast_time_entries(record)
     if len(entries) != len(record.effects):
-        return None  # never erase death/attack/other effects omitted by cast-time projection
+        return None  # never erase death/attack/activated/static effects omitted by cast-time projection
     if not entries and not record.modes:
         return None  # defensive: callers require one of the two
+
+    is_spell_type = bool(
+        re.search(r"\b(?:instant|sorcery)\b", record.type_line.split("—", 1)[0], re.IGNORECASE)
+    )
+    has_kicked_mode = any((m.name or "").strip().casefold() == "cast_kicked" for m in record.modes)
+    has_kicked_effect = any(
+        tuple(c.strip().casefold() for c in e.conditions) == ("this spell was kicked",) for e in entries
+    )
+    if has_kicked_mode != has_kicked_effect:
+        return None
+
+    # Validate modes strictly
+    modes = []
+    requires_high = False
+    for mode in record.modes:
+        mname = (mode.name or "").strip().casefold()
+        if mname not in ("cast", "evoke", "alternate_cast", "cast_kicked"):
+            return None
+        if mname in ("cast", "alternate_cast", "cast_kicked"):
+            requires_high = True
+        cost = mode.cost
+        if not _no_extra_cost(cost):
+            return None  # a cost extra the cast application does not pay
+        mana_value = _cost_mana_value(cost.mana or "")
+        if mana_value is None:
+            return None
+        cost_text = " ".join((mode.cost_text or "").strip().split())
+        if mname == "cast":
+            if (cost.mana or "") != (record.mana_cost or ""):
+                return None
+            if is_spell_type and mode.stays_on_battlefield:
+                return None
+            if not is_spell_type and record.type_line and not mode.stays_on_battlefield:
+                return None
+            norm_mc = " ".join((record.mana_cost or "").strip().split())
+            if cost_text and cost_text != norm_mc and not _COST_REDUCTION_TEXT_RE.fullmatch(cost_text):
+                return None
+            consumption = None
+        elif mname == "evoke":
+            if mode.stays_on_battlefield:
+                return None
+            consumption = _hand_consumption(mode.cost_text, mode_name="evoke")
+            if consumption is None and (re.search(r"cards?", cost_text.lower()) or cost_text):
+                if not re.fullmatch(r"(?:evoke\s*[—–-]\s*)?(?:\{o?(?:[0-9]+|[wubrg])\})+", cost_text, re.I):
+                    return None
+        elif mname == "alternate_cast":
+            if is_spell_type and mode.stays_on_battlefield:
+                return None
+            consumption = _hand_consumption(mode.cost_text, mode_name="alternate_cast")
+            if consumption is None:
+                return None  # unparsed or conditional alternate cast (e.g. Force of Vigor) abstains
+        else:  # cast_kicked
+            if not (cost.mana or "") or not _KICKER_COST_TEXT_RE.fullmatch(cost_text or (cost.mana or "")):
+                return None
+            if is_spell_type and mode.stays_on_battlefield:
+                return None
+            consumption = None
+        modes.append((mode.name, cost.mana or "", mana_value, consumption, bool(mode.stays_on_battlefield)))
+
+    if requires_high and record.confidence != "high":
+        return None
+
+    # Modal "Choose one" path
+    if len(entries) >= 2 and all(
+        len(e.conditions) == 1 and _CHOOSE_ONE_COND_RE.fullmatch(e.conditions[0].strip()) for e in entries
+    ):
+        if (
+            record.confidence != "high"
+            or len(record.modes) != 1
+            or (record.modes[0].name or "").strip().casefold() != "cast"
+        ):
+            return None
+        if card is not None and len(bullets(str(card.get("oracle_text") or ""))) != len(entries):
+            return None
+        modal_sentences: list[str] = []
+        any_valued = False
+        for entry in entries:
+            if canonicalize_trigger(entry.trigger) != "CAST":
+                return None
+            sentence = render_effect_sentence(entry.effect)
+            if not sentence:
+                return None
+            mode_match = _CHOOSE_ONE_COND_RE.fullmatch(entry.conditions[0].strip())
+            if mode_match is None or _norm_mode_sentence(mode_match.group("text")) != _norm_mode_sentence(
+                sentence
+            ):
+                return None
+            if _record_line_valued(name, sentence):
+                any_valued = True
+            elif not card_flow(sentence.lower()):
+                return None
+            modal_sentences.append(sentence)
+        if not any_valued:
+            return None
+        return {
+            "landfall_mana": False,
+            "rock": False,
+            "rock_produces": frozenset(),
+            "imprint_rock": False,
+            "consume": None,
+            "modes": tuple(modes),
+            "land_mana": False,
+            "cast_effects": (),
+            "kicked_effects": (),
+        }
+
+    # Paired kicker path
+    if has_kicked_mode:
+        if record.confidence != "high":
+            return None
+        if card is not None:
+            oracle_low = str(card.get("oracle_text") or "").lower()
+            if "kicker" not in oracle_low or "instead" not in oracle_low:
+                return None
+        base_sentences: list[str] = []
+        kicked_sentences: list[str] = []
+        for entry in entries:
+            if canonicalize_trigger(entry.trigger) != "CAST":
+                return None
+            sentence = render_effect_sentence(entry.effect)
+            if not sentence or not _record_line_valued(name, sentence):
+                return None
+            if not entry.conditions:
+                base_sentences.append(sentence)
+            elif tuple(c.strip().casefold() for c in entry.conditions) == ("this spell was kicked",):
+                kicked_sentences.append(sentence)
+            else:
+                return None
+        if not base_sentences or not kicked_sentences:
+            return None
+        return {
+            "landfall_mana": False,
+            "rock": False,
+            "rock_produces": frozenset(),
+            "imprint_rock": False,
+            "consume": None,
+            "modes": tuple(modes),
+            "land_mana": False,
+            "cast_effects": tuple(base_sentences),
+            "kicked_effects": tuple(kicked_sentences),
+        }
+
+    # Unconditional cast-time / ETB / Imprint / Landfall path
     rock, consume = False, None
     landfall_mana = False
+    cast_sentences: list[str] = []
     for entry in entries:
-        if entry.conditions or entry.trigger not in (
+        canon = canonicalize_trigger(entry.trigger)
+        if entry.conditions or canon not in (
             "",
             "CAST",
             "ENTERS_THE_BATTLEFIELD",
             "ENTERS_THE_BATTLEFIELD_OR_EVOKE",
         ):
             return None
+        if canon == "CAST" and record.confidence != "high":
+            return None
         effect = entry.effect
         if isinstance(effect, AddMana):
             if rock or landfall_mana:
                 return None  # multiple mana effects are not a single source
-            if entry.trigger == "":
+            if canon == "":
                 if not _IMPRINT_COLORS_RE.search(str((card or {}).get("oracle_text") or "")):
                     return None  # no generic activated-mana timing/payment representation
                 if "may exile" not in str((card or {}).get("oracle_text") or "").lower():
@@ -2307,20 +2736,26 @@ def _record_semantics(record: Any, name: str, card: dict | None = None) -> dict 
                 # This source represents exactly one tap-only activation. The
                 # record schema does not encode activation costs, so bind the
                 # complete oracle activation rather than trusting an AddMana tag.
-                oracle = str((card or {}).get("oracle_text") or "")
-                activation = oracle.split("\n")[-1].strip()
+                oracle_clean = " ".join(
+                    re.sub(r"<[^>]*>", "", str((card or {}).get("oracle_text") or "")).split()
+                )
+                imprint_oracle_ok = bool(
+                    re.fullmatch(
+                        r"(?:Imprint\s*[—–-]\s*)?When [^.\n]+ enters(?: the battlefield)?, "
+                        r"you may exile a nonartifact, nonland card from your hand\.\s+"
+                        r"\{(?:oT|T)\}: Add one mana of any of the exiled card['’]s colors\.",
+                        oracle_clean,
+                        re.IGNORECASE,
+                    )
+                )
                 if (
                     effect.amount != 1
                     or effect.mana.lower() not in ("any color", "any colour")
-                    or not re.fullmatch(
-                        r"\{(?:oT|T)\}: Add one mana of any of the exiled card's colors\.",
-                        activation,
-                        re.IGNORECASE,
-                    )
+                    or not imprint_oracle_ok
                 ):
                     return None
                 rock = True
-            elif entry.trigger == "ENTERS_THE_BATTLEFIELD":
+            elif canon == "ENTERS_THE_BATTLEFIELD":
                 if (
                     _landfall_mana_card(card)
                     and effect.amount == 1
@@ -2341,23 +2776,13 @@ def _record_semantics(record: Any, name: str, card: dict | None = None) -> dict 
         sentence = render_effect_sentence(effect)
         if not sentence or not _record_line_valued(name, sentence):
             return None
+        cast_sentences.append(sentence)
     if landfall_mana and (len(entries) != 1 or record.modes):
         return None  # compound triggers need a richer event representation
-    modes = []
-    for mode in record.modes:
-        cost = mode.cost
-        if cost.tap or cost.sacrifice is not None or cost.life or cost.discard or cost.exile_from_graveyard:
-            return None  # a cost extra the cast application does not pay
-        mana_value = _cost_mana_value(cost.mana or "")
-        if mana_value is None:
-            return None
-        consumption = _hand_consumption(mode.cost_text)
-        if consumption is None and re.search(r"cards?", (mode.cost_text or "").lower()):
-            return None  # a hand cost we cannot parse: stay conservative
-        modes.append((mode.name, cost.mana or "", mana_value, consumption, bool(mode.stays_on_battlefield)))
     return {
         "landfall_mana": landfall_mana,
         "rock": rock,
+        "rock_produces": frozenset("WUBRG") if rock and not consume else frozenset(),
         # Chrome Mox-style: the rock's colours are the exiled card's colours, not any
         # colour (#A1 review round 5); bound to the actually-paid cards at application.
         "imprint_rock": bool(
@@ -2365,24 +2790,39 @@ def _record_semantics(record: Any, name: str, card: dict | None = None) -> dict 
         ),
         "consume": consume,
         "modes": tuple(modes),
+        "land_mana": False,
+        "cast_effects": tuple(cast_sentences),
+        "kicked_effects": (),
     }
+
+
+def _record_eligible_reason(card: dict, reason: str) -> bool:
+    if reason == "its triggered ability":
+        return True
+    if reason == "its effect":
+        types = _types(card)
+        return bool(
+            re.search(r"\b(?:instant|sorcery)\b", types)
+            and "aura" not in types
+            and "planeswalker" not in types
+            and not re.search(r"\benchant\b", _text(card))
+        )
+    return False
 
 
 def unmodelled_effect(card: dict | None, result: Any = None) -> str:
     """``_unmodelled_effect_reasons``, with a card-facts record filling the gap (A1).
 
-    The one gap a record fills is a permanent whose own enters trigger the text
-    parser cannot value: when its record exists and every cast-time effect and
-    every mode is representable (``_record_represents``), ``Moves._variants``
-    merges those effects into the hard cast — and applies the record's bounded
-    semantics (land-entry mana, a rock's production, an imprint-style hand cost,
-    evoke-style alternate costs) — so the gap stops counting as unmodelled. Every
-    other gap keeps today's reason: no record shape yet represents pumps, auras,
-    X costs or unreadable tokens, and pretending otherwise would clear the flag
-    without the variants gaining anything.
+    Records fill bounded gaps: permanents whose own enters trigger the text parser
+    cannot value (``"its triggered ability"``), and non-aura, non-planeswalker
+    instants/sorceries whose cast effect the text parser left unmodelled
+    (``"its effect"``). When the record exists and every effect and mode is
+    representable (``_record_represents``), ``Moves._variants`` adopts its exact
+    semantics so the gap stops counting as unmodelled. Every other gap keeps
+    today's reason.
     """
     reason = _unmodelled_effect_reasons(card, result)
-    if reason == "its triggered ability" and isinstance(card, dict):
+    if isinstance(card, dict) and _record_eligible_reason(card, reason):
         name = str(card.get("name") or "")
         record = _known_record(*_record_key(card))
         if record is not None and _record_represents(record, name, card):
@@ -2492,7 +2932,7 @@ def _plain_rock_text_output(card: dict) -> frozenset[str]:
 
 
 def _plain_rock_output(card: dict) -> frozenset[str]:
-    if _unmodelled_effect_reasons(card):
+    if _is_creature(card) or _unmodelled_effect_reasons(card):
         return frozenset()
     return _plain_rock_text_output(card)
 
@@ -2928,10 +3368,14 @@ class Moves:
         for var in hs.variants:
             if var.kind != "cast" or var.aim or var.chip:
                 continue
-            text = modes[var.mode].lower() if var.mode is not None and var.mode < len(modes) else whole
+            if var.reach is not None and var.reach is not hs.spell.card and "_source_types" in var.reach:
+                text = _text(var.reach)
+            else:
+                text = modes[var.mode].lower() if var.mode is not None and var.mode < len(modes) else whole
             amount = walker_burn(text)
-            if amount and (var.mode, amount) not in seen:
-                seen.add((var.mode, amount))
+            key = (var.mode, var.mode_text, var.mana_value, var.consumes, amount)
+            if amount and key not in seen:
+                seen.add(key)
                 out.append(dataclasses.replace(var, reach=None, bounce=False, aim="walker", walker=amount))
         return tuple(out)
 
@@ -2964,8 +3408,9 @@ class Moves:
                 (c.limit or 0 for c in _removal_clauses(var.reach) if c.kind == "damage" and c.targeted),
                 default=0,
             )
-            if amount > 0 and (var.mode, amount) not in seen:
-                seen.add((var.mode, amount))
+            key = (var.mode, var.mode_text, var.mana_value, var.consumes, amount)
+            if amount > 0 and key not in seen:
+                seen.add(key)
                 chips.append(dataclasses.replace(var, chip=amount))
         return tuple(chips)
 
@@ -3090,7 +3535,7 @@ class Moves:
 
         def make(
             mode=None, text="", gain=0, reach=None, bounce=False, rock=False, loss=0, face=0, aim="", specs=(),
-            sweep=0,
+            sweep=0, rock_produces=frozenset(),
         ):  # fmt: skip
             if reach is not None and reach is not card and not _types(reach).strip():
                 # A mode's or an enters trigger's text: its card's type and colours decide
@@ -3105,6 +3550,7 @@ class Moves:
                 hs.index, "cast", mode, text, body, gain, reach, bounce, rock, spell.mana_value, spell.pips,
                 bool(info.instant_speed), loss, face, aim, tokens=self._tokens([*base_specs, *specs]),
                 life_tokens=per_life, counter=counters, sweep=sweep, named_tokens=named,
+                rock_produces=rock_produces,
             )  # fmt: skip
 
         def aimed(var: Variant, alt: int) -> list[Variant]:
@@ -3112,6 +3558,13 @@ class Moves:
             if not alt:
                 return []
             return [dataclasses.replace(var, reach=None, bounce=False, face=var.face + alt, aim="opponent")]
+
+        text_reason = _unmodelled_effect_reasons(card)
+        record = None if oracle_modes else _known_record(*_record_key(card))
+        semantics = _record_semantics(record, spell.name, card) if record is not None else None
+        record_rock = False
+        record_rock_produces: frozenset[str] = frozenset()
+        record_sweep = 0
 
         if creature:
             # A creature's own text acts through its modes (bullets) or, without modes, its
@@ -3124,10 +3577,9 @@ class Moves:
             # A card-facts record fills what the text parser left unmodelled (#A1): its
             # cast-time/enters effects rendered through the same parsers, merged only into
             # slots the card's own text left empty.
-            record = None if oracle_modes else _known_record(*_record_key(card))
             rec_text = (
-                record_cast_text(record)
-                if record is not None and _trigger_unmodelled(card, spell.name)
+                ("\n".join(semantics["cast_effects"]) or record_cast_text(record))
+                if semantics is not None and _trigger_unmodelled(card, spell.name)
                 else ""
             )
             if rec_text:
@@ -3145,6 +3597,9 @@ class Moves:
                     # with the same token parser, only into a slot the card's own text
                     # left empty.
                     base_specs = list(token_specs(_cast_text(rec_etb)) or ())
+            if semantics is not None and semantics["rock"]:
+                record_rock = True
+                record_rock_produces = semantics["rock_produces"]
             bounce = etb_reach is not None and reach[0] == "bounce"
         elif spell.role == "creature":
             # A noncreature that makes creature tokens (card_role calls it a creature): the rest
@@ -3160,14 +3615,39 @@ class Moves:
             bounce = etb_reach is not None and spell.role == "bounce"
             match = _LIFEGAIN.search(_text(etb)) if spell.role == "lifegain" or counters else None
             alt, each = face_damage(etb)
+        if (
+            not creature
+            and not oracle_modes
+            and semantics is not None
+            and _record_eligible_reason(card, text_reason)
+        ):
+            rec_text = "\n".join(semantics["cast_effects"])
+            if rec_text:
+                rec_etb = {"name": spell.name, "oracle_text": rec_text, "type_line": ""}
+                if reach is None or reach[0] == "fight":
+                    rec_reach = removal_reach(rec_etb)
+                    if rec_reach is not None and rec_reach[0] != "fight":
+                        reach, etb_reach = rec_reach, rec_etb
+                        bounce = rec_reach[0] == "bounce"
+                if match is None:
+                    match = _LIFEGAIN.search(rec_text)
+                if not alt and not each:
+                    alt, each = face_damage(rec_etb)
+                if not base_specs:
+                    base_specs = list(token_specs(_cast_text(rec_etb)) or ())
+                record_sweep = _sweep(_cast_text(rec_etb))
+            if semantics["rock"]:
+                record_rock = True
+                record_rock_produces = semantics["rock_produces"]
         plain = make(
             reach=etb_reach,
             bounce=bounce,
             gain=int(match.group(1)) if match else 0,
-            rock=spell.role == "ramp" and _plain_rock_supported(card),
+            rock=(spell.role == "ramp" and _plain_rock_supported(card)) or record_rock,
             loss=life_loss(etb),
             face=each,
-            sweep=0 if oracle_modes else _sweep(_cast_text(etb)),
+            sweep=0 if oracle_modes else (_sweep(_cast_text(etb)) or record_sweep),
+            rock_produces=record_rock_produces,
         )
         # A fixed Helix-style spell is classified as removal, so the old
         # role-gated gain parser omitted its unconditional life gain (#308).
@@ -3184,22 +3664,10 @@ class Moves:
             and not any(classify(spell.name, b)[0] != "other" for b in oracle_modes)
             and unmodelled_effect(card)
         ):
-            # Nothing its text does is valued (a pump, an aura, a fog, a planeswalker): never cast
-            # in a line, where a placeholder value would put it ahead of holding it — unless a
-            # card-facts record supplies valued effects (#A1): its rendered lines that the search
-            # values (``_record_line_valued``, the same predicate as the unmodelled gate) stand in
-            # as the modes.
-            record = _known_record(*_record_key(card))
-            rescued = tuple(
-                line
-                for line in (record_cast_text(record).splitlines() if record is not None else ())
-                if _record_line_valued(spell.name, line)
-            )
-            if rescued:
-                oracle_modes = rescued  # read by the mode loop below like the card's own bullets
-                variants = []
-            else:
-                plain, variants = None, []
+            # Nothing its text does is valued (a pump, an aura, a fog, a planeswalker, or a
+            # rejected record): never cast in a line, where a placeholder value would put it
+            # ahead of holding it.
+            plain, variants = None, []
         else:
             modes = [(i, b, *classify(spell.name, b)) for i, b in enumerate(oracle_modes)]
             if all(kind == "other" for _i, _b, kind, *_rest in modes):
@@ -3239,52 +3707,86 @@ class Moves:
                 variants += [var, *aimed(var, mode_alt)]
             # A card-facts record completes what the text parser missed (#A1): bounded
             # semantics only — event-bound landfall mana, a rock's production,
-            # an imprint-style hand cost paid on the cast, and payable alternate costs
-            # (evoke) whose lifecycle the cast application respects. The unmodelled gate
-            # (``unmodelled_effect``) cleared only because EVERY cast-time effect and
-            # every mode is representable (``_record_represents``); this fill mirrors
-            # exactly that predicate, so the variants really gain what the record states.
+            # an imprint-style hand cost paid on the cast, payable alternate costs
+            # (evoke, unconditional exile-from-hand), and paired kicker modes.
+            # This fill mirrors ``unmodelled_effect``'s admission gate so there is
+            # zero discrepancy between gate clearance and actual variants.
             extras: list = []
             if (
                 plain is not None
-                # The card's OWN text left a triggered-ability gap that only the record
-                # closed (``unmodelled_effect`` cleared it via ``_record_represents``):
-                # a card its text parser already values fully keeps exactly its text-built
-                # variants, so record semantics can never double-count parsed effects.
-                and _unmodelled_effect_reasons(card) == "its triggered ability"
-                and not any(classify(spell.name, b)[0] != "other" for b in oracle_modes)
-                and unmodelled_effect(card) == ""
+                and semantics is not None
+                and not oracle_modes
+                and (
+                    (_record_eligible_reason(card, text_reason) and unmodelled_effect(card) == "")
+                    or (text_reason == "" and bool(semantics["kicked_effects"]))
+                )
             ):
-                record = _known_record(*_record_key(card))
-                semantics = _record_semantics(record, spell.name, card)
-                if semantics is not None:
-                    if semantics["consume"] is not None:
-                        count, color, restrictions = semantics["consume"]
-                        plain = dataclasses.replace(
+                if semantics["consume"] is not None:
+                    count, color, restrictions = semantics["consume"]
+                    plain = dataclasses.replace(
+                        plain,
+                        consumes=count,
+                        consume_spec=(color, restrictions),
+                        imprint_rock=semantics["imprint_rock"],
+                        rock=semantics["rock"],
+                        rock_produces=semantics["rock_produces"],
+                    )
+                if plain.imprint_rock:
+                    extras.append(
+                        dataclasses.replace(
+                            plain, consumes=0, rock=False, imprint_rock=False, rock_produces=frozenset()
+                        )
+                    )
+                for mode_name, mode_mana, mv_cost, consumption, stays in semantics["modes"]:
+                    mname_low = mode_name.strip().casefold()
+                    if mname_low == "evoke" and body is None:
+                        continue  # evoke needs a body to leave again
+                    if mname_low == "cast" and mv_cost == spell.mana_value and consumption is None:
+                        continue  # identical to the hard cast
+                    cons_count, cons_color, cons_restrictions = consumption or (0, "", frozenset())
+                    if mname_low == "cast_kicked" and semantics["kicked_effects"]:
+                        kicked_text = "\n".join(semantics["kicked_effects"])
+                        kicked_etb = {"name": spell.name, "oracle_text": kicked_text, "type_line": ""}
+                        k_reach = removal_reach(kicked_etb)
+                        k_etb_reach = kicked_etb if k_reach is not None and k_reach[0] != "fight" else None
+                        k_bounce = k_etb_reach is not None and k_reach[0] == "bounce"
+                        k_match = _LIFEGAIN.search(kicked_text)
+                        k_alt, k_each = face_damage(kicked_etb)
+                        k_specs = tuple(token_specs(_cast_text(kicked_etb)) or ())
+                        k_sweep = _sweep(_cast_text(kicked_etb))
+                        k_var = dataclasses.replace(
+                            make(
+                                None,
+                                mode_name,
+                                gain=int(k_match.group(1)) if k_match else 0,
+                                reach=k_etb_reach,
+                                bounce=k_bounce,
+                                loss=life_loss(kicked_etb),
+                                face=k_each,
+                                specs=k_specs,
+                                sweep=k_sweep,
+                            ),
+                            mana_value=mv_cost,
+                            pips=_pips(mode_mana),
+                            consumes=cons_count,
+                            consume_spec=(cons_color, cons_restrictions),
+                            ephemeral=body is not None and not stays,
+                        )
+                        extras.extend([k_var, *aimed(k_var, k_alt)])
+                    else:
+                        alt_var = dataclasses.replace(
                             plain,
-                            consumes=count,
-                            consume_spec=(color, restrictions),
-                            imprint_rock=semantics["imprint_rock"],
-                            rock=semantics["rock"],
+                            mode_text=mode_name,
+                            mana_value=mv_cost,
+                            pips=_pips(mode_mana),
+                            consumes=cons_count,
+                            consume_spec=(cons_color, cons_restrictions),
+                            ephemeral=body is not None and not stays,
+                            rock=plain.rock if stays else False,
+                            imprint_rock=plain.imprint_rock if stays else False,
+                            rock_produces=plain.rock_produces if stays else frozenset(),
                         )
-                    if plain.imprint_rock:
-                        extras.append(dataclasses.replace(plain, consumes=0, rock=False, imprint_rock=False))
-                    for mode_name, mode_mana, mv_cost, consumption, stays in semantics["modes"]:
-                        if body is None and not stays:
-                            continue  # an ephemeral alternate needs a body to leave again
-                        if mv_cost == spell.mana_value and consumption is None and stays:
-                            continue  # identical to the hard cast
-                        cons_count, cons_color, cons_restrictions = consumption or (0, "", frozenset())
-                        extras.append(
-                            dataclasses.replace(
-                                make(None, mode_name, reach=plain.reach),
-                                mana_value=mv_cost,
-                                pips=_pips(mode_mana),
-                                consumes=cons_count,
-                                consume_spec=(cons_color, cons_restrictions),
-                                ephemeral=body is not None and not stays,
-                            )
-                        )
+                        extras.extend([alt_var, *aimed(alt_var, alt)])
             if not variants and plain is not None:
                 variants = [plain, *aimed(plain, alt)]
             variants.extend(extras)
@@ -3583,6 +4085,12 @@ class Moves:
             return turn >= abs_turn
         return k == 0 and self.our_turn and body["_sick"]  # the snapshot's own bodies
 
+    @staticmethod
+    def _live_rocks(rocks, ours) -> list:
+        """Keep non-creature rocks plus creature mana sources still alive on our board."""
+        alive = {b["instance_id"] for b in ours}
+        return [r for r in rocks if getattr(r, "creature_iid", None) is None or r.creature_iid in alive]
+
     def sources(self, node: Node, land: Land | None) -> tuple[list, list]:
         """(sources before this line's rocks, all sources) on our turn ``node.k``."""
         if land is not None and getattr(land.source, "land_card", None):
@@ -3617,7 +4125,7 @@ class Moves:
                     temporary.append(SimpleNamespace(produces=frozenset("WUBRG"), name=_name(card)))
         # Only existing permanents see this land entry; newly cast bodies do not.
         # Temporary mana is used in this main phase and is not stored in node.rocks.
-        return before_rocks, before_rocks + list(node.rocks) + temporary
+        return before_rocks, before_rocks + self._live_rocks(node.rocks, node.ours) + temporary
 
     def land_options(self, node: Node) -> list:
         """One land per class (colours, enters tapped), at most three; [None] when no drop.
@@ -3635,7 +4143,7 @@ class Moves:
         pips = [p for i in node.hand for p in self.spells[i].spell.pips]
         base = self.model.sources_now if (node.k == 0 and self.our_turn) else self.model.sources_all
         have: set = set()
-        for source in list(base) + list(node.played) + list(node.rocks):
+        for source in list(base) + list(node.played) + self._live_rocks(node.rocks, node.ours):
             have |= set(source.produces)
         have.discard("C")
         by_key: dict = {}
@@ -3778,7 +4286,7 @@ class Moves:
             value = 0.5
         elif var.body is not None:
             value = _spell_value(hs.spell, survival=self.survival, theirs=list(theirs))
-        elif var.rock and (var.imprint_rock or _plain_rock_supported(hs.spell.card)):
+        elif var.rock and (var.imprint_rock or var.rock_produces or _plain_rock_supported(hs.spell.card)):
             value = 1.5
         elif var.reach is None and not var.gain and not var.tokens and not var.life_tokens:
             value = 1.0
@@ -4271,7 +4779,7 @@ class Moves:
 
     def choice_text(self, choice) -> str:
         return " + ".join(
-            f"{self.spells[v.spell].name}:{v.kind}:{v.mode}:{t['instance_id'] if t else ''}"
+            f"{self.spells[v.spell].name}:{v.kind}:{v.mode}:{v.mode_text}:{t['instance_id'] if t else ''}"
             for v, t in choice
         )
 
@@ -4971,9 +5479,20 @@ class Moves:
                 # An imprint-bound rock (Chrome Mox) produces only the colours of the
                 # card its cast actually exiled (#A1 review round 5); a payment that
                 # gave no colours (declined/unmatched imprint) adds no mana at all.
-                produces = frozenset(paid_colors) if var.imprint_rock else _plain_rock_output(hs.spell.card)
+                if var.imprint_rock:
+                    produces = frozenset(paid_colors)
+                elif var.rock_produces:
+                    produces = var.rock_produces
+                else:
+                    produces = _plain_rock_output(hs.spell.card)
                 if produces:
-                    mid.rocks.append(SimpleNamespace(produces=produces, name=hs.name))
+                    mid.rocks.append(
+                        SimpleNamespace(
+                            produces=produces,
+                            name=hs.name,
+                            creature_iid=var.body["instance_id"] if var.body is not None else None,
+                        )
+                    )
             mid.ours = self.rescale(mid.ours)  # "+1/+0 for each other creature you control" (#157)
             if mid.entry_draw_branches:
                 self._fork_entry_draw(mid, index + 1, chipped)
@@ -5344,6 +5863,7 @@ class Moves:
         carry.update(
             ours=tuple(mid.ours),
             hand=tuple(mid.hand),
+            rocks=tuple(self._live_rocks(mid.rocks, mid.ours)),
         )
         if opponent_loss.draw_loses:
             return dataclasses.replace(
@@ -5425,9 +5945,11 @@ class Moves:
                 (iid, name, loyal + self.walker_growth(iid, gains)) for iid, name, loyal in carry["walkers"]
             )
             spawned = []
+        rescaled_ours = tuple(self.rescale(list(hit["ours"])))
         carry.update(
-            our_life=hit["life"], opp_life=hit["opp_life"], ours=tuple(self.rescale(list(hit["ours"]))),
+            our_life=hit["life"], opp_life=hit["opp_life"], ours=rescaled_ours,
             theirs=tuple([*hit["theirs"], *spawned]), hand=hit["hand"], walkers=walkers,
+            rocks=tuple(self._live_rocks(carry["rocks"], rescaled_ours)),
             persistent=tuple(hit["persistent"]),
         )  # fmt: skip
         return dataclasses.replace(

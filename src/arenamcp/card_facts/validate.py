@@ -136,7 +136,7 @@ def _aura_line_matches(entry, line):
         return False
     lowered = line.casefold()
     if lowered.startswith(("when this aura enters,", "when this aura enters the battlefield,")):
-        if entry.trigger != "ETB":
+        if entry.trigger not in ("ETB", "ENTERS_THE_BATTLEFIELD"):
             return False
         if lowered in {
             "when this aura enters, draw a card.",
@@ -147,10 +147,10 @@ def _aura_line_matches(entry, line):
         if entry.trigger != line.partition(",")[0]:
             return False
     elif ":" in line.split(".")[0]:
-        if entry.trigger not in ("", "activate"):
+        if entry.trigger not in ("", "activate", "activated", "ACTIVATED"):
             return False
     else:
-        if entry.trigger not in ("", "static"):
+        if entry.trigger not in ("", "static", "STATIC"):
             return False
         pump = re.fullmatch(r"Enchanted creature gets ([+-]\d+)/([+-]\d+)\.", line, re.I)
         if pump and entry.effect == Pump(int(pump[1]), int(pump[2]), "enchanted creature"):

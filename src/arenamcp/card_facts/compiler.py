@@ -278,7 +278,7 @@ Answer with ONE JSON object and nothing else. It must match this shape:
   ],
   "effects": [
     {
-      "trigger": "<when it happens: ETB, dies, attacks, activated, ...>",
+      "trigger": "<canonical event: CAST, ENTERS_THE_BATTLEFIELD, ACTIVATED, STATIC, ATTACKS, DIES, LANDFALL, ...>",
       "effect": {"effect_type": "<see below>", "...": "<fields for that type>"},
       "conditions": ["<only if the text states a condition>"]
     }
@@ -328,18 +328,18 @@ Keep Ward/Protection costs (e.g. "Ward {2}", "Ward—Pay 2 life") when intrinsic
 threshold-gated lines like "8+ | Flying" are conditional Unknown effects, never \
 body.keywords. A keyword granted to an enchanted creature, an equipped creature, \
 a token or a target belongs to that effect, never to the source's body.
-For an Aura preserve each printed "Enchant ..." restriction verbatim in a static \
+For an Aura preserve each printed "Enchant ..." restriction verbatim in a STATIC \
 Unknown effect. Its cast must target a legal recipient and it must remain legally \
 attached. For Auras, represent EACH other printed rules paragraph once. A simple \
-"Enchanted creature gets +N/+N." can use static Pump and "When this Aura enters, \
-draw a card." can use ETB Draw. For every other rule or compound effect use one \
+"Enchanted creature gets +N/+N." can use STATIC Pump and "When this Aura enters, \
+draw a card." can use ENTERS_THE_BATTLEFIELD Draw. For every other rule or compound effect use one \
 Unknown with its complete verbatim paragraph, including restrictions, grants, \
 conditions, duration and costs; omit redundant partial typed effects. On Auras, \
 lines starting with "When ", "Whenever ", or "At " (other than "When this Aura \
 enters, draw a card.") must set trigger to the exact text before the first comma \
 and effect to Unknown with the full line verbatim (conditions: []); "As this Aura \
-enters, ..." lines use trigger "static" and Unknown with the full line verbatim. \
-Use ETB for "When this Aura enters, ...", static for attachment and continuous \
+enters, ..." lines use trigger "STATIC" and Unknown with the full line verbatim. \
+Use ENTERS_THE_BATTLEFIELD for "When this Aura enters, ...", STATIC for attachment and continuous \
 effects, and keep conditions empty when the complete rule is in Unknown. Exile \
 has no duration field. Do not represent temporary exile as unconditional Exile.
 5. Current TokenSpec cannot represent token colors or affirmative legendary status. \
@@ -671,6 +671,47 @@ def _raw_native_type_problems(data: dict[str, Any]) -> list[str]:
     return problems
 
 
+_UNAMBIGUOUS_TRIGGER_ALIASES: dict[str, str] = {
+    "": "",
+    "cast": "CAST",
+    "resolves": "CAST",
+    "etb": "ENTERS_THE_BATTLEFIELD",
+    "enters": "ENTERS_THE_BATTLEFIELD",
+    "enters_the_battlefield": "ENTERS_THE_BATTLEFIELD",
+    "enters_the_battlefield_or_evoke": "ENTERS_THE_BATTLEFIELD_OR_EVOKE",
+    "activated": "ACTIVATED",
+    "activate": "ACTIVATED",
+    "static": "STATIC",
+    "attacks": "ATTACKS",
+    "dies": "DIES",
+    "landfall": "LANDFALL",
+}
+
+
+def normalize_trigger_alias(trigger: Any) -> Any:
+    """Normalize only unambiguous exact trigger aliases; leave custom phrases intact."""
+    if not isinstance(trigger, str):
+        return trigger
+    canonical = _UNAMBIGUOUS_TRIGGER_ALIASES.get(trigger.strip().casefold())
+    return canonical if canonical is not None else trigger
+
+
+def _normalize_record_triggers(data: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(data)
+    effects = data.get("effects")
+    if isinstance(effects, list):
+        new_effects = []
+        for entry in effects:
+            if isinstance(entry, dict) and "trigger" in entry:
+                new_entry = dict(entry)
+                new_entry["trigger"] = normalize_trigger_alias(entry["trigger"])
+                new_effects.append(new_entry)
+            else:
+                new_effects.append(entry)
+        normalized["effects"] = new_effects
+    return normalized
+
+
 def _stamp(record_data: dict[str, Any], printed: PrintedCard) -> CardFacts:
     """Build the record from the model's dict and stamp compiler-owned fields."""
     digest = executable_source_hash(printed)
@@ -807,11 +848,12 @@ def compile_one(
                 )
                 if raw_problems:
                     raise ValueError("; ".join(raw_problems))
-                record_candidate = _stamp(dict(data), printed)
+                normalized_data = _normalize_record_triggers(data)
+                record_candidate = _stamp(normalized_data, printed)
                 problems = (
                     validate(record_candidate, printed)
-                    + _token_contract_problems(data, printed)
-                    + _printed_cast_contract_problems(data, printed)
+                    + _token_contract_problems(normalized_data, printed)
+                    + _printed_cast_contract_problems(normalized_data, printed)
                 )
                 record = record_candidate if not problems else record_candidate
             except Exception as error:
