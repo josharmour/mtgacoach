@@ -602,6 +602,16 @@ def _record_has_unknown_effect(record: Any) -> bool:
     return any(getattr(e.effect, "effect_type", "") in ("", "Unknown") for e in record.effects)
 
 
+def record_for_card(card: Any, state: dict | None = None):
+    """Public record-first ``CardFacts`` lookup for callers outside ``play_safety``."""
+    return _record_for(card, state)
+
+
+def record_is_complete(record: Any) -> bool:
+    """True when ``record`` is an authenticated ``CardFacts`` record with no ``UnknownEffect``."""
+    return record is not None and not _record_has_unknown_effect(record)
+
+
 def _plain_text(card: dict) -> str:
     return re.sub(r"<[^>]*>", "", _normalize_mana_symbols(str(card.get("oracle_text") or ""))).lower()
 
@@ -1366,6 +1376,175 @@ def damage_effect(
         damage = max(damage, int(upgrade.group(1)))
     scope = clauses[0].group("scope")
     return damage, "any" if scope == "any target" else "each" if scope.startswith("each") else "target"
+
+
+_FACE_DAMAGE_TARGETS = frozenset(
+    {
+        "any",
+        "any_target",
+        "creature_or_player",
+        "target_creature_or_player",
+        "opponent",
+        "each_opponent",
+        "opponents",
+        "player",
+        "target_player",
+        "target_opponent",
+        "player_or_planeswalker",
+    }
+)
+_ATTACK_DAMAGE_TRIGGERS = frozenset(
+    {"ATTACK", "ATTACKS", "ON_ATTACK", "WHENEVER_ATTACKS", "CREATURE_ATTACKS"}
+)
+_OPPOSING_ATTACK_DAMAGE_TARGETS = _FACE_DAMAGE_TARGETS | frozenset({"defending_player"})
+
+
+def _normalized_target_token(raw_target: Any) -> str:
+    return str(raw_target or "").strip().lower().replace("-", "_").replace(" ", "_")
+
+
+def _resolve_damage_entries(entries: list[tuple[Any, int]]) -> int:
+    """Resolve matching ``(entry, amount)`` pairs without summing mutually exclusive conditions."""
+    if not entries:
+        return 0
+    uncond_total = sum(amt for entry, amt in entries if not getattr(entry, "conditions", ()))
+    cond_amounts = [amt for entry, amt in entries if getattr(entry, "conditions", ())]
+    if not cond_amounts:
+        return uncond_total
+    return max(uncond_total, max(cond_amounts))
+
+
+def _has_cast_mode_when_modes_present(record: Any) -> bool:
+    modes = getattr(record, "modes", ()) or ()
+    return (not modes) or any(
+        str(getattr(m, "name", "") or "").strip().casefold() in ("", "cast") for m in modes
+    )
+
+
+def each_opponent_damage(card: dict, state: dict | None = None) -> int:
+    """Cast damage dealt directly to each opponent (record-first, regex fallback)."""
+    from arenamcp.ability_synthesizer import Damage
+
+    rec = record_for_card(card, state)
+    if record_is_complete(rec):
+        if not _has_cast_mode_when_modes_present(rec):
+            return 0
+        matched: list[tuple[Any, int]] = []
+        for entry in rec.effects:
+            if (
+                str(entry.trigger or "").strip().casefold() in ("", "cast")
+                and isinstance(entry.effect, Damage)
+                and type(entry.effect.amount) is int
+                and entry.effect.amount > 0
+            ):
+                tok = _normalized_target_token(entry.effect.target)
+                if "each_opponent" in tok or tok == "opponents":
+                    matched.append((entry, int(entry.effect.amount)))
+        return _resolve_damage_entries(matched)
+    oracle = str(card.get("oracle_text") or "")
+    match = re.search(r"deals (\d+) damage to each opponent", oracle, re.IGNORECASE)
+    return int(match.group(1)) if match else 0
+
+
+def face_burn_damage(card: dict, state: dict | None = None) -> int:
+    """Cast burn damage reachable at an opponent's life total (record-first, regex fallback)."""
+    from arenamcp.ability_synthesizer import Damage
+
+    rec = record_for_card(card, state)
+    if record_is_complete(rec):
+        if not _has_cast_mode_when_modes_present(rec):
+            return 0
+        matched: list[tuple[Any, int]] = []
+        for entry in rec.effects:
+            if (
+                str(entry.trigger or "").strip().casefold() in ("", "cast")
+                and isinstance(entry.effect, Damage)
+                and type(entry.effect.amount) is int
+                and entry.effect.amount > 0
+            ):
+                tok = _normalized_target_token(entry.effect.target)
+                if tok in _FACE_DAMAGE_TARGETS or any(
+                    k in tok
+                    for k in (
+                        "each_opponent",
+                        "target_opponent",
+                        "target_player",
+                        "target_creature_or_player",
+                        "any_target",
+                    )
+                ):
+                    matched.append((entry, int(entry.effect.amount)))
+        return _resolve_damage_entries(matched)
+    parsed = damage_effect(card, state) if isinstance(card, dict) else None
+    text = str((card or {}).get("oracle_text") or "").lower()
+    if parsed and (parsed[1] == "any" or "opponent" in text or "target player" in text):
+        return int(parsed[0])
+    face = re.search(
+        r"deals? (\d+) damage to (?:each opponent|target opponent|target player|any target)", text
+    )
+    return int(face.group(1)) if face else 0
+
+
+def attack_trigger_damage(card: dict, state: dict | None = None) -> int:
+    """Direct combat-trigger ping damage to an opponent/player/any target (record-first)."""
+    from arenamcp.ability_synthesizer import Damage
+
+    rec = record_for_card(card, state)
+    if record_is_complete(rec):
+        matched: list[tuple[Any, int]] = []
+        for entry in rec.effects:
+            trig = str(entry.trigger or "").strip().upper().replace(" ", "_")
+            if (
+                trig in _ATTACK_DAMAGE_TRIGGERS
+                and isinstance(entry.effect, Damage)
+                and type(entry.effect.amount) is int
+                and entry.effect.amount > 0
+            ):
+                tok = _normalized_target_token(entry.effect.target)
+                if tok in _OPPOSING_ATTACK_DAMAGE_TARGETS or any(
+                    k in tok
+                    for k in (
+                        "each_opponent",
+                        "target_opponent",
+                        "target_player",
+                        "target_creature_or_player",
+                        "defending_player",
+                        "any_target",
+                    )
+                ):
+                    matched.append((entry, int(entry.effect.amount)))
+        return _resolve_damage_entries(matched)
+    text = str((card or {}).get("oracle_text") or "").lower()
+    ping = re.search(r"whenever [^.]*attack[^.]*deals? (\d+) damage", text)
+    return int(ping.group(1)) if ping else 0
+
+
+_GRAVEYARD_EXILE_COND_RE = re.compile(r"\bfrom\b[^.\n]*\bgraveyard\b|\bgraveyard card\b", re.I)
+
+
+def exiles_graveyard_card(card: dict | None, oracle: str, state: dict | None = None) -> bool:
+    """Whether a card exiles a card from a graveyard (record-first, regex fallback)."""
+    from arenamcp.ability_synthesizer import Exile
+
+    rec = record_for_card(card, state) if isinstance(card, dict) and card else None
+    if record_is_complete(rec):
+        if any(getattr(mode.cost, "exile_from_graveyard", 0) > 0 for mode in rec.modes):
+            return True
+        for entry in rec.effects:
+            if isinstance(entry.effect, Exile) and (
+                "graveyard" in str(entry.effect.target or "").lower()
+                or any(_GRAVEYARD_EXILE_COND_RE.search(str(cond)) for cond in entry.conditions)
+            ):
+                return True
+        return False
+    return bool(
+        re.search(
+            r"\bexile (?:up to \w+ )?target (?:[a-z-]+ )*cards? from "
+            r"(?:a|any|your|an opponent's|target player's) graveyard\b",
+            str(oracle or ""),
+            re.IGNORECASE,
+        )
+    )
 
 
 def damage_would_kill(creature: dict, damage: int) -> bool | None:

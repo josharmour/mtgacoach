@@ -6,6 +6,7 @@ import argparse
 import collections
 import concurrent.futures
 import contextlib
+import copy
 import dataclasses
 import gzip
 import hashlib
@@ -14,6 +15,7 @@ import json
 import logging
 import math
 import os
+import random
 import re
 import sys
 import threading
@@ -1380,6 +1382,545 @@ def diff_reports(before, after):
     }
 
 
+B3_V2_STRATA = (
+    "stack_sequencing",
+    "aura_equipment_protection",
+    "card_facts_non_vanilla",
+    "close_combat",
+    "open_mana_sweeper_trick",
+)
+
+_AURA_EQUIP_PROT_RE = re.compile(
+    r"\b(?:aura|equipment|equip|hexproof|shroud|ward|protection from|indestructible|"
+    r"exile [^.\n]*then return|flicker|blink|phase out|phases out)\b",
+    re.I,
+)
+_TARGET_OR_ATTACH_RE = re.compile(
+    r"\b(?:target|destroy|exile|damage|enchant|equip|attach|aura|equipment)\b",
+    re.I,
+)
+_TRICK_OR_SWEEPER_RE = re.compile(
+    r"\b(?:flash|instant|counter target|damage to each|destroy all|exile all|-x/-x|gets [+-]\d+/[+-]\d+)\b",
+    re.I,
+)
+_COMBAT_STEPS = frozenset(
+    {
+        "begincombat",
+        "declareattack",
+        "declareattackers",
+        "declareblock",
+        "declareblockers",
+        "firststrikedamage",
+        "combatdamage",
+        "endcombat",
+    }
+)
+
+
+def _card_blob(card: dict, *, include_name: bool = False) -> str:
+    if not isinstance(card, dict):
+        return ""
+    parts = [
+        card.get("type_line"),
+        card.get("oracle_text"),
+        " ".join(str(x) for x in (card.get("subtypes") or ())),
+        " ".join(str(x) for x in (card.get("card_types") or ())),
+        " ".join(str(x) for x in (card.get("keywords") or ())),
+    ]
+    if include_name:
+        parts.append(card.get("name"))
+    return " ".join(str(p) for p in parts if p).lower()
+
+
+def _is_creature(card: dict) -> bool:
+    if not isinstance(card, dict):
+        return False
+    types = {str(t).lower().removeprefix("cardtype_") for t in (card.get("card_types") or ())}
+    return "creature" in types or "creature" in str(card.get("type_line") or "").lower()
+
+
+def _is_land(card: dict) -> bool:
+    if not isinstance(card, dict):
+        return False
+    types = {str(t).lower().removeprefix("cardtype_") for t in (card.get("card_types") or ())}
+    return "land" in types or "land" in str(card.get("type_line") or "").lower()
+
+
+def _card_index(state: dict) -> tuple[dict[int, dict], dict[int, dict]]:
+    by_iid: dict[int, dict] = {}
+    by_grp: dict[int, dict] = {}
+    if not isinstance(state, dict):
+        return by_iid, by_grp
+    for zone_name in ("hand", "battlefield", "stack", "graveyard", "exile", "command"):
+        for card in state.get(zone_name) or ():
+            if not isinstance(card, dict):
+                continue
+            iid = card.get("instance_id")
+            if type(iid) is int:
+                by_iid.setdefault(iid, card)
+            gid = card.get("grp_id")
+            if type(gid) is int:
+                by_grp.setdefault(gid, card)
+    return by_iid, by_grp
+
+
+def _resolve_option_cards(decision: dict, state: dict) -> list[dict]:
+    by_iid, by_grp = _card_index(state)
+    resolved: list[dict] = []
+    seen_ids: set[int] = set()
+
+    def _add(card: dict | None) -> None:
+        if isinstance(card, dict) and id(card) not in seen_ids:
+            seen_ids.add(id(card))
+            resolved.append(card)
+
+    for opt in decision.get("options") or ():
+        if not isinstance(opt, dict):
+            continue
+        meta = opt.get("meta") if isinstance(opt.get("meta"), dict) else {}
+        if meta.get("actionType") == "ActionType_Pass" or str(opt.get("option_id") or "") == "pass":
+            continue
+        for key in ("instanceId", "sourceId", "targetId", "attackerInstanceId", "blockerInstanceId"):
+            val = meta.get(key)
+            if type(val) is int and val in by_iid:
+                _add(by_iid[val])
+        for target_id in meta.get("targets") or ():
+            if type(target_id) is int and target_id in by_iid:
+                _add(by_iid[target_id])
+        for key in ("grpId", "card_grp_id", "grp_id"):
+            val = meta.get(key)
+            if type(val) is int and val in by_grp:
+                _add(by_grp[val])
+
+    dctx = state.get("decision_context") if isinstance(state.get("decision_context"), dict) else {}
+    for key in ("source_id", "target_id"):
+        val = dctx.get(key)
+        if type(val) is int and val in by_iid:
+            _add(by_iid[val])
+    return resolved
+
+
+def _record_is_non_vanilla(rec: dict) -> bool:
+    """True when a CardFacts record encodes effects, mana production, alternate modes, or non-mana costs."""
+    if not isinstance(rec, dict):
+        return False
+    if rec.get("effects") or rec.get("mana"):
+        return True
+    printed_mana = str(rec.get("mana_cost") or "").strip()
+    for mode in rec.get("modes") or ():
+        if not isinstance(mode, dict):
+            continue
+        name = str(mode.get("name") or "").strip().casefold()
+        if name not in ("", "cast"):
+            return True
+        cost = mode.get("cost") if isinstance(mode.get("cost"), dict) else {}
+        cost_mana = str(cost.get("mana") or "").strip()
+        cost_text = str(mode.get("cost_text") or "").strip()
+        expected_cost = printed_mana or cost_mana
+        if cost_text and cost_text != expected_cost:
+            return True
+        if cost_mana and printed_mana and cost_mana != printed_mana:
+            return True
+        if (
+            cost.get("tap")
+            or cost.get("sacrifice")
+            or int(cost.get("life") or 0) > 0
+            or int(cost.get("discard") or 0) > 0
+            or int(cost.get("exile_from_graveyard") or 0) > 0
+        ):
+            return True
+    return False
+
+
+def classify_hard_strata(
+    case: dict,
+    *,
+    records_by_hash: dict[str, dict] | None = None,
+) -> list[str]:
+    """Classify a sanitized case into canonical ``B3_V2_STRATA`` hard buckets."""
+    decision = _case_decision(case)
+    state = (case.get("snapshot") or {}).get("state") or {}
+    if not isinstance(decision, dict) or not isinstance(state, dict):
+        return []
+    options = decision.get("options") or ()
+    if len(options) < 2:
+        return []
+
+    req_type = str(decision.get("request_type") or "")
+    stack = state.get("stack") or ()
+    bf = state.get("battlefield") or ()
+    local = state.get("local_seat_id")
+    option_cards = _resolve_option_cards(decision, state)
+
+    matched: list[str] = []
+
+    # 1. Multi-step stack / hold sequencing.
+    if stack and req_type in {
+        "ActionsAvailable",
+        "SelectTargets",
+        "CastingTimeOptions",
+        "OptionalAction",
+        "SelectN",
+    }:
+        matched.append("stack_sequencing")
+
+    # 2. Aura / equipment / protection / blink timing.
+    relevant_prot = [*option_cards, *(c for c in stack if isinstance(c, dict))]
+    if req_type == "SelectTargets" or any(_TARGET_OR_ATTACH_RE.search(_card_blob(c)) for c in relevant_prot):
+        relevant_prot.extend(c for c in bf if isinstance(c, dict))
+    if relevant_prot and any(_AURA_EQUIP_PROT_RE.search(_card_blob(c)) for c in relevant_prot):
+        matched.append("aura_equipment_protection")
+
+    # 3. CardFacts-covered non-vanilla cards on offered options or the stack.
+    if records_by_hash:
+        from arenamcp.card_facts.client import hash_for_card
+        from arenamcp.card_facts.prompt_render import candidate_fact_hashes
+
+        for card in [*option_cards, *(c for c in stack if isinstance(c, dict))]:
+            digests = list(candidate_fact_hashes(card))
+            raw_h = hash_for_card(card)
+            if raw_h and raw_h not in digests:
+                digests.append(raw_h)
+            if isinstance(card.get("rules_hash"), str) and card["rules_hash"] not in digests:
+                digests.append(card["rules_hash"])
+            rec = next((records_by_hash[d] for d in digests if d in records_by_hash), None)
+            if rec is not None and _record_is_non_vanilla(rec):
+                matched.append("card_facts_non_vanilla")
+                break
+
+    # 4. Close combat decisions & combat-step priority windows.
+    our_creatures = [
+        c for c in bf if _is_creature(c) and (local is None or c.get("controller_seat_id") == local)
+    ]
+    opp_creatures = [
+        c
+        for c in bf
+        if _is_creature(c) and local is not None and c.get("controller_seat_id") not in (None, local)
+    ]
+    lives = [
+        p.get("life_total")
+        for p in (state.get("players") or ())
+        if isinstance(p, dict) and type(p.get("life_total")) is int
+    ]
+    low_life = any(lv <= 15 for lv in lives)
+    turn = state.get("turn") if isinstance(state.get("turn"), dict) else {}
+    phase = str(turn.get("phase") or "").lower().removeprefix("phase_")
+    step = str(turn.get("step") or "").lower().removeprefix("step_")
+    in_combat = ("combat" in phase) or (step in _COMBAT_STEPS)
+    if (
+        req_type in {"DeclareAttackers", "DeclareBlockers", "AssignDamage"}
+        and ((our_creatures and opp_creatures) or low_life)
+    ) or (
+        in_combat
+        and req_type in {"ActionsAvailable", "SelectTargets", "OptionalAction"}
+        and ((our_creatures and opp_creatures) or len(our_creatures) + len(opp_creatures) >= 2 or low_life)
+    ):
+        matched.append("close_combat")
+
+    # 5. Open-mana sweeper / trick exposure.
+    opp_untapped_lands = [
+        c
+        for c in bf
+        if local is not None
+        and c.get("controller_seat_id") not in (None, local)
+        and _is_land(c)
+        and not c.get("is_tapped")
+    ]
+    zones = state.get("zones") if isinstance(state.get("zones"), dict) else {}
+    opp_hand = zones.get("opponent_hand_count")
+    has_opp_hand = opp_hand is None or (type(opp_hand) is int and opp_hand > 0)
+    sweeper_or_trick_opt = any(
+        _TRICK_OR_SWEEPER_RE.search(_card_blob(c))
+        for c in [*option_cards, *(c for c in stack if isinstance(c, dict))]
+    )
+    if (
+        len(opp_untapped_lands) >= 2
+        and req_type in {"ActionsAvailable", "DeclareAttackers", "DeclareBlockers", "SelectTargets"}
+        and has_opp_hand
+        and (len(our_creatures) >= 2 or sweeper_or_trick_opt)
+    ):
+        matched.append("open_mana_sweeper_trick")
+
+    return matched
+
+
+def _spread_by_match_group(bucket: list[dict], rng: random.Random) -> list[dict]:
+    """Order candidates across distinct matches round-robin to avoid single-match flooding."""
+    by_match: dict[str, list[dict]] = collections.defaultdict(list)
+    for item in sorted(bucket, key=lambda c: str(c.get("case_id") or "")):
+        by_match[str(item.get("match_group") or item.get("case_id") or "")].append(item)
+    for items in by_match.values():
+        rng.shuffle(items)
+    groups = list(by_match.keys())
+    rng.shuffle(groups)
+    ordered: list[dict] = []
+    while groups:
+        next_groups = []
+        for grp in groups:
+            items = by_match[grp]
+            if items:
+                ordered.append(items.pop())
+            if items:
+                next_groups.append(grp)
+        groups = next_groups
+    return ordered
+
+
+def _interleave_weighted(losses: list[dict], others: list[dict], loss_weight: float) -> list[dict]:
+    """Deterministically interleave loss and non-loss lists at target ``loss_weight`` ratio."""
+    w = max(0.0, min(1.0, float(loss_weight)))
+    if not others or w >= 1.0:
+        return [*losses, *others]
+    if not losses or w <= 0.0:
+        return [*others, *losses]
+    ordered: list[dict] = []
+    li = 0
+    oi = 0
+    budget = 0.0
+    while li < len(losses) and oi < len(others):
+        budget += w
+        if budget - li >= 0.5:
+            ordered.append(losses[li])
+            li += 1
+        else:
+            ordered.append(others[oi])
+            oi += 1
+    if li < len(losses):
+        ordered.extend(losses[li:])
+    if oi < len(others):
+        ordered.extend(others[oi:])
+    return ordered
+
+
+def sample_stratified_b3_v2(
+    cases: list[dict],
+    *,
+    target_size: int = 200,
+    seed: int = 20261119,
+    records_by_hash: dict[str, dict] | None = None,
+    loss_weight: float = 0.7,
+) -> tuple[list[dict], dict]:
+    """Deterministically sample up to ``target_size`` hard cases balanced across ``B3_V2_STRATA``."""
+    unique: dict[str, dict] = {}
+    for case in cases:
+        if isinstance(case, dict) and case.get("case_id"):
+            unique.setdefault(str(case["case_id"]), case)
+
+    hard_pool: list[tuple[dict, list[str]]] = []
+    by_stratum: dict[str, list[dict]] = {s: [] for s in B3_V2_STRATA}
+    for cid in sorted(unique):
+        case = unique[cid]
+        strata = classify_hard_strata(case, records_by_hash=records_by_hash)
+        if not strata:
+            continue
+        tagged = {**case, "strata": list(strata)}
+        hard_pool.append((tagged, strata))
+        for stratum in strata:
+            by_stratum[stratum].append(tagged)
+
+    rng = random.Random(seed)
+    ordered_by_stratum: dict[str, list[dict]] = {}
+    for stratum in B3_V2_STRATA:
+        losses = _spread_by_match_group([c for c in by_stratum[stratum] if c.get("result") == "loss"], rng)
+        others = _spread_by_match_group([c for c in by_stratum[stratum] if c.get("result") != "loss"], rng)
+        ordered_by_stratum[stratum] = _interleave_weighted(losses, others, loss_weight)
+
+    selected_map: dict[str, dict] = {}
+    primary_counts: dict[str, int] = dict.fromkeys(B3_V2_STRATA, 0)
+    capped_target = max(0, int(target_size))
+
+    if capped_target > 0 and hard_pool:
+        # Allocate initial per-stratum quota processing rarest stratum first.
+        base_quota = max(1, capped_target // len(B3_V2_STRATA))
+        strata_by_rarity = sorted(B3_V2_STRATA, key=lambda s: (len(by_stratum[s]), B3_V2_STRATA.index(s)))
+        for stratum in strata_by_rarity:
+            if len(selected_map) >= capped_target:
+                break
+            quota = min(base_quota, capped_target - len(selected_map))
+            taken = 0
+            for candidate in ordered_by_stratum[stratum]:
+                if taken >= quota or len(selected_map) >= capped_target:
+                    break
+                cid = str(candidate["case_id"])
+                if cid in selected_map:
+                    continue
+                selected_map[cid] = {**candidate, "primary_stratum": stratum}
+                primary_counts[stratum] += 1
+                taken += 1
+
+        # Top up remaining headroom round-robin across strata with smallest picked counts first.
+        while len(selected_map) < capped_target:
+            added_any = False
+            for stratum in sorted(B3_V2_STRATA, key=lambda s: (primary_counts[s], B3_V2_STRATA.index(s))):
+                if len(selected_map) >= capped_target:
+                    break
+                for candidate in ordered_by_stratum[stratum]:
+                    cid = str(candidate["case_id"])
+                    if cid not in selected_map:
+                        selected_map[cid] = {**candidate, "primary_stratum": stratum}
+                        primary_counts[stratum] += 1
+                        added_any = True
+                        break
+            if not added_any:
+                break
+
+    selected = list(selected_map.values())
+    stratum_coverage = {s: sum(1 for c in selected if s in (c.get("strata") or ())) for s in B3_V2_STRATA}
+    by_result = dict(collections.Counter(str(c.get("result") or "unknown") for c in selected))
+    stats = {
+        "eligible_input": len(unique),
+        "hard_pool": len(hard_pool),
+        "selected": len(selected),
+        "target_size": capped_target,
+        "seed": seed,
+        "by_primary_stratum": primary_counts,
+        "by_stratum_coverage": stratum_coverage,
+        "by_result": by_result,
+        "distinct_matches": len({str(c.get("match_group") or "") for c in selected if c.get("match_group")}),
+    }
+    return selected, stats
+
+
+def _assert_no_private_keys(node) -> None:
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if private_key(key):
+                raise UnsafeCase(f"private key present in blinded export: {key}")
+            _assert_no_private_keys(value)
+    elif isinstance(node, list):
+        for item in node:
+            _assert_no_private_keys(item)
+
+
+def build_blind_label_template(
+    cases: list[dict],
+    *,
+    corpus_file: str = "",
+    corpus_sha256: str = "",
+) -> tuple[list[dict], dict]:
+    """Strip outcomes/picks/match IDs and validate schema+privacy for blind B3-v2 labeling."""
+    blinded: list[dict] = []
+    labels: dict[str, dict] = {}
+    by_primary = collections.Counter()
+    by_request_type = collections.Counter()
+
+    for idx, case in enumerate(cases):
+        if not isinstance(case, dict) or not case.get("case_id"):
+            raise UnsafeCase("missing case_id")
+        cid = str(case["case_id"])
+        snapshot = copy.deepcopy(case.get("snapshot"))
+        pending = copy.deepcopy(_case_decision(case))
+        if not isinstance(snapshot, dict) or not isinstance(pending, dict):
+            raise UnsafeCase("missing snapshot or decision")
+        assert_case_schema(snapshot, pending)
+        strata = [str(s) for s in (case.get("strata") or ())]
+        primary = str(case.get("primary_stratum") or (strata[0] if strata else "unclassified"))
+        item = {
+            "case_id": cid,
+            "snapshot": snapshot,
+            "pending_decision": pending,
+            "strata": strata,
+            "primary_stratum": primary,
+        }
+        _assert_no_private_keys(item)
+        if discover_identities(item):
+            raise UnsafeCase("identity value detected in blinded export")
+        blinded.append(item)
+
+        req_type = str(pending.get("request_type") or "unknown")
+        by_primary[primary] += 1
+        by_request_type[req_type] += 1
+        labels[cid] = {
+            "index": idx,
+            "request_type": req_type,
+            "primary_stratum": primary,
+            "strata": strata,
+            "status": "abstain",
+            "pivotal": None,
+            "acceptable": [],
+            "blunders": [],
+            "reason": "",
+        }
+
+    effective_sha = corpus_sha256 or hashlib.sha256(json.dumps(blinded).encode("utf-8")).hexdigest()
+    template = {
+        "schema_version": 2,
+        "benchmark": "B3-v2",
+        "corpus_file": corpus_file,
+        "corpus_sha256": effective_sha,
+        "counts": {
+            "total": len(blinded),
+            "labelled": 0,
+            "abstain": len(blinded),
+            "by_primary_stratum": dict(by_primary),
+            "by_request_type": dict(by_request_type),
+        },
+        "labels": labels,
+    }
+    return blinded, template
+
+
+def stratum_summary(
+    cases: list[dict],
+    results: list[dict],
+    labels: dict[str, dict] | None = None,
+) -> dict:
+    """Summarize replay status and label scores grouped by B3-v2 primary stratum and all strata."""
+    case_by_id = {str(c.get("case_id")): c for c in cases if isinstance(c, dict) and c.get("case_id")}
+    primary: dict[str, dict[str, int | float | None]] = {}
+    all_strata: dict[str, dict[str, int | float | None]] = {}
+
+    def _bucket() -> dict[str, int | float | None]:
+        return {
+            "total": 0,
+            "answered": 0,
+            "withheld": 0,
+            "error": 0,
+            "scored": 0,
+            "acceptable": 0,
+            "blunder": 0,
+            "unlabelled_choice": 0,
+            "blunder_rate": None,
+        }
+
+    def _bump(group: dict[str, dict], key: str, row: dict, outcome: str) -> None:
+        b = group.setdefault(key, _bucket())
+        b["total"] += 1
+        status = str(row.get("status") or "error")
+        if status == "answered":
+            b["answered"] += 1
+        elif status == "withheld":
+            b["withheld"] += 1
+        else:
+            b["error"] += 1
+        if outcome in {"acceptable", "blunder", "unlabelled_choice"}:
+            b["scored"] += 1
+            b[outcome] += 1
+
+    for row in results:
+        cid = str(row.get("case_id") or "")
+        case = case_by_id.get(cid) or {}
+        outcome = _score_row(row, labels)
+        primary_key = str(
+            case.get("primary_stratum")
+            or ((case.get("strata") or [None])[0] if case.get("strata") else None)
+            or ((labels or {}).get(cid) or {}).get("primary_stratum")
+            or "unclassified"
+        )
+        _bump(primary, primary_key, row, outcome)
+        strata = case.get("strata") or ((labels or {}).get(cid) or {}).get("strata") or [primary_key]
+        for stratum in strata:
+            _bump(all_strata, str(stratum), row, outcome)
+
+    for group in (primary, all_strata):
+        for bucket in group.values():
+            scored = int(bucket["scored"] or 0)
+            if scored > 0:
+                bucket["blunder_rate"] = round(int(bucket["blunder"] or 0) / scored, 4)
+
+    return {"by_primary_stratum": primary, "by_stratum": all_strata}
+
+
 @contextlib.contextmanager
 def _silence_replay_diagnostics():
     """Dedicated-process FD and Python stream suppression, restored on errors.
@@ -1498,6 +2039,14 @@ def main(argv=None):
         action="store_true",
         help="compare native combat submissions in aggregate-only mode",
     )
+    parser.add_argument(
+        "--sample-b3-v2",
+        type=Path,
+        default=None,
+        help="curate stratified hard B3-v2 blinded cases & label template into DIR",
+    )
+    parser.add_argument("--sample-size", type=int, default=200, help="target B3-v2 sample size")
+    parser.add_argument("--sample-seed", type=int, default=20261119, help="RNG seed for B3-v2 sampling")
     args = parser.parse_args(argv)
     if args.native_combat and not args.aggregate_only:
         parser.exit(2, "native combat requires aggregate-only mode\n")
@@ -1513,6 +2062,38 @@ def main(argv=None):
         except Exception:
             parser.exit(2, "offline aggregate replay failed; no cases exported\n")
         print(json.dumps(value, sort_keys=True))
+        return
+    if args.sample_b3_v2 is not None:
+        if args.bundles is None:
+            parser.exit(2, "--sample-b3-v2 requires --bundles\n")
+        bundle_paths = sorted(args.bundles.glob("*.json.gz")) or sorted(args.bundles.glob("*.json"))
+        cases, manifest, build_counts = build_cases(bundle_paths)
+        records_by_hash, facts_sha = load_card_facts_dir(args.card_facts_dir)
+        selected, stats = sample_stratified_b3_v2(
+            cases,
+            target_size=args.sample_size,
+            seed=args.sample_seed,
+            records_by_hash=records_by_hash,
+        )
+        blinded, labels_template = build_blind_label_template(
+            selected,
+            corpus_file="blinded.local.json",
+        )
+        args.sample_b3_v2.mkdir(parents=True, exist_ok=True)
+        blinded_bytes = json.dumps(blinded, indent=2).encode("utf-8")
+        (args.sample_b3_v2 / "blinded.local.json").write_bytes(blinded_bytes)
+        labels_template["corpus_sha256"] = hashlib.sha256(blinded_bytes).hexdigest()
+        (args.sample_b3_v2 / "labels_template.local.json").write_text(json.dumps(labels_template, indent=2))
+        manifest_by_id = {m["case_id"]: m for m in manifest if isinstance(m, dict) and m.get("case_id")}
+        selected_manifest = [
+            manifest_by_id[c["case_id"]] for c in selected if c.get("case_id") in manifest_by_id
+        ]
+        (args.sample_b3_v2 / "private-selected-manifest.local.json").write_text(
+            json.dumps(selected_manifest, indent=2)
+        )
+        sample_stats_out = {**stats, "build_counts": build_counts, "facts_sha256": facts_sha}
+        (args.sample_b3_v2 / "sample_stats.local.json").write_text(json.dumps(sample_stats_out, indent=2))
+        print(json.dumps(sample_stats_out, indent=2))
         return
     if args.cases is None and args.cases_file is None:
         parser.exit(2, "cases directory or --cases-file required outside aggregate-only mode\n")
@@ -1576,6 +2157,8 @@ def main(argv=None):
             "model_layer": v1_report["model_layer"],
             "v1_summary": report_mod.summary(v1_report),
         }
+        if any(isinstance(c, dict) and (c.get("primary_stratum") or c.get("strata")) for c in cases):
+            summary_out["by_stratum"] = stratum_summary(cases, results, labels_map)
         if repeats_summary is not None:
             summary_out["repeats_summary"] = {
                 "repeats": repeats_summary["repeats"],

@@ -4,21 +4,65 @@ import re
 
 from arenamcp.combat_keywords import has_combat_keyword
 from arenamcp.optional_prompts import _local_seat
+from arenamcp.play_safety import record_for_card, record_is_complete
 
 _COLORED_EXILE = re.compile(
     r"\bwhen you cast this spell, exile up to one target permanent that(?:'|’)s one or more colors\.", re.I
 )
+_CAST_EXILE_TRIGGERS = frozenset({"CAST", "ON_CAST", "WHEN_YOU_CAST", "SPELL_CAST"})
 _COLORS = {"w", "u", "b", "r", "g", "white", "blue", "black", "red", "green"}
 _PERMANENTS = {"creature", "artifact", "enchantment", "planeswalker", "land", "battle"}
 
 
-def _possible_target_restriction(card):
+_COLOR_TARGET_RE = re.compile(r"\b(?:colored|colors?)\b", re.I)
+_PERMANENT_TARGET_RE = re.compile(r"\bpermanents?\b", re.I)
+_COLORLESS_TARGET_RE = re.compile(r"\bcolorless\b", re.I)
+
+
+def _possible_target_restriction(card, state=None):
+    if any(
+        tok in str(k).lower()
+        for k in (card.get("keywords") or ())
+        for tok in ("hexproof", "shroud", "protection", "ward")
+    ):
+        return True
+    rec = record_for_card(card, state)
+    if record_is_complete(rec):
+        rec_keywords = [str(k).lower() for k in rec.body.keywords or ()]
+        return any(tok in kw for kw in rec_keywords for tok in ("hexproof", "shroud", "ward", "protection"))
+    if any(has_combat_keyword(card, k) for k in ("hexproof", "shroud")):
+        return True
     text = str(card.get("oracle_text") or "").lower()
-    return (
-        any(has_combat_keyword(card, k) for k in ("hexproof", "shroud"))
-        or bool(re.search(r"\b(?:protection|ward)\b|\bcan(?:not|'t) be (?:the )?target", text))
-        or any("protection" in str(k).lower() or "ward" in str(k).lower() for k in card.get("keywords") or [])
-    )
+    return bool(re.search(r"\b(?:protection|ward)\b|\bcan(?:not|'t) be (?:the )?target", text))
+
+
+def _cast_exile_trigger(card, state=None) -> str:
+    """Return colored-permanent cast-trigger text (CardFacts-first, regex fallback)."""
+    from arenamcp.ability_synthesizer import Exile
+
+    rec = record_for_card(card, state)
+    if record_is_complete(rec):
+        for entry in rec.effects:
+            trig = str(entry.trigger or "").strip().upper().replace(" ", "_")
+            if trig in _CAST_EXILE_TRIGGERS and isinstance(entry.effect, Exile):
+                raw_blob = " ".join(
+                    [str(entry.effect.target or ""), *(str(c) for c in entry.conditions or ())]
+                )
+                norm_blob = re.sub(r"[_-]+", " ", raw_blob).lower()
+                if (
+                    _PERMANENT_TARGET_RE.search(norm_blob)
+                    and _COLOR_TARGET_RE.search(norm_blob)
+                    and not _COLORLESS_TARGET_RE.search(norm_blob)
+                ):
+                    trigger = _COLORED_EXILE.search(str(card.get("oracle_text") or ""))
+                    return (
+                        trigger.group()
+                        if trigger
+                        else "When you cast this spell, exile up to one target permanent that's one or more colors."
+                    )
+        return ""
+    trigger = _COLORED_EXILE.search(str(card.get("oracle_text") or ""))
+    return trigger.group() if trigger else ""
 
 
 def colored_exile_payoffs(decision, state):
@@ -54,7 +98,7 @@ def colored_exile_payoffs(decision, state):
         types = {str(t).lower().removeprefix("cardtype_") for t in card.get("card_types") or []}
         if not types:
             types = set(re.findall(r"\w+", str(card.get("type_line") or "").lower()))
-        if colors & _COLORS and types & _PERMANENTS and not _possible_target_restriction(card):
+        if colors & _COLORS and types & _PERMANENTS and not _possible_target_restriction(card, state):
             candidates.append(card)
     if not candidates:
         return []
@@ -64,9 +108,9 @@ def colored_exile_payoffs(decision, state):
         if option.payable is not True or option.meta.get("actionType") != "ActionType_Cast":
             continue
         card = sources.get(option.meta.get("instanceId"), {})
-        trigger = _COLORED_EXILE.search(str(card.get("oracle_text") or ""))
+        trigger = _cast_exile_trigger(card, state)
         if trigger:
-            result.append((option, card, trigger.group(), candidates))
+            result.append((option, card, trigger, candidates))
     return result
 
 

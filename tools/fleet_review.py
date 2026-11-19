@@ -43,6 +43,7 @@ import ast
 import collections
 import gzip
 import json
+import math
 import os
 import re
 import sys
@@ -122,6 +123,107 @@ PLAN_FORMED_RE = re.compile(r"Game plan reform \(")
 PATH_CORRECTED_RE = re.compile(r"GamePlan validation.*\bpath:.*corrected")
 
 UNKNOWN = "unknown"
+
+BASELINE_WIN_RATE = 0.484
+TARGET_WIN_RATE = 0.520
+MIN_GATE_MATCHES = 30
+
+
+def wilson_interval(
+    wins: int,
+    decided: int,
+    *,
+    z: float = 1.959963984540054,
+) -> tuple[float, float]:
+    """Two-sided Wilson binomial confidence interval in [0.0, 1.0]."""
+    if decided <= 0:
+        return 0.0, 0.0
+    w = max(0, min(int(wins), int(decided)))
+    n = int(decided)
+    p = w / n
+    z2 = z * z
+    denom = 1.0 + z2 / n
+    center = (p + z2 / (2.0 * n)) / denom
+    half = (z * math.sqrt((p * (1.0 - p) + z2 / (4.0 * n)) / n)) / denom
+    return max(0.0, center - half), min(1.0, center + half)
+
+
+def evaluate_promotion_gate(
+    wins: int,
+    losses: int,
+    *,
+    baseline: float = BASELINE_WIN_RATE,
+    target: float = TARGET_WIN_RATE,
+    min_matches: int = MIN_GATE_MATCHES,
+    watchdog_hop_limit_rate: float | None = None,
+    max_hop_limit_rate: float = 0.05,
+    b3_v2_blunder_rate: float | None = None,
+    max_b3_v2_blunder_rate: float = 0.05,
+) -> dict:
+    """Evaluate W1/M1 promotion gate against >52% target and 48.4% pre-Neon baseline."""
+    wins_i = max(0, int(wins))
+    losses_i = max(0, int(losses))
+    decided = wins_i + losses_i
+    win_rate = (wins_i / decided) if decided > 0 else None
+    win_rate_pct = (100.0 * win_rate) if win_rate is not None else None
+    low, high = wilson_interval(wins_i, decided)
+    delta = (win_rate - baseline) if win_rate is not None else None
+    min_matches_met = decided >= min_matches
+    win_rate_met = win_rate is not None and win_rate > target
+    clock_safety_met = (
+        True if watchdog_hop_limit_rate is None else (float(watchdog_hop_limit_rate) <= max_hop_limit_rate)
+    )
+    b3_v2_met = True if b3_v2_blunder_rate is None else (float(b3_v2_blunder_rate) <= max_b3_v2_blunder_rate)
+
+    reasons: list[str] = []
+    if not min_matches_met:
+        reasons.append(f"insufficient decided matches: {decided} < {min_matches}")
+    if not win_rate_met:
+        if win_rate is None:
+            reasons.append("no decided matches to compute win rate")
+        else:
+            reasons.append(f"win rate {100.0 * win_rate:.1f}% <= target {100.0 * target:.1f}%")
+    if not clock_safety_met:
+        reasons.append(
+            f"watchdog_hop_limit_rate {float(watchdog_hop_limit_rate):.4f} > {max_hop_limit_rate:.4f}"
+        )
+    if not b3_v2_met:
+        reasons.append(f"b3_v2_blunder_rate {float(b3_v2_blunder_rate):.4f} > {max_b3_v2_blunder_rate:.4f}")
+
+    passed = min_matches_met and win_rate_met and clock_safety_met and b3_v2_met
+    if not min_matches_met:
+        status = "insufficient_matches"
+    elif passed:
+        status = "passed"
+    else:
+        status = "failed"
+
+    return {
+        "status": status,
+        "passed": passed,
+        "wins": wins_i,
+        "losses": losses_i,
+        "decided_matches": decided,
+        "win_rate": win_rate,
+        "win_rate_pct": win_rate_pct,
+        "wilson_95_low": low,
+        "wilson_95_high": high,
+        "baseline_win_rate": baseline,
+        "target_win_rate": target,
+        "delta_vs_baseline": delta,
+        "min_matches": min_matches,
+        "min_matches_met": min_matches_met,
+        "win_rate_met": win_rate_met,
+        "clock_safety_met": clock_safety_met,
+        "b3_v2_met": b3_v2_met,
+        "watchdog_hop_limit_rate": float(watchdog_hop_limit_rate)
+        if watchdog_hop_limit_rate is not None
+        else None,
+        "max_hop_limit_rate": max_hop_limit_rate,
+        "b3_v2_blunder_rate": float(b3_v2_blunder_rate) if b3_v2_blunder_rate is not None else None,
+        "max_b3_v2_blunder_rate": max_b3_v2_blunder_rate,
+        "reasons": reasons,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -687,6 +789,38 @@ def aggregate(reviews):
 
     agg["matches"] = len(matches)
     agg["days"] = sorted(agg["days"])
+    total_wins = 0
+    total_losses = 0
+    total_unknown_results = 0
+    total_answers = 0
+    for fold in matches.values():
+        latest = fold["_latest"]
+        if latest["result"] == "win":
+            total_wins += 1
+        elif latest["result"] == "loss":
+            total_losses += 1
+        else:
+            total_unknown_results += 1
+        total_answers += fold["answers"]
+    decided = total_wins + total_losses
+    low, high = wilson_interval(total_wins, decided)
+    wr = (total_wins / decided) if decided > 0 else None
+    hop_rate = (agg["flags"].get("watchdog_hop_limit", 0) / total_answers) if total_answers > 0 else None
+    agg["win_rate_summary"] = {
+        "wins": total_wins,
+        "losses": total_losses,
+        "unknown_results": total_unknown_results,
+        "decided_matches": decided,
+        "win_rate": wr,
+        "win_rate_pct": (100.0 * wr) if wr is not None else None,
+        "wilson_95_low": low,
+        "wilson_95_high": high,
+    }
+    agg["promotion_gate"] = evaluate_promotion_gate(
+        total_wins,
+        total_losses,
+        watchdog_hop_limit_rate=hop_rate,
+    )
     return agg
 
 
@@ -849,6 +983,33 @@ def render_report(agg):
             "  %s [%s] turn=%s lives=%s (start=%d)"
             % (e["match_id"], e["format_name"], e["turn_number"], e["lives"], e["starting_life"])
         )
+    gate = agg.get("promotion_gate")
+    if isinstance(gate, dict):
+        w("")
+        w(
+            "== Win-rate promotion gate (W1 vs %.1f%% pre-Neon baseline, target > %.1f%%)"
+            % (
+                100.0 * gate["baseline_win_rate"],
+                100.0 * gate["target_win_rate"],
+            )
+        )
+        if gate.get("win_rate_pct") is None:
+            w("  status=%s: 0 decided matches (min=%d)" % (gate["status"], gate["min_matches"]))
+        else:
+            w(
+                "  status=%s: %dW/%dL (%.1f%%, Wilson 95%% [%.1f%%, %.1f%%], delta vs baseline %+.1f pp)"
+                % (
+                    gate["status"],
+                    gate["wins"],
+                    gate["losses"],
+                    gate["win_rate_pct"],
+                    100.0 * gate["wilson_95_low"],
+                    100.0 * gate["wilson_95_high"],
+                    100.0 * gate["delta_vs_baseline"],
+                )
+            )
+        if gate.get("reasons"):
+            w("  reasons: " + "; ".join(gate["reasons"]))
     return "\n".join(out)
 
 
@@ -870,7 +1031,7 @@ def json_report(agg):
             }
         )
         by_deck[key] = entry
-    return {
+    out = {
         "bundles": agg["bundles"],
         "matches": agg["matches"],
         "days": agg["days"],
@@ -887,6 +1048,11 @@ def json_report(agg):
         "opponent_commanders": {k: dict(v) for k, v in agg["opponent_commanders"].items()},
         "early_ends": agg["early_ends"],
     }
+    if "win_rate_summary" in agg:
+        out["win_rate_summary"] = dict(agg["win_rate_summary"])
+    if "promotion_gate" in agg:
+        out["promotion_gate"] = dict(agg["promotion_gate"])
+    return out
 
 
 def collect_reviews(directory, since=None):

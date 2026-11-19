@@ -45,6 +45,108 @@ from datetime import datetime, timezone
 from statistics import median
 from types import SimpleNamespace
 
+BASELINE_WIN_RATE = 0.484
+TARGET_WIN_RATE = 0.520
+MIN_GATE_MATCHES = 30
+
+
+def wilson_interval(
+    wins: int,
+    decided: int,
+    *,
+    z: float = 1.959963984540054,
+) -> tuple[float, float]:
+    """Two-sided Wilson binomial confidence interval in [0.0, 1.0]."""
+    if decided <= 0:
+        return 0.0, 0.0
+    w = max(0, min(int(wins), int(decided)))
+    n = int(decided)
+    p = w / n
+    z2 = z * z
+    denom = 1.0 + z2 / n
+    center = (p + z2 / (2.0 * n)) / denom
+    half = (z * math.sqrt((p * (1.0 - p) + z2 / (4.0 * n)) / n)) / denom
+    return max(0.0, center - half), min(1.0, center + half)
+
+
+def evaluate_promotion_gate(
+    wins: int,
+    losses: int,
+    *,
+    baseline: float = BASELINE_WIN_RATE,
+    target: float = TARGET_WIN_RATE,
+    min_matches: int = MIN_GATE_MATCHES,
+    watchdog_hop_limit_rate: float | None = None,
+    max_hop_limit_rate: float = 0.05,
+    b3_v2_blunder_rate: float | None = None,
+    max_b3_v2_blunder_rate: float = 0.05,
+) -> dict:
+    """Evaluate W1/M1 promotion gate against >52% target and 48.4% pre-Neon baseline."""
+    wins_i = max(0, int(wins))
+    losses_i = max(0, int(losses))
+    decided = wins_i + losses_i
+    win_rate = (wins_i / decided) if decided > 0 else None
+    win_rate_pct = (100.0 * win_rate) if win_rate is not None else None
+    low, high = wilson_interval(wins_i, decided)
+    delta = (win_rate - baseline) if win_rate is not None else None
+    min_matches_met = decided >= min_matches
+    win_rate_met = win_rate is not None and win_rate > target
+    clock_safety_met = (
+        True if watchdog_hop_limit_rate is None else (float(watchdog_hop_limit_rate) <= max_hop_limit_rate)
+    )
+    b3_v2_met = True if b3_v2_blunder_rate is None else (float(b3_v2_blunder_rate) <= max_b3_v2_blunder_rate)
+
+    reasons: list[str] = []
+    if not min_matches_met:
+        reasons.append(f"insufficient decided matches: {decided} < {min_matches}")
+    if not win_rate_met:
+        if win_rate is None:
+            reasons.append("no decided matches to compute win rate")
+        else:
+            reasons.append(f"win rate {100.0 * win_rate:.1f}% <= target {100.0 * target:.1f}%")
+    if not clock_safety_met:
+        reasons.append(
+            f"watchdog_hop_limit_rate {float(watchdog_hop_limit_rate):.4f} > {max_hop_limit_rate:.4f}"
+        )
+    if not b3_v2_met:
+        reasons.append(f"b3_v2_blunder_rate {float(b3_v2_blunder_rate):.4f} > {max_b3_v2_blunder_rate:.4f}")
+
+    passed = min_matches_met and win_rate_met and clock_safety_met and b3_v2_met
+    if not min_matches_met:
+        status = "insufficient_matches"
+    elif passed:
+        status = "passed"
+    else:
+        status = "failed"
+
+    return {
+        "status": status,
+        "passed": passed,
+        "wins": wins_i,
+        "losses": losses_i,
+        "decided_matches": decided,
+        "win_rate": win_rate,
+        "win_rate_pct": win_rate_pct,
+        "wilson_95_low": low,
+        "wilson_95_high": high,
+        "baseline_win_rate": baseline,
+        "target_win_rate": target,
+        "delta_vs_baseline": delta,
+        "min_matches": min_matches,
+        "min_matches_met": min_matches_met,
+        "win_rate_met": win_rate_met,
+        "clock_safety_met": clock_safety_met,
+        "b3_v2_met": b3_v2_met,
+        "watchdog_hop_limit_rate": float(watchdog_hop_limit_rate)
+        if watchdog_hop_limit_rate is not None
+        else None,
+        "max_hop_limit_rate": max_hop_limit_rate,
+        "b3_v2_blunder_rate": float(b3_v2_blunder_rate) if b3_v2_blunder_rate is not None else None,
+        "max_b3_v2_blunder_rate": max_b3_v2_blunder_rate,
+        "reasons": reasons,
+    }
+
+
 _REPO_SRC = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src")
 if _REPO_SRC not in sys.path:
     sys.path.insert(0, _REPO_SRC)
@@ -1417,6 +1519,13 @@ def aggregate(summaries):
         for mid, fold in matches.items()
         if fold["synergy_execution"]["decisions_evaluated"] > 0
     }
+    t1 = aggregate_t1(matches)
+    ap_on = wl_by_autopilot["on"]
+    ap_on_matches = {mid: fold for mid, fold in matches.items() if fold["_latest"].get("autopilot")}
+    t1_ap_on = aggregate_t1(ap_on_matches)
+    ap_on_answers = sum(fold["answers"] for fold in ap_on_matches.values())
+    hop_waits = int((t1_ap_on.get("hop_limit_watchdog_waits") or {}).get("n") or 0)
+    hop_rate = (hop_waits / ap_on_answers) if ap_on_answers > 0 else None
 
     return {
         "matches": n_matches,
@@ -1461,7 +1570,12 @@ def aggregate(summaries):
         },
         "prompt_size_median_chars": percentile(all_prompts, 0.5),
         "prompt_size_p90_chars": percentile(all_prompts, 0.9),
-        "t1": aggregate_t1(matches),
+        "t1": t1,
+        "promotion_gate": evaluate_promotion_gate(
+            ap_on["wins"],
+            ap_on["losses"],
+            watchdog_hop_limit_rate=hop_rate,
+        ),
         "synergy_execution": {
             "matches_with_decisions": len(syn_per_match),
             "decisions_evaluated": syn_evaluated,
@@ -1679,6 +1793,21 @@ def render_report(agg):
             f"(executed={syn['executed_live_synergy']}, other={syn['chose_different_play']}, rate={rate}; "
             f"line-tagged executed={syn.get('line_tagged_executed', 0)}, other={syn.get('line_tagged_other', 0)})"
         )
+
+    gate = agg.get("promotion_gate")
+    if isinstance(gate, dict):
+        out.append("")
+        if gate.get("win_rate_pct") is None:
+            out.append(
+                f"Promotion gate (autopilot on): {gate.get('status')} (0 decided matches vs target > {100.0 * gate['target_win_rate']:.1f}%)"
+            )
+        else:
+            out.append(
+                f"Promotion gate (autopilot on): {gate['status']} — {gate['wins']}W/{gate['losses']}L "
+                f"({gate['win_rate_pct']:.1f}%, Wilson 95% [{100.0 * gate['wilson_95_low']:.1f}%, {100.0 * gate['wilson_95_high']:.1f}%], "
+                f"delta vs {100.0 * gate['baseline_win_rate']:.1f}% baseline: {100.0 * gate['delta_vs_baseline']:+.1f} pp, "
+                f"target > {100.0 * gate['target_win_rate']:.1f}%)"
+            )
 
     return "\n".join(out)
 

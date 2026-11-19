@@ -5,7 +5,6 @@ via a separate LLM call with a constrained schema prompt.
 """
 
 import concurrent.futures
-import inspect
 import json
 import logging
 import os
@@ -13,13 +12,123 @@ import re
 import threading
 import time
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass, field
-from enum import Enum
 from typing import Any
 
+from arenamcp.action_response_parser import (
+    normalize_action_payload as normalize_action_payload,
+)
+from arenamcp.action_response_parser import (
+    parse_action_plan_response,
+    parse_turn_plan_response,
+    strip_json_fences,
+)
+from arenamcp.action_types import (
+    _ACTIONS_AVAILABLE_BRIDGE_REQUESTS,
+    _ARENA_TARGET_MARKS,
+    BLOCK_DANGER_LIFE,
+    BLOCK_DANGER_MARGIN,
+    DECLINE_DECISION,
+    FALLBACK_ATTACK_PUSH,
+    FALLBACK_AUTO_PICK,
+    FALLBACK_BIG_BOARD,
+    FALLBACK_LLM_UNAVAILABLE,
+    FALLBACK_NO_ACTIONS,
+    FALLBACK_PREFLIGHT_LAND_DROP,
+    NO_TARGETS_DECISION,
+    ActionPlan,
+    ActionType,
+    GameAction,
+    LLMUnavailableError,
+    SecondLookError,
+    TurnPlan,
+    TurnPlanStep,
+    _accepted_extras,
+    _as_int,
+    _autopilot_task_rules,
+    _dynamic_autopilot_rules,
+    _is_opponent_turn,
+    _walker_loyalty,
+    is_decision_cancelled_error,
+    is_llm_unavailable_error,
+    is_time_budget_error,
+    linked_cast_note,
+    power_only_note,
+)
+from arenamcp.action_types import (
+    _AUTOPILOT_SITUATIONAL_LINES as _AUTOPILOT_SITUATIONAL_LINES,
+)
+from arenamcp.action_types import (
+    _BACKEND_FAILURE_TYPES as _BACKEND_FAILURE_TYPES,
+)
+from arenamcp.action_types import (
+    ACTION_SCHEMA as ACTION_SCHEMA,
+)
+from arenamcp.action_types import (
+    AUTOPILOT_SYSTEM_PROMPT as AUTOPILOT_SYSTEM_PROMPT,
+)
+from arenamcp.action_types import (
+    POWER_ONLY_NOTE as POWER_ONLY_NOTE,
+)
+from arenamcp.action_types import (
+    _strip_attacker_annotations as _strip_attacker_annotations,
+)
+from arenamcp.action_types import (
+    autopilot_system_prompt as autopilot_system_prompt,
+)
 from arenamcp.backend_health import is_backend_error_text
 from arenamcp.backends.proxy import first_token_budget
 from arenamcp.big_board import big_board_declaration, compress_menu, declaration_effort, group_menu
+from arenamcp.board_math_picks import (
+    _DAMAGED_RE as _DAMAGED_RE,
+)
+from arenamcp.board_math_picks import (
+    _FACE_TARGET_RE as _FACE_TARGET_RE,
+)
+from arenamcp.board_math_picks import (
+    _ID_MENTION_RE as _ID_MENTION_RE,
+)
+from arenamcp.board_math_picks import (
+    _REACTIVE_CAST_ROLES as _REACTIVE_CAST_ROLES,
+)
+from arenamcp.board_math_picks import (
+    _UNDAMAGED_RE as _UNDAMAGED_RE,
+)
+from arenamcp.board_math_picks import (
+    _controller_seat,
+    _legal_payable,
+    _lethal_this_turn,
+    _local_seat,
+    _local_turn,
+    _model_reasoning,
+    _modes_line,
+    _opponent_tapped_out,
+    _option_prints,
+    _option_text,
+    _unmodelled_options,
+    board_math_agreement,
+    board_math_option_pick,
+    line_casts_option,
+    line_fallback_option_pick,
+    own_stack_only,
+)
+from arenamcp.board_math_picks import (
+    _kill_names as _kill_names,
+)
+from arenamcp.board_math_picks import (
+    _line_text as _line_text,
+)
+from arenamcp.board_math_picks import (
+    _no_board_math_reason as _no_board_math_reason,
+)
+from arenamcp.board_math_picks import (
+    _own_main_phase_with_empty_stack as _own_main_phase_with_empty_stack,
+)
+from arenamcp.board_math_picks import (
+    _reasoning_names_target as _reasoning_names_target,
+)
+from arenamcp.board_math_picks import (
+    board_math_legacy_plan as board_math_legacy_plan,
+)
 from arenamcp.cast_notes import (
     combat_cast_note,
     creature_payment_note,
@@ -31,7 +140,7 @@ from arenamcp.cast_notes import (
 )
 from arenamcp.channel_zones import battlefield_channel_note, channel_land_note
 from arenamcp.damage_assignment import fallback_plan as damage_fallback_plan
-from arenamcp.damage_assignment import is_assign_damage_window, spoken_split
+from arenamcp.damage_assignment import is_assign_damage_window
 from arenamcp.decision_memory import (
     PROPOSED,
     DecisionMemory,
@@ -52,7 +161,16 @@ from arenamcp.match_context import (
     strategic_policy,
     with_deck_reference,
 )
-from arenamcp.play_safety import filter_play_options, find_source, shrink_note, unsafe_play_reason
+from arenamcp.play_safety import (
+    attack_trigger_damage,
+    each_opponent_damage,
+    exiles_graveyard_card,
+    face_burn_damage,
+    filter_play_options,
+    find_source,
+    shrink_note,
+    unsafe_play_reason,
+)
 from arenamcp.situational_rules import SUBJECTS as SITUATIONAL_SUBJECTS
 from arenamcp.situational_rules import compose as compose_rules
 from arenamcp.situational_rules import deck_subjects, dynamic_subjects
@@ -84,27 +202,6 @@ from arenamcp.ward import (
 logger = logging.getLogger(__name__)
 
 
-def _as_int(value: Any) -> int:
-    try:
-        return int(value or 0)
-    except (TypeError, ValueError):
-        return 0
-
-
-def _walker_loyalty(card: dict[str, Any]) -> int | None:
-    """A planeswalker's current loyalty (its loyalty counters first), None when unknown (#130)."""
-    from arenamcp.combat_strategy import loyalty
-
-    return loyalty(card)
-
-
-def _is_opponent_turn(game_state: dict[str, Any], local_seat: Any) -> bool:
-    """Whether the opponent is the active player (False when either seat is unknown)."""
-    active = _as_int((game_state.get("turn") or {}).get("active_player"))
-    local = _as_int(local_seat)
-    return bool(active and local and active != local)
-
-
 def _ability_rules_text(ability_grp_id: int) -> str:
     """Arena rules text of one ability id (e.g. a modal spell's chosen mode), or ""."""
     try:
@@ -115,193 +212,7 @@ def _ability_rules_text(ability_grp_id: int) -> str:
         return ""
 
 
-# Arena's target highlight, as the typed-decision prompt states it per target.
-_ARENA_TARGET_MARKS = {
-    "Hot": "good target",
-    "Cold": "bad target for you",
-    "ReplaceRole": "already wears this Role from you: the new Role only replaces it (no gain)",
-}
-
-# Sentinel returned by plan_decision_options when the safe move is to
-# DECLINE the pending window (cancel / pause for manual) rather than pick
-# any option. Live 2026-07-05: a harmful SelectTargets whose only legal
-# candidates were the user's own permanents must not be auto-submitted.
-DECLINE_DECISION = "__decline__"
-
-# Internal sentinel for an "up to N" SelectTargets answered with no (more)
-# targets. plan_decision_options returns it to callers as an empty list.
-NO_TARGETS_DECISION = "__no_targets__"
-
-# Blocks leaving this much life or less are replaced when the solver's blocks
-# keep at least BLOCK_DANGER_MARGIN more (see _check_block_survival).
-BLOCK_DANGER_LIFE = 5
-BLOCK_DANGER_MARGIN = 5
-
-
-_ACTIONS_AVAILABLE_BRIDGE_REQUESTS = {
-    "ActionsAvailable",
-    "ActionsAvailableReq",
-    "ActionsAvailableRequest",
-}
-
-
-class ActionType(Enum):
-    """Types of actions the autopilot can execute in MTGA."""
-
-    PLAY_LAND = "play_land"
-    CAST_SPELL = "cast_spell"
-    DECLARE_ATTACKERS = "declare_attackers"
-    DECLARE_BLOCKERS = "declare_blockers"
-    SELECT_TARGET = "select_target"
-    SELECT_N = "select_n"
-    MODAL_CHOICE = "modal_choice"
-    MULLIGAN_KEEP = "mulligan_keep"
-    MULLIGAN_MULL = "mulligan_mull"
-    PASS_PRIORITY = "pass_priority"
-    RESOLVE = "resolve"
-    DRAFT_PICK = "draft_pick"
-    CLICK_BUTTON = "click_button"
-    ACTIVATE_ABILITY = "activate_ability"
-    ORDER_BLOCKERS = "order_blockers"
-    # New decision types from GRE protocol
-    ASSIGN_DAMAGE = "assign_damage"
-    ORDER_COMBAT_DAMAGE = "order_combat_damage"
-    PAY_COSTS = "pay_costs"
-    SEARCH_LIBRARY = "search_library"
-    DISTRIBUTE = "distribute"
-    NUMERIC_INPUT = "numeric_input"
-    CHOOSE_STARTING_PLAYER = "choose_starting_player"
-    SELECT_REPLACEMENT = "select_replacement"
-    SELECT_COUNTERS = "select_counters"
-    CASTING_OPTIONS = "casting_options"
-    ORDER_TRIGGERS = "order_triggers"
-
-
-@dataclass
-class GameAction:
-    """A single structured action to execute in MTGA."""
-
-    action_type: ActionType
-    card_name: str = ""
-    target_names: list[str] = field(default_factory=list)
-    attacker_names: list[str] = field(default_factory=list)
-    attacker_targets: dict[str, str] = field(default_factory=dict)
-    blocker_assignments: dict[str, str] = field(default_factory=dict)
-    modal_index: int = 0
-    select_card_names: list[str] = field(default_factory=list)
-    scry_position: str = ""  # "top" or "bottom"
-    numeric_value: int = 0  # For numeric_input (X spells, pay life)
-    distribution: dict[str, int] | None = None  # target_name -> amount
-    play_or_draw: str = ""  # "play" or "draw"
-    reasoning: str = ""
-    confidence: float = 1.0
-    gre_action_ref: Any | None = None  # GREActionRef from gre_action_matcher
-    # Land play via the MDFC back face ("Action: PlayMDFC" menu entries) —
-    # the matcher must resolve it to the raw PlayMDFC action, not a plain
-    # Play (#39, live 2026-07-06).
-    mdfc: bool = False
-    commander_return: bool = False
-    # Bound at planning time, then revalidated against the live combat request.
-    attacker_instance_ids: list[int] = field(default_factory=list)
-    blocker_instance_assignments: dict[int, int] = field(default_factory=dict)
-    # The model chose this action (a plan without a fallback_reason), as opposed
-    # to an auto-confirm, AFK default or deterministic fallback.
-    model_choice: bool = False
-    # Why a deterministic override replaced what was asked for; spoken after the action.
-    override_note: str = ""
-    # The model's own reasoning when a guard rewrote ``reasoning`` (ledger #36),
-    # kept so reviews can see what the model meant.
-    model_reasoning: str = ""
-    # A combat guard (crackback, losing attack) emptied this attack declaration on
-    # purpose: a decided hold, which the bridge must not refill with the solver's pick.
-    guard_hold: bool = False
-    # The line search's attack, pushed over a declaration that ends worse (ledger #178): the
-    # bridge sends it as it is, with no losing-attack thinning (the search already judged
-    # every block) and no solver override.
-    line_push: bool = False
-
-    def __str__(self) -> str:
-        parts = [self.action_type.value]
-        if self.card_name:
-            parts.append(self.card_name)
-        if self.target_names:
-            parts.append(f"-> {', '.join(self.target_names)}")
-        if self.attacker_names:
-            parts.append(f"attackers: {', '.join(self.attacker_names)}")
-        if self.attacker_targets:
-            parts.append(
-                "attack targets: "
-                + ", ".join(f"{name} -> {target}" for name, target in self.attacker_targets.items())
-            )
-        if self.blocker_assignments:
-            assigns = [f"{b}->{a}" for b, a in self.blocker_assignments.items()]
-            parts.append(f"blocks: {', '.join(assigns)}")
-        if self.modal_index and f"mode {self.modal_index}" not in (self.card_name or "").lower():
-            parts.append(f"mode {self.modal_index}")
-        if self.scry_position:
-            parts.append(f"scry {self.scry_position}")
-        return " | ".join(parts)
-
-
-# WP-0.4 fallback reason codes. A non-empty reason means a DEFAULT PATH, not the
-# model, chose the action; bug reports and logs use it to tell the two apart.
-# Note "[pick-salvage]" is deliberately absent: that is the model's own pick
-# index recovered from malformed JSON, so the decision is still the model's.
-FALLBACK_AUTO_PICK = "planner_auto_pick"
-FALLBACK_PREFLIGHT_LAND_DROP = "planner_preflight_land_drop"
-FALLBACK_NO_ACTIONS = "planner_no_actions"
-# A combat declaration on a board too big for the model to answer in time (ledger #155/#162):
-# the combat solver's safe default declares it, the model is not asked.
-FALLBACK_BIG_BOARD = "planner_big_board_solver"
-# The line search's attack replaced a declaration that ends worse (ledger #178).
-FALLBACK_ATTACK_PUSH = "planner_attack_push"
-# The model server could not answer: the circuit breaker is open, the call
-# timed out, or it failed with a transport/HTTP error or an error sentinel.
-# An empty plan carrying this reason means "decide without the model now",
-# not "nothing to do" (bug_20261006_185403: both looked identical).
-FALLBACK_LLM_UNAVAILABLE = "llm_unavailable"
-
-
-class LLMUnavailableError(RuntimeError):
-    """The model was not asked (circuit open) or answered with an error sentinel."""
-
-
-class SecondLookError(ValueError):
-    """A typed-decision pick a deterministic check set aside, with no better model answer in time.
-
-    The caller's board-math fallback decides instead of firing the pick
-    (ledger #57, #59: a false lethal claim, face burn the line search rates
-    below its best line).
-    """
-
-
-# Exception classes (matched by name to avoid importing the proxy/SDK here)
-# that mean the model server failed rather than the answer being unusable.
-_BACKEND_FAILURE_TYPES = frozenset(
-    {
-        "BackendError",
-        "BackendUnavailable",
-        "APIError",
-        "APIConnectionError",
-        "APITimeoutError",
-        "APIStatusError",
-    }
-)
-
-
-def _accepted_extras(complete: Any, extras: dict[str, Any]) -> dict[str, Any]:
-    """The optional complete() keywords (call_class, first_token_timeout_s) this backend accepts.
-
-    Dropping the ones it lacks keeps a missing keyword from reaching the
-    TypeError fallbacks, which would also drop raise_on_error.
-    """
-    try:
-        parameters = inspect.signature(complete).parameters
-    except (TypeError, ValueError):
-        return {}
-    if any(parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()):
-        return dict(extras)
-    return {key: value for key, value in extras.items() if key in parameters}
+from arenamcp.action_legality import _ActionLegalityMixin
 
 
 def llm_circuit_open(backend: Any) -> bool:
@@ -330,391 +241,6 @@ def llm_degraded(backend: Any) -> bool:
     except Exception as error:  # a broken health probe must never block a decision
         logger.debug("backend degraded probe failed: %s", error)
         return False
-
-
-def is_time_budget_error(error: BaseException) -> bool:
-    """The call ran out of its own time budget (the model was too slow), not a dead server.
-
-    Includes the overall streaming budget ("LLM ... time budget exhausted"),
-    the decision hedge's deadline ("no answer in time"), a single call's
-    first-token cutoff ("no first token within ..."), and a mid-stream stall
-    ("stream stalled: ..."). A transport "Request timed out." or an open
-    circuit breaker stays "unavailable".
-    """
-    if getattr(error, "kind", None) in ("first_token_timeout", "stream_stall"):
-        return True
-    text = str(error).lower()
-    return (
-        "time budget exhausted" in text
-        or "no answer in time" in text
-        or "no first token within" in text
-        or "stream stalled" in text
-    )
-
-
-def is_decision_cancelled_error(error: BaseException) -> bool:
-    """The caller cancelled the decision because the Arena window moved on."""
-    if getattr(error, "kind", None) == "cancelled":
-        return True
-    text = str(error).lower()
-    return (
-        "decision cancelled" in text
-        or "request cancelled" in text
-        or "request changed during planning" in text
-    )
-
-
-def is_llm_unavailable_error(error: BaseException) -> bool:
-    """A model-server failure (circuit open, timeout, transport, HTTP), not a bad answer."""
-    if isinstance(
-        error, (LLMUnavailableError, TimeoutError, ConnectionError, concurrent.futures.TimeoutError)
-    ):
-        return True
-    return any(cls.__name__ in _BACKEND_FAILURE_TYPES for cls in type(error).__mro__)
-
-
-@dataclass
-class ActionPlan:
-    """A complete plan of actions to execute."""
-
-    actions: list[GameAction] = field(default_factory=list)
-    overall_strategy: str = ""
-    voice_advice: str = ""
-    trigger: str = ""
-    turn_number: int = 0
-    # WP-0.4: why this plan did NOT come from the model ("" = the model decided).
-    # The old signal was an "[auto-pick]" / "[land-drop-first]" prefix sniffed
-    # out of overall_strategy, which fails silently: reword a strategy string
-    # and fallbacks stop being identified. Bug reports and logs rely on this
-    # structured tag to tell model decisions from deterministic ones.
-    fallback_reason: str = ""
-    # With FALLBACK_LLM_UNAVAILABLE: how the model call failed ("timeout",
-    # "llm_unavailable: circuit open", "llm_error: <error>", ...), so callers can
-    # tell a server that can't be reached from one that was only slow.
-    fallback_detail: str = ""
-
-    def spoken_actions(self) -> str:
-        """Describe validated actions, never a separate model-generated recommendation."""
-        from arenamcp.narration import combat_declaration, counted_creatures, spoken_list, spoken_name
-
-        lines = []
-        for action in self.actions:
-            kind = action.action_type
-            if kind == ActionType.CAST_SPELL:
-                line = f"Cast {action.card_name}"
-            elif kind == ActionType.PLAY_LAND:
-                line = f"Play {action.card_name}"
-            elif kind == ActionType.ACTIVATE_ABILITY:
-                line = f"Activate {action.card_name}"
-            elif kind == ActionType.SELECT_TARGET:
-                line = f"Target {', '.join(action.target_names)}"
-            elif kind == ActionType.DECLARE_ATTACKERS:
-                line = (
-                    f"Attack with {counted_creatures([spoken_name(name) for name in action.attacker_names])}"
-                    if action.attacker_names
-                    else "Don't attack"
-                )
-                if action.attacker_targets:
-                    line = combat_declaration("Attack", action.attacker_targets)
-                elif action.target_names:
-                    line += " at " + spoken_list([spoken_name(name) for name in action.target_names])
-            elif kind == ActionType.DECLARE_BLOCKERS:
-                line = (
-                    combat_declaration("Block", action.blocker_assignments)
-                    if action.blocker_assignments
-                    else "Don't block"
-                )
-            elif kind == ActionType.ASSIGN_DAMAGE and spoken_split(action.distribution):
-                line = "Assign " + spoken_split(action.distribution)
-            elif kind == ActionType.NUMERIC_INPUT:
-                line = f"Choose {action.numeric_value}"
-            elif kind == ActionType.PASS_PRIORITY:
-                line = "Pass"
-            elif kind == ActionType.SELECT_N:
-                line = (
-                    f"Select {', '.join(action.select_card_names)}"
-                    if action.select_card_names
-                    else "Confirm selection"
-                )
-            elif kind == ActionType.MULLIGAN_KEEP:
-                line = "Keep this hand"
-            elif kind == ActionType.MULLIGAN_MULL:
-                line = "Mulligan"
-            elif kind == ActionType.CLICK_BUTTON:
-                if action.commander_return and action.card_name.lower() == "accept":
-                    names = ", ".join(action.target_names) or "your commander"
-                    line = f"Return {names} to the command zone"
-                else:
-                    line = f"Click {action.card_name or 'button'}"
-            else:
-                line = kind.value.replace("_", " ").capitalize()
-            if action.override_note:
-                line += f" — {action.override_note.rstrip('.')}"
-            lines.append(f"{line}.")
-        return " ".join(lines)
-
-    def __str__(self) -> str:
-        lines = [f"Plan ({self.trigger}, turn {self.turn_number}): {self.overall_strategy}"]
-        for i, action in enumerate(self.actions, 1):
-            lines.append(f"  {i}. {action}")
-        return "\n".join(lines)
-
-
-@dataclass
-class TurnPlanStep:
-    """One user-visible play in a multi-step turn plan.
-
-    Mana abilities, casting-time sub-decisions, and search prompts are
-    intentionally NOT modeled here — those are mid-spell mechanical
-    decisions, not plays. The status field is updated as steps execute.
-    """
-
-    action_type: str  # "play_land", "cast_spell", "activate_ability", "declare_attackers", etc.
-    card_name: str = ""
-    target_names: list[str] = field(default_factory=list)
-    rationale: str = ""
-    status: str = "pending"  # "pending" | "current" | "done" | "skipped"
-
-
-@dataclass
-class TurnPlan:
-    """An ordered list of plays the autopilot intends to make this turn.
-
-    Built once per turn (on the first non-trivial own-turn LLM call) and
-    held until the turn changes or until divergence forces a replan. The
-    UI displays this as a sticky panel and highlights progress as steps
-    complete; per-priority-window single-action LLM calls still happen
-    for execution. The plan is parallel context, not a replacement for
-    the per-window planner.
-    """
-
-    turn_number: int
-    steps: list[TurnPlanStep] = field(default_factory=list)
-    current_idx: int = 0
-    last_replanned_reason: str = ""
-
-    def __post_init__(self) -> None:
-        # First step starts as "current" so the UI has something to highlight
-        # immediately, before any actions execute.
-        if self.steps and 0 <= self.current_idx < len(self.steps):
-            if self.steps[self.current_idx].status == "pending":
-                self.steps[self.current_idx].status = "current"
-
-    def remaining(self) -> list[TurnPlanStep]:
-        return self.steps[self.current_idx :]
-
-    def mark_current_done(self) -> None:
-        if 0 <= self.current_idx < len(self.steps):
-            self.steps[self.current_idx].status = "done"
-            self.current_idx += 1
-            if self.current_idx < len(self.steps):
-                # Whichever step is now current gets the "current" marker so
-                # the UI can highlight it. Don't touch already-skipped/done.
-                if self.steps[self.current_idx].status == "pending":
-                    self.steps[self.current_idx].status = "current"
-
-
-# JSON schema embedded in the system prompt for constrained output
-ACTION_SCHEMA = """{
-  "actions": [{
-    "pick": "integer: the 1-based number of a Legal: menu entry; OMIT for structured actions",
-    "action_type": "play_land|cast_spell|declare_attackers|declare_blockers|select_target|select_n|modal_choice|mulligan_keep|mulligan_mull|pass_priority|resolve|draft_pick|click_button|activate_ability|order_blockers|assign_damage|order_combat_damage|pay_costs|search_library|distribute|numeric_input|choose_starting_player|select_replacement|select_counters|casting_options|order_triggers",
-    "card_name": "string (card name, empty if not applicable)",
-    "target_names": ["string (target card/player names)"],
-    "attacker_names": ["string (creature names to attack with)"],
-    "attacker_targets": {"attacker_name": "Opponent or exact legal planeswalker name [instance_id]"},
-    "blocker_assignments": {"blocker_name": "attacker_name"},
-    "modal_index": 0,
-    "select_card_names": ["string (cards to select for scry/discard/etc)"],
-    "scry_position": "top|bottom (only for scry decisions)",
-    "numeric_value": 0,
-    "distribution": {"target_name": 0},
-    "play_or_draw": "play|draw",
-    "reasoning": "string (brief explanation, max ~10 words)"
-  }],
-  "overall_strategy": "string (1-sentence strategy summary)",
-  "voice_advice": "string (1-2 sentence spoken coaching advice for the player, concise and actionable)"
-}
-OMIT every field that does not apply. A menu pick needs ONLY "pick" (plus a
-short "reasoning"); a structured action needs ONLY action_type + its own
-fields. Never emit empty placeholder fields."""
-
-
-AUTOPILOT_SYSTEM_PROMPT = (
-    """You are an MTG Arena autopilot. Given the game state and trigger, output a JSON action plan to execute.
-
-RULES:
-- PREFERRED OUTPUT: the "Legal:" menu is NUMBERED. For a simple play (cast,
-  play land, activate, pass), answer with {"pick": <number>} — the number of
-  the menu entry you choose. "pick" MUST be a bare integer (e.g. 3), never
-  text. Respond in English only. Use structured action_type fields ONLY for
-  combat declarations, targeting, distribution, and other decisions that
-  need extra data.
-- ONLY pick actions from the "Legal:" menu. Never invent actions. Never
-  propose anything under EXCLUDED.
-- MANA IS AUTO-PAID. The engine taps lands/rocks automatically when you cast
-  or activate. NEVER try to tap a permanent for mana as your action — mana
-  activations are not in your menu for exactly this reason.
-- play_land ONLY when a "Play Land:" (or PlayMDFC) entry is in the menu.
-  "#N" suffixes on battlefield names (e.g. "Forest #3") are display
-  disambiguators for permanents already in play — never playable cards.
-- TRUST [OK] tags. "[OK]" on a Cast or Activate Ability action means MTGA's mana solver already verified the cost is payable from your current mana — including hybrid, phyrexian, cost reductions, and affinity. Do NOT recompute the cost yourself or claim you "lack the mana": the Mana summary shows floating mana only, not what your untapped lands can produce. If an action is [OK] in the legal list, you CAN take it. Failing to play affordable [OK] actions wastes the turn. Every action in the legal list is offered by MTGA as currently legal — a missing [OK] on an Activate Ability does NOT mean it is unaffordable; tap/sacrifice activations cost no mana at all (e.g. cracking a fetch land — which also triggers landfall). The one exception is an explicit "[NEED:<cost>]" tag: that ability's mana cost was checked against your actual mana and you cannot pay it, so never recommend it.
-- If a pending decision is shown, resolve that decision (not a new cast/play).
-- ONE action per plan. Don't sequence (no "play land" + "cast spell").
-- LANDFALL ORDER: an [OK] permanent with a landfall trigger ("whenever a land you control enters") that you will cast this turn comes BEFORE the land drop, so the land triggers it.
-- EXCEPTION: declare_attackers/declare_blockers carry the full set in one action — do NOT add a "done" click.
-- ATTACK TARGETS: Supply attacker_names AND attacker_targets mapping each chosen creature to its legal recipient. When a planeswalker and the opponent are available, explicitly choose who each creature attacks; split attacks when useful. Compare killing the planeswalker (loyalty, abilities, future value) with lethal or pressure on the player. Damage to a planeswalker is NOT damage to the opponent. Prefer the recipient-aware combat search over the older player-only attack line when both appear. The search models visible combat approximately, not hidden tricks, triggered abilities, or future loyalty activations; never invent unknown loyalty. Say the chosen recipients in voice_advice; never leave that choice to a default UI target.
-- MANY ATTACKERS: attacker_names may be ["all"] (every attacker on the menu) or ["all except <names>"]; with attacker_targets {"all": "Opponent"} when every one attacks the player. A menu line "N-M. Attack with: Rabbit #1..#12 (1/1): 12 identical" stands for twelve interchangeable tokens; name them "Rabbit #1" ... "Rabbit #12".
-- ZERO-POWER ATTACKERS: A legal attacker need not be a useful attacker. Leave zero-power creatures untapped for mana or defense unless an actual attack trigger, required attack, pump plan, or damage-replacement effect gives attacking a concrete benefit. Flying alone does not make a zero-power attack useful.
-- BLOCKERS: "Block with: X" names an eligible blocker, NOT a complete move. Supply action_type="declare_blockers" and blocker_assignments mapping each blocker to a named attacker. Never use a bare menu pick or an empty attacker name. Use an explicit empty mapping only when intentionally declaring no blocks.
-- RESOURCE TRADES: For blocks, sacrifices or discards, compare the resulting board now AND after the earliest feasible recovery under the deck playbook. Price trigger payoffs, lost persistent resources, colored mana, tax and timing. A token label, legendary status, or generic material score cannot decide this comparison by itself.
-- BLOCKING COST: Nonlethal damage is not free. Before declining blocks, compare remaining life and the next attack with sacrificing the least useful single blocker. Preserving an engine must enable a concrete recovery play, not just a vague ramp plan. Respect mana spending restrictions: mana usable only for creature abilities cannot help cast spells. A large hit can justify losing a support creature while retaining the stronger mana engine.
-- ANIMATION: Making an artifact or land a creature does not untap it or make it enter again. A tapped source, including one tapped by the payment solution, cannot become an attacker just by animating it. Creatures that entered this turn need haste to attack; haste-on-entry triggers do not retroactively give older creatures haste. Require a concrete benefit before paying for temporary animation, and use current card types rather than leftover power/toughness to decide whether it is already a creature.
-- EQUIPMENT: Reassess haste-granting equipment after its wearer taps or new creatures enter. Move it to an untapped summoning-sick creature when that enables a useful attack or tap ability now. A tapped wearer can still deserve shroud/hexproof protection; do not move equipment just because another creature is untapped. Equip only when Arena offers the activation; do not shuffle it endlessly or float mana without a concrete use.
-- [SS] = summoning sick (can't attack). * prefix = token. [3P1P] = 3 +1/+1 counters. [UNBLOCKABLE] = can't be blocked right now (own text or a static grant); no blocker can stop its damage.
-- If a TURN PLAN is shown, follow it. Stay committed to the locked turn plan unless a material change (opponent response, lethal threat, unexpected trigger) makes it obsolete.
-- PROTECTIVE / LIFE-PAYMENT ABILITIES: Do NOT activate an ability that pays life (or other resources) for indestructible/hexproof/protection/a temporary buff unless there is a concrete threat to the creature right now — it is blocked by a creature that would kill it, it is targeted by removal/burn on the stack, or it must survive incoming damage this step. An unblocked attacker facing no removal needs no protection; activating "just in case" only loses life. When in doubt, pass.
-- BOARD PRESSURE: When the opponent's board is wider than yours or grew by multiple creatures this turn, prioritize interaction (removal, profitable blocks, combat tricks) over advancing your own plan. At low life (below ~15), block with large or indestructible creatures — an indestructible blocker loses nothing by blocking.
-- STACK: A "STACK (top resolves first):" block lists every spell and ability waiting to resolve, in resolution order — entry 1 resolves NEXT. Each entry shows its controller (YOU/OPP), its name, and "-> targets: ..." when it targets something. Read it before you act: if an OPP spell targets one of your permanents, decide whether to respond (counter it, or use the targeted permanent's ability in response so it isn't wasted) BEFORE it resolves — once it resolves the window is gone. Do not "respond" to your own spell that nothing is fighting over, and do not counter a spell that does not matter. When the stack is empty there is nothing to respond to.
-- COMBAT SOLVER: "Computed optimal blocks:" and "Computed optimal attack:" are recommendations under approximate life/material/resource values, not proof of the best strategic move. Large searches may use a bounded heuristic. Prefer the recommendation, but account for combat tricks, removal, resource engines, your hand, and next-turn recovery; explain a concrete reason when deviating. Do not trade away multiple mana/draw/token engines merely to prevent nonlethal damage or kill one attacker: compare the damage with the resources and future blocks lost. Tokens with useful abilities are not disposable just because they are small. Survival takes precedence when taking the hit would be lethal. These lines never authorize a combat action absent from the Legal: menu; main-phase combat analysis is planning information only.
-- VOICE CLARITY: when a play's payoff is on FUTURE turns (static effects,
-  engines, ramp), voice_advice must say WHY NOW in a few words ("spare mana,
-  nothing else to cast", "get the doubler down before next turn's counters") —
-  a correct play that sounds random loses the user's trust.
-- VOICE CLARITY: voice_advice must state ONE concrete action in plain spoken language and name the specific creatures involved. For blocks: either name the block ("Block their <attacker> with your <blocker>") or, if not blocking, say "Don't block — take <N> from <attacker>". For attacks, name who swings. Never give self-contradictory advice (e.g. saying both "let it trade" and "take the hit"), and never reference a creature that is not on the board. Your voice_advice must match your actual assignments; explain any deviation from the solver's recommendation.
-- DESTRUCTIVE TARGETING (destroy, exile, deals damage, -N/-N): Ground each target in its current controller and instance ID. Prefer opposing threats. An intentional friendly target requires a concrete benefit (such as a death trigger or the friendly fighter in a fight effect); explicitly acknowledge that it is yours. No legal opponent targets does not justify destroying your own creature. Decline optional targeting when there is no useful target.
-- TUTORS & SEARCH LIBRARY: When searching your library for an X-cost tutor (e.g. Green Sun's Zenith, Finale of Devastation, Chord of Calling), you may ONLY select a card whose mana value (CMC) is less than or equal to X. Never propose a card whose mana value exceeds X.
-- LAND PLAY PRIORITY: On Precombat Main (Main1), if you have not played a land this turn and hold a land in hand, playing your land MUST be the FIRST step before casting spells that require that mana.
-- Output ONLY JSON matching the schema. No prose, no markdown, no commentary.
-
-ACTION_TYPE MAPPING (match Legal text → action_type):
-- "Play Land: X"       → action_type=play_land,    card_name="X"
-- "Cast X"             → action_type=cast_spell,   card_name="X"
-- "Activate Ability: X"→ action_type=activate_ability, card_name="X"
-- "Pass"               → action_type=pass_priority
-NEVER use action_type=click_button for a card play — that's only for explicit UI buttons (Done, Skip, OK).
-
-PER-DECISION FIELDS:
-- choose_starting_player: play_or_draw = "play" or "draw".
-- numeric_input: numeric_value within shown min/max.
-- distribute: map each chosen target name (or its offered instance ID for same-name targets) to its amount. Respect the offered limits.
-- assign_damage: order by priority (kill key targets first).
-- search_library / select_counters: use select_card_names.
-- casting_options (CastingTimeOptions window — "Cast normally" vs an
-  alternative cost / mode while a spell is being cast): answer with
-  {"pick": <menu number>} or action_type=modal_choice + modal_index.
-  This is a mode pick, NOT numeric_input and NOT a new cast.
-
-SCHEMA:
-"""
-    + ACTION_SCHEMA
-)
-
-# AUTOPILOT_SYSTEM_PROMPT rule lines that need their subject in the game
-# (situational_rules.SUBJECTS).
-_AUTOPILOT_SITUATIONAL_LINES = (
-    ("animation", "- ANIMATION: "),
-    ("equipment", "- EQUIPMENT: "),
-    ("library", "- TUTORS & SEARCH LIBRARY: "),
-)
-
-
-def _autopilot_task_rules(match_subjects: Iterable[str]) -> str:
-    """Autopilot rules filtered to core rules plus ``match_subjects``."""
-    wanted = set(match_subjects)
-    dropped = tuple(prefix for subject, prefix in _AUTOPILOT_SITUATIONAL_LINES if subject not in wanted)
-    if not dropped:
-        return AUTOPILOT_SYSTEM_PROMPT
-    return "\n".join(line for line in AUTOPILOT_SYSTEM_PROMPT.split("\n") if not line.startswith(dropped))
-
-
-def _dynamic_autopilot_rules(dyn_subjects: Iterable[str]) -> str:
-    """Situational strategic and autopilot rules active dynamically beyond ``match_subjects``."""
-    wanted = set(dyn_subjects)
-    if not wanted:
-        return ""
-    parts: list[str] = []
-    policy_tail = dynamic_strategic_policy(wanted)
-    if policy_tail:
-        parts.append(policy_tail)
-    prefixes = tuple(prefix for subject, prefix in _AUTOPILOT_SITUATIONAL_LINES if subject in wanted)
-    if prefixes:
-        lines = [line for line in AUTOPILOT_SYSTEM_PROMPT.split("\n") if line.startswith(prefixes)]
-        if lines:
-            parts.append("\n".join(lines))
-    if not parts:
-        return ""
-    return "SITUATIONAL RULES:\n" + "\n".join(parts)
-
-
-def autopilot_system_prompt(subjects: Any = SITUATIONAL_SUBJECTS) -> str:
-    """The plan_actions system prompt for the rule subjects in play (all by default)."""
-    wanted = set(subjects)
-    # E2: the strategic policy leads BOTH system prompts (typed decisions and
-    # autopilot plan_actions), so the two calls share one long cached prefix;
-    # the per-prompt rule text follows. Pure reorder, no byte changes.
-    return strategic_policy(wanted) + "\n" + _autopilot_task_rules(wanted)
-
-
-def _strip_attacker_annotations(tail: str) -> str:
-    """Drop trailing annotations from a "Attack with: X" / "Block with: X" tail.
-
-    Legal lines may carry a "(P/T)" suffix plus warning tags like
-    "[0 POWER ...]"; we keep only the card name + optional #N.
-    """
-    cleaned = tail
-    for marker in (" (", " ["):
-        cut = cleaned.find(marker)
-        if cut >= 0:
-            cleaned = cleaned[:cut]
-    return cleaned
-
-
-from arenamcp.action_legality import _ActionLegalityMixin
-
-
-def linked_cast_note(game_state: dict[str, Any], meta: dict[str, Any], lookup: Any = None) -> str:
-    """Rules for a cast whose card is not its source object (prepared spell, Adventure, back face).
-
-    2026-10-05: "Cast Peer Review" (Prudent Fateseer's prepared spell) reached the
-    model as a bare name; the spell is not in hand, so no zone listed its rules.
-    """
-    source = find_source(game_state, meta)
-    cast_grp = meta.get("grpId")
-    if not source or not cast_grp or not source.get("grp_id") or cast_grp == source.get("grp_id"):
-        return ""
-    if lookup is None:
-        from arenamcp.match_context import _local_card
-
-        def lookup(grp_id: int) -> dict[str, Any]:
-            return _local_card(grp_id, int(time.monotonic() // 30))
-
-    spell = lookup(int(cast_grp)) or {}
-    if not spell.get("oracle_text"):
-        return ""
-    return " " + json.dumps(
-        {
-            "casts": spell.get("name"),
-            "from": source.get("name"),
-            "mana_cost": spell.get("mana_cost"),
-            "type": spell.get("type_line"),
-            "rules": " ".join(str(spell.get("oracle_text")).split())[:300],
-        },
-        ensure_ascii=False,
-    )
-
-
-POWER_ONLY_NOTE = (
-    "  [-N/-0 lowers POWER only; toughness is unchanged, so it never kills. "
-    "It only matters in this turn's combat]"
-)
-
-
-def power_only_note(text: Any) -> str:
-    """Flag -N/-0 effects: 2026-10-05 the model cast Icy Reception's -5/-0 "to kill" a 2/3."""
-    from arenamcp.play_safety import POWER_ONLY_DEBUFF
-
-    return POWER_ONLY_NOTE if POWER_ONLY_DEBUFF.search(str(text or "")) else ""
 
 
 class ActionPlanner(_ActionLegalityMixin):
@@ -3322,74 +2848,7 @@ class ActionPlanner(_ActionLegalityMixin):
         The turn plan rides along on the first own-turn action call (R2,
         2026-07-06), so ``response`` is that merged action response.
         """
-        if not response:
-            return None
-        text = response.strip()
-        fence_match = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", text, re.DOTALL)
-        if fence_match:
-            text = fence_match.group(1).strip()
-        text = re.sub(r",\s*([\]}])", r"\1", text)
-
-        try:
-            data = json.loads(text)
-        except json.JSONDecodeError:
-            logger.debug("turn plan: response was not valid JSON")
-            return None
-
-        if not isinstance(data, dict):
-            return None
-
-        # Tolerate either {"turn_plan": {"steps": [...]}} or {"steps": [...]}.
-        block = data.get("turn_plan")
-        if isinstance(block, dict):
-            steps_data = block.get("steps", [])
-        else:
-            steps_data = data.get("steps", [])
-
-        # P0-8 belt-and-braces: a response without a turn_plan block still
-        # describes the turn through its actions — map actions→steps
-        # (reasoning→rationale) instead of discarding the whole response.
-        if (not isinstance(steps_data, list) or not steps_data) and isinstance(data.get("actions"), list):
-            steps_data = [
-                {**a, "rationale": a.get("rationale") or a.get("reasoning", "")}
-                for a in data["actions"]
-                if isinstance(a, dict)
-            ]
-
-        if not isinstance(steps_data, list):
-            return None
-
-        steps: list[TurnPlanStep] = []
-        for item in steps_data:
-            if not isinstance(item, dict):
-                continue
-            action_type = str(item.get("action_type") or "").strip().lower()
-            if not action_type:
-                continue
-            # Only keep user-visible plays.
-            if action_type not in self._TURN_PLAN_USER_VISIBLE_ACTIONS:
-                continue
-            card_name = str(item.get("card_name") or "").strip()
-            target_names_raw = item.get("target_names") or []
-            if isinstance(target_names_raw, list):
-                target_names = [str(t).strip() for t in target_names_raw if str(t).strip()]
-            else:
-                target_names = []
-            rationale = str(item.get("rationale") or "").strip()
-            steps.append(
-                TurnPlanStep(
-                    action_type=action_type,
-                    card_name=card_name,
-                    target_names=target_names,
-                    rationale=rationale,
-                    status="pending",
-                )
-            )
-
-        if not steps:
-            return None
-
-        return TurnPlan(turn_number=current_turn, steps=steps)
+        return parse_turn_plan_response(response, current_turn, self._TURN_PLAN_USER_VISIBLE_ACTIONS)
 
     def advance_turn_plan(self, executed_action: GameAction) -> str:
         """Advance the active turn plan for an executed action.
@@ -4364,216 +3823,10 @@ class ActionPlanner(_ActionLegalityMixin):
         bridge_request: str | None = None,
         game_state: dict[str, Any] | None = None,
     ) -> ActionPlan:
-        """Parse LLM response into an ActionPlan.
-
-        Handles markdown fences, trailing commas, missing fields, and
-        other common LLM output quirks.
-        """
-        plan = ActionPlan()
-
-        # Extract JSON from markdown fences if present
-        json_str = response.strip()
-        fence_match = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", json_str, re.DOTALL)
-        if fence_match:
-            json_str = fence_match.group(1).strip()
-
-        # Remove trailing commas before } or ]
-        json_str = re.sub(r",\s*([\]}])", r"\1", json_str)
-
-        # Try to parse
-        try:
-            data = json.loads(json_str)
-        except json.JSONDecodeError as e:
-            from arenamcp.action_diagnostics import record_parse_failure
-            from arenamcp.action_json import recover_action_json
-
-            decode_error = e
-
-            def record_failure(recovery: str) -> None:
-                state = game_state if isinstance(game_state, dict) else {}
-                request = state.get("_bridge_request_payload")
-                request_id = (
-                    (request.get("gameStateId"), request.get("msgId")) if isinstance(request, dict) else ()
-                )
-                record_parse_failure(
-                    response,
-                    parse_input=json_str,
-                    error=decode_error,
-                    recovery=recovery,
-                    legal_action_count=len(legal_actions or []),
-                    request_type=bridge_request,
-                    request_id=request_id,
-                    origin_logger=logger,
-                )
-
-            recovered = recover_action_json(json_str)
-            if recovered is not None:
-                record_failure("action_payload")
-                return self._parse_response(
-                    json.dumps(recovered), legal_actions, decision_context, bridge_request, game_state
-                )
-            # #37 (live 2026-07-06): DSV4 sporadically emits unquoted garbage
-            # tokens as the pick value ('"pick": 什么人') which invalidates the
-            # whole JSON. The pick intent is usually still recoverable —
-            # salvage the first integer pick and resolve it against the menu
-            # before giving up.
-            m = re.search(r'"pick"\s*:\s*(\d+)', json_str)
-            if m and self._last_menu:
-                idx = int(m.group(1)) - 1
-                if 0 <= idx < len(self._last_menu):
-                    action = self._legal_action_to_action(self._last_menu[idx])
-                    if action is not None:
-                        record_failure("pick")
-                        plan.actions = [action]
-                        plan.overall_strategy = f"[pick-salvage] {self._last_menu[idx]}"
-                        plan.voice_advice = self._humanize_legal_action(self._last_menu[idx])
-                        return plan
-            record_failure("none")
-            return plan
-
-        # Accept the two shapes models emit besides {"actions": [...]}: a bare
-        # list of actions, and a single top-level action ({"pick": 1,
-        # "reasoning": ...}). glm-5.3-flash does the latter; with only the
-        # wrapper accepted, a correct pick parsed as 0 actions and the
-        # fallback heuristic passed the turn with castable spells in hand
-        # (bug_20260920_231337 replay, 2026-09-22).
-        if isinstance(data, list):
-            data = {"actions": data}
-        elif not isinstance(data, dict):
-            data = {}
-        elif "actions" not in data and ("pick" in data or "action_type" in data):
-            data = {**data, "actions": [data]}
-            if not data.get("overall_strategy"):
-                data["overall_strategy"] = str(data.get("reasoning", "") or "")
-
-        # Extract overall strategy and voice advice
-        plan.overall_strategy = data.get("overall_strategy", "")
-        plan.voice_advice = data.get("voice_advice", "")
-
-        # Parse actions
-        for action_data in data.get("actions", []):
-            # R3: a menu pick resolves to the exact legal-action string we
-            # showed — the action is legal by construction, so name
-            # hallucination is structurally impossible on this path.
-            action = None
-            pick = action_data.get("pick") if isinstance(action_data, dict) else None
-            if pick is not None and self._structured_combat_declaration(action_data):
-                pick = None  # an echoed pick never replaces a declaration (#44)
-            if pick is not None:
-                try:
-                    idx = int(pick) - 1
-                except (TypeError, ValueError):
-                    idx = -1
-                if 0 <= idx < len(self._last_menu):
-                    entry = self._last_menu[idx]
-                    if entry.lower().startswith("block with:"):
-                        if not action_data.get("blocker_assignments"):
-                            logger.warning("Blocker menu pick %s omitted its attacker assignments", pick)
-                            continue
-                        action = self._parse_action({**action_data, "action_type": "declare_blockers"})
-                    else:
-                        action = self._menu_entry_action(entry, action_data)
-                    if action is not None:
-                        action.reasoning = str(action_data.get("reasoning", "") or "")
-                        logger.debug(f"Menu pick {pick} → {self._last_menu[idx]!r}")
-                if action is None:
-                    logger.warning(
-                        f"Planner pick {pick!r} "
-                        + (
-                            f"({self._last_menu[idx]!r}) has no executable mapping"
-                            if 0 <= idx < len(self._last_menu)
-                            else f"out of menu range (1..{len(self._last_menu)})"
-                        )
-                        + "; trying structured fields"
-                    )
-            if action is None:
-                if (
-                    isinstance(action_data, dict)
-                    and str(action_data.get("action_type") or "").strip().lower() == "declare_blockers"
-                    and not (action_data.get("blocker_assignments") or {})
-                    and (
-                        str((decision_context or {}).get("type") or "").lower() == "declare_attackers"
-                        or str(bridge_request or "") == "DeclareAttackers"
-                        or any(
-                            str(a or "").lower().strip().startswith(("attack with:", "declare attackers:"))
-                            for a in legal_actions
-                        )
-                    )
-                ):
-                    # #196: a mislabelled hold; attackers the answer does name still attack.
-                    action_data = {
-                        **action_data,
-                        "action_type": "declare_attackers",
-                        "attacker_names": list(action_data.get("attacker_names") or []),
-                        "attacker_targets": dict(action_data.get("attacker_targets") or {}),
-                    }
-                action = self._parse_action(action_data)
-            if action is not None and action.action_type == ActionType.DECLARE_ATTACKERS:
-                from arenamcp.action_legality import normalize_attack_declaration
-
-                context = decision_context or {}
-                ids = context.get("legal_attacker_ids") or [
-                    a.get("attackerInstanceId")
-                    for a in context.get("raw_attackers") or []
-                    if isinstance(a, dict)
-                ]
-                repaired = normalize_attack_declaration(action, legal_actions, ids)
-                if repaired:
-                    logger.info("Attack declaration repaired: %s", repaired)
-            if action and game_state and game_state.get("battlefield"):
-                try:
-                    self._bind_combat_identities(action, game_state, decision_context or {})
-                except (ValueError, TypeError, KeyError) as error:
-                    logger.warning("Rejecting ambiguous combat assignment: %s", error)
-                    continue
-            if action and self._is_action_legal(action, legal_actions, decision_context, bridge_request):
-                plan.actions.append(action)
-            elif action:
-                logger.warning(
-                    "Dropping illegal planner action: %s (%s) bridge_request=%r decision=%r not in %s",
-                    action.action_type.value,
-                    action.card_name,
-                    bridge_request,
-                    (decision_context or {}).get("type"),
-                    legal_actions,
-                )
-                if action.action_type in (ActionType.DECLARE_ATTACKERS, ActionType.DECLARE_BLOCKERS):
-                    # Ledger #155: the log kept 200 characters of the answer, never why it failed.
-                    logger.warning(
-                        "Dropped declaration: attackers=%s targets=%s blocks=%s; answer: %s",
-                        action.attacker_names,
-                        action.attacker_targets,
-                        action.blocker_assignments,
-                        (response or "")[:4000],
-                    )
-
-        # Spoken line derives from what was actually ACCEPTED (a rejected
-        # target's instruction must not survive — test_planning_consistency).
-        # Keep the model's phrasing only when it refers to an accepted card;
-        # otherwise fall back to the terse action recap ("Discard Mutavault
-        # to hand size." survives; advice naming a dropped target doesn't).
-        if any(
-            action.action_type == ActionType.DECLARE_ATTACKERS
-            and (action.attacker_targets or action.target_names)
-            for action in plan.actions
-        ):
-            plan.voice_advice = plan.spoken_actions()
-            return plan
-        if plan.actions and plan.voice_advice:
-            accepted_names = []
-            for action in plan.actions:
-                accepted_names.extend(action.select_card_names)
-                accepted_names.extend(action.target_names)
-                accepted_names.extend(action.attacker_names)
-                accepted_names.extend(action.blocker_assignments.keys())
-                accepted_names.extend(action.blocker_assignments.values())
-                if action.card_name:
-                    accepted_names.append(action.card_name)
-            advice_low = plan.voice_advice.casefold()
-            if any(n and n.casefold() in advice_low for n in accepted_names):
-                return plan
-        plan.voice_advice = plan.spoken_actions()
-        return plan
+        """Parse LLM response into an ActionPlan."""
+        return parse_action_plan_response(
+            self, response, legal_actions, decision_context, bridge_request, game_state
+        )
 
     @staticmethod
     def _bind_combat_identities(action: GameAction, state: dict, context: dict) -> None:
@@ -4683,21 +3936,8 @@ class ActionPlanner(_ActionLegalityMixin):
 
     @staticmethod
     def _extract_first_json(text: str) -> str | None:
-        """Pull the first JSON object out of a possibly prose-wrapped reply.
-
-        Models routinely prefix a sentence before the JSON despite "reply
-        ONLY with JSON" instructions (0/5 typed-decision parses on
-        2026-07-05 failed this way). Strips markdown fences, extracts the
-        first {...} block, and drops trailing commas.
-        """
-        s = (text or "").strip()
-        fence = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", s, re.DOTALL)
-        if fence:
-            s = fence.group(1).strip()
-        m = re.search(r"\{.*\}", s, re.DOTALL)
-        if not m:
-            return None
-        return re.sub(r",\s*([\]}])", r"\1", m.group(0))
+        """Pull the first JSON object out of a possibly prose-wrapped reply."""
+        return strip_json_fences(text, extract_object=True)
 
     _PAY_DECLINE_INSTRUCTIONS = (
         "You decide whether to PAY an optional cost in a Magic: The "
@@ -6483,8 +5723,7 @@ class ActionPlanner(_ActionLegalityMixin):
                     continue
                 card = find_source(game_state, meta)
                 oracle = str(card.get("oracle_text") or "")
-                each = re.search(r"deals (\d+) damage to each opponent", oracle, re.IGNORECASE)
-                face += int(each.group(1)) if each else 0
+                face += each_opponent_damage(card, game_state) if card else 0
                 burn = burn_reach(oracle, card, game_state) if card else None
                 if burn is None:
                     continue
@@ -9145,8 +8384,6 @@ class ActionPlanner(_ActionLegalityMixin):
         """An optimistic bound on face damage this turn: this spell, the burn in hand the
         reasoning names, and (before combat on our turn) our creatures able to attack plus
         their attack pings. Blockers are ignored: it only stops a redirect away from face."""
-        from arenamcp.play_safety import damage_effect
-
         played = str(getattr(decision, "source_label", "") or "").lower()
         played_id = self._decision_source_instance(game_state)
         reasoning = " ".join(
@@ -9164,17 +8401,7 @@ class ActionPlanner(_ActionLegalityMixin):
                 or not (name in reasoning or any(f" {w} " in f" {reasoning} " for w in words))
             ):
                 continue
-            parsed = damage_effect(card, game_state)
-            text = str(card.get("oracle_text") or "").lower()
-            # Face burn only: any target, target player/opponent, or each opponent (Boltwave).
-            if parsed and (parsed[1] == "any" or "opponent" in text or "target player" in text):
-                total += int(parsed[0])
-                continue
-            face = re.search(
-                r"deals? (\d+) damage to (?:each opponent|target opponent|target player|any target)", text
-            )
-            if face:
-                total += int(face.group(1))
+            total += face_burn_damage(card, game_state)
         turn = game_state.get("turn") or {}
         local = game_state.get("local_seat_id") or next(
             (
@@ -9203,9 +8430,7 @@ class ActionPlanner(_ActionLegalityMixin):
             if entered is not None and entered >= number and "haste" not in text:
                 continue
             total += max(0, _as_int(card.get("power")) or 0)
-            ping = re.search(r"whenever [^.]*attack[^.]*deals? (\d+) damage", text)
-            if ping:
-                total += int(ping.group(1))
+            total += attack_trigger_damage(card, game_state)
         return total
 
     def _follow_line_over_face(
@@ -9532,6 +8757,7 @@ class ActionPlanner(_ActionLegalityMixin):
             )
         intentional_own = intentional_opp = True
         arena_bad: list[str] = []
+        source_card = find_source(game_state, {"instanceId": self._decision_source_instance(game_state)})
         for oid in chosen:
             if not str(oid).startswith("tgt:"):
                 continue
@@ -9557,7 +8783,9 @@ class ActionPlanner(_ActionLegalityMixin):
             justified = (
                 acknowledged == expected and isinstance(justification, str) and bool(justification.strip())
             )
-            if acknowledged == expected and self._is_graveyard_exile_target(game_state, iid, oracle):
+            if acknowledged == expected and self._is_graveyard_exile_target(
+                game_state, iid, oracle, card=source_card or None
+            ):
                 # Oct 24 Veteran Survivor: Arena marks our graveyard Cold even
                 # when exiling it advances Survival. This is resource selection,
                 # not removal of our board. Keep the explicit controller-aware
@@ -9649,28 +8877,25 @@ class ActionPlanner(_ActionLegalityMixin):
         return chosen
 
     @staticmethod
-    def _is_graveyard_exile_target(game_state: dict[str, Any], instance_id: int, oracle: str) -> bool:
+    def _is_graveyard_exile_target(
+        game_state: dict[str, Any],
+        instance_id: int,
+        oracle: str,
+        *,
+        card: dict[str, Any] | None = None,
+    ) -> bool:
         """Known graveyard resource selection, not battlefield self-removal."""
         zones = game_state.get("zones") or {}
         graveyard = game_state.get("graveyard", zones.get("graveyard", [])) or []
-        if not any(
-            isinstance(card, dict) and _as_int(card.get("instance_id")) == instance_id for card in graveyard
-        ):
+        if not any(isinstance(c, dict) and _as_int(c.get("instance_id")) == instance_id for c in graveyard):
             return False
         # Do not let stale duplicate zone data exempt a live permanent.
         if any(
-            isinstance(card, dict) and _as_int(card.get("instance_id")) == instance_id
-            for card in game_state.get("battlefield", zones.get("battlefield", [])) or []
+            isinstance(c, dict) and _as_int(c.get("instance_id")) == instance_id
+            for c in game_state.get("battlefield", zones.get("battlefield", [])) or []
         ):
             return False
-        return bool(
-            re.search(
-                r"\bexile (?:up to \w+ )?target (?:[a-z-]+ )*cards? from "
-                r"(?:a|any|your|an opponent's|target player's) graveyard\b",
-                oracle,
-                re.IGNORECASE,
-            )
-        )
+        return exiles_graveyard_card(card, oracle, game_state)
 
     @staticmethod
     def _unclassified_pick_reason(
@@ -11975,700 +11200,3 @@ class ActionPlanner(_ActionLegalityMixin):
                 return []
         n = max(1, int(decision.min_select or 1))
         return [o.option_id for o in opts[:n]]
-
-
-# --- priority play without the model ---------------------------------------------
-
-# Cast roles that need a target or a moment only the model would pick
-# (counterspells, combat tricks): never cast blind on our own main phase.
-_REACTIVE_CAST_ROLES = frozenset({"counter", "pump"})
-
-
-def _legal_payable(game_state: dict[str, Any], legal_actions: list[str]) -> dict[int, bool | None]:
-    """Hand instance id -> Arena's [OK] verdict for each "Cast X" in the legacy legal-action strings."""
-    by_name: dict[str, int] = {}
-    for card in game_state.get("hand") or []:
-        if isinstance(card, dict) and card.get("name") and isinstance(card.get("instance_id"), int):
-            by_name.setdefault(str(card["name"]).casefold(), card["instance_id"])
-    verdicts: dict[int, bool | None] = {}
-    for entry in legal_actions:
-        text = str(entry or "").strip()
-        if not text.lower().startswith("cast "):
-            continue
-        name = re.sub(r"\s*\[[^\]]*\]", "", text[5:]).strip().casefold()
-        iid = by_name.get(name)
-        if iid is not None:
-            verdicts[iid] = "[ok]" in text.lower()
-    return verdicts
-
-
-def _option_prints(decision: Any, game_state: dict[str, Any] | None = None) -> tuple[list[int], bool]:
-    """Keep all offered prints; only known non-card buttons or resolved targets can omit one."""
-    out: list[int] = []
-    all_bound = True
-    zone_by_iid: dict[int, dict[str, Any]] = {}
-    if isinstance(game_state, dict):
-        for zone_name in ("battlefield", "stack", "graveyard", "exile", "hand", "command"):
-            for card in game_state.get(zone_name) or ():
-                if isinstance(card, dict) and type(card.get("instance_id")) is int:
-                    zone_by_iid.setdefault(card["instance_id"], card)
-    for option in getattr(decision, "options", ()) or ():
-        meta = getattr(option, "meta", None) or {}
-        oid = str(getattr(option, "option_id", "") or "")
-        bound = oid in {"pass", "cancel", "done", SELECT_N_DECLINE} or oid.startswith(("mull:", "optional:"))
-        for key in ("grpId", "grp_id", "card_grp_id"):
-            value = meta.get(key)
-            if type(value) is int and value > 4:
-                bound = True
-                if value not in out:
-                    out.append(value)
-        if not bound and (tgt_match := re.fullmatch(r"tgt:(\d+)", oid)) is not None:
-            obj = zone_by_iid.get(int(tgt_match.group(1)))
-            if obj is not None:
-                if obj.get("is_token"):
-                    bound = True
-                else:
-                    gid = obj.get("grp_id")
-                    if type(gid) is int and gid > 4:
-                        bound = True
-                        if gid not in out:
-                            out.append(gid)
-            elif oid in {"tgt:1", "tgt:2"}:
-                bound = True
-        all_bound = all_bound and bound
-    return out, all_bound
-
-
-def _local_seat(state: dict[str, Any]) -> Any:
-    seat = state.get("local_seat_id")
-    if seat is None:
-        seat = next(
-            (
-                player.get("seat_id")
-                for player in state.get("players") or []
-                if isinstance(player, dict) and player.get("is_local")
-            ),
-            None,
-        )
-    return seat
-
-
-def _opponent_tapped_out(state: dict[str, Any]) -> bool:
-    """Every land the opponent controls is tapped (they hold no mana for a trick or a flash blocker)."""
-    local = _local_seat(state)
-    lands = [
-        card
-        for card in state.get("battlefield") or []
-        if local is not None
-        and _controller_seat(card) not in (None, local)
-        and (
-            "land" in str(card.get("type_line") or "").lower()
-            or "CardType_Land" in (card.get("card_types") or [])
-        )
-    ]
-    return bool(lands) and all(card.get("is_tapped") for card in lands)
-
-
-def _model_reasoning(plan: ActionPlan, action: GameAction) -> str:
-    """What the plan said for ``action`` before a guard rewrites it: its reasoning and the plan's strategy.
-
-    Ledger #36 (2026-10-19 match 6175f002): the losing-attack and block guards
-    replaced the model's reasoning without logging it, so reviews could not
-    tell what the model meant.
-    """
-    if action.model_reasoning:
-        return action.model_reasoning
-    parts = [str(action.reasoning or "").strip(), str(plan.overall_strategy or "").strip()]
-    return " | ".join(dict.fromkeys(part for part in parts if part))
-
-
-def _lethal_this_turn(state: dict[str, Any]) -> bool | None:
-    """Whether the board math finds our kill this turn (lethal on board, a lethal posture, a line
-    winning on T); None when the board cannot be assessed."""
-    try:
-        from arenamcp import board_assessment
-
-        facts = board_assessment.assess(state)
-    except Exception as error:  # the strategic layer never blocks a decision
-        logger.debug("lethal check: no assessment (%s)", error)
-        return None
-    if facts is None:
-        return None
-    best = facts.lines[0] if getattr(facts, "lines", None) else None
-    return bool(facts.lethal_now or facts.posture == "lethal" or (best is not None and best.win_at == 1))
-
-
-def _local_turn(state: dict[str, Any]) -> bool:
-    turn = state.get("turn") or {}
-    local = _local_seat(state)
-    return local is not None and turn.get("active_player") == local
-
-
-def _own_main_phase_with_empty_stack(state: dict[str, Any]) -> bool:
-    turn = state.get("turn") or {}
-    local = _local_seat(state)
-    if local is None or turn.get("active_player") != local:
-        return False
-    return "main" in str(turn.get("phase") or "").lower() and not (state.get("stack") or [])
-
-
-def own_stack_only(decision: Any, state: dict[str, Any]) -> str:
-    """The name of our spell on top when everything on the stack is ours; '' otherwise.
-
-    Nothing of theirs is there to answer, so passing lets it resolve. A
-    snapshot can trail the request: a land play or a sorcery-speed cast on
-    the menu proves the stack already empty (:func:`play_safety.menu_proves_empty_stack`
-    for lands), and then this is ''. 2026-10-19 09:03:36 (match 41753907):
-    with our own Fleeting Effigy on the stack the window went to the model
-    at high effort ("removal available: Burst Lightning") and ran 15 s.
-    """
-    from arenamcp.mulligan_policy import hand_card
-
-    local = _local_seat(state)
-    stack = state.get("stack") or []
-    if local is None or not stack:
-        return ""
-    if any(not isinstance(entry, dict) or _controller_seat(entry) != local for entry in stack):
-        return ""
-    for option in getattr(decision, "options", ()) or ():
-        meta = option.meta or {}
-        kind = str(meta.get("actionType") or "").removeprefix("ActionType_")
-        if kind == "Play":
-            return ""
-        if kind == "Cast":
-            card = find_source(state, meta)
-            if card.get("type_line") and not hand_card(card).instant_speed:
-                return ""
-    return str(stack[0].get("name") or "spell")  # the top (arenamcp.stack_order)
-
-
-def _controller_seat(card: dict[str, Any]) -> Any:
-    return card.get("controller_seat_id") or card.get("owner_seat_id")
-
-
-def _no_board_math_reason(decision: Any, state: dict[str, Any]) -> str:
-    """Why the board-math fallback only drops a land or passes in this window."""
-    turn = state.get("turn") or {}
-    local = _local_seat(state)
-    main = "main" in str(turn.get("phase") or "").lower()
-    if local is not None and turn.get("active_player") == local and main:
-        own = own_stack_only(decision, state)
-        if own:
-            return f"our own {own} is on the stack, so pass and let it resolve"
-        if state.get("stack"):
-            return "with a spell on the stack only a pass is safe"
-    return "outside our main phase only a land drop or a pass is safe"
-
-
-def _line_text(step: Any) -> str:
-    """Speakable board-math line for this turn ("plays Island, then casts A and B")."""
-    parts = []
-    if step.land:
-        parts.append(f"plays {step.land}")
-    casts = list(step.casts)
-    if casts:
-        parts.append("casts " + (", ".join(casts[:-1]) + " and " + casts[-1] if len(casts) > 1 else casts[0]))
-    return "the board-math line " + (", then ".join(parts) if parts else "casts nothing payable this turn")
-
-
-def board_math_option_pick(decision: Any, game_state: dict[str, Any]) -> tuple[list[str], str]:
-    """A priority-window choice without the model: land drop, then the board-math line.
-
-    bug_20261006_185403 (18:53:53): with the model timing out, the old
-    fallback ("play a land, otherwise pass") passed turn 10 with four payable
-    creatures while board_assessment scheduled Geist of Saint Thalia +
-    Theoretical Necromancer. This applies only on our own main phase with an
-    empty stack; elsewhere the land-else-pass pick stands (no blind
-    instant-speed plays). It is recomputed every window, so the next
-    scheduled spell follows from the new board. When the searched best line
-    casts nothing this turn (holding is never the fallback's choice), the
-    greedy schedule's casts stand in. It never picks an unpayable option, an
-    X spell, an activation, or a counterspell / combat trick.
-
-    Returns ``(option_ids, reason)``.
-    """
-    from arenamcp.mana import mana_cost_to_cmc
-
-    fallback = ActionPlanner.deterministic_option_pick(decision)
-    if decision.request_type != "ActionsAvailable" or not _own_main_phase_with_empty_stack(game_state):
-        # 2026-10-19 09:03:51: "outside our main phase" was said in our main
-        # phase, with our own Fleeting Effigy on the stack.
-        return fallback, _no_board_math_reason(decision, game_state)
-    assessment, option_role = None, None
-    step, plan_text, scheduled = None, "", set()
-    greedy: set[str] = set()
-    try:
-        from arenamcp.board_assessment import assess, option_role
-
-        assessment = assess(game_state)
-        if assessment is not None and assessment.our_turn and assessment.lookahead:
-            first = assessment.lookahead[0]
-            plan_text, scheduled = _line_text(first), set(first.casts)
-            step = first
-            # The searched best line may hold every spell this turn (the opponent policy
-            # values our crackback, so a line that attacks and casts nothing can edge out
-            # the cast: 2026-10-07, this very board after Necromancer resolved). Without
-            # the model, holding is never the fallback: the greedy schedule's T casts
-            # (the search's pinned baseline) stand in when the best line casts nothing.
-            if not scheduled:
-                baseline = getattr(getattr(assessment, "line_search", None), "baseline", None)
-                steps = getattr(baseline, "steps", None) or ()
-                greedy = set(getattr(steps[0], "casts", ()) or ()) if steps else set()
-    except Exception as error:  # the strategic layer never blocks a decision
-        logger.debug("board-math fallback: no assessment: %s", error)
-        assessment = None
-    options = [option for option in decision.options if option.payable is not False]
-    # Creatures that change nothing about this turn's attack wait for main 2 (pro YFRA game
-    # 2026-10-18, match 3 turn 7: attack first, then cast). Main 1 only; main 2 casts them.
-    deferred: set[str] = set()
-    phase = str((game_state.get("turn") or {}).get("phase") or "")
-    if step is not None and getattr(step, "attack", None) and "main1" in phase.lower().replace("_", ""):
-        deferred = set(getattr(step, "post_combat", None) or ())
-
-    def name_of(option: Any) -> str:
-        return str(find_source(game_state, option.meta or {}).get("name") or "")
-
-    lands = [option for option in options if (option.meta or {}).get("actionType") == "ActionType_Play"]
-    if lands:
-        wanted = str(step.land or "") if step is not None else ""
-        pick = (
-            next((option for option in lands if wanted and name_of(option) == wanted), None)
-            or next((option for option in lands if untapped_land_drop(game_state, [option])), None)
-            or lands[0]
-        )
-        # A landfall permanent the line casts this turn goes down before the land.
-        from arenamcp.landfall_order import landfall_first
-
-        first = landfall_first(decision, game_state, pick.option_id, planned_names=scheduled | greedy)
-        if first is not None:
-            return [first.option_id], first.reason
-        return [pick.option_id], plan_text or "no board assessment, so the land drop comes first"
-
-    picks: list[tuple[int, Any]] = []
-    for option in options:
-        meta = option.meta or {}
-        if option.payable is not True or meta.get("actionType") != "ActionType_Cast":
-            continue
-        card = find_source(game_state, meta)
-        name = str(card.get("name") or "")
-        cost = str(card.get("mana_cost") or "")
-        if not name or "{x}" in cost.lower():
-            continue
-        try:
-            role = option_role(option, game_state) if option_role is not None else "other"
-        except Exception:
-            role = "other"
-        if role in _REACTIVE_CAST_ROLES or name in deferred:
-            continue
-        if (
-            "flash" in re.sub(r"\([^()]*\)", "", str(card.get("oracle_text") or "")).lower()
-            and unpayable_graveyard_flashback(game_state, card, meta) is not None
-        ):
-            continue
-        if step is not None:
-            if name not in scheduled and name not in greedy:
-                continue
-        elif assessment is not None or role not in ("creature", "planeswalker"):
-            continue
-        picks.append((mana_cost_to_cmc(cost), option))
-    if picks:
-        # Most expensive first: Arena's autotap then keeps cheaper colours open
-        # for the rest of the line, re-planned from the new board next window.
-        _, option = max(picks, key=lambda item: item[0])
-        if step is not None and not scheduled:
-            casts = sorted(greedy)
-            plan_text = (
-                "the best searched line holds this turn, so the greedy schedule's cast stands in: "
-                + (", ".join(casts[:-1]) + " and " + casts[-1] if len(casts) > 1 else casts[0])
-            )
-        return [option.option_id], plan_text or "no board assessment, so the biggest payable creature"
-    if any(option.option_id == "pass" for option in options):
-        if deferred:
-            later = ", ".join(sorted(deferred))
-            return ["pass"], f"{plan_text}; attack first, {later} after combat"
-        return ["pass"], "passing: no safe payable cast from the searched line is available in this menu"
-    return fallback, "no pass option, so the first legal option"
-
-
-def _option_text(decision: Any, option_id: str) -> str:
-    """An option's label for logs, without the ability text in brackets or a final period."""
-    option = decision.find(option_id)
-    label = str(getattr(option, "label", "") or option_id)
-    return label.split(" [", 1)[0].strip().rstrip(".") or option_id
-
-
-def _unmodelled_options(result: Any, decision: Any, state: dict[str, Any]) -> dict[str, str]:
-    """Payable casts whose effect the line search drops: option id -> "card (why)".
-
-    The search values tokens it can't read, an aura, a pump and the like as
-    nothing (``line_guard.unmodelled_cast``, the check the line guard itself
-    applies), so the line starting with that cast is no evidence against it:
-    its tag must not call it worse, and the LINES line names it (review
-    2026-10-07: two hasty 3/1s that were exactly lethal were tagged 'dead T11').
-    """
-    from arenamcp.line_guard import unmodelled_cast
-
-    found: dict[str, str] = {}
-    for option in getattr(decision, "options", ()) or ():
-        meta = option.meta or {}
-        if option.payable is False or "cast" not in str(meta.get("actionType") or "").lower():
-            continue
-        why = unmodelled_cast(result, option, state)
-        if why:
-            found[option.option_id] = why
-    return found
-
-
-def _kill_names(names: tuple[str, ...]) -> str:
-    """' (kills Healer's Hawk, Soldier ×2)' / ' (kills nothing)' for a mode's ``ModeComparison.kills``."""
-    counts: dict[str, int] = {}
-    for name in names:
-        counts[name] = counts.get(name, 0) + 1
-    shown = [name if n == 1 else f"{name} ×{n}" for name, n in counts.items()]
-    if len(shown) > 4:
-        shown = [*shown[:3], f"+{sum(list(counts.values())[3:])} more"]
-    return f" (kills {', '.join(shown)})" if shown else " (kills nothing)"
-
-
-def _modes_line(comparison: Any, decision: Any, max_chars: int = 400) -> str:
-    """The 'MODES ...' line for a modal menu: each mode's searched outcome, or ''.
-
-    The strategy block's role and board facts come from ``assess``, which
-    does not resolve this pending choice (2026-10-06 G1 T14: 'ALL-IN: no
-    defensive line survives' next to a gain-4 mode that survives T15), so
-    the line says which of the two already counts the choice. A removal or
-    sweep mode names what it kills (ledger #87, 2026-10-19 c8ea2b6c T14: the
-    model chose Iroh's Demonstration's 4 damage on Healer's Hawk over the
-    1-to-each sweep that also killed both Soldier tokens).
-    """
-    try:
-        from arenamcp.line_guard import _life_parts
-
-        if comparison is None or not getattr(comparison, "complete", False):
-            return ""
-        head = (
-            "MODES (each searched with this choice resolved; the role and board facts below were "
-            "computed before it resolves): "
-        )
-        parts = []
-        for option in decision.options:
-            line = comparison.lines.get(option.option_id)
-            if line is None:
-                continue
-            kind = comparison.modes.get(option.option_id) or _option_text(decision, option.option_id)
-            if kind == "other":
-                kind = _option_text(decision, option.option_id).split(": ", 1)[-1][:48] + " (not modelled)"
-            killed = (getattr(comparison, "kills", None) or {}).get(option.option_id)
-            if killed is not None:
-                kind += _kill_names(tuple(killed))
-            outcome = ", ".join(_life_parts(line, modal=True)) or line.outcome_text()
-            parts.append(f"{kind} — {outcome}")
-        if len(parts) < 2:
-            return ""
-        text = head + " | ".join(parts)
-        return text if len(text) <= max_chars else text[: max_chars - 1] + "…"
-    except Exception as error:  # the strategic layer never blocks a decision
-        logger.debug("modes line skipped: %s", error)
-        return ""
-
-
-def line_fallback_option_pick(
-    decision: Any, game_state: dict[str, Any], board_pick: list[str]
-) -> tuple[list[str], str] | None:
-    """The best searched line's first play when the model gave no usable answer, or None.
-
-    ``line_guard.line_fallback_pick`` ranks the best line's own plays: a burn
-    spell that wins now, removal on a creature that can attack, a creature,
-    then the land that pays for the turn. Since the board-math pick
-    (``board_math_option_pick``) already follows the best line's T step, it
-    stays when it is that line's own land (land first) or another of its casts
-    while the line's pick is not aimed (most expensive first, so Arena's
-    autotap keeps cheaper colours open). The line's pick is used when it is
-    aimed (burn / removal on an attacker) or the board-math pick is not part of
-    the best line (e.g. a pass). Our main phase with an empty stack only, and
-    casts only when Arena confirms them payable; None (the board-math pick)
-    without a usable search, with ARENAMCP_LINE_SEARCH=0, or on any error.
-    """
-    if decision.request_type != "ActionsAvailable" or not _own_main_phase_with_empty_stack(game_state):
-        return None
-    try:
-        from arenamcp.board_assessment import assess
-        from arenamcp.line_guard import line_fallback_pick
-        from arenamcp.line_search import action_key
-
-        assessment = assess(game_state)
-        result = getattr(assessment, "line_search", None)
-        if assessment is None or result is None:
-            return None
-        picked = line_fallback_pick(result, decision, game_state)
-        if not picked or len(picked) != 1 or picked == board_pick:
-            return None
-        option = decision.find(picked[0])
-        if option is None:
-            return None
-        meta = option.meta or {}
-        if meta.get("actionType") != "ActionType_Play" and option.payable is not True:
-            return None  # the board-math rule: never cast on an unconfirmed autotap
-        if meta.get("actionType") == "ActionType_Cast":
-            fb_card = find_source(game_state, meta)
-            if (
-                "flash" in re.sub(r"\([^()]*\)", "", str(fb_card.get("oracle_text") or "")).lower()
-                and unpayable_graveyard_flashback(game_state, fb_card, meta) is not None
-            ):
-                return None
-        best = result.best
-        aimed = dict(best.steps[0].targets) if best.steps else {}
-        line_aimed = str(find_source(game_state, meta).get("name") or "") in aimed
-        current = decision.find(board_pick[0]) if len(board_pick) == 1 else None
-        if current is not None and current.option_id != "pass":
-            key = action_key(current, game_state)
-            if key is not None and key in best.first_actions:
-                if (current.meta or {}).get("actionType") == "ActionType_Play" or not line_aimed:
-                    return None  # the same line, in the board-math order
-        return picked, f"the best searched line is {best.summary()}"
-    except Exception as error:  # the strategic layer never blocks a decision
-        logger.debug("line fallback pick skipped: %s", error)
-        return None
-
-
-def line_casts_option(decision: Any, game_state: dict[str, Any], option_id: str, reasoning: str = "") -> str:
-    """Why the searched line casts ``option_id``'s spell this turn, or "" (ledger #86).
-
-    The best line's casts this turn; when it holds every spell, the greedy
-    schedule's casts, as in :func:`board_math_option_pick`. Our main phase with
-    an empty stack and a payable cast only. A spell the line aims needs
-    ``reasoning`` to name that target (:func:`_reasoning_names_target`).
-    """
-    if decision.request_type != "ActionsAvailable" or not _own_main_phase_with_empty_stack(game_state):
-        return ""
-    option = decision.find(option_id)
-    meta = (option.meta if option is not None else None) or {}
-    if option is None or option.payable is not True or meta.get("actionType") != "ActionType_Cast":
-        return ""
-    name = str(find_source(game_state, meta).get("name") or "")
-    if not name:
-        return ""
-    try:
-        from arenamcp.board_assessment import assess
-
-        assessment = assess(game_state)
-        if assessment is None or not assessment.our_turn or not assessment.lookahead:
-            return ""
-        first = assessment.lookahead[0]
-        casts, why = set(first.casts), f"the searched line casts {name} this turn"
-        if not casts:
-            baseline = getattr(getattr(assessment, "line_search", None), "baseline", None)
-            steps = getattr(baseline, "steps", None) or ()
-            casts = set(getattr(steps[0], "casts", ()) or ()) if steps else set()
-            why = f"the searched line holds, and the greedy schedule casts {name} this turn"
-    except Exception as error:  # the strategic layer never blocks a decision
-        logger.debug("line cast check skipped: %s", error)
-        return ""
-    if name not in casts:
-        return ""
-    target = ActionPlanner._searched_line_target(game_state, name)[0]
-    if target and not _reasoning_names_target(reasoning, target):
-        return ""
-    return why
-
-
-def board_math_agreement(
-    decision: Any, game_state: dict[str, Any], chosen: list[str], reasoning: str = ""
-) -> str:
-    """Why the board-math fallback would play exactly ``chosen`` here, or "".
-
-    The fallback's own pick (:func:`board_math_option_pick`, overridden by
-    :func:`line_fallback_option_pick` as in ``_board_math_fallback``) on our
-    main phase with an empty stack, where it follows the searched line. Never
-    a pass: holding everything is the call the high-effort answer is for.
-
-    A spell the searched line aims at a target agrees only when ``reasoning``
-    states that target (:func:`_reasoning_names_target`). 2026-10-19 10:55:38
-    (match 15e0eb20 T7, ledger #56): the line was "Lightning Strike (on
-    Nullpriest of Oblivion)"; the low answer cast Strike "pointing at face",
-    counted as the board-math play, and the high leg was cancelled.
-    """
-    chosen = [str(option_id) for option_id in chosen or []]
-    if decision.request_type != "ActionsAvailable" or len(chosen) != 1 or chosen == ["pass"]:
-        return ""
-    if not _own_main_phase_with_empty_stack(game_state):
-        return ""
-    picked, why = board_math_option_pick(decision, game_state)
-    line = line_fallback_option_pick(decision, game_state, picked)
-    if line is not None:
-        picked, why = line
-    if picked != chosen:
-        return ""
-    option = decision.find(chosen[0])
-    card = find_source(game_state, (option.meta if option is not None else None) or {})
-    name = str(card.get("name") or "")
-    target, target_id = ActionPlanner._searched_line_target(game_state, name) if name else ("", 0)
-    if target and not _reasoning_names_target(reasoning, target, target_id=target_id, game_state=game_state):
-        logger.info(
-            "typed-decision: the low answer casts the line's %s but not at its target (%s): %r",
-            name,
-            "the opponent" if target == "opponent" else target,
-            str(reasoning or "")[:160],
-        )
-        return ""
-    # Ledger #144 (2026-10-19 match 970d9b41 T12, 13:33:53): the line was "Iroh's Demonstration
-    # (deals 4 damage to target creature, on Ravenhill Flock)"; the low answer "Iroh's mode 1
-    # sweeps Ravenhill Flock" named the target, so the high leg was cancelled, and the mode
-    # menu then took mode 1. A low answer that speaks of another mode waits for the high one.
-    modal = "•" in str(card.get("oracle_text") or "")  # a 'choose one' card
-    mode = ActionPlanner._searched_line_mode(game_state, name) if name and modal else ""
-    if mode:
-        try:
-            from arenamcp.mode_claims import other_modes_named
-
-            others = other_modes_named(reasoning, card, mode)
-        except Exception as error:  # unread: the cast waits for the high answer
-            logger.debug("line mode check failed: %s", error)
-            return ""
-        if others:
-            logger.info(
-                "typed-decision: the low answer casts the line's %s but names %s, "
-                "not the line's mode (%s): %r",
-                name,
-                ", ".join(others),
-                mode,
-                str(reasoning or "")[:160],
-            )
-            return ""
-    return why or "the board-math play"
-
-
-_FACE_TARGET_RE = re.compile(
-    r"\b(?:face|go(?:es|ing)? face|(?:at|to|into|on|target(?:ing)?) (?:the )?(?:opponent|opponent's (?:face|life)|player)"
-    r"|their (?:face|life(?: total)?|head)|(?:opponent|player) directly)\b",
-    re.IGNORECASE,
-)
-
-
-_ID_MENTION_RE = re.compile(r"(?:\[id:\s*|\bid[: ]\s*|#)(\d+)", re.IGNORECASE)
-_UNDAMAGED_RE = re.compile(r"\b(?:undamaged|unhurt|unwounded)\b", re.IGNORECASE)
-_DAMAGED_RE = re.compile(r"\b(?:\d+-)?(?:damaged|wounded|injured)\b", re.IGNORECASE)
-
-
-def _reasoning_names_target(
-    reasoning: str, target: str, *, target_id: int = 0, game_state: dict[str, Any] | None = None
-) -> bool:
-    """Whether ``reasoning`` aims the cast where the searched line does ("opponent" or a creature's name).
-
-    A creature counts when its full name or a distinctive word of it (four
-    letters or more, "Nullpriest") appears and the reasoning does not send
-    the spell at the opponent instead; the opponent counts when the
-    reasoning names the face/opponent and no creature as the spell's mark.
-
-    With the line's instance (``target_id``) and another opposing creature of
-    the same name, the name alone does not say which: the reasoning must name
-    that instance's id, or call it damaged/undamaged when only it is (ledger
-    #111, 2026-10-19 12:31:40: "on the undamaged Hearth Elemental" agreed with
-    a line aimed at the damaged one). Without the id, the name decides.
-    """
-    text = str(reasoning or "")
-    if not text:
-        return False
-    # "kill Nullpriest instead of going face": the rejected option is not the mark.
-    aimed = re.sub(r"\b(?:instead of|rather than|over|not)\b[^.;,:—–]*", " ", text, flags=re.IGNORECASE)
-    face = bool(_FACE_TARGET_RE.search(aimed))
-    if target == "opponent":
-        return face
-    folded = aimed.casefold()
-    name = target.casefold()
-    words = [word for word in re.findall(r"[a-z0-9']+", name.split(",")[0]) if len(word) >= 4]
-    named = name in folded or any(re.search(rf"\b{re.escape(word)}\b", folded) for word in words)
-    if not named or face:
-        return False
-    if not target_id or not isinstance(game_state, dict):
-        return True
-    local_seat = _local_seat(game_state)
-    bodies = {
-        _as_int(card.get("instance_id")): card
-        for card in game_state.get("battlefield", []) or []
-        if card.get("name") == target and card.get("controller_seat_id") != local_seat
-    }
-    if target_id not in bodies or len(bodies) == 1:
-        return True
-    mentioned = {int(found) for found in _ID_MENTION_RE.findall(aimed)}
-    if mentioned & set(bodies):
-        return target_id in mentioned
-    damaged = {iid: _as_int(card.get("damage")) > 0 for iid, card in bodies.items()}
-    if list(damaged.values()).count(damaged[target_id]) != 1:
-        return False  # its twins look the same: nothing in the text can single it out
-    says_damaged, says_undamaged = bool(_DAMAGED_RE.search(aimed)), bool(_UNDAMAGED_RE.search(aimed))
-    if says_damaged == says_undamaged:
-        return False
-    return says_damaged == damaged[target_id]
-
-
-def board_math_legacy_plan(
-    game_state: dict[str, Any],
-    legal_actions: list[str] | None,
-    trigger: str = "",
-    *,
-    lead: str = "Model unavailable",
-    fallback_reason: str = FALLBACK_LLM_UNAVAILABLE,
-) -> ActionPlan:
-    """:func:`board_math_option_pick` for the legacy legal-action-string path.
-
-    Only "Play Land: X", "Cast X" (from hand, or our commander from the command
-    zone; payable only with "[OK]") and "Pass" take part. Returns an empty plan
-    when none of them is legal, so the caller's other nets (safe defaults,
-    manual-required) still apply.
-    """
-    from arenamcp.decisions import DecisionOption, PendingDecision
-
-    turn = int(((game_state.get("turn") or {}).get("turn_number")) or 0)
-    plan = ActionPlan(trigger=trigger, turn_number=turn, fallback_reason=fallback_reason)
-    hand: dict[str, dict] = {}
-    cards = list(game_state.get("hand") or [])
-    if game_state.get("command"):
-        # Our commanders in the command zone: the board math casts them like hand cards.
-        from arenamcp.board_model import our_commanders
-
-        cards += [c.card for c in our_commanders(game_state)]
-    for card in cards:
-        if isinstance(card, dict) and card.get("name"):
-            hand.setdefault(str(card["name"]).casefold(), card)
-    options: list[Any] = []
-    texts: dict[str, str] = {}
-    for index, entry in enumerate(legal_actions or []):
-        text = str(entry or "").strip()
-        lower = text.lower()
-        if lower == "pass":
-            if "pass" not in texts:
-                options.append(DecisionOption("pass", "Pass"))
-                texts["pass"] = text
-            continue
-        if lower.startswith("play land:"):
-            kind, rest, payable = "ActionType_Play", text.split(":", 1)[1], None
-        elif lower.startswith("cast "):
-            kind, rest, payable = "ActionType_Cast", text[5:], "[ok]" in lower
-        else:
-            continue
-        card = hand.get(re.sub(r"\s*\[[^\]]*\]", "", rest).strip().casefold())
-        if card is None:
-            continue
-        option_id = f"legal:{index}"
-        meta = {"actionType": kind, "instanceId": card.get("instance_id"), "grpId": card.get("grp_id")}
-        options.append(DecisionOption(option_id, text, payable=payable, meta=meta))
-        texts[option_id] = text
-    if not options:
-        return plan
-    decision = PendingDecision((0, 0), "ActionsAvailable", tuple(options), can_pass="pass" in texts)
-    picked, why = board_math_option_pick(decision, game_state)
-    if len(picked) != 1 or picked[0] not in texts:
-        return plan
-    if picked[0] == "pass":
-        action = GameAction(action_type=ActionType.PASS_PRIORITY)
-    else:
-        action = ActionPlanner.__new__(ActionPlanner)._legal_action_to_action(texts[picked[0]])
-        if action is None:
-            return plan
-    action.reasoning = f"{lead}; {why}."
-    plan.actions = [action]
-    plan.overall_strategy = f"[local-fallback] {why}"
-    plan.voice_advice = plan.spoken_actions()
-    logger.warning("Legacy fallback (%s): %s -> %s", lead.lower(), why, texts[picked[0]])
-    return plan

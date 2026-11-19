@@ -6,7 +6,7 @@ import logging
 import re
 from typing import Any
 
-from arenamcp.action_planner import ActionType, GameAction, _strip_attacker_annotations
+from arenamcp.action_types import ActionType, GameAction, _strip_attacker_annotations
 
 logger = logging.getLogger(__name__)
 
