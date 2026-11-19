@@ -43,7 +43,9 @@ DEFAULTS = {
     # strategy-blind — e.g. it told Josh to cast Ephemerate on a random
     # creature instead of saving it for his commander (2026-07-16).
     "auto_deck_strategy": True,
-    # Optional experiment: high-effort background strategy, low-effort actions.
+    # Deprecated: superseded by bounded E4 pivotal_thinking (NN2). When True,
+    # forces flat "low" effort on decisions and suppresses E4 selection unless
+    # ARENAMCP_PIVOTAL_THINKING=1 overrides it.
     "separate_strategy_planning": False,
     # Spend high reasoning effort on pivotal decisions (E4); env ARENAMCP_PIVOTAL_THINKING overrides.
     "pivotal_thinking": True,

@@ -1165,9 +1165,12 @@ class StandaloneCoach(
             if self._coach:
                 self._autopilot._game_plan_mgr = self._coach._ensure_game_plan_mgr()
                 if self._autopilot._game_plan_mgr:
-                    self._autopilot._game_plan_mgr.separate_strategy_planning = (
-                        planner.separate_strategy_planning
+                    sep_active = (
+                        planner._separate_strategy_active()
+                        if hasattr(planner, "_separate_strategy_active")
+                        else bool(getattr(planner, "separate_strategy_planning", False))
                     )
+                    self._autopilot._game_plan_mgr.separate_strategy_planning = sep_active
                     # #205: wait only briefly for a deck analysis (the coach's
                     # bounded gate). Suspending on _deck_strategy_pending for
                     # the whole multi-minute playbook build left the first

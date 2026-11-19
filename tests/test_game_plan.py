@@ -242,8 +242,11 @@ def test_seed_and_prior_plan_are_available_for_adaptation():
     later["turn"]["active_player"] = 2
     later["deck_reference"] = state["deck_reference"]
     mgr.maybe_reform(later)
+    from arenamcp.match_context import shared_match_system_prompt
+
     assert "develop commander engine" in be.requests[1][1]
-    assert "Removal and tutoring are conditional" in be.requests[1][0]
+    assert be.requests[1][0] == shared_match_system_prompt(later)
+    assert "Removal and tutoring are conditional" in be.requests[1][1]
     assert "Holding mana or passing is correct" in mgr.plan_text()
 
 
@@ -637,7 +640,8 @@ def test_the_first_plan_runs_at_low_effort_and_later_ones_at_high():
 
 
 def test_compact_opening_uses_playbook_then_reuses_a_covered_turn():
-    from arenamcp.game_plan import LIVE_PLAN_PROMPT
+    from arenamcp.game_plan import LIVE_PLAN_INSTRUCTIONS
+    from arenamcp.match_context import shared_match_system_prompt
 
     class Capture(FakeBackend):
         model = "current"
@@ -659,9 +663,11 @@ def test_compact_opening_uses_playbook_then_reuses_a_covered_turn():
     mgr = GamePlanManager(backend, separate_strategy_planning=True)
     mgr.seed("Use early creatures to enable the finishing attack.")
     opening = _state(turn=1)
+    expected_sys = shared_match_system_prompt(opening)
     plan = mgr.maybe_reform(opening)
     assert plan.step_for(3) and plan.switch_if
-    assert backend.requests[0][0] == LIVE_PLAN_PROMPT
+    assert backend.requests[0][0] == expected_sys
+    assert LIVE_PLAN_INSTRUCTIONS in backend.requests[0][1]
     assert "early creatures" in backend.requests[0][1]
     assert backend.requests[0][2]["reasoning_effort"] == "none"
     assert backend.caps == [2048]
@@ -680,7 +686,8 @@ def test_compact_opening_uses_playbook_then_reuses_a_covered_turn():
     later = _state(turn=5, opp_life=12)
     later["turn"]["active_player"] = 2
     assert mgr.maybe_reform(later) is not plan
-    assert backend.requests[-1][0] == LIVE_PLAN_PROMPT
+    assert backend.requests[-1][0] == expected_sys
+    assert LIVE_PLAN_INSTRUCTIONS in backend.requests[-1][1]
     assert "Attack with Bears" in backend.requests[-1][1]
     assert backend.caps == [2048, 2048]
 
@@ -705,17 +712,22 @@ def test_covered_step_cannot_hide_missing_cards_or_a_lethal_flip():
 
 
 def test_hosted_lethal_flip_still_requests_a_full_strategic_review(monkeypatch):
-    from arenamcp.game_plan import GAME_PLAN_PROMPT, LIVE_PLAN_PROMPT
+    from arenamcp.game_plan import GAME_PLAN_INSTRUCTIONS, LIVE_PLAN_INSTRUCTIONS
+    from arenamcp.match_context import shared_match_system_prompt
 
     backend = FakeBackend([_plan_json("attack"), _plan_json("defend")])
     backend.model = "current"
     manager = GamePlanManager(backend, separate_strategy_planning=True)
     facts = [("aggressor", False, False, False)]
     monkeypatch.setattr(manager, "_strategic_key", lambda *args: (facts[0], (), (), frozenset()))
-    manager.maybe_reform(_state(turn=3))
+    state3 = _state(turn=3)
+    expected_sys = shared_match_system_prompt(state3)
+    manager.maybe_reform(state3)
     facts[0] = ("defender", False, True, False)
     manager.maybe_reform(_state(turn=3))
-    assert [call[0] for call in backend.requests] == [LIVE_PLAN_PROMPT, GAME_PLAN_PROMPT]
+    assert [call[0] for call in backend.requests] == [expected_sys, expected_sys]
+    assert LIVE_PLAN_INSTRUCTIONS in backend.requests[0][1]
+    assert GAME_PLAN_INSTRUCTIONS in backend.requests[1][1]
     assert backend.requests[-1][2]["reasoning_effort"] == "high"
 
 

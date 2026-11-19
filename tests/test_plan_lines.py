@@ -119,13 +119,19 @@ PLAN_REPLY = {
     ],
 )
 def test_plan_prompt_lists_candidate_lines_to_build_from(fixture, first_line):
+    from arenamcp.match_context import shared_match_system_prompt
+
     backend = _Backend(PLAN_REPLY)
-    GamePlanManager(backend).maybe_reform(_with_catalog(getattr(S, fixture)))
+    state = _with_catalog(getattr(S, fixture))
+    GamePlanManager(backend).maybe_reform(state)
     system, user = backend.calls[0]
-    assert (
+    assert system == shared_match_system_prompt(state)
+    instruction = (
         'When BOARD FACTS lists CANDIDATE LINES (a deterministic 2-turn search), build "turns" from one of '
-        "them and keep its attack/hold posture unless you name a concrete card or combat reason." in system
+        "them and keep its attack/hold posture unless you name a concrete card or combat reason."
     )
+    assert instruction in (system + "\n" + user)
+    assert user.index(instruction) < user.index("BOARD FACTS (deterministic")
     block = user[user.index("CANDIDATE LINES (2-turn search") :]
     assert block.splitlines()[1].startswith(first_line)
     assert "Prefer one of these lines; a deviation needs a concrete card or combat reason." in block
@@ -135,13 +141,16 @@ def test_plan_prompt_without_the_search_only_mentions_candidate_lines_conditiona
     # Review 2026-10-07: with ARENAMCP_LINE_SEARCH=0 the system prompt pointed at a section
     # that wasn't there. It stays static (prefix caching) but is phrased as a condition.
     monkeypatch.setenv("ARENAMCP_LINE_SEARCH", "0")
+    from arenamcp.match_context import shared_match_system_prompt
+
     backend = _Backend(PLAN_REPLY)
-    GamePlanManager(backend).maybe_reform(_with_catalog(S.G1_T12))
+    state = _with_catalog(S.G1_T12)
+    GamePlanManager(backend).maybe_reform(state)
     system, user = backend.calls[0]
-    assert "CANDIDATE LINES" not in user
-    mentions = [line for line in system.splitlines() if "CANDIDATE LINES" in line]
+    assert system == shared_match_system_prompt(state)
+    assert "CANDIDATE LINES (2-turn search" not in user
+    mentions = [line for line in user.splitlines() if "CANDIDATE LINES" in line]
     assert mentions and all(line.startswith("- When BOARD FACTS lists CANDIDATE LINES") for line in mentions)
-    assert system == gp.GAME_PLAN_PROMPT
 
 
 def test_plan_prompt_keeps_the_deck_and_playbook_ahead_of_the_board():
@@ -156,7 +165,7 @@ def test_plan_prompt_keeps_the_deck_and_playbook_ahead_of_the_board():
         users.append(backend.calls[0][1])
     for user in users:
         assert user.startswith("DECK REFERENCE")
-        head = user.index("DECK PLAYBOOK / STRATEGY:\n" + playbook)
+        head = user.index("DECK STRATEGY:\n" + playbook)
         assert head < user.index("Heartstring Puller") < user.index("BOARD FACTS (deterministic")
     stable = users[0][: users[0].index(playbook) + len(playbook)]
     assert users[1].startswith(stable)

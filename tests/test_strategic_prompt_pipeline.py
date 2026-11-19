@@ -99,12 +99,13 @@ def test_typed_and_legacy_prompts_share_complete_stable_deck(state):
     # The strategic policy rides in the system prompt; its tutor rules need a
     # library effect in play (situational_rules).
     assert "A plan is conditional" in backend.calls[-1][0]
-    assert "For tutors" not in backend.calls[-1][0]
+    assert "For tutors" not in first
     changed = deepcopy(state)
     changed["players"][0]["life_total"] = 5
     changed["turn"]["turn_number"] = 5
     planner._llm_decision_options(decision, changed)
     second = backend.calls[-1][1]
+    assert backend.calls[-1][0] == backend.calls[0][0]
     assert first.split("PENDING DECISION:")[0] == second.split("PENDING DECISION:")[0]
     assert first != second
     assert_full_context(
@@ -116,8 +117,9 @@ def test_typed_and_legacy_prompts_share_complete_stable_deck(state):
     planner._llm_decision_options(decision, scry)
     third = backend.calls[-1][1]
     assert_full_context(third)
-    assert third.split("PENDING DECISION:")[0] == first.split("PENDING DECISION:")[0]
-    assert "For tutors" in backend.calls[-1][0]
+    assert backend.calls[-1][0] == backend.calls[0][0]
+    assert third.split("SITUATIONAL RULES:")[0] == first.split("PENDING DECISION:")[0]
+    assert "For tutors" in third
 
 
 def test_coach_dynamic_strategy_does_not_invalidate_deck_prefix(state, monkeypatch):

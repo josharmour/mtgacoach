@@ -87,10 +87,83 @@ STRATEGIC_POLICY_PARTS: tuple[tuple[str | None, str], ...] = (
 STRATEGIC_POLICY_CORE = compose_rules(STRATEGIC_POLICY_PARTS, frozenset())
 STRATEGIC_POLICY = compose_rules(STRATEGIC_POLICY_PARTS)
 
+# Universal MTG tactical rules shared identically across decision.* and
+# background.game_plan inside shared_match_system_prompt so models retain
+# authoritative system-role instruction compliance without per-window drift.
+SHARED_TACTICAL_RULES_PARTS: tuple[tuple[str | None, str], ...] = (
+    (
+        "commander",
+        "A commander in the command zone is an available engine: compare deploying it against other setup spells and explain that tradeoff. ",
+    ),
+    (
+        None,
+        "Prefer establishing a real engine over redundant setup unless survival or a stronger concrete line requires waiting. ",
+    ),
+    (
+        "library",
+        "Searching lands into hand funds future land drops, not immediate mana acceleration. ",
+    ),
+    (
+        "vehicle",
+        "Crew activates a Vehicle already in play; it does not retrigger enters or grant haste. "
+        "Crew only for a concrete attack, block, or synergy when the Vehicle isn't already a creature. ",
+    ),
+    (
+        "animation",
+        "Animating an artifact or land does not untap it, give haste, or retrigger entering. Check current card types before assuming it is a creature. ",
+    ),
+    (None, "Payable does not mean free. "),
+    (
+        "animation",
+        "Until-end-of-turn animation expires this turn and cannot block or discount spells on future turns. ",
+    ),
+    (
+        "equipment",
+        "For haste-granting equipment, weigh equipping summoning-sick creatures for attacks or tap abilities; "
+        "equip only when offered and avoid shuffling equipment without concrete gain (note shroud blocks targeting). ",
+    ),
+    (
+        None,
+        "Evaluate every spell clause: unconditional card draw can justify cycling a buff early, "
+        "but Never buff an opposing creature merely to draw. ",
+    ),
+    (
+        "library",
+        "For library searches, compare offered cards and pick a complementary set up to max_select. ",
+    ),
+    (
+        None,
+        "Putting a creature onto the battlefield does not trigger 'when you cast' abilities. "
+        "Account for cost/timing of cards sent to hand. "
+        "TEMPORARY EFFECTS: 'until end of turn' -X/-Y or +X/+Y expires at end of turn, "
+        "so outside combat use it only when it kills now. "
+        "SEQUENCING: casting one spell can leave another unpayable; "
+        "cast payable landfall permanents before your land drop. "
+        "Pass when your own spell is on the stack so it resolves before discarding a missing sorcery-speed card. "
+        "Never discard a castable card for an effect that kills nothing.",
+    ),
+)
+
 
 def strategic_policy(subjects: Iterable[str] = SITUATIONAL_SUBJECTS) -> str:
     """The strategic policy for the rule subjects in play (situational_rules.subjects_in_play)."""
     return compose_rules(STRATEGIC_POLICY_PARTS, subjects)
+
+
+def dynamic_strategic_policy(subjects: Iterable[str]) -> str:
+    """Situational strategic-policy clauses for ``subjects`` only (excluding core rules)."""
+    wanted = set(subjects)
+    return "".join(
+        subj_text for subj, subj_text in STRATEGIC_POLICY_PARTS if subj is not None and subj in wanted
+    ).strip()
+
+
+def shared_match_system_prompt(state: dict | None = None) -> str:
+    """Match-immutable system prompt shared across ``decision.*`` and ``background.game_plan``."""
+    from arenamcp.situational_rules import deck_subjects
+
+    subjects = deck_subjects(state)
+    return strategic_policy(subjects) + "\n" + compose_rules(SHARED_TACTICAL_RULES_PARTS, subjects)
 
 
 def prepared_card(grp_id: int) -> dict[str, Any] | None:
@@ -755,13 +828,16 @@ def prepare_match_context(
         candidate_gids = sorted((offered | scope) - set(quoted) - set(commanders))
         quoted += candidate_gids
     quoted = [gid for gid in quoted if gid not in commanders]
+    stable_rules_header_idx: int | None = None
     if quoted:
         # Each card's count, cost, type and printed stats are on its deck-list
         # line above; its rules line adds only MV and rules (2026-10-18: every
         # seen card's facts were sent twice in the same reference).
+        if not full_rules:
+            stable_rules_header_idx = len(reference)
         reference.append(
             "RULES OF THE CARDS SEEN THIS GAME (hand, battlefield, graveyards, exile, stack"
-            + (", and the pending decision's candidates" if reveal else "")
+            + (", and the pending decision's candidates" if candidate_gids else "")
             + (", plus potential " + "/".join(sorted(tutor_types)) + " search targets" if scope else "")
             + "; cost, type and printed stats as listed above; the rest of the library is listed above "
             "by name only: do not invent its rules)"
@@ -799,19 +875,28 @@ def prepare_match_context(
     result["deck_reference"] = "\n".join(reference)
     # E2: the same reference, split at the per-window candidate lines. The
     # candidates are appended last above, so the stable part is the reference
-    # minus exactly those trailing lines; recomposing the two fields reproduces
-    # ``deck_reference`` byte for byte.
+    # minus those trailing lines, with the RULES header kept invariant when
+    # candidate_gids or tutor scope are non-empty so shared KV prefix stays intact.
     candidate_lines = [
         _card_line(catalog[gid], deck[gid], gid, listed=True)
         for gid in candidate_gids
         if gid not in commanders
     ]
+    stable_reference_lines = (
+        reference[: len(reference) - len(candidate_lines)] if candidate_lines else list(reference)
+    )
+    if stable_rules_header_idx is not None and (candidate_gids or scope):
+        stable_reference_lines[stable_rules_header_idx] = (
+            "RULES OF THE CARDS SEEN THIS GAME (hand, battlefield, graveyards, exile, stack"
+            "; cost, type and printed stats as listed above; the rest of the library is listed above "
+            "by name only: do not invent its rules)"
+        )
     if candidate_lines:
         result["decision_candidate_rules"] = "\n".join(candidate_lines)
-        result["deck_reference_stable"] = "\n".join(reference[: len(reference) - len(candidate_lines)])
+        result["deck_reference_stable"] = "\n".join(stable_reference_lines)
     else:
         result["decision_candidate_rules"] = ""
-        result["deck_reference_stable"] = result["deck_reference"]
+        result["deck_reference_stable"] = "\n".join(stable_reference_lines)
     result["deck_catalog"] = catalog
     result["deck_rules_grp_ids"] = sorted(set(quoted) | set(commanders))
     result["library_listed"] = bool(

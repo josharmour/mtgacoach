@@ -215,7 +215,8 @@ def test_reform_feeds_board_facts_and_uses_the_larger_background_budget():
     manager = GamePlanManager(backend)
     plan = manager.maybe_reform(deepcopy(G1_T12))
     system, user, args, kwargs = backend.calls[0]
-    assert "WHO IS THE BEATDOWN" in system and "Removal and tutoring are conditional" in system
+    assert "A plan is conditional" in system
+    assert "WHO IS THE BEATDOWN" in user and "Removal and tutoring are conditional" in user
     assert "BOARD FACTS (deterministic" in user
     assert "ASSESSED ROLE: defender" in user
     assert "T = turn 12 (this turn); T+1 = turn 14; T+2 = turn 16" in user

@@ -3,12 +3,53 @@
 from __future__ import annotations
 
 import concurrent.futures
+import logging
 import os
 import threading
 import time
 
+logger = logging.getLogger(__name__)
+
 _THINKER = threading.BoundedSemaphore(1)
 POLICY = "deepseek-effort1-cap256-v1"
+DEFAULT_PIVOTAL_THINKING_BUDGET = 256
+_MIN_PIVOTAL_THINKING_BUDGET = 32
+_MAX_PIVOTAL_THINKING_BUDGET = 1024
+
+
+def pivotal_thinking_token_budget() -> int:
+    """Explicit thinking-token cap for live E4 pivotal calls (0 disables the cap)."""
+    raw = os.environ.get("ARENAMCP_PIVOTAL_THINKING_BUDGET")
+    if raw is None or raw.strip() == "":
+        return DEFAULT_PIVOTAL_THINKING_BUDGET
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        logger.warning(
+            "[SETTINGS] Invalid ARENAMCP_PIVOTAL_THINKING_BUDGET=%r; using %d",
+            raw,
+            DEFAULT_PIVOTAL_THINKING_BUDGET,
+        )
+        return DEFAULT_PIVOTAL_THINKING_BUDGET
+    if value == 0:
+        return 0
+    if value < 0:
+        logger.warning(
+            "[SETTINGS] Negative ARENAMCP_PIVOTAL_THINKING_BUDGET=%r; using %d",
+            raw,
+            DEFAULT_PIVOTAL_THINKING_BUDGET,
+        )
+        return DEFAULT_PIVOTAL_THINKING_BUDGET
+    clamped = max(_MIN_PIVOTAL_THINKING_BUDGET, min(_MAX_PIVOTAL_THINKING_BUDGET, value))
+    if clamped != value:
+        logger.warning(
+            "[SETTINGS] Clamped ARENAMCP_PIVOTAL_THINKING_BUDGET=%d to [%d, %d] -> %d",
+            value,
+            _MIN_PIVOTAL_THINKING_BUDGET,
+            _MAX_PIVOTAL_THINKING_BUDGET,
+            clamped,
+        )
+    return clamped
 
 
 def enabled(model):
@@ -199,7 +240,15 @@ class PivotalCallBudget:
     action. Load is supplied afresh at each request, not cached at admission.
     """
 
-    def __init__(self, *, deadline, normal_seconds, pivotal_seconds, reasons=()):
+    def __init__(
+        self,
+        *,
+        deadline,
+        normal_seconds,
+        pivotal_seconds,
+        reasons=(),
+        thinking_token_budget: int | None = None,
+    ):
         import math
 
         values = (deadline, normal_seconds, pivotal_seconds)
@@ -209,12 +258,29 @@ class PivotalCallBudget:
             raise ValueError("finite numeric budgets required")
         if normal_seconds <= 0 or pivotal_seconds < normal_seconds:
             raise ValueError("pivotal budget must cover the positive normal budget")
+        if thinking_token_budget is None:
+            resolved_token_budget = pivotal_thinking_token_budget()
+        elif (
+            isinstance(thinking_token_budget, bool)
+            or not isinstance(thinking_token_budget, int)
+            or thinking_token_budget < 0
+        ):
+            raise ValueError("non-negative integer thinking_token_budget required")
+        else:
+            resolved_token_budget = thinking_token_budget
         self.deadline = deadline
         self.normal_seconds = normal_seconds
         self.pivotal_seconds = pivotal_seconds
         self.reasons = tuple(reasons)
+        self.thinking_token_budget = resolved_token_budget
         self.high_calls = 0
         self.calls = 0
+
+    def token_budget_for(self, effort: str | None) -> int | None:
+        """Return the bounded thinking-token budget for an admitted effort level."""
+        if effort == "high" and self.thinking_token_budget > 0:
+            return self.thinking_token_budget
+        return None
 
     def admit(self, *, now, degraded=False, plan_in_flight=False, correction=False):
         """Return (effort, seconds), or raise before an unsafe/extra call.

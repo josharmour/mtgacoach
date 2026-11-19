@@ -118,6 +118,20 @@ def test_per_request_reasoning_effort_overrides_the_default(captured):
 @pytest.mark.parametrize("call_class", ["decision.typed", "decision.fast", "background.commentary", "probe"])
 def test_current_deadline_sensitive_calls_disable_reasoning(captured, model, call_class):
     backend = ProxyBackend(model=model, base_url="http://127.0.0.1:9/v1", api_key="test")
+    if model == "current" and call_class.startswith("decision."):
+        backend.complete("Choose", "Board", call_class=call_class, reasoning_effort=None)
+        assert captured["extra_body"]["chat_template_kwargs"] == {
+            "thinking": False,
+            "reasoning_effort": "none",
+        }
+        assert "priority" not in captured["extra_body"]
+
+        captured.clear()
+        backend.complete("Choose", "Board", call_class=call_class, reasoning_effort="low")
+        assert captured["extra_body"]["chat_template_kwargs"] == {"thinking": True, "reasoning_effort": "low"}
+        assert "priority" not in captured["extra_body"]
+        return
+
     backend.complete("Choose", "Board", call_class=call_class, reasoning_effort="low")
     assert captured["extra_body"]["chat_template_kwargs"] == {"thinking": False, "reasoning_effort": "none"}
     assert "priority" not in captured["extra_body"]

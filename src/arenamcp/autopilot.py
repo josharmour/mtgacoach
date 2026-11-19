@@ -260,10 +260,14 @@ class AutopilotEngine(
         try:
             from arenamcp.game_plan import GamePlanManager
 
+            sep_active = (
+                self._planner._separate_strategy_active()
+                if hasattr(self._planner, "_separate_strategy_active")
+                else getattr(self._planner, "separate_strategy_planning", False) is True
+            )
             self._game_plan_mgr: Any | None = GamePlanManager(
                 self._planner._backend,
-                separate_strategy_planning=getattr(self._planner, "separate_strategy_planning", False)
-                is True,
+                separate_strategy_planning=sep_active,
             )
         except Exception as e:  # never block construction on the strategic layer
             logger.debug("GamePlanManager unavailable: %s", e)
@@ -5839,6 +5843,7 @@ class AutopilotEngine(
         if boundary:
             self._discard_typed_plan(decision, option_ids, boundary)
             return True
+        self._emit_turn_plan_payload()
         self._note_typed_fallback()
         if decision.request_type == "CastingTimeOptions":
             option_ids = self._untargeted_mode_for_no_kill(decision, game_state, option_ids)

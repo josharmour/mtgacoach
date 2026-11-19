@@ -131,7 +131,8 @@ def test_two_creature_search_carries_card_rules_to_planner_and_submits_both(poll
         if card.get("oracle_text"):
             assert card["oracle_text"].splitlines()[0] in prompt
     assert "Choose at least 0 and at most 2 option(s)." in prompt
-    assert "does not trigger 'when you cast'" in system
+    assert "A plan is conditional" in system
+    assert "does not trigger 'when you cast'" in (system + "\n" + prompt)
     bridge = TypedBridge(poll)
     assert submit_option(bridge, decision, picked)
     assert bridge.submitted == [("selection", [538, 539])]

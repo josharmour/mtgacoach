@@ -28,17 +28,21 @@ GROUPS = ("decision", "plan", "playbook", "announcer", "probe")
 #   None                                leave the caller's request unchanged
 VALID_POLICIES = frozenset({"none", "low", "medium", "high", "max", "cap_low"})
 
-# GLM (behind the "current" alias since 2026-11-03): exactly what the alias
-# path sent before this table existed - decisions without thinking, plan calls
-# capped at low, playbook/announcer/probe without thinking.
+# GLM (behind the "current" alias since 2026-11-03): routine decisions stay
+# unthinking when requested as None/"none", while E4 pivotal or explicit "low"
+# decision calls are capped at bounded low effort (NN2) so live clock stays safe;
+# plan calls remain capped at low; playbook/announcer/probe without thinking.
 GLM_ROW = {
-    "decision": "none",
+    "decision": "cap_low",
     "plan": "cap_low",
     "playbook": "none",
     "announcer": "none",
     "probe": "none",
 }
-DEEPSEEK_ROW = dict(GLM_ROW)
+DEEPSEEK_ROW = {
+    **GLM_ROW,
+    "decision": "none",
+}
 # OpenRouter test models (or-*): never think, so a head-to-head run compares
 # models and not thinking budgets. 2026-11-09 23:24 (match eedf1ae3): Gemma 4
 # 26B at "low" spent 4,613 thinking tokens on a plan, 17 s at the median and
@@ -294,3 +298,43 @@ def effort_for_backend(backend, call_class: str, reasoning_effort, *, idle_playb
     return apply_policy(
         effective_row(family, idle_playbook=idle_playbook), group_for_call_class(call_class), reasoning_effort
     )
+
+
+def decision_thinking_budget(
+    backend,
+    call_class: str,
+    *,
+    requested_effort,
+    effective_effort,
+    explicit_budget: int | None = None,
+) -> int | None:
+    """Explicit thinking-token cap for bounded live decisions on GLM/DeepSeek, else None."""
+    if group_for_call_class(call_class) != "decision":
+        return None
+    if effective_effort in (None, "none"):
+        return None
+    if family_for_backend(backend) not in {"glm", "deepseek"}:
+        return None
+    raw_env = os.environ.get("ARENAMCP_DECISION_THINKING_BUDGET")
+    if raw_env is not None and raw_env.strip() != "":
+        try:
+            env_val = int(raw_env.strip())
+        except ValueError:
+            logger.warning("[SETTINGS] Invalid ARENAMCP_DECISION_THINKING_BUDGET=%r; ignoring it", raw_env)
+        else:
+            if env_val <= 0:
+                if env_val < 0:
+                    logger.warning(
+                        "[SETTINGS] Negative ARENAMCP_DECISION_THINKING_BUDGET=%r disables token budget",
+                        raw_env,
+                    )
+                return None
+            return env_val
+    if explicit_budget is not None:
+        return explicit_budget if explicit_budget > 0 else None
+    if requested_effort in {"high", "max"} and effective_effort == "low":
+        from arenamcp.selective_thinking import pivotal_thinking_token_budget
+
+        capped = pivotal_thinking_token_budget()
+        return capped if capped > 0 else None
+    return None

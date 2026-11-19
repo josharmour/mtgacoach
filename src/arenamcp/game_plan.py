@@ -262,10 +262,8 @@ STRATEGIC_LANE = StrategicLane()
 
 # Strong, compact instruction. The model returns STRICT JSON so we can render a
 # stable prompt block for the planner and a one-line intro for spoken advice.
-GAME_PLAN_PROMPT = (
-    STRATEGIC_POLICY_CORE
-    + "\n"
-    + """You are a Magic: The Gathering strategic planner forming a PERSISTENT GAME PLAN.
+GAME_PLAN_INSTRUCTIONS = (
+    """You are a Magic: The Gathering strategic planner forming a PERSISTENT GAME PLAN.
 Given the current board, hand, mana, life totals, the deterministic BOARD FACTS and the Oracle-grounded deck playbook, decide WHO IS THE BEATDOWN, how this game is won, and what to do on each of our next three turns, like a strong human player looking 2-3 turns ahead.
 
 BOARD FACTS are computed from the live board (clocks through best blocks, race, lethal flags, mana budget per turn). Treat them as hard facts:
@@ -304,13 +302,12 @@ Respond with ONLY a JSON object, no prose, no markdown:
   "lessons": ["what has worked or failed so far THIS match, from the ledger (<=12 words each, up to 4)"]
 }"""
 )
+GAME_PLAN_PROMPT = STRATEGIC_POLICY_CORE + "\n" + GAME_PLAN_INSTRUCTIONS
 
 
 # A short update uses the same validated GamePlan fields as a full strategic review.
-LIVE_PLAN_PROMPT = (
-    STRATEGIC_POLICY_CORE
-    + "\n"
-    + """Choose the line from the supplied deck playbook that fits this match.
+LIVE_PLAN_INSTRUCTIONS = (
+    """Choose the line from the supplied deck playbook that fits this match.
 Use BOARD FACTS, the current hand, the mana available and the prior plan. Keep a sound line.
 Give one win condition, our next play or hold, and the specific opposing play or draw that
 would change it. Follow a feasible candidate line when one is supplied. Cast only cards
@@ -327,6 +324,7 @@ Use exact card names and leave unavailable actions empty.
           {"turn":"T+1","land":"","cast":[],"attack":"","hold":""}],
  "switch_if":["specific change"]}"""
 )
+LIVE_PLAN_PROMPT = STRATEGIC_POLICY_CORE + "\n" + LIVE_PLAN_INSTRUCTIONS
 
 
 # The assessed race reasons that attacking is what survives (``board_assessment._role``, ledger #161).
@@ -393,7 +391,7 @@ class GamePlan:
     def step_for(self, turn: int) -> dict | None:
         return next((step for step in self.turn_plan if step.get("turn") == turn), None)
 
-    def as_planner_block(self, *, with_role_and_turns: bool = True) -> str:
+    def as_planner_block(self, *, with_role_and_turns: bool = True, state: dict | None = None) -> str:
         """Multi-line block injected into the ActionPlanner per-decision prompt.
 
         ``with_role_and_turns=False`` omits the role and turn-plan lines when
@@ -405,8 +403,13 @@ class GamePlan:
             reason = f" — {self.role_reason}" if self.role_reason else ""
             lines.append(f"  Role: {self.role.upper()}{reason}")
         if self.turn_plan and with_role_and_turns:
+            steps = (
+                [_with_progress(step, None, state) for step in self.turn_plan]
+                if isinstance(state, dict)
+                else self.turn_plan
+            )
             lines.append(
-                "  Turn plan: " + " | ".join(f"T{step['turn']}: {step_text(step)}" for step in self.turn_plan)
+                "  Turn plan: " + " | ".join(f"T{step['turn']}: {step_text(step)}" for step in steps)
             )
         lines.append(f"  Win condition(s): {wins}")
         if self.route_state:
@@ -3598,13 +3601,23 @@ def _move_displaced(plan: GamePlan, best: Any, displaced: list[str], state: dict
 # --- render-time progress -------------------------------------------------------------
 
 _DONE = " ✓"
+_ON_STACK = " ⏳ on stack (resolving)"
 
 
 def _with_progress(step: dict, assessment: Any, state: dict | None) -> dict:
-    """``step`` with what is already done this turn marked ✓: the land played, permanents cast."""
-    if not isinstance(state, dict) or not assessment.our_turn or step.get("turn") != assessment.turn:
+    """``step`` with what is already done (✓) or resolving on stack (⏳) marked."""
+    if not isinstance(state, dict):
         return step
     local = _local_seat(state)
+    if assessment is not None:
+        our_turn = bool(assessment.our_turn)
+        turn = assessment.turn
+    else:
+        turn_info = state.get("turn") or {}
+        our_turn = local is not None and turn_info.get("active_player") == local
+        turn = _round(turn_info.get("turn_number"), -1)
+    if not our_turn or step.get("turn") != turn:
+        return step
     lands_played = next(
         (
             _round(p.get("lands_played"))
@@ -3613,27 +3626,62 @@ def _with_progress(step: dict, assessment: Any, state: dict | None) -> dict:
         ),
         0,
     )
+
+    def _plain_keys(raw_name: Any) -> set[str]:
+        text = str(raw_name or "").strip()
+        if not text:
+            return set()
+        keys = {_plain(text)}
+        if "//" in text:
+            keys.update(_plain(face) for face in text.split("//"))
+        return {k for k in keys if k}
+
+    def _consume_key_match(pool: list[set[str]], target_keys: set[str]) -> bool:
+        for idx, keys in enumerate(pool):
+            if keys & target_keys:
+                pool.pop(idx)
+                return True
+        return False
+
     entered_lands: Counter[str] = Counter()
-    entered: Counter[str] = Counter()
+    entered_pool: list[set[str]] = []
     for card in state.get("battlefield") or []:
         if (
             not isinstance(card, dict)
             or (card.get("controller_seat_id") or card.get("owner_seat_id")) != local
         ):
             continue
-        if _round(card.get("turn_entered_battlefield"), -1) != assessment.turn:
+        if _round(card.get("turn_entered_battlefield"), -1) != turn:
             continue
-        (entered_lands if _is_hand_land(card) else entered)[_plain(card.get("name"))] += 1
+        if _is_hand_land(card):
+            entered_lands[_plain(card.get("name"))] += 1
+        else:
+            keys = _plain_keys(card.get("name"))
+            if keys:
+                entered_pool.append(keys)
+    stack_pool: list[set[str]] = []
+    for item in state.get("stack") or []:
+        if (
+            not isinstance(item, dict)
+            or (item.get("controller_seat_id") or item.get("owner_seat_id")) != local
+            or str(item.get("object_kind") or "").upper() == "ABILITY"
+            or item.get("countered")
+        ):
+            continue
+        keys = _plain_keys(item.get("name"))
+        if keys:
+            stack_pool.append(keys)
     marked = dict(step)
     land = str(step.get("land") or "")
     if land and lands_played > 0 and entered_lands[_plain(land)] > 0:
         marked["land"] = land + _DONE
     casts = []
     for entry in step.get("cast") or []:
-        name = _plain(_ANY_NOTE.sub("", str(entry)))
-        if entered[name] > 0:
-            entered[name] -= 1
+        entry_keys = _plain_keys(_ANY_NOTE.sub("", str(entry)))
+        if entry_keys and _consume_key_match(entered_pool, entry_keys):
             entry = f"{entry}{_DONE}"
+        elif entry_keys and _consume_key_match(stack_pool, entry_keys):
+            entry = f"{entry}{_ON_STACK}"
         casts.append(entry)
     marked["cast"] = casts
     # A successful optional payment can consume the last reserved source
@@ -3641,7 +3689,7 @@ def _with_progress(step: dict, assessment: Any, state: dict | None) -> dict:
     # current mana once the step's planned land/casts are complete; never
     # erase the saved plan or treat a submitted payment as already resolved.
     pending_land = marked.get("land") and not str(marked["land"]).endswith(_DONE)
-    if not pending_land and all(str(entry).endswith(_DONE) for entry in casts):
+    if not pending_land and all(str(entry).endswith(_DONE) for entry in casts) and not state.get("stack"):
         from arenamcp.resource_hold import current_mana_hold
 
         marked["hold"] = current_mana_hold(str(marked.get("hold") or ""), state)
@@ -4109,7 +4157,7 @@ def compose_strategy_block(
     extra = extra_facts.rstrip()
     refresh = plan_refresh_note(plan, refresh_failed)
     if assessment is None:
-        block = plan.as_planner_block().strip() if plan else ""
+        block = plan.as_planner_block(state=state).strip() if plan else ""
         if block and refresh:
             block += "\n" + refresh
         return f"{block}\n{extra}" if block and extra else block or extra.strip()
@@ -6466,6 +6514,31 @@ class GamePlanManager:
         )
 
     # ----- LLM call --------------------------------------------------------
+    def _shared_playbook_core(self, game_state: dict[str, Any], seed: str | None) -> tuple[str, str]:
+        """Return ``(shared_core, plan_playbook_tail)`` matching ActionPlanner's leading playbook block."""
+        source = getattr(self, "_playbook_source", None)
+        if callable(source):
+            try:
+                from arenamcp.deck_strategy import DeckPlaybook
+
+                book = source()
+                if type(book) is DeckPlaybook:
+                    fields, core = DeckPlaybook._decision_context_lines(book, game_state, request_type=None)
+                    if (
+                        type(fields) is list
+                        and all(type(field) is str for field in fields)
+                        and type(core) is set
+                        and all(type(index) is int and 0 <= index < len(fields) for index in core)
+                    ):
+                        shared_core = "\n".join(field for index, field in enumerate(fields) if index in core)
+                        plan_tail = "\n\n".join(filter(None, self._seed_parts(seed, game_state)))
+                        return shared_core, plan_tail
+            except Exception as error:
+                logger.debug("shared playbook core unavailable: %s", error)
+        if seed:
+            return f"DECK STRATEGY:\n{seed}", ""
+        return "", ""
+
     def _build_context(self, game_state: dict[str, Any]) -> str:
         """Rich board/hand context, reusing the coach formatter when possible."""
         try:
@@ -6496,10 +6569,20 @@ class GamePlanManager:
         change_detail: str = "",
     ) -> GamePlan | None:
         from arenamcp.board_assessment import assess
-        from arenamcp.match_context import prepare_match_context, split_deck_reference
+        from arenamcp.match_context import (
+            prepare_match_context,
+            shared_match_system_prompt,
+            split_deck_reference,
+        )
 
         # A plan spans turns: it lists the library's remaining cards (outs).
-        game_state = prepare_match_context(game_state, library=True, compact_starting_deck=True)
+        game_state = prepare_match_context(
+            game_state,
+            library=True,
+            compact_decision=True,
+            compact_starting_deck=True,
+            source_ids_complete=True,
+        )
         context = self._build_context(game_state)
         assessment = assess(game_state)
         # Stable text first, for the server's prefix cache: system prompt,
@@ -6576,17 +6659,17 @@ class GamePlanManager:
                 f"executable win condition / next play this time."
             )
         user_parts.append("\nForm the GAME PLAN as JSON now.")
-        # Prefix-cache order (E2): deck list and commanders (stable all
-        # match), then the invariant playbook core (per deck), then the RULES
-        # section (grows only as cards are seen), then the variable playbook
-        # mechanism lines (whose quoted-in-reference pointers depend on RULES),
-        # then the volatile board. Blocks keep their exact bytes; only their
-        # order changes.
-        seed_core, seed_tail = self._seed_parts(seed, game_state)
-        head, rules = split_deck_reference(str(game_state.get("deck_reference") or ""))
-        user_message = "\n\n".join(
-            block for block in (head, seed_core, rules, seed_tail, "\n".join(user_parts)) if block
+        # Prefix-cache order (E2/NN1): match-immutable system prompt, then
+        # deck list and commanders, then the invariant playbook core, then the
+        # RULES section (grows only as cards are seen), then the plan's full
+        # playbook tail, candidate rules, task instructions, and volatile board.
+        shared_core, plan_playbook_tail = self._shared_playbook_core(game_state, seed)
+        stable_reference = str(
+            game_state.get("deck_reference_stable") or game_state.get("deck_reference") or ""
         )
+        candidate_rules = str(game_state.get("decision_candidate_rules") or "")
+        head, rules = split_deck_reference(stable_reference)
+        system_prompt = shared_match_system_prompt(game_state)
 
         self._reform_failure = ""
         model = str(getattr(self._backend, "model", "")).lower()
@@ -6602,7 +6685,20 @@ class GamePlanManager:
                 "planned step unavailable",
             }
         )
-        prompt = LIVE_PLAN_PROMPT if compact else GAME_PLAN_PROMPT
+        plan_instructions = LIVE_PLAN_INSTRUCTIONS if compact else GAME_PLAN_INSTRUCTIONS
+        user_message = "\n\n".join(
+            block
+            for block in (
+                head,
+                shared_core,
+                rules,
+                plan_playbook_tail,
+                candidate_rules,
+                plan_instructions,
+                "\n".join(user_parts),
+            )
+            if block
+        )
         budget = min(self._timeout, self._INITIAL_HOSTED_PLAN_TIMEOUT_S) if compact else self._timeout
         # Parsing repair is part of this reform, not a second full occupation
         # of the background lane (#141/#223). Share one wall-clock deadline.
@@ -6626,7 +6722,9 @@ class GamePlanManager:
                 )
             elif effort == "low":
                 logger.info("Game plan: reform at low effort for speed")
-            response = self._complete(prompt, user_message, cancel=cancel, effort=effort, deadline=deadline)
+            response = self._complete(
+                system_prompt, user_message, cancel=cancel, effort=effort, deadline=deadline, compact=compact
+            )
         except Exception as e:
             logger.warning("game-plan LLM call failed (keeping prior plan): %s", e)
             self._reform_failure = "call failed"
@@ -6638,7 +6736,13 @@ class GamePlanManager:
             json_retried = True
             retry_effort = "none" if compact else "low"
             plan = self._retry_for_json(
-                user_message, turn_num, cancel=cancel, deadline=deadline, effort=retry_effort, prompt=prompt
+                user_message,
+                turn_num,
+                cancel=cancel,
+                deadline=deadline,
+                effort=retry_effort,
+                prompt=system_prompt,
+                compact=compact,
             )
             if plan is not None:
                 effort = retry_effort
@@ -6665,6 +6769,8 @@ class GamePlanManager:
                 cancel=cancel,
                 deadline=deadline,
                 effort="low",
+                system_prompt=system_prompt,
+                compact=compact,
             )
             if plan is None:
                 return None
@@ -6696,6 +6802,8 @@ class GamePlanManager:
         cancel: threading.Event | None,
         deadline: float,
         effort: str = "low",
+        system_prompt: str = GAME_PLAN_PROMPT,
+        compact: bool | None = None,
     ) -> GamePlan | None:
         """#235: repair a broken schedule once, within the first call's budget.
 
@@ -6720,7 +6828,12 @@ class GamePlanManager:
         )
         try:
             response = self._complete(
-                GAME_PLAN_PROMPT, user_message + nudge, cancel=cancel, effort=effort, deadline=deadline
+                system_prompt,
+                user_message + nudge,
+                cancel=cancel,
+                effort=effort,
+                deadline=deadline,
+                compact=compact,
             )
             repaired = self._usable_plan(response, turn_num, cancel=cancel, effort=effort)
             if cancel is not None and cancel.is_set():
@@ -6814,6 +6927,7 @@ class GamePlanManager:
         deadline: float | None = None,
         effort: str = "low",
         prompt: str = GAME_PLAN_PROMPT,
+        compact: bool | None = None,
     ) -> GamePlan | None:
         """One cheap retry within this reform's budget, unless cancelled or the server is down."""
         if (cancel is not None and cancel.is_set()) or not background_llm_allowed(self._backend):
@@ -6832,6 +6946,7 @@ class GamePlanManager:
                 cancel=cancel,
                 effort=effort,
                 deadline=deadline,
+                compact=compact,
             )
         except Exception as e:
             logger.warning("game-plan retry call failed (keeping prior plan): %s", e)
@@ -6850,6 +6965,7 @@ class GamePlanManager:
         cancel: threading.Event | None = None,
         effort: str | None = None,
         deadline: float | None = None,
+        compact: bool | None = None,
     ) -> str:
         """Call the backend for a background strategy plan.
 
@@ -6859,12 +6975,13 @@ class GamePlanManager:
         cancellable once its turn has passed, where the backend supports
         those keywords.
         """
+        is_compact = (system_prompt == LIVE_PLAN_PROMPT) if compact is None else bool(compact)
         labels = accepted_call_kwargs(
             self._backend,
             call_class=self._CALL_CLASS,
             priority=BACKGROUND_PRIORITY,
             cancel_event=cancel,
-            response_format={"type": "json_object"} if system_prompt == LIVE_PLAN_PROMPT else None,
+            response_format={"type": "json_object"} if is_compact else None,
             lane_wait_s=self._PLAN_LANE_WAIT_S,
         )
         remaining = self._timeout if deadline is None else min(self._timeout, deadline - time.monotonic())
@@ -6873,7 +6990,7 @@ class GamePlanManager:
         return self._backend.complete(
             system_prompt,
             user_message,
-            self._COMPACT_PLAN_MAX_TOKENS if system_prompt == LIVE_PLAN_PROMPT else self._PLAN_MAX_TOKENS,
+            self._COMPACT_PLAN_MAX_TOKENS if is_compact else self._PLAN_MAX_TOKENS,
             temperature=0.0,
             request_timeout_s=remaining,
             background=True,

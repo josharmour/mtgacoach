@@ -3,6 +3,7 @@
 import logging
 import re
 from collections import Counter
+from collections.abc import Iterable
 from typing import Any
 
 from arenamcp.combat_keywords import has_combat_keyword, is_creature_now
@@ -64,6 +65,328 @@ def aura_waits_for_creature(state: dict, card: dict) -> bool:
         and all(obj.get("controller_seat_id") == local for obj in stack)
         and any(resolves_to_creature(obj) for obj in stack)
     )
+
+
+def _norm_plan_text(text: str) -> str:
+    """Casefold and collapse punctuation/whitespace for GamePlan text matching."""
+    cleaned = str(text or "").casefold().replace("’", "'").replace("'", "")
+    return re.sub(r"[^a-z0-9]+", " ", cleaned).strip()
+
+
+def _plan_name_candidates(card_name: str) -> tuple[tuple[str, bool], ...]:
+    """Pairs of ``(normalized_name, is_single_word_split_face)`` for full and ``//`` faces."""
+    raw = str(card_name or "").strip()
+    if not raw:
+        return ()
+    seen: dict[str, bool] = {}
+    full = _norm_plan_text(raw)
+    if full:
+        seen[full] = False
+    if "//" in raw:
+        for face in raw.split("//"):
+            norm_face = _norm_plan_text(face)
+            if norm_face and norm_face not in seen:
+                seen[norm_face] = len(norm_face.split()) == 1
+    return tuple(seen.items())
+
+
+def _name_match_keys(card_name: str) -> set[str]:
+    """Full normalized name plus any split/MDFC ``//`` faces."""
+    return {name for name, _single in _plan_name_candidates(card_name)}
+
+
+def _strip_cast_entry_note(entry: str) -> str:
+    """Strip trailing parenthetical notes and ``landcycle `` prefix from a planned cast."""
+    cleaned = re.sub(r"\s*\([^()]*\)\s*$", "", str(entry or "").strip())
+    if cleaned.lower().startswith("landcycle "):
+        cleaned = cleaned[len("landcycle ") :].strip()
+    return _norm_plan_text(cleaned)
+
+
+_CLAUSE_HOLD_VERB_RE = re.compile(
+    r"^(?:keep|hold|holding|save|saving|keeping|reserve|reserving|leave|leaving)\b"
+)
+_EXPLICIT_SPLIT_HOLD_RE = re.compile(
+    r"\b(?:hold|holding|save|saving|keep|keeping|reserve|reserving)\s+"
+    r"(?:up\s+)?(?:the\s+|our\s+|(?:[0-9]*[wubrgc]+\s+|mana\s+)(?:up\s+)?(?:for|to\s+(?:cast|play))\s+)?__card__\b"
+)
+_EXCLUDED_CARD_CONTEXT_RE = re.compile(
+    r"\b(?:instead of|rather than|not|without|except|after|before|unless|"
+    r"to protect|protect|protecting|defend|defending|against|onto|targeting|target)\s+"
+    r"(?:the\s+|our\s+|your\s+|their\s+)?__card__\b"
+    r"|\bfor\s+(?:their|opposing|opponent|opponents)\s+(?:attacking\s+|blocking\s+)?__card__\b"
+)
+_CAST_PREFIX_RE = re.compile(r"\b(?:cast|casting|play|playing|resolve|resolving)\b")
+_AFFIRMATIVE_HOLD_TO_CAST_RE = re.compile(
+    r"\b(?:hold|holding|save|saving|keep|keeping|wait|waiting|reserve|reserving)\b.*\bto\s+(?:cast|play)\b"
+)
+
+
+def card_held_by_plan(card_name: str, hold_text: str, *, planned_casts: Iterable[str] = ()) -> bool:
+    """Whether a GamePlan ``hold:`` line reserves ``card_name`` rather than casting it now."""
+    candidates = _plan_name_candidates(card_name)
+    if not candidates or not str(hold_text or "").strip():
+        return False
+    card_keys = {name for name, _ in candidates}
+    for entry in planned_casts or ():
+        raw_entry = str(entry or "").strip()
+        if not raw_entry or "✓" in raw_entry or "⏳" in raw_entry:
+            continue
+        cleaned_entry = re.sub(r"\s*\([^()]*\)\s*$", "", raw_entry)
+        if cleaned_entry.lower().startswith("landcycle "):
+            cleaned_entry = cleaned_entry[len("landcycle ") :].strip()
+        if _name_match_keys(cleaned_entry) & card_keys:
+            return False
+    clauses = [c for c in re.split(r"[;\n]+|(?:\.\s+)", str(hold_text)) if c.strip()]
+    held_match = False
+    for clause in clauses:
+        norm_clause = _norm_plan_text(clause)
+        if not norm_clause:
+            continue
+        clause_starts_hold = bool(_CLAUSE_HOLD_VERB_RE.match(norm_clause))
+        for cand, is_single_split_face in candidates:
+            if not re.search(rf"\b{re.escape(cand)}\b", norm_clause):
+                continue
+            cand_pat = r"\b" + r"[, ]+".join(re.escape(part) for part in cand.split()) + r"\b"
+            paren_target = re.search(
+                rf"\([^)]*\b(?:for|to protect|against|targeting)\b[^)]*{cand_pat}[^)]*\)",
+                clause.casefold().replace("’", "'").replace("'", ""),
+            )
+            stripped_parens = re.sub(
+                r"\([^)]*\)",
+                " ",
+                clause.casefold().replace("’", "'").replace("'", ""),
+            )
+            outside_parens = (
+                stripped_parens if paren_target else clause.casefold().replace("’", "'").replace("'", "")
+            )
+            if not re.search(cand_pat, _norm_plan_text(outside_parens)):
+                continue
+            # Keep commas outside card names so "Hold Jace, the Mind Sculptor, don't hold Opt"
+            # splits cleanly across comma-separated directives.
+            comma_clause = re.sub(r"[^a-z0-9,]+", " ", outside_parens)
+            marked_clause = re.sub(cand_pat, " __card__ ", comma_clause)
+            for sub in marked_clause.split(","):
+                if "__card__" not in sub:
+                    continue
+                norm_sub = re.sub(r"\s+", " ", sub).strip()
+                if re.search(r"\b(?:dont|do not|never|stop)\s+hold(?:ing)?\b", norm_sub):
+                    return False
+                if re.search(r"\bcast\s+(?:the\s+)?__card__\s+now\b", norm_sub):
+                    return False
+                if _EXCLUDED_CARD_CONTEXT_RE.search(norm_sub):
+                    continue
+                before_card = norm_sub.split("__card__", 1)[0].strip()
+                if _CAST_PREFIX_RE.search(before_card) and not _AFFIRMATIVE_HOLD_TO_CAST_RE.search(
+                    before_card
+                ):
+                    continue
+                if is_single_split_face and not (
+                    norm_clause == "__card__"
+                    or (clause_starts_hold and norm_sub == "__card__")
+                    or _EXPLICIT_SPLIT_HOLD_RE.search(norm_sub)
+                ):
+                    continue
+                held_match = True
+    return held_match
+
+
+def _extract_plan_step_details(
+    plan_step: dict | None,
+    plan_text: str,
+    state: dict,
+    *,
+    step_source_active: bool = False,
+) -> tuple[str, list[str]]:
+    """Return ``(hold_text, raw_casts)`` from ``plan_step`` or the current-turn ``THIS TURN`` line."""
+    if isinstance(plan_step, dict):
+        hold = str(plan_step.get("hold") or "").strip()
+        raw_casts = plan_step.get("cast") or []
+        if isinstance(raw_casts, str):
+            casts = [
+                part.strip() for part in re.split(r"\s*\+\s*|\s*;\s*|\s+and\s+", raw_casts) if part.strip()
+            ]
+        else:
+            casts = [str(part).strip() for part in raw_casts if str(part).strip()]
+        if hold or casts or "hold" in plan_step:
+            return hold, casts
+
+    if step_source_active and plan_step is None:
+        return "", []
+
+    text = str(plan_text or "")
+    if not text:
+        return "", []
+    turn_num = (state.get("turn") or {}).get("turn_number")
+    body = ""
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("THIS TURN"):
+            colon = stripped.find("):")
+            if colon >= 0:
+                header = stripped[:colon]
+                turn_match = re.search(r"\bT(\d+)\b", header)
+                if (
+                    turn_match is not None
+                    and isinstance(turn_num, int)
+                    and not isinstance(turn_num, bool)
+                    and int(turn_match.group(1)) != turn_num
+                ):
+                    continue
+                body = stripped[colon + 2 :].strip()
+                break
+    if not body and turn_num is not None:
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("Turn plan:"):
+                prefix = f"T{turn_num}:"
+                for seg in stripped[len("Turn plan:") :].split("|"):
+                    seg_s = seg.strip()
+                    if seg_s.startswith(prefix):
+                        body = seg_s[len(prefix) :].strip()
+                        break
+                break
+    if not body:
+        return "", []
+    body = re.sub(r"\s*\[game plan[^\]]*\]\s*$", "", body).strip()
+    hold_match = re.search(r"(?:^|;\s*)hold:\s*(.+)$", body, re.IGNORECASE)
+    hold = hold_match.group(1).strip() if hold_match else ""
+    cast_match = re.search(r"(?:^|;\s*)cast\s+(.+?)(?=;\s*(?:attack|hold):|$)", body, re.IGNORECASE)
+    casts = [c.strip() for c in cast_match.group(1).split(" + ") if c.strip()] if cast_match else []
+    return hold, casts
+
+
+def _consume_name_keys(pool: list[set[str]], target_keys: set[str]) -> bool:
+    for idx, keys in enumerate(pool):
+        if keys & target_keys:
+            pool.pop(idx)
+            return True
+    return False
+
+
+def _uncast_planned_casts(raw_casts: list[str], state: dict, local: Any) -> list[str]:
+    """Filter out planned casts already resolved this turn or currently on our stack."""
+    if not raw_casts:
+        return []
+    turn_info = state.get("turn") or {}
+    try:
+        turn_num = int(turn_info.get("turn_number"))
+    except (TypeError, ValueError):
+        turn_num = -1
+    entered_pool: list[set[str]] = []
+    for card in state.get("battlefield") or []:
+        if (
+            not isinstance(card, dict)
+            or (card.get("controller_seat_id") or card.get("owner_seat_id")) != local
+        ):
+            continue
+        try:
+            etb_turn = int(card.get("turn_entered_battlefield"))
+        except (TypeError, ValueError):
+            etb_turn = -2
+        if turn_num >= 0 and etb_turn == turn_num:
+            keys = _name_match_keys(str(card.get("name") or ""))
+            if keys:
+                entered_pool.append(keys)
+    stack_pool: list[set[str]] = []
+    for item in state.get("stack") or []:
+        if (
+            not isinstance(item, dict)
+            or (item.get("controller_seat_id") or item.get("owner_seat_id")) != local
+            or str(item.get("object_kind") or "").upper() == "ABILITY"
+            or item.get("countered")
+        ):
+            continue
+        keys = _name_match_keys(str(item.get("name") or ""))
+        if keys:
+            stack_pool.append(keys)
+    uncast: list[str] = []
+    for entry in raw_casts:
+        text = str(entry or "").strip()
+        if not text or "✓" in text or "⏳" in text:
+            continue
+        cleaned = re.sub(r"\s*\([^()]*\)\s*$", "", text)
+        if cleaned.lower().startswith("landcycle "):
+            cleaned = cleaned[len("landcycle ") :].strip()
+        entry_keys = _name_match_keys(cleaned)
+        if entry_keys and _consume_name_keys(entered_pool, entry_keys):
+            continue
+        if entry_keys and _consume_name_keys(stack_pool, entry_keys):
+            continue
+        uncast.append(text)
+    return uncast
+
+
+def own_stack_reserved_option(
+    option: Any,
+    card: dict,
+    state: dict,
+    *,
+    plan_step: dict | None = None,
+    plan_text: str = "",
+    step_source_active: bool = False,
+) -> str:
+    """Return a non-empty hold reason when ``option`` should wait for our own stack to resolve."""
+    from arenamcp.target_effects import (
+        creature_aura_scope,
+        enchant_effect_text,
+        resolves_to_creature,
+        target_effect_is_harmful,
+    )
+
+    if not isinstance(state, dict) or not isinstance(card, dict):
+        return ""
+    meta = getattr(option, "meta", None) or {}
+    if meta.get("actionType") != "ActionType_Cast":
+        return ""
+    local = _local_seat(state)
+    stack = state.get("stack") or []
+    if local is None or not stack:
+        return ""
+    if any(
+        not isinstance(obj, dict) or (obj.get("controller_seat_id") or obj.get("owner_seat_id")) != local
+        for obj in stack
+    ):
+        return ""
+    turn = state.get("turn") or {}
+    phase = str(turn.get("phase") or "").lower()
+    step = str(turn.get("step") or "").lower()
+    if "combat" in phase or (
+        "main" not in phase and any(tok in step for tok in ("combat", "attack", "block", "damage"))
+    ):
+        return ""
+    if any(
+        isinstance(c, dict) and (c.get("is_attacking") or c.get("is_blocking"))
+        for c in state.get("battlefield") or []
+    ):
+        return ""
+
+    card_name = str(card.get("name") or "").strip()
+    hold_text, raw_casts = _extract_plan_step_details(
+        plan_step, plan_text, state, step_source_active=step_source_active
+    )
+    if card_name and hold_text:
+        uncast = _uncast_planned_casts(raw_casts, state, local)
+        if card_held_by_plan(card_name, hold_text, planned_casts=uncast):
+            return f"held by game plan ({card_name})"
+
+    if (
+        turn.get("active_player") == local
+        and "main" in phase
+        and any(
+            resolves_to_creature(obj) and str(obj.get("object_kind") or "").upper() != "ABILITY"
+            for obj in stack
+        )
+    ):
+        scope = creature_aura_scope(card)
+        oracle = str(card.get("oracle_text") or "")
+        if scope == "self" or (
+            scope == "either"
+            and target_effect_is_harmful(enchant_effect_text("Enchant creature", oracle)) is False
+        ):
+            return "waiting for our creature spell on stack to resolve before casting beneficial Aura"
+
+    return ""
 
 
 def _tutor_requirement(card: dict) -> re.Match | None:

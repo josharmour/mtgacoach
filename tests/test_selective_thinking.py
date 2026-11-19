@@ -52,9 +52,14 @@ def test_actual_transport_requires_opt_in_typed_deepseek_leg(
     assert seen[0]["max_tokens"] == 2048
     if bounded:
         assert extra["chat_template_kwargs"] == {"thinking": True, "reasoning_effort": 1}
-    elif model == "current" and kind.startswith("decision."):
+    elif model == "deepseek-v4.1-flash-local" and kind.startswith("decision."):
         assert extra["chat_template_kwargs"] == {"thinking": False, "reasoning_effort": "none"}
-    elif kind == "background.game_plan" or model.startswith("glm"):
+    elif (
+        model == "current"
+        and kind.startswith("decision.")
+        or kind == "background.game_plan"
+        or model.startswith("glm")
+    ):
         assert extra["chat_template_kwargs"] == {"thinking": True, "reasoning_effort": "low"}
 
 

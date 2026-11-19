@@ -61,7 +61,7 @@ def _efforts(backend):
 
 
 GLM_BEFORE = {
-    "decision.typed": "none",
+    "decision.typed": "low",
     "background.game_plan": "low",
     "background.deck_playbook": "none",
     "background.commentary": "none",
@@ -69,28 +69,29 @@ GLM_BEFORE = {
 }
 
 
-def test_glm_behind_current_alias_is_sent_exactly_today_settings():
-    """GLM behind ``current`` keeps decisions none / plan low / rest none.
+def test_glm_behind_current_alias_is_sent_bounded_low_settings():
+    """GLM behind ``current`` caps high-requested decisions & plans at ``low``, rest ``none``.
 
-    Before this chunk the alias test in proxy._alias_effort produced exactly
-    GLM_BEFORE for the ``current`` alias; Josh reached Mythic on these settings
-    (2026-11-09), so the served-model table must reproduce them bit for bit -
-    before the first response (served None), for the real served name
-    (``glm-5.3-flash``) and for the echoed alias (``current``, 51,148 log
-    lines).
+    NN2 sets ``GLM_ROW["decision"] = "cap_low"`` so pivotal / high requests cap
+    at bounded ``low`` while routine ``None`` / ``"none"`` requests keep thinking
+    off — verified identically before first response, on ``glm-5.3-flash``, and
+    on echoed ``current``.
     """
     for served in (None, "glm-5.3-flash", "current"):
         assert _efforts(_Backend("current", served)) == GLM_BEFORE, served
+        assert effort_for_backend(_Backend("current", served), "decision.typed", None) is None
 
 
-def test_alias_fallback_matches_the_old_alias_rule():
-    """The pre-response alias fallback reproduces the old _alias_effort rule."""
-    assert _alias_effort("current", "decision.typed", "low") == "none"
+def test_alias_fallback_matches_cap_low_alias_rule():
+    """The pre-response alias fallback enforces GLM cap_low while keeping DeepSeek decisions off."""
+    assert _alias_effort("current", "decision.typed", "low") == "low"
+    assert _alias_effort("current", "decision.typed", "high") == "low"
+    assert _alias_effort("current", "decision.typed", None) is None
     assert _alias_effort("current", "background.game_plan", "high") == "low"
     assert _alias_effort("current", "background.game_plan", "medium") == "medium"
     assert _alias_effort("deepseek-v4", "decision.typed", "low") == "none"
     assert _alias_effort("dsv4-chat", "background.game_plan", "max") == "low"
-    # A direct model name was never governed by the old rule and still is not.
+    # A direct model name was never governed by the alias table and still is not.
     assert _alias_effort("glm-5.3-flash", "decision.typed", "low") == "low"
     assert _alias_effort("glm-5.3-flash", "background.game_plan", "high") == "high"
 
@@ -105,7 +106,7 @@ def test_settings_follow_the_served_model_not_the_alias():
     """
     assert _efforts(_Backend("current", "or-gemma-4-26b"))["background.game_plan"] == "none"
     assert _efforts(_Backend("or-gemma-4-26b", "glm-5.3-flash"))["background.game_plan"] == "low"
-    assert _efforts(_Backend("or-gemma-4-26b", "glm-5.3-flash"))["decision.typed"] == "none"
+    assert _efforts(_Backend("or-gemma-4-26b", "glm-5.3-flash"))["decision.typed"] == "low"
 
 
 def test_deepseek_names_keep_the_deepseek_row():

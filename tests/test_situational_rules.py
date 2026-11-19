@@ -8,7 +8,7 @@ commander and library-search special cases on every call: ~800 of its
 from arenamcp.action_planner import AUTOPILOT_SYSTEM_PROMPT, ActionPlanner, autopilot_system_prompt
 from arenamcp.decisions import DecisionOption, PendingDecision
 from arenamcp.match_context import STRATEGIC_POLICY, strategic_policy
-from arenamcp.situational_rules import SUBJECTS, subjects_in_play
+from arenamcp.situational_rules import SUBJECTS, deck_subjects, dynamic_subjects, subjects_in_play
 
 LOCAL, OPP = 1, 2
 CREW = "Crew activates a Vehicle"
@@ -142,27 +142,94 @@ def test_the_typed_and_plan_calls_send_the_rules_for_their_board():
             self.reply, self.calls = reply, []
 
         def complete(self, system, user, *args, **kwargs):
-            self.calls.append(system)
+            self.calls.append((system, user))
             return self.reply
 
     backend = Capture('{"option_ids": ["pass"]}')
     decision = PendingDecision((1, 1), "ActionsAvailable", (DecisionOption("pass", "Pass"),), can_pass=True)
     ActionPlanner(backend)._llm_decision_options(decision, _state())
-    assert CREW not in backend.calls[-1] and "payable individually now" in backend.calls[-1]
+    sys_1, user_1 = backend.calls[-1]
+    combined_1 = sys_1 + "\n" + user_1
+    assert CREW not in combined_1 and "payable individually now" in combined_1
+
     ActionPlanner(backend)._llm_decision_options(
         decision, _state(hand=[BEAR, _card("Copter", "Artifact — Vehicle")])
     )
-    assert CREW in backend.calls[-1] and EQUIPMENT not in backend.calls[-1]
+    sys_2, user_2 = backend.calls[-1]
+    combined_2 = sys_2 + "\n" + user_2
+    assert CREW in combined_2 and EQUIPMENT not in combined_2
+    assert sys_2 == sys_1
+
     plan_backend = Capture('{"actions": [{"pick": 1}]}')
     planner = ActionPlanner(plan_backend, timeout=10.0, land_drop_first=False)
     planner.plan_actions(_state(), "new_turn", ["Cast Grizzly Bears [OK]", "Pass"])
-    assert "- EQUIPMENT:" not in plan_backend.calls[-1] and "- BLOCKERS:" in plan_backend.calls[-1]
+    plan_sys_1, plan_user_1 = plan_backend.calls[-1]
+    plan_combined_1 = plan_sys_1 + "\n" + plan_user_1
+    assert "- EQUIPMENT:" not in plan_combined_1 and "- BLOCKERS:" in plan_combined_1
+    assert plan_sys_1 == sys_1
+
     planner.plan_actions(
         _state(battlefield=[FOREST, _card("Sword", "Artifact — Equipment", "Equip {2}")]),
         "new_turn",
         ["Cast Grizzly Bears [OK]", "Activate Ability: Sword [OK]", "Pass"],
     )
-    assert "- EQUIPMENT:" in plan_backend.calls[-1]
+    plan_sys_2, plan_user_2 = plan_backend.calls[-1]
+    plan_combined_2 = plan_sys_2 + "\n" + plan_user_2
+    assert "- EQUIPMENT:" in plan_combined_2
+    assert plan_sys_2 == plan_sys_1
+
+
+def test_deck_subjects_reads_only_deck_and_format_metadata(monkeypatch):
+    # Empty state with no deck or brawl/commander metadata -> frozenset()
+    assert deck_subjects(None) == frozenset()
+    assert deck_subjects(_state()) == frozenset()
+
+    # Live zones and decision options are never inspected by deck_subjects
+    vehicle = _card("Smuggler's Copter", "Artifact — Vehicle", "Flying\nCrew 1")
+    equipment = _card("Short Sword", "Artifact — Equipment", "Equip {1}")
+    tutor = _card("Tutor", "Sorcery", "Search your library for a card.")
+    strix = _card("Hallway Heckler", "Creature — Sorcerer", "This creature enters prepared.")
+    manland = _card("Mishra's Land", "Land", "{1}: This land becomes a 2/2 creature.")
+    live_only = _state(
+        hand=[vehicle, tutor],
+        battlefield=[equipment, strix, manland],
+        stack=[tutor],
+        graveyard=[equipment],
+        exile=[vehicle],
+    )
+    assert deck_subjects(live_only) == frozenset()
+
+    # deck_catalog detects all deck-level mechanics
+    catalog = {101: BEAR, 102: vehicle, 103: equipment, 104: tutor, 105: strix}
+    assert deck_subjects({"deck_catalog": catalog}) == frozenset(
+        {"vehicle", "animation", "equipment", "library", "set_mechanics"}
+    )
+
+    # Lazily resolves deck_cards via _local_card only when deck_catalog is absent
+    monkeypatch.setattr("arenamcp.match_context._local_card", lambda gid, _epoch: catalog[gid])
+    assert deck_subjects({"deck_cards": [101, 102]}) == frozenset({"vehicle", "animation"})
+    assert deck_subjects({"deck_cards": [101], "deck_catalog": {999: equipment}}) == frozenset({"equipment"})
+
+    # Commander metadata and format_name / event_id detect "commander"
+    assert deck_subjects({"commander_grp_ids": [81845]}) == frozenset({"commander"})
+    assert deck_subjects({"format_name": "Historic Brawl"}) == frozenset({"commander"})
+    assert deck_subjects({"event_id": "Play_Commander_100"}) == frozenset({"commander"})
+
+    # Broken populated deck data never drops rules -> returns SUBJECTS
+    assert deck_subjects({"deck_catalog": 7}) == SUBJECTS
+    assert deck_subjects({"deck_cards": 7}) == SUBJECTS
+
+    # dynamic_subjects returns only subjects not already covered by match_subjects
+    match_sub = frozenset({"vehicle", "animation"})
+    assert dynamic_subjects(
+        _state(hand=[vehicle, equipment]),
+        _decision("Search"),
+        match_subjects=match_sub,
+    ) == frozenset({"equipment", "library"})
+
+    # Kill switch restores all SUBJECTS
+    monkeypatch.setenv("ARENAMCP_SITUATIONAL_RULES", "0")
+    assert deck_subjects(_state()) == SUBJECTS
 
 
 def test_the_coach_prompt_drops_the_strixhaven_primer_and_equipment_rule_without_their_cards():

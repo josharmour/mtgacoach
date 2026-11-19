@@ -165,7 +165,8 @@ def test_optional_payment_prompt_includes_same_turn_reservation():
     assert planner.plan_pay_or_decline("Spellbook Vendor", "You may pay {1}.", state) is False
     system, prompt = planner._call_llm.call_args.args[:2]
     assert "Hold W for Rescue" in prompt
-    assert "mana reserved for protection" in system
+    assert "A plan is conditional" in system
+    assert "mana reserved for protection" in (system + "\n" + prompt)
 
 
 def test_fresh_unrelated_cast_does_not_bypass_optional_payment_review():

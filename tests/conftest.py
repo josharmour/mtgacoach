@@ -409,6 +409,8 @@ def _reset_llm_gates() -> None:
     proxy = sys.modules.get("arenamcp.backends.proxy")
     if proxy is not None:
         proxy.reset_priority_state()
+        if hasattr(proxy, "reset_thinking_budget_state"):
+            proxy.reset_thinking_budget_state()
         # A request thread a test left behind may still hold the old lane;
         # its release() on the new lane is a no-op.
         proxy._BACKGROUND_LANE = proxy._BackgroundLane()

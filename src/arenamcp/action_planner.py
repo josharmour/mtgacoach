@@ -12,7 +12,7 @@ import os
 import re
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
@@ -43,8 +43,11 @@ from arenamcp.decisions import SELECT_N_DECLINE, expand_target_selection
 from arenamcp.mana import SPELL_CAST_TYPES
 from arenamcp.mana_potential import mana_reach_note
 from arenamcp.match_context import (
+    SHARED_TACTICAL_RULES_PARTS,
     STRATEGIC_POLICY_CORE,
+    dynamic_strategic_policy,
     prepare_match_context,
+    shared_match_system_prompt,
     split_deck_reference,
     strategic_policy,
     with_deck_reference,
@@ -52,7 +55,7 @@ from arenamcp.match_context import (
 from arenamcp.play_safety import filter_play_options, find_source, shrink_note, unsafe_play_reason
 from arenamcp.situational_rules import SUBJECTS as SITUATIONAL_SUBJECTS
 from arenamcp.situational_rules import compose as compose_rules
-from arenamcp.situational_rules import subjects_in_play
+from arenamcp.situational_rules import deck_subjects, dynamic_subjects
 from arenamcp.target_effects import (
     GOOD_TARGET,
     aura_entry_payoff,
@@ -616,17 +619,41 @@ _AUTOPILOT_SITUATIONAL_LINES = (
 )
 
 
+def _autopilot_task_rules(match_subjects: Iterable[str]) -> str:
+    """Autopilot rules filtered to core rules plus ``match_subjects``."""
+    wanted = set(match_subjects)
+    dropped = tuple(prefix for subject, prefix in _AUTOPILOT_SITUATIONAL_LINES if subject not in wanted)
+    if not dropped:
+        return AUTOPILOT_SYSTEM_PROMPT
+    return "\n".join(line for line in AUTOPILOT_SYSTEM_PROMPT.split("\n") if not line.startswith(dropped))
+
+
+def _dynamic_autopilot_rules(dyn_subjects: Iterable[str]) -> str:
+    """Situational strategic and autopilot rules active dynamically beyond ``match_subjects``."""
+    wanted = set(dyn_subjects)
+    if not wanted:
+        return ""
+    parts: list[str] = []
+    policy_tail = dynamic_strategic_policy(wanted)
+    if policy_tail:
+        parts.append(policy_tail)
+    prefixes = tuple(prefix for subject, prefix in _AUTOPILOT_SITUATIONAL_LINES if subject in wanted)
+    if prefixes:
+        lines = [line for line in AUTOPILOT_SYSTEM_PROMPT.split("\n") if line.startswith(prefixes)]
+        if lines:
+            parts.append("\n".join(lines))
+    if not parts:
+        return ""
+    return "SITUATIONAL RULES:\n" + "\n".join(parts)
+
+
 def autopilot_system_prompt(subjects: Any = SITUATIONAL_SUBJECTS) -> str:
     """The plan_actions system prompt for the rule subjects in play (all by default)."""
     wanted = set(subjects)
-    dropped = tuple(prefix for subject, prefix in _AUTOPILOT_SITUATIONAL_LINES if subject not in wanted)
-    rules = AUTOPILOT_SYSTEM_PROMPT
-    if dropped:
-        rules = "\n".join(line for line in rules.split("\n") if not line.startswith(dropped))
     # E2: the strategic policy leads BOTH system prompts (typed decisions and
     # autopilot plan_actions), so the two calls share one long cached prefix;
     # the per-prompt rule text follows. Pure reorder, no byte changes.
-    return strategic_policy(wanted) + "\n" + rules
+    return strategic_policy(wanted) + "\n" + _autopilot_task_rules(wanted)
 
 
 def _strip_attacker_annotations(tail: str) -> str:
@@ -723,6 +750,12 @@ class ActionPlanner(_ActionLegalityMixin):
         self._backend = backend
         self.separate_strategy_planning = separate_strategy_planning
         self.pivotal_thinking = bool(pivotal_thinking)
+        if separate_strategy_planning and self.pivotal_thinking and not self._explicit_pivotal_env():
+            logger.warning(
+                "separate_strategy_planning=True is deprecated and suppresses E4 pivotal_thinking selection "
+                "(decisions use flat bounded 'low' effort instead). Set separate_strategy_planning=False "
+                "to enable E4 selective pivotal thinking."
+            )
         logger.info(
             "Planner mode: %s",
             "separate strategy (low-effort actions, concurrent background plans)"
@@ -789,9 +822,19 @@ class ActionPlanner(_ActionLegalityMixin):
         """
         self._background_yield = fn
 
+    @staticmethod
+    def _explicit_pivotal_env() -> str:
+        return os.environ.get("ARENAMCP_PIVOTAL_THINKING", "").strip().lower()
+
+    def _separate_strategy_active(self) -> bool:
+        """Whether separate_strategy_planning suppresses E4 selection (explicit E4 env wins)."""
+        if not self.separate_strategy_planning:
+            return False
+        return self._explicit_pivotal_env() not in {"1", "true", "yes", "on"}
+
     def _yield_background(self) -> bool:
         """Ask background work to step aside for a decision; False when a reform stays in flight."""
-        if self.separate_strategy_planning:
+        if self._separate_strategy_active():
             return True  # Separate strategy may continue; actions never wait for it.
         yield_fn = getattr(self, "_background_yield", None)
         if not callable(yield_fn):
@@ -1152,6 +1195,7 @@ class ActionPlanner(_ActionLegalityMixin):
         cancel_event: threading.Event | None = None,
         yield_background: bool = True,
         selective_thinking: bool = False,
+        thinking_token_budget: int | None = None,
     ) -> str:
         """One planner model call: deterministic, raising on backend errors, labelled.
 
@@ -1177,7 +1221,9 @@ class ActionPlanner(_ActionLegalityMixin):
         extras: dict[str, Any] = {"call_class": call_class}
         if selective_thinking:
             extras["selective_thinking"] = True
-        if self.separate_strategy_planning and call_class.startswith("decision."):
+        if thinking_token_budget is not None and thinking_token_budget > 0:
+            extras["thinking_token_budget"] = thinking_token_budget
+        if self._separate_strategy_active() and call_class.startswith("decision."):
             reasoning_effort = "low"
         if call_class in {"decision.typed", "decision.mulligan"}:
             # bug_20261028_192726: a fast answer chose pass but left its
@@ -1438,13 +1484,22 @@ class ActionPlanner(_ActionLegalityMixin):
             self._turn_memo_turn = current_turn
             self._turn_executed = []
             self._turn_intent = None
-            # Drop the multi-step turn plan as well — a new turn earns a
-            # fresh plan, computed lazily the next time we make an LLM
-            # call from our own active turn.
-            self._active_turn_plan = None
+            # Drop the multi-step turn plan on a turn change unless it is
+            # already a same-turn GamePlan projection from plan_decision_options.
+            if not (
+                getattr(self, "_turn_plan_from_game_plan", False)
+                and self._active_turn_plan is not None
+                and self._active_turn_plan.turn_number == current_turn
+            ):
+                self._active_turn_plan = None
             # Reset the per-turn turn-plan attempt guard so the new turn
             # gets one attempt to build a fresh plan.
             self._turn_plan_attempted_for_turn = -1
+        if callable(getattr(self, "_plan_step_source", None)):
+            try:
+                self.sync_turn_plan_from_game_plan(game_state)
+            except Exception as error:
+                logger.debug("GamePlan turn-plan projection skipped in plan_actions: %s", error)
         # P1-7: _turn_executed is now appended ONLY from the autopilot's
         # verified-execution callback (note_executed). The old
         # executed-by-assumption append here recorded guardrail-rejected
@@ -1574,12 +1629,24 @@ class ActionPlanner(_ActionLegalityMixin):
         if want_turn_plan:
             self._turn_plan_attempted_for_turn = current_turn
 
-        # Build the prompt: the rules for the subjects in play (situational_rules).
-        system_prompt = autopilot_system_prompt(
-            subjects_in_play(game_state, extra_text=effective_legal_actions or [])
+        # Build the prompt: match-immutable shared system prompt + shared
+        # deck/playbook/seen prefix; dynamic situational rules ride late in user.
+        game_state = prepare_match_context(
+            game_state, compact_decision=True, compact_starting_deck=True, source_ids_complete=True
         )
+        match_subjects = deck_subjects(game_state)
+        dyn_subjects = dynamic_subjects(
+            game_state, extra_text=effective_legal_actions or [], match_subjects=match_subjects
+        )
+        system_prompt = shared_match_system_prompt(game_state)
         user_message = self._build_action_prompt(
-            game_state, trigger, effective_legal_actions, decision_context
+            game_state,
+            trigger,
+            effective_legal_actions,
+            decision_context,
+            match_subjects=match_subjects,
+            dyn_subjects=dyn_subjects,
+            include_task_rules=True,
         )
         if want_turn_plan:
             user_message += (
@@ -1614,6 +1681,7 @@ class ActionPlanner(_ActionLegalityMixin):
             cancel_event: threading.Event | None = None,
         ) -> str:
             remaining = model_deadline - time.monotonic()
+            call_token_budget: int | None = None
             if declaration_admission is not None:
                 effort, admitted = declaration_admission.admit(
                     now=time.monotonic(),
@@ -1621,6 +1689,7 @@ class ActionPlanner(_ActionLegalityMixin):
                     plan_in_flight=not self._yield_background(),
                     correction=declaration_admission.calls > 0,
                 )
+                call_token_budget = declaration_admission.token_budget_for(effort)
                 effort = "high" if effort == "high" else None
                 remaining = min(remaining, admitted)
                 diag["pivotal_thinking"].update(
@@ -1638,6 +1707,7 @@ class ActionPlanner(_ActionLegalityMixin):
                 first_token_timeout_s=self._plan_first_token_timeout(len(system_prompt) + len(user_message)),
                 reasoning_effort=effort,
                 cancel_event=cancel_event,
+                thinking_token_budget=call_token_budget,
             )
             if declaration_admission is not None:
                 metrics = getattr(self._backend, "last_request_metrics", None)
@@ -1652,6 +1722,7 @@ class ActionPlanner(_ActionLegalityMixin):
                     else "routine",
                     "reasoning_tokens": usage,
                     "effort": effort or "low",
+                    "thinking_token_budget": call_token_budget,
                 }
                 diag["pivotal_thinking"].setdefault("call_usage", []).append(event)
                 logger.info("E4 call metrics: %s", json.dumps(event, sort_keys=True))
@@ -1693,11 +1764,12 @@ class ActionPlanner(_ActionLegalityMixin):
         # 12 life. Within lethal reach or in danger they think at high effort, a low-effort
         # answer racing alongside as the hedge (``_hedged_declaration``).
         effort, effort_why = declaration_effort(game_state, effective_legal_actions)
-        if self.separate_strategy_planning:
+        separate_active = self._separate_strategy_active()
+        if separate_active:
             effort = None
         from arenamcp.selective_thinking import PivotalCallBudget, close_combat_reason, pivotal_enabled
 
-        if pivotal_enabled(self.pivotal_thinking) and not self.separate_strategy_planning:
+        if pivotal_enabled(self.pivotal_thinking) and not separate_active:
             from arenamcp.board_assessment import assess
 
             assessment = assess(game_state)
@@ -3429,6 +3501,90 @@ class ActionPlanner(_ActionLegalityMixin):
             "replanned_reason": plan.last_replanned_reason,
         }
 
+    def sync_turn_plan_from_game_plan(self, game_state: dict[str, Any]) -> TurnPlan | None:
+        """Project ``GamePlanManager.current_step`` onto ``self._active_turn_plan``."""
+        step_source = getattr(self, "_plan_step_source", None)
+        if not callable(step_source):
+            return None
+        step = step_source(game_state)
+        if not isinstance(step, dict):
+            if getattr(self, "_turn_plan_from_game_plan", False):
+                self._active_turn_plan = None
+            return None
+        from arenamcp.decision_memory import _TURN_STEPS, turn_window
+        from arenamcp.game_plan import _ANY_NOTE, _DONE, _NO_ATTACK, _ON_STACK, _plain, _round, _with_progress
+
+        marked = _with_progress(step, None, game_state)
+        turn_num = _round((game_state.get("turn") or {}).get("turn_number"), 0) or _round(
+            marked.get("turn"), 0
+        )
+        steps: list[TurnPlanStep] = []
+        raw_land = str(marked.get("land") or "").strip()
+        if raw_land:
+            land_done = raw_land.endswith(_DONE)
+            land_name = raw_land[: -len(_DONE)].strip() if land_done else raw_land
+            if land_name and land_name.lower() != "none":
+                steps.append(
+                    TurnPlanStep(
+                        action_type="play_land",
+                        card_name=land_name,
+                        status="done" if land_done else "pending",
+                    )
+                )
+        raw_casts = marked.get("cast") or []
+        if isinstance(raw_casts, str):
+            raw_casts = [p.strip() for p in re.split(r"\s*\+\s*|\s*;\s*|\s+and\s+", raw_casts) if p.strip()]
+        for entry in raw_casts:
+            raw_entry = str(entry or "").strip()
+            if not raw_entry:
+                continue
+            if raw_entry.endswith(_DONE):
+                status = "done"
+                rationale = ""
+                clean = raw_entry[: -len(_DONE)].strip()
+            elif raw_entry.endswith(_ON_STACK):
+                status = "current"
+                rationale = "on stack (resolving)"
+                clean = raw_entry[: -len(_ON_STACK)].strip()
+            else:
+                status = "pending"
+                rationale = ""
+                clean = raw_entry
+            clean = _ANY_NOTE.sub("", clean).strip()
+            if clean:
+                steps.append(
+                    TurnPlanStep(
+                        action_type="cast_spell",
+                        card_name=clean,
+                        rationale=rationale,
+                        status=status,
+                    )
+                )
+        raw_attack = str(marked.get("attack") or "").strip()
+        plain_attack = _plain(raw_attack)
+        if plain_attack and plain_attack != "no" and not _NO_ATTACK.match(plain_attack):
+            win = turn_window(game_state)
+            past_combat = _local_turn(game_state) and win is not None and win >= _TURN_STEPS.index("main2")
+            steps.append(
+                TurnPlanStep(
+                    action_type="declare_attackers",
+                    card_name=raw_attack,
+                    status="done" if past_combat else "pending",
+                )
+            )
+        current_idx = next((idx for idx, s in enumerate(steps) if s.status == "current"), None)
+        if current_idx is None:
+            current_idx = next(
+                (idx for idx, s in enumerate(steps) if s.status not in ("done", "skipped")),
+                len(steps),
+            )
+            if current_idx < len(steps) and steps[current_idx].status == "pending":
+                steps[current_idx].status = "current"
+        projected = TurnPlan(turn_number=turn_num, steps=steps, current_idx=current_idx)
+        self._active_turn_plan = projected
+        self._turn_plan_from_game_plan = True
+        return projected
+
     @staticmethod
     def _resolve_raw_actions_for_matching(
         game_state: dict[str, Any],
@@ -3804,12 +3960,19 @@ class ActionPlanner(_ActionLegalityMixin):
         trigger: str,
         legal_actions: list[str] | None = None,
         decision_context: dict[str, Any] | None = None,
+        *,
+        match_subjects: Iterable[str] | None = None,
+        dyn_subjects: Iterable[str] | None = None,
+        include_task_rules: bool = False,
     ) -> str:
         """Build the user message with formatted game context.
 
         Reuses the compact format from CoachEngine._format_game_context().
         """
-        game_state = prepare_match_context(game_state, compact_starting_deck=True)
+        if match_subjects is None:
+            game_state = prepare_match_context(
+                game_state, compact_decision=True, compact_starting_deck=True, source_ids_complete=True
+            )
         # Import and use CoachEngine's formatter for consistency. The planner
         # variant drops heavy GRE JSON dumps and trims oracle text on
         # long-resident permanents — see _format_game_context(for_planner).
@@ -3928,13 +4091,12 @@ class ActionPlanner(_ActionLegalityMixin):
             if attack_note:
                 parts.insert(1, attack_note)
 
-        # Persistent GAME PLAN (strategic spine): the top-level frame every
-        # tactical decision serves. Placed before the per-turn intent so the
-        # model reads "here is how we win this game" first, then "here is the
-        # plan for this turn", then the immediate decision.
-        strategy_context = self._strategy_context(game_state)
-        if strategy_context:
-            parts.append(strategy_context)
+        # Persistent GAME PLAN (strategic spine): volatile per-turn plan block;
+        # the stable playbook core/tail sit in prefix-cache order above/around seen_rules.
+        grounded = self._grounded_plan_block(game_state)
+        self._last_plan_block = grounded or ""
+        if grounded:
+            parts.append(grounded)
 
         # 2026-10-11: the attack window followed a plan formed before this
         # turn's casts (a haste creature that dies at end step, a pump on
@@ -4026,7 +4188,40 @@ class ActionPlanner(_ActionLegalityMixin):
 
         parts.append("\nRespond with ONLY a JSON action plan matching the schema.")
 
-        return with_deck_reference("\n".join(parts), game_state)
+        resolved_match_subjects = (
+            deck_subjects(game_state) if match_subjects is None else frozenset(match_subjects)
+        )
+        resolved_dyn_subjects = (
+            dynamic_subjects(
+                game_state, extra_text=legal_actions or [], match_subjects=resolved_match_subjects
+            )
+            if dyn_subjects is None
+            else frozenset(dyn_subjects)
+        )
+        stable_reference = str(
+            game_state.get("deck_reference_stable") or game_state.get("deck_reference") or ""
+        )
+        candidate_rules = str(game_state.get("decision_candidate_rules") or "")
+        reference_head, seen_rules = split_deck_reference(stable_reference)
+        stable_strategy = self._stable_strategy_context(game_state, request_type="")
+        playbook_core, playbook_tail = self._playbook_context_parts(stable_strategy, game_state, "")
+        task_rules = _autopilot_task_rules(resolved_match_subjects) if include_task_rules else ""
+        dynamic_rules = _dynamic_autopilot_rules(resolved_dyn_subjects) if include_task_rules else ""
+        volatile_body = "\n".join(parts)
+        return "\n\n".join(
+            block
+            for block in (
+                reference_head,
+                playbook_core,
+                seen_rules,
+                task_rules,
+                playbook_tail,
+                dynamic_rules,
+                candidate_rules,
+                volatile_body,
+            )
+            if block
+        )
 
     @staticmethod
     def _attack_line_note(game_state: dict[str, Any]) -> str:
@@ -4461,8 +4656,8 @@ class ActionPlanner(_ActionLegalityMixin):
             return None
         return re.sub(r",\s*([\]}])", r"\1", m.group(0))
 
-    _PAY_DECLINE_SYSTEM_PROMPT = (
-        STRATEGIC_POLICY_CORE + "\n" + "You decide whether to PAY an optional cost in a Magic: The "
+    _PAY_DECLINE_INSTRUCTIONS = (
+        "You decide whether to PAY an optional cost in a Magic: The "
         "Gathering Arena game (a 'you may pay ...' trigger or ability). "
         "Paying commits you to the effect that follows, including choosing "
         "targets for it. Check the mana left after payment and recent decisions: "
@@ -4475,6 +4670,7 @@ class ActionPlanner(_ActionLegalityMixin):
         '{"pay": true, "reasoning": "<one short sentence>"} — no prose '
         "before or after."
     )
+    _PAY_DECLINE_SYSTEM_PROMPT = STRATEGIC_POLICY_CORE + "\n" + _PAY_DECLINE_INSTRUCTIONS
 
     def plan_pay_or_decline(
         self,
@@ -4491,10 +4687,13 @@ class ActionPlanner(_ActionLegalityMixin):
         if llm_circuit_open(self._backend):
             logger.info("plan_pay_or_decline skipped: model server unavailable (circuit open)")
             return None
-        game_state = prepare_match_context(game_state, compact_starting_deck=True)
+        game_state = prepare_match_context(
+            game_state, compact_decision=True, compact_starting_deck=True, source_ids_complete=True
+        )
         stable_reference = str(
             game_state.get("deck_reference_stable") or game_state.get("deck_reference") or ""
         )
+        candidate_rules = str(game_state.get("decision_candidate_rules") or "")
         reference_head, seen_rules = split_deck_reference(stable_reference)
         stable_strategy = self._stable_strategy_context(game_state, request_type="PayCosts")
         playbook_core, playbook_tail = self._playbook_context_parts(stable_strategy, game_state, "PayCosts")
@@ -4519,17 +4718,30 @@ class ActionPlanner(_ActionLegalityMixin):
         volatile_block = "\n".join(line for line in volatile_lines if line is not None)
         if "\n\n\n" in volatile_block:
             volatile_block = re.sub(r"\n{3,}", "\n\n", volatile_block)
+        pay_instructions = self._PAY_DECLINE_INSTRUCTIONS
         ordered_blocks = [
             block
-            for block in (reference_head, playbook_core, seen_rules, playbook_tail, volatile_block)
+            for block in (
+                reference_head,
+                playbook_core,
+                seen_rules,
+                pay_instructions,
+                playbook_tail,
+                candidate_rules,
+                volatile_block,
+            )
             if block
         ]
         user_message = "\n\n".join(ordered_blocks)
         if not reference_head and not playbook_core and not seen_rules:
-            user_message = with_deck_reference(volatile_block, game_state)
+            fallback_body = "\n\n".join(
+                block for block in (pay_instructions, playbook_tail, candidate_rules, volatile_block) if block
+            )
+            user_message = with_deck_reference(fallback_body, game_state)
+        system_prompt = shared_match_system_prompt(game_state)
         try:
             response = self._call_llm(
-                self._PAY_DECLINE_SYSTEM_PROMPT,
+                system_prompt,
                 user_message,
                 # 256 was spent on reasoning alone (2026-10-19 12:21:07, empty
                 # answer -> declined): the other decision calls get 1024+.
@@ -4583,69 +4795,20 @@ class ActionPlanner(_ActionLegalityMixin):
             logger.debug("kicker fact unavailable: %s", error)
         return ""
 
+    _DECISION_OUTPUT_FORMAT = (
+        "Choose one legal action from OPTIONS and output ONLY JSON: "
+        '{"option_ids": ["<id>", ...], "reasoning": "<one short sentence>"} '
+        '(e.g. {"option_ids": ["tgt:123"], "reasoning": "kills the biggest threat"}). '
+        "Never pick 'cannot auto-pay' options; [OK] options are Arena-confirmed payable. "
+        "Each option is payable individually now; reassess after each play. Use the deck strategy to compare plays."
+    )
+
     # The decision rules, each tagged with the subject it needs in the game
     # (situational_rules.SUBJECTS; None: always). With every subject in play
     # the joined text is the whole prompt.
     _DECISION_SYSTEM_PARTS: tuple[tuple[str | None, str], ...] = (
-        (
-            None,
-            "Choose one legal action from OPTIONS and output ONLY JSON: "
-            '{"option_ids": ["<id>", ...], "reasoning": "<one short sentence>"} '
-            '(e.g. {"option_ids": ["tgt:123"], "reasoning": "kills the biggest threat"}). '
-            "Never pick 'cannot auto-pay' options; [OK] options are Arena-confirmed payable. "
-            "Each option is payable individually now; reassess after each play. Use the deck strategy to compare plays. ",
-        ),
-        (
-            "commander",
-            "A commander in the command zone is an available engine: compare deploying it against other setup spells and explain that tradeoff. ",
-        ),
-        (
-            None,
-            "Prefer establishing a real engine over redundant setup unless survival or a stronger concrete line requires waiting. ",
-        ),
-        (
-            "library",
-            "Searching lands into hand funds future land drops, not immediate mana acceleration. ",
-        ),
-        (
-            "vehicle",
-            "Crew activates a Vehicle already in play; it does not retrigger enters or grant haste. "
-            "Crew only for a concrete attack, block, or synergy when the Vehicle isn't already a creature. ",
-        ),
-        (
-            "animation",
-            "Animating an artifact or land does not untap it, give haste, or retrigger entering. Check current card types before assuming it is a creature. ",
-        ),
-        (None, "Payable does not mean free. "),
-        (
-            "animation",
-            "Until-end-of-turn animation expires this turn and cannot block or discount spells on future turns. ",
-        ),
-        (
-            "equipment",
-            "For haste-granting equipment, weigh equipping summoning-sick creatures for attacks or tap abilities; "
-            "equip only when offered and avoid shuffling equipment without concrete gain (note shroud blocks targeting). ",
-        ),
-        (
-            None,
-            "Evaluate every spell clause: unconditional card draw can justify cycling a buff early, "
-            "but Never buff an opposing creature merely to draw. ",
-        ),
-        (
-            "library",
-            "For library searches, compare offered cards and pick a complementary set up to max_select. ",
-        ),
-        (
-            None,
-            "Putting a creature onto the battlefield does not trigger 'when you cast' abilities. "
-            "Account for cost/timing of cards sent to hand. "
-            "TEMPORARY EFFECTS: 'until end of turn' -X/-Y or +X/+Y expires at end of turn, "
-            "so outside combat use it only when it kills now. "
-            "SEQUENCING: casting one spell can leave another unpayable; "
-            "cast payable landfall permanents before your land drop. "
-            "Pass when your own spell is on the stack so it resolves before discarding a missing sorcery-speed card. "
-            "Never discard a castable card for an effect that kills nothing.",
-        ),
+        (None, _DECISION_OUTPUT_FORMAT + " "),
+        *SHARED_TACTICAL_RULES_PARTS,
     )
     # Every rule: the prompt when every subject is in play.
     _DECISION_SYSTEM_PROMPT = compose_rules(_DECISION_SYSTEM_PARTS)
@@ -4658,6 +4821,25 @@ class ActionPlanner(_ActionLegalityMixin):
         # per-prompt rule text follows. Pure reorder, no byte changes.
         return strategic_policy(subjects) + "\n" + compose_rules(cls._DECISION_SYSTEM_PARTS, subjects)
 
+    @classmethod
+    def _dynamic_decision_rules(cls, dyn_subjects: Iterable[str]) -> str:
+        """Situational strategic and decision rules active dynamically beyond ``match_subjects``."""
+        wanted = set(dyn_subjects)
+        if not wanted:
+            return ""
+        parts: list[str] = []
+        policy_tail = dynamic_strategic_policy(wanted)
+        if policy_tail:
+            parts.append(policy_tail)
+        dec_tail = "".join(
+            text for subject, text in cls._DECISION_SYSTEM_PARTS if subject is not None and subject in wanted
+        ).strip()
+        if dec_tail:
+            parts.append(dec_tail)
+        if not parts:
+            return ""
+        return "SITUATIONAL RULES:\n" + "\n".join(parts)
+
     def plan_decision_options(self, decision: Any, game_state: dict[str, Any]) -> list[str]:
         """Choose option ids for a typed PendingDecision, remembering the choice.
 
@@ -4667,6 +4849,10 @@ class ActionPlanner(_ActionLegalityMixin):
         """
         self._bound_decision_evidence = None
         game_state = self._state_with_our_burn_marks(game_state)
+        try:
+            self.sync_turn_plan_from_game_plan(game_state)
+        except Exception as error:  # game-plan projection must never block a decision
+            logger.debug("GamePlan turn-plan projection skipped: %s", error)
         from arenamcp.public_sequence import TriggerUseMemory
 
         if not hasattr(self, "_public_trigger_uses"):
@@ -5372,6 +5558,9 @@ class ActionPlanner(_ActionLegalityMixin):
         decision, sneak_pick = self._sneak_policy(decision, game_state)
         if sneak_pick:
             return sneak_pick
+        decision, own_stack_pick = self._own_stack_continuation_pass(decision, game_state)
+        if own_stack_pick:
+            return own_stack_pick
         decision, held_pick = self._hold_instant_burn(decision, game_state)
         if held_pick:
             return held_pick
@@ -6018,6 +6207,109 @@ class ActionPlanner(_ActionLegalityMixin):
         logger.info("typed-decision: second look chose %s (first %s)", new_chosen, chosen)
         return new_data, new_chosen
 
+    def _own_stack_continuation_pass(
+        self, decision: Any, game_state: dict[str, Any]
+    ) -> tuple[Any, list[str]]:
+        """Hold reserved instant plays while only our own spell/ability resolves on the stack."""
+        if (
+            getattr(decision, "request_type", None) != "ActionsAvailable"
+            or not getattr(decision, "can_pass", False)
+            or decision.find("pass") is None
+        ):
+            return decision, []
+        own_stack = own_stack_only(decision, game_state)
+        if not own_stack:
+            return decision, []
+        from arenamcp.decision_memory import _TURN_STEPS, turn_window
+
+        combat_windows = {
+            _TURN_STEPS.index(step)
+            for step in (
+                "begincombat",
+                "declareattack",
+                "declareblock",
+                "firststrikedamage",
+                "combatdamage",
+                "endcombat",
+            )
+        }
+        window = turn_window(game_state)
+        phase = str((game_state.get("turn") or {}).get("phase") or "").lower()
+        if (
+            (window is not None and window in combat_windows)
+            or "combat" in phase
+            or any(
+                isinstance(card, dict) and (card.get("is_attacking") or card.get("is_blocking"))
+                for card in game_state.get("battlefield") or []
+            )
+        ):
+            return decision, []
+        if _lethal_this_turn(game_state) is True or lethal_reach(decision, game_state) is not None:
+            return decision, []
+        payable = [o for o in decision.options if o.option_id != "pass" and o.payable is not False]
+        if not payable:
+            return decision, []
+        step_source = getattr(self, "_plan_step_source", None)
+        step_source_active = callable(step_source)
+        plan_step = step_source(game_state) if step_source_active else None
+        plan_text = self._plan_text_now(game_state)
+        from arenamcp.play_safety import aura_waits_for_creature, own_stack_reserved_option
+
+        held_ids: set[str] = set()
+        held_names: list[str] = []
+        reasons: list[str] = []
+        for option in payable:
+            card = find_source(game_state, option.meta or {})
+            why = own_stack_reserved_option(
+                option,
+                card,
+                game_state,
+                plan_step=plan_step,
+                plan_text=plan_text,
+                step_source_active=step_source_active,
+            )
+            if (
+                not why
+                and (option.meta or {}).get("actionType") == "ActionType_Cast"
+                and aura_waits_for_creature(game_state, card)
+            ):
+                why = "waiting for our creature to resolve before casting its Aura"
+            if why:
+                held_ids.add(option.option_id)
+                card_name = str(card.get("name") or option.label or option.option_id)
+                if card_name not in held_names:
+                    held_names.append(card_name)
+                reasons.append(why)
+        if not held_ids:
+            return decision, []
+        from dataclasses import replace
+
+        reason = "; ".join(dict.fromkeys(reasons))
+        existing_held = list(getattr(self, "_held_instants", []) or [])
+        self._held_instants = list(dict.fromkeys([*existing_held, *held_names]))
+        notes = list(getattr(self, "_held_notes", []) or [])
+        note = f"OWN-STACK TIMING: {', '.join(held_names)} held while our {own_stack} resolves ({reason})."
+        if note not in notes:
+            notes.append(note)
+        self._held_notes = notes
+        kept = tuple(o for o in decision.options if o.option_id not in held_ids)
+        filtered = replace(decision, options=kept)
+        if any(o.option_id == "pass" for o in kept) and all(
+            o.option_id == "pass" or o.payable is False for o in kept
+        ):
+            self._last_decision_option_ids = ["pass"]
+            self._last_decision_reasoning = f"Pass priority so our {own_stack} resolves first ({reason})."
+            self._last_decision_trace = {
+                "policy": "own_stack_continuation",
+                "own_stack": own_stack,
+                "held": sorted(held_ids),
+                "reason": reason,
+                "validated_ids": ["pass"],
+            }
+            logger.info("Own-stack continuation: passing so %s resolves (%s)", own_stack, reason)
+            return filtered, ["pass"]
+        return filtered, []
+
     def _hold_instant_burn(self, decision: Any, game_state: dict[str, Any]) -> tuple[Any, list[str]]:
         """Burn timing without the model (``burn_timing``): holds, and the release at their end step.
 
@@ -6282,8 +6574,11 @@ class ActionPlanner(_ActionLegalityMixin):
                 f"STACK TIMING: {', '.join(names)} are held while our {pending} is on the stack: the best line "
                 f"casts {plays} next, and they would leave it unpaid. Passing lets {pending} resolve."
             )
-        self._held_instants = list(dict.fromkeys(names_of(instants) + names_of(sweepers) + names_of(stacked)))
-        self._held_notes = notes
+        new_instants = names_of(instants) + names_of(sweepers) + names_of(stacked)
+        existing_instants = list(getattr(self, "_held_instants", []) or [])
+        self._held_instants = list(dict.fromkeys([*existing_instants, *new_instants]))
+        existing_notes = list(getattr(self, "_held_notes", []) or [])
+        self._held_notes = list(dict.fromkeys([*existing_notes, *notes]))
         kept = tuple(option for option in decision.options if option.option_id not in held_ids)
         filtered = replace(decision, options=kept)
         if any(option.option_id == "pass" for option in kept) and all(
@@ -6356,14 +6651,19 @@ class ActionPlanner(_ActionLegalityMixin):
 
         held_ids = {option.option_id for option, _card in holds}
         names = list(dict.fromkeys(str(card.get("name") or option.label) for option, card in holds))
-        self._held_instants = names
+        existing_instants = list(getattr(self, "_held_instants", []) or [])
+        self._held_instants = list(dict.fromkeys([*existing_instants, *names]))
+        existing_notes = list(getattr(self, "_held_notes", []) or [])
         if in_combat:
             self._hold_fates().held(game_state, names, "kills nothing in our combat")
-            self._held_notes = [
+            combat_note = (
                 f"COMBAT: {', '.join(names)} are held this window: they kill no creature that matters in this "
                 "combat and nothing is lethal; they are cast at the opponent's end step or in response to "
                 "their creature or trigger."
-            ]
+            )
+            if combat_note not in existing_notes:
+                existing_notes.append(combat_note)
+            self._held_notes = existing_notes
             logger.info(
                 "Instant timing: holding %s for the opponent's end step (our combat: kills no blocker, not "
                 "lethal)",
@@ -6375,10 +6675,13 @@ class ActionPlanner(_ActionLegalityMixin):
             )
             policy = "combat_hold"
         else:
-            self._held_notes = [
+            upkeep_note = (
                 f"UPKEEP: {', '.join(names)} are held for our main phase: nothing of theirs is on the stack to "
                 "answer, and there they do the same after the land drop and our creatures."
-            ]
+            )
+            if upkeep_note not in existing_notes:
+                existing_notes.append(upkeep_note)
+            self._held_notes = existing_notes
             logger.info(
                 "Instant timing: holding %s for our main phase (our upkeep/draw step)", ", ".join(names)
             )
@@ -6535,7 +6838,7 @@ class ActionPlanner(_ActionLegalityMixin):
 
     def _require_outcome_reask(self, *, yielded, deadline):
 
-        if self.separate_strategy_planning or not yielded or llm_degraded(getattr(self, "_backend", None)):
+        if self._separate_strategy_active() or not yielded or llm_degraded(getattr(self, "_backend", None)):
             raise SecondLookError("outcome correction unavailable: server busy/degraded")
         if deadline - time.monotonic() < 6.0:
             raise SecondLookError("outcome correction unavailable: insufficient clock")
@@ -10496,6 +10799,10 @@ class ActionPlanner(_ActionLegalityMixin):
         # because the playbook's variable lines sit behind that section, a
         # growing commander tax or a different window kind no longer erases
         # it either. Blocks keep their exact bytes; only their order changes.
+        match_subjects = deck_subjects(game_state)
+        dyn_subjects = dynamic_subjects(game_state, decision, match_subjects=match_subjects)
+        decision_output_format = "DECISION OUTPUT FORMAT:\n" + self._DECISION_OUTPUT_FORMAT
+        dynamic_rules = self._dynamic_decision_rules(dyn_subjects)
         stable_reference = str(
             game_state.get("deck_reference_stable") or game_state.get("deck_reference") or ""
         )
@@ -10510,7 +10817,9 @@ class ActionPlanner(_ActionLegalityMixin):
                 reference_head,
                 playbook_core,
                 seen_rules,
+                decision_output_format,
                 playbook_tail,
+                dynamic_rules,
                 candidate_rules,
                 "\n".join(lines),
             )
@@ -10531,17 +10840,11 @@ class ActionPlanner(_ActionLegalityMixin):
         )
         from arenamcp.selective_thinking import enabled as selective_enabled
 
-        explicit_e4 = os.environ.get("ARENAMCP_PIVOTAL_THINKING", "").strip().lower() in {
-            "1",
-            "true",
-            "yes",
-            "on",
-        }
+        explicit_e4 = self._explicit_pivotal_env() in {"1", "true", "yes", "on"}
+        separate_active = self._separate_strategy_active()
         selective_requested = not explicit_e4 and selective_enabled(getattr(self._backend, "model", None))
         e4_enabled = (
-            pivotal_enabled(self.pivotal_thinking)
-            and not self.separate_strategy_planning
-            and not selective_requested
+            pivotal_enabled(self.pivotal_thinking) and not separate_active and not selective_requested
         )
         e4_reasons = ()
         if e4_enabled:
@@ -10558,7 +10861,7 @@ class ActionPlanner(_ActionLegalityMixin):
             e4_reasons = tuple(dict.fromkeys((*([critical] if critical else ()), *ev_reasons)))
             critical = "; ".join(e4_reasons)
         selective_reason = selection_reason(decision, game_state, critical) if selective_requested else ""
-        if self.separate_strategy_planning:
+        if separate_active:
             critical = ""
         # On the opponent's turn the windows close fast (2026-10-11 turn 9: 13
         # windows each answered within 3 s while one high-effort call ran its
@@ -10575,24 +10878,26 @@ class ActionPlanner(_ActionLegalityMixin):
             logger.info(
                 "typed-decision: %s, opponent-turn short budget — %s",
                 critical,
-                "E4 pivotal effort subject to load admission" if e4_enabled else "low effort",
+                "routine effort" if e4_enabled else "low effort",
             )
             critical = ""
+            e4_reasons = ()
         elif critical and own_stack:
             # Nothing of theirs to answer: passing resolves it (2026-10-19 09:03:36).
             logger.info(
                 "typed-decision: %s, only our own %s is on the stack — %s",
                 critical,
                 own_stack,
-                "E4 pivotal effort subject to load admission" if e4_enabled else "low effort",
+                "routine effort" if e4_enabled else "low effort",
             )
             critical = ""
+            e4_reasons = ()
         elif critical:
             logger.info("typed-decision: high reasoning effort (%s)", critical)
         elif passed_over and not opponent_turn:
             logger.info("typed-decision: low effort, burn only goes face (%s)", "; ".join(passed_over))
         self._last_decision_trace = {
-            "planning_mode": "separate_strategy" if self.separate_strategy_planning else "existing",
+            "planning_mode": "separate_strategy" if separate_active else "existing",
             "request_type": decision.request_type,
             "request_id": list(decision.request_id),
             "source": decision.source_label,
@@ -10643,9 +10948,9 @@ class ActionPlanner(_ActionLegalityMixin):
             if decision.request_type == "Mulligan" or "LondonMulligan" in str(decision.source_label or "")
             else "decision.typed"
         )
-        # The rules for the subjects in play (situational_rules), e.g. no crew
-        # rules without a Vehicle.
-        system_prompt = self._decision_system_prompt(subjects_in_play(game_state, decision))
+        # NN1: system_prompt stays 100% match-immutable (shared across decision.*
+        # and background.game_plan); dynamic subjects ride late in user_message.
+        system_prompt = shared_match_system_prompt(game_state)
 
         def ask(
             message: str, *, effort: str | None, budget: float, cancel_event: threading.Event | None = None
@@ -10667,7 +10972,7 @@ class ActionPlanner(_ActionLegalityMixin):
                     category="pivotal" if e4_budget.reasons or e4_budget.high_calls else "routine",
                 )
             thinking_leg = bool(selective_reason and effort == "selective")
-            if self.separate_strategy_planning:
+            if separate_active:
                 effort = "low"
 
             # A high-effort decision holds new game-plan reforms back: vLLM
@@ -10679,6 +10984,7 @@ class ActionPlanner(_ActionLegalityMixin):
                 # add high-effort reasoning alongside the background reform.
                 logger.info("typed-decision: correction uses low effort while game-plan reform is in flight")
                 effort = None
+            call_token_budget = e4_budget.token_budget_for(effort) if e4_budget is not None else None
             remaining = min(budget, decision_deadline - time.monotonic())
             if remaining <= 0:
                 raise concurrent.futures.TimeoutError("typed decision budget exhausted")
@@ -10704,6 +11010,7 @@ class ActionPlanner(_ActionLegalityMixin):
                             cancel_event=request_cancel,
                             yield_background=False,
                             selective_thinking=thinking_leg,
+                            thinking_token_budget=call_token_budget,
                         ),
                         timeout_s=remaining,
                     )
@@ -10723,6 +11030,7 @@ class ActionPlanner(_ActionLegalityMixin):
                                 else "routine",
                                 "reasoning_tokens": usage,
                                 "effort": effort or "low",
+                                "thinking_token_budget": call_token_budget,
                             },
                             sort_keys=True,
                         ),
@@ -10731,6 +11039,7 @@ class ActionPlanner(_ActionLegalityMixin):
                         {
                             "effort": effort or "low",
                             "reasoning_tokens": usage,
+                            "thinking_token_budget": call_token_budget,
                         }
                     )
                 return answer

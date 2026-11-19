@@ -189,7 +189,8 @@ def test_typed_prompt_uses_current_decision_instead_of_stale_snapshot():
     assert "Legal:" not in backend.prompt and "GRE_Request" not in backend.prompt
     assert "[S,OK]" in backend.prompt
     assert "NEED:" not in backend.prompt
-    assert "payable individually now" in backend.system
+    assert "A plan is conditional" in backend.system
+    assert "payable individually now" in (backend.system + "\n" + backend.prompt)
     assert state == previous
 
 

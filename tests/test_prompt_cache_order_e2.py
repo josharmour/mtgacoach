@@ -27,7 +27,7 @@ from arenamcp.action_planner import (
     ActionPlanner,
     autopilot_system_prompt,
 )
-from arenamcp.decisions import build_pending_decision
+from arenamcp.decisions import DecisionOption, PendingDecision, build_pending_decision
 from arenamcp.deck_strategy import DeckPlaybook
 from arenamcp.game_plan import GamePlanManager
 from arenamcp.match_context import (
@@ -53,7 +53,7 @@ class _PlanBackend:
         self.calls: list[dict] = []
 
     def complete(self, system_prompt, user_message, max_tokens=4096, **kwargs):
-        self.calls.append({"user": user_message})
+        self.calls.append({"system": system_prompt, "user": user_message, **kwargs})
         return json.dumps(
             {
                 "win_conditions": ["aggro beatdown"],
@@ -200,8 +200,16 @@ def test_prepare_match_context_splits_candidate_rules_without_changing_a_byte(
     stable = prepared["deck_reference_stable"]
     candidates = prepared["decision_candidate_rules"]
 
-    # Splitting loses nothing: stable + candidate reproduce the reference.
-    assert stable + "\n" + candidates == prepared["deck_reference"]
+    # Candidate rules are stripped out of deck_reference_stable while keeping its RULES header invariant.
+    assert "and the pending decision's candidates" not in stable
+    assert "pending decision's candidates" in prepared["deck_reference"]
+    # Every line other than that RULES header matches stable + "\n" + candidates.
+    stable_lines = stable.splitlines()
+    ref_lines = prepared["deck_reference"].splitlines()
+    assert len(stable_lines) + len(candidates.splitlines()) == len(ref_lines)
+    assert stable + "\n" + candidates == prepared["deck_reference"].replace(
+        ", and the pending decision's candidates", ""
+    )
     # The unseen card's rule is a candidate, not part of the shared stable text.
     new_rule = f"Rules for card {LIBRARY_GRP_ID}."
     assert f"Card {LIBRARY_GRP_ID} [grp:{LIBRARY_GRP_ID}]" in candidates
@@ -212,6 +220,10 @@ def test_prepare_match_context_splits_candidate_rules_without_changing_a_byte(
     plain = prepare_match_context(deepcopy(state))
     assert plain["decision_candidate_rules"] == ""
     assert plain["deck_reference_stable"] == plain["deck_reference"]
+    assert stable_lines[0:] and stable.startswith(plain["deck_reference_stable"].split("\nRULES")[0])
+    assert [ln for ln in stable_lines if ln.startswith("RULES")] == [
+        ln for ln in plain["deck_reference_stable"].splitlines() if ln.startswith("RULES")
+    ]
 
 
 def test_two_decisions_regenerate_the_reference_and_keep_the_stable_part_first(
@@ -573,7 +585,7 @@ def test_plan_prompt_orders_head_seed_rules_board(_regenerated_lookup):
 
     order = [
         user_message.find("DECK REFERENCE"),
-        user_message.find("DECK PLAYBOOK / STRATEGY:"),
+        user_message.find("DECK STRATEGY:"),
         user_message.find("RULES OF THE CARDS SEEN THIS GAME"),
         user_message.find("YOUR BOARD:"),
         user_message.rfind("Form the GAME PLAN"),
@@ -585,6 +597,455 @@ def test_plan_prompt_orders_head_seed_rules_board(_regenerated_lookup):
     # The reference was regenerated from this call's own zones: its head is
     # byte-identical to what prepare_match_context renders for this state.
     prepared_head, _rules = split_deck_reference(
-        prepare_match_context(deepcopy(state), compact_starting_deck=True)["deck_reference"]
+        prepare_match_context(
+            deepcopy(state), compact_decision=True, compact_starting_deck=True, source_ids_complete=True
+        )["deck_reference"]
     )
     assert user_message.startswith(prepared_head.rstrip("\n"))
+
+
+class _FullCaptureBackend:
+    """Records both system prompt and user message for prefix-cache verification."""
+
+    def __init__(self, reply: str, model: str = "other") -> None:
+        self.reply = reply
+        self.model = model
+        self.calls: list[dict] = []
+
+    def complete(self, system_prompt, user_message, max_tokens=4096, **kwargs):
+        self.calls.append(
+            {
+                "system": system_prompt,
+                "user": user_message,
+                "class": kwargs.get("call_class"),
+                "max_tokens": max_tokens,
+            }
+        )
+        return self.reply
+
+
+def test_nn1_multi_turn_transitions_keep_system_and_shared_prefix_identical(monkeypatch):
+    """NN1: multi-turn board/menu transitions never mutate system_prompt or the leading prefix."""
+    catalog = {
+        101: {
+            "name": "Fixture Vanguard",
+            "type_line": "Creature — Human Soldier",
+            "mana_cost": "{1}{W}",
+            "cmc": 2,
+            "power": "2",
+            "toughness": "2",
+            "oracle_text": "Vigilance",
+        },
+        102: {
+            "name": "Fixture Courier",
+            "type_line": "Creature — Elf Scout",
+            "mana_cost": "{2}{G}",
+            "cmc": 3,
+            "power": "3",
+            "toughness": "2",
+            "oracle_text": "When this creature enters, gain 2 life.",
+        },
+        103: {
+            "name": "Fixture Library Card",
+            "type_line": "Creature — Beast",
+            "mana_cost": "{3}{G}",
+            "cmc": 4,
+            "power": "4",
+            "toughness": "4",
+            "oracle_text": "Trample",
+        },
+    }
+    monkeypatch.setattr("arenamcp.match_context._local_card", lambda gid, _epoch: catalog[gid])
+    monkeypatch.setattr("arenamcp.card_facts.client.facts_for", lambda *args, **kwargs: {})
+
+    def base_state():
+        return {
+            "match_id": "nn1-multi-turn",
+            "local_seat_id": 1,
+            "players": [
+                {"seat_id": 1, "is_local": True, "life_total": 20},
+                {"seat_id": 2, "is_local": False, "life_total": 20},
+            ],
+            "turn": {"turn_number": 3, "active_player": 1, "phase": "Phase_Main1"},
+            "deck_cards": [101, 102, 103],
+            "hand": [
+                {
+                    **catalog[101],
+                    "grp_id": 101,
+                    "instance_id": 11,
+                    "owner_seat_id": 1,
+                    "controller_seat_id": 1,
+                }
+            ],
+            "battlefield": [],
+            "graveyard": [],
+            "exile": [],
+            "stack": [],
+            "zones": {"library_count": 2, "opponent_hand_count": 5},
+        }
+
+    backend = _FullCaptureBackend('{"option_ids": ["pass"], "reasoning": "hold"}')
+    planner = ActionPlanner(backend, timeout=15.0, land_drop_first=False)
+    planner._deck_strategy_fn = lambda: "Curve out cleanly and protect key attackers."
+
+    # 1. Turn 3 ActionsAvailable (already-seen hand card in reveal must not churn RULES header)
+    s1 = base_state()
+    d1 = build_pending_decision(
+        {
+            "has_pending": True,
+            "request_type": "ActionsAvailable",
+            "can_pass": True,
+            "actions": [
+                {"actionType": "ActionType_Cast", "grpId": 101, "instanceId": 11, "hasAutoTap": True}
+            ],
+        },
+        resolve_name=lambda gid: catalog.get(gid, {}).get("name", ""),
+    )
+    planner._llm_decision_options(d1, deepcopy(s1))
+    call_1 = backend.calls[-1]
+    assert "and the pending decision's candidates" not in call_1["user"]
+
+    # 2. Turn 4 ActionsAvailable after drawing 102
+    s2 = base_state()
+    s2["turn"]["turn_number"] = 4
+    s2["hand"].append(
+        {**catalog[102], "grp_id": 102, "instance_id": 12, "owner_seat_id": 1, "controller_seat_id": 1}
+    )
+    planner._llm_decision_options(d1, deepcopy(s2))
+    call_2 = backend.calls[-1]
+
+    # 3. Turn 5 SelectTargets with Vehicle, Equipment, and Strixhaven permanent entering battlefield
+    s3 = deepcopy(s2)
+    s3["turn"]["turn_number"] = 5
+    s3["battlefield"] = [
+        {
+            "grp_id": 501,
+            "instance_id": 51,
+            "name": "Borrowed Skiff",
+            "type_line": "Artifact — Vehicle",
+            "oracle_text": "Flying\nCrew 2",
+            "owner_seat_id": 2,
+            "controller_seat_id": 1,
+        },
+        {
+            "grp_id": 502,
+            "instance_id": 52,
+            "name": "Borrowed Blade",
+            "type_line": "Artifact — Equipment",
+            "oracle_text": "Equipped creature gets +2/+0 and haste.\nEquip {2}",
+            "owner_seat_id": 2,
+            "controller_seat_id": 1,
+        },
+        {
+            "grp_id": 503,
+            "instance_id": 53,
+            "name": "Borrowed Adept",
+            "type_line": "Creature — Wizard",
+            "oracle_text": "Whenever you cast an instant or sorcery spell, increment.",
+            "owner_seat_id": 2,
+            "controller_seat_id": 1,
+        },
+    ]
+    d3 = PendingDecision(
+        (5, 1),
+        "SelectTargets",
+        (DecisionOption("tgt:51", "Borrowed Skiff [id:51]", meta={"targetId": 51}),),
+    )
+    planner._llm_decision_options(d3, deepcopy(s3))
+    call_3 = backend.calls[-1]
+
+    # 4. Turn 6 those permanents leave battlefield and a Search menu opens for already-seen 102
+    s4 = deepcopy(s2)
+    s4["turn"]["turn_number"] = 6
+    s4["graveyard"] = deepcopy(s3["battlefield"])
+    d4_seen = PendingDecision(
+        (6, 1),
+        "Search",
+        (DecisionOption("sel:102", "Fixture Courier", meta={"grpId": 102}),),
+    )
+    planner._llm_decision_options(d4_seen, deepcopy(s4))
+    call_4 = backend.calls[-1]
+
+    # 5. Turn 6 Search menu offering unseen library card 103
+    d5_unseen = PendingDecision(
+        (6, 2),
+        "Search",
+        (DecisionOption("sel:103", "Fixture Library Card", meta={"grpId": 103}),),
+    )
+    planner._llm_decision_options(d5_unseen, deepcopy(s4))
+    call_5 = backend.calls[-1]
+
+    # system_prompt is 100% byte-identical across all 5 calls and includes universal tactical rules
+    systems = [c["system"] for c in (call_1, call_2, call_3, call_4, call_5)]
+    assert len(set(systems)) == 1
+    assert "TEMPORARY EFFECTS:" in call_1["system"]
+    assert "Prefer establishing a real engine" in call_1["system"]
+    assert "DECISION OUTPUT FORMAT:" in call_1["user"]
+
+    # (reference_head, playbook_core, seen_rules) up to newly drawn card 102 is byte-identical
+    line_101_end_1 = call_1["user"].index("\n\nDECISION OUTPUT FORMAT:")
+    line_101_end_2 = call_2["user"].index("\nFixture Courier [grp:102]")
+    assert call_1["user"][:line_101_end_1] == call_2["user"][:line_101_end_2]
+
+    # Once 102 is seen, calls 2, 3, and 4 share the entire prefix through seen_rules + DECISION OUTPUT FORMAT
+    pending_2 = call_2["user"].index("PENDING DECISION")
+    assert call_2["user"][:pending_2] == call_3["user"][: call_3["user"].index("SITUATIONAL RULES:")]
+    assert call_2["user"][:pending_2] == call_4["user"][: call_4["user"].index("SITUATIONAL RULES:")]
+
+    # Search with unseen library candidate 103 STILL shares the exact invariant prefix
+    # all the way through the RULES header and seen cards (up to DECISION OUTPUT FORMAT).
+    dec_start_2 = call_2["user"].index("\n\nDECISION OUTPUT FORMAT:")
+    dec_start_5 = call_5["user"].index("\n\nDECISION OUTPUT FORMAT:")
+    assert call_2["user"][:dec_start_2] == call_5["user"][:dec_start_5]
+    assert "RULES OF THE CARDS SEEN THIS GAME" in call_5["user"][:dec_start_5]
+    assert (
+        "Fixture Library Card [grp:103]"
+        in call_5["user"][
+            call_5["user"].index("SITUATIONAL RULES:") : call_5["user"].index("PENDING DECISION")
+        ]
+    )
+
+    # Every visible subject's rule still appears in the prompt when active
+    assert "Crew activates a Vehicle" in call_3["user"]
+    assert "For haste-granting equipment" in call_3["user"]
+    assert "For tutors and library searches" in call_4["user"]
+    assert "For library searches" in call_4["user"]
+    assert "For library searches" in call_5["user"]
+
+
+@pytest.mark.parametrize("use_playbook", [False, True])
+def test_nn1_decision_and_game_plan_share_system_and_leading_user_prefix(monkeypatch, use_playbook):
+    """NN1: decision.typed, decision.plan, decision.pay, and background.game_plan share one prefix."""
+    book = playbook_for("replay")
+    catalog = deepcopy(book.catalog)
+    catalog[1003] = {
+        "name": "Fixture Scout",
+        "mana_cost": "{1}{G}",
+        "type_line": "Creature — Elf Scout",
+        "cmc": 2,
+        "power": "2",
+        "toughness": "1",
+        "oracle_text": "Vigilance\nWhen this creature enters, scry 1.",
+    }
+    monkeypatch.setattr("arenamcp.match_context._local_card", lambda gid, _epoch: catalog[gid])
+    monkeypatch.setattr("arenamcp.card_facts.client.facts_for", lambda *args, **kwargs: {})
+
+    state = {
+        "match_id": f"nn1-cross-lane-{use_playbook}",
+        "local_seat_id": 1,
+        "commander_grp_ids": [1001],
+        "deck_cards": [1002] * 10 + [1003],
+        "players": [
+            {"seat_id": 1, "is_local": True, "life_total": 20, "commander_ids": [50]},
+            {"seat_id": 2, "is_local": False, "life_total": 20},
+        ],
+        "turn": {"turn_number": 4, "active_player": 1, "phase": "Phase_Main1"},
+        "hand": [
+            {**catalog[1003], "grp_id": 1003, "instance_id": 13, "owner_seat_id": 1, "controller_seat_id": 1}
+        ],
+        "battlefield": [
+            {**catalog[1002], "grp_id": 1002, "instance_id": 21, "owner_seat_id": 1, "controller_seat_id": 1},
+            {**catalog[1002], "grp_id": 1002, "instance_id": 22, "owner_seat_id": 1, "controller_seat_id": 1},
+        ],
+        "command": [
+            {**catalog[1001], "grp_id": 1001, "instance_id": 50, "owner_seat_id": 1, "controller_seat_id": 1}
+        ],
+        "graveyard": [],
+        "exile": [],
+        "stack": [],
+        "zones": {"library_count": 8, "opponent_hand_count": 5},
+        "decision_context": {"type": "actions_available"},
+    }
+
+    typed_be = _FullCaptureBackend('{"option_ids": ["pass"], "reasoning": "hold"}')
+    plan_be = _FullCaptureBackend('{"actions": [{"pick": 1}]}')
+    pay_be = _FullCaptureBackend('{"pay": false, "reasoning": "hold mana"}')
+    plan_json = json.dumps(
+        {
+            "role": "aggressor",
+            "win_conditions": ["Deploy Fixture Scout"],
+            "path": "Develop scout and commander",
+            "threat": "opposing removal",
+            "develop_next": "cast Fixture Scout",
+            "turns": [{"turn": "T", "land": "", "cast": ["Fixture Scout"], "attack": "none", "hold": ""}],
+            "switch_if": ["opponent threatens lethal"],
+        }
+    )
+    compact_gp_be = _FullCaptureBackend(plan_json, model="current")
+    full_gp_be = _FullCaptureBackend(plan_json, model="other")
+
+    if use_playbook:
+        typed_planner = ActionPlanner(
+            typed_be, timeout=15.0, land_drop_first=False, deck_playbook_fn=lambda: book
+        )
+        plan_planner = ActionPlanner(
+            plan_be, timeout=15.0, land_drop_first=False, deck_playbook_fn=lambda: book
+        )
+        pay_planner = ActionPlanner(
+            pay_be, timeout=15.0, land_drop_first=False, deck_playbook_fn=lambda: book
+        )
+        compact_mgr = GamePlanManager(compact_gp_be, separate_strategy_planning=True)
+        compact_mgr.set_playbook_source(lambda: book)
+        full_mgr = GamePlanManager(full_gp_be, separate_strategy_planning=True)
+        full_mgr.set_playbook_source(lambda: book)
+    else:
+        strategy = "Develop scouts early, protect the commander, and pressure life total."
+        typed_planner = ActionPlanner(
+            typed_be, timeout=15.0, land_drop_first=False, deck_strategy_fn=lambda: strategy
+        )
+        plan_planner = ActionPlanner(
+            plan_be, timeout=15.0, land_drop_first=False, deck_strategy_fn=lambda: strategy
+        )
+        pay_planner = ActionPlanner(
+            pay_be, timeout=15.0, land_drop_first=False, deck_strategy_fn=lambda: strategy
+        )
+        compact_mgr = GamePlanManager(compact_gp_be, separate_strategy_planning=True)
+        compact_mgr.seed(strategy)
+        full_mgr = GamePlanManager(full_gp_be, separate_strategy_planning=True)
+        full_mgr.seed(strategy)
+
+    decision = build_pending_decision(
+        {
+            "has_pending": True,
+            "request_type": "ActionsAvailable",
+            "can_pass": True,
+            "actions": [
+                {"actionType": "ActionType_Cast", "grpId": 1003, "instanceId": 13, "hasAutoTap": True}
+            ],
+        },
+        resolve_name=lambda gid: catalog.get(gid, {}).get("name", ""),
+    )
+
+    typed_planner._llm_decision_options(decision, deepcopy(state))
+    plan_planner.plan_actions(deepcopy(state), "new_turn", ["Cast Fixture Scout [OK]", "Pass"])
+    pay_planner.plan_pay_or_decline("Ward Tax", "Pay {1} or counter spell.", deepcopy(state))
+    assert compact_mgr.maybe_reform(deepcopy(state)) is not None
+    assert full_mgr.maybe_reform(deepcopy(state)) is not None
+
+    calls = [
+        typed_be.calls[-1],
+        plan_be.calls[-1],
+        pay_be.calls[-1],
+        compact_gp_be.calls[-1],
+        full_gp_be.calls[-1],
+    ]
+    assert len({c["system"] for c in calls}) == 1
+    assert "For tutors and library searches" in calls[0]["system"]
+
+    # Compute exact expected shared prefix: reference_head + playbook_core + seen_rules
+    prepared = prepare_match_context(
+        deepcopy(state), compact_decision=True, compact_starting_deck=True, source_ids_complete=True
+    )
+    head, rules = split_deck_reference(prepared["deck_reference_stable"])
+    if use_playbook:
+        fields, core = DeckPlaybook._decision_context_lines(book, state, request_type=None)
+        playbook_core = "\n".join(f for i, f in enumerate(fields) if i in core)
+    else:
+        playbook_core = (
+            "DECK STRATEGY:\nDevelop scouts early, protect the commander, and pressure life total."
+        )
+    expected_prefix = "\n\n".join((head, playbook_core, rules))
+    assert "DECK REFERENCE" in expected_prefix
+    assert "RULES OF THE CARDS SEEN THIS GAME" in expected_prefix
+    for c in calls:
+        assert c["user"].startswith(expected_prefix), f"prefix mismatch for {c['class']}"
+
+
+def test_nn1_opponent_vehicle_and_strixhaven_keep_rules_without_breaking_prefix(monkeypatch):
+    """Opposite control: out-of-deck dynamic cards add situational rules without changing the shared prefix."""
+    catalog = {
+        101: {
+            "name": "Fixture Bear",
+            "type_line": "Creature — Bear",
+            "mana_cost": "{1}{G}",
+            "cmc": 2,
+            "power": "2",
+            "toughness": "2",
+            "oracle_text": "",
+        },
+        102: {
+            "name": "Forest",
+            "type_line": "Basic Land — Forest",
+            "mana_cost": "",
+            "cmc": 0,
+            "oracle_text": "({T}: Add {G}.)",
+        },
+    }
+    monkeypatch.setattr("arenamcp.match_context._local_card", lambda gid, _epoch: catalog[gid])
+    monkeypatch.setattr("arenamcp.card_facts.client.facts_for", lambda *args, **kwargs: {})
+
+    base = {
+        "match_id": "nn1-opp-control",
+        "local_seat_id": 1,
+        "players": [
+            {"seat_id": 1, "is_local": True, "life_total": 20},
+            {"seat_id": 2, "is_local": False, "life_total": 20},
+        ],
+        "turn": {"turn_number": 3, "active_player": 1, "phase": "Phase_Main1"},
+        "deck_cards": [101, 102],
+        "hand": [
+            {**catalog[101], "grp_id": 101, "instance_id": 11, "owner_seat_id": 1, "controller_seat_id": 1}
+        ],
+        "battlefield": [],
+        "graveyard": [],
+        "exile": [],
+        "stack": [],
+        "zones": {"library_count": 1, "opponent_hand_count": 5},
+    }
+    decision = build_pending_decision(
+        {
+            "has_pending": True,
+            "request_type": "ActionsAvailable",
+            "can_pass": True,
+            "actions": [
+                {"actionType": "ActionType_Cast", "grpId": 101, "instanceId": 11, "hasAutoTap": True}
+            ],
+        },
+        resolve_name=lambda gid: catalog.get(gid, {}).get("name", ""),
+    )
+
+    backend = _FullCaptureBackend('{"option_ids": ["pass"], "reasoning": "hold"}')
+    planner = ActionPlanner(backend, timeout=15.0, land_drop_first=False)
+    planner._deck_strategy_fn = lambda: "Play bears and hold interaction."
+    planner._llm_decision_options(decision, deepcopy(base))
+    sys_base, user_base = backend.calls[-1]["system"], backend.calls[-1]["user"]
+
+    # Opponent plays a Strixhaven card and a Vehicle (not in our deck).
+    # Also model gaining temporary control of an opponent's Vehicle (owner=2, controller=1)
+    # so crew rules are active for us while still outside our deck.
+    opp_cards = deepcopy(base)
+    opp_cards["battlefield"] = [
+        {
+            "grp_id": 801,
+            "instance_id": 81,
+            "name": "Opposing Initiate",
+            "type_line": "Creature — Sorcerer",
+            "oracle_text": "This creature enters prepared.",
+            "owner_seat_id": 2,
+            "controller_seat_id": 2,
+        },
+        {
+            "grp_id": 802,
+            "instance_id": 82,
+            "name": "Borrowed Chariot",
+            "type_line": "Artifact — Vehicle",
+            "oracle_text": "Flying\nCrew 2",
+            "owner_seat_id": 2,
+            "controller_seat_id": 1,
+        },
+    ]
+    from arenamcp.situational_rules import deck_subjects, dynamic_subjects
+
+    match_sub = deck_subjects(opp_cards)
+    assert match_sub == frozenset()
+    dyn_sub = dynamic_subjects(opp_cards, decision, match_subjects=match_sub)
+    assert {"set_mechanics", "vehicle", "animation"}.issubset(dyn_sub)
+
+    planner._llm_decision_options(decision, deepcopy(opp_cards))
+    sys_opp, user_opp = backend.calls[-1]["system"], backend.calls[-1]["user"]
+
+    assert sys_opp == sys_base
+    shared_prefix = user_base[: user_base.index("PENDING DECISION")]
+    assert user_opp.startswith(shared_prefix)
+    assert "Crew activates a Vehicle" in user_opp[len(shared_prefix) :]
+    assert "Crew activates a Vehicle" not in shared_prefix

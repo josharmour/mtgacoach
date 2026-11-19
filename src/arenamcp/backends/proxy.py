@@ -23,7 +23,11 @@ from arenamcp.backends.health import (
     get_circuit,
 )
 from arenamcp.client_metadata import get_client_headers
-from arenamcp.model_call_settings import effort_for_backend, served_name_for_backend
+from arenamcp.model_call_settings import (
+    decision_thinking_budget,
+    effort_for_backend,
+    served_name_for_backend,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -619,6 +623,58 @@ def _warn_invalid_priority(value) -> None:
 def _sent_priority(params: dict | None) -> int | None:
     extra = (params or {}).get("extra_body") or {}
     value = extra.get("priority")
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+# ── Thinking token budget (session rejection fallback) ────────────────
+_THINKING_BUDGET_ENV = "ARENAMCP_THINKING_BUDGET"
+_thinking_budget_lock = threading.Lock()
+_thinking_budget_rejected_endpoints: dict[tuple[str, str], str] = {}
+
+
+def _thinking_budget_endpoint_key(base_url: str | None, model: str | None) -> tuple[str, str]:
+    return (str(base_url or "").strip(), str(model or "").strip().lower())
+
+
+def thinking_budget_enabled(base_url: str | None = None, model: str | None = None) -> bool:
+    """True unless disabled by env or rejected by ``(base_url, model)`` this session."""
+    if os.environ.get(_THINKING_BUDGET_ENV, "").strip().lower() in _FALSE_VALUES:
+        return False
+    if base_url is None and model is None:
+        return not _thinking_budget_rejected_endpoints
+    return _thinking_budget_endpoint_key(base_url, model) not in _thinking_budget_rejected_endpoints
+
+
+def reset_thinking_budget_state() -> None:
+    """Forget session-level thinking_token_budget rejections (tests, engine reload)."""
+    with _thinking_budget_lock:
+        _thinking_budget_rejected_endpoints.clear()
+
+
+def _disable_thinking_budget(
+    error: Exception, *, base_url: str | None = None, model: str | None = None
+) -> None:
+    key = _thinking_budget_endpoint_key(base_url, model)
+    with _thinking_budget_lock:
+        first = key not in _thinking_budget_rejected_endpoints
+        _thinking_budget_rejected_endpoints[key] = str(error)[:300] or type(error).__name__
+    if first:
+        logger.warning(
+            "[PROXY] Server rejected 'thinking_token_budget' for %s (%s); token budget disabled for this session",
+            key[1] or "default",
+            str(error)[:200],
+        )
+
+
+def _rejects_thinking_budget(error: Exception) -> bool:
+    if getattr(error, "status_code", None) not in (400, 422):
+        return False
+    return "thinking_token_budget" in f"{error} {getattr(error, 'body', '')}".lower()
+
+
+def _sent_thinking_budget(params: dict | None) -> int | None:
+    extra = (params or {}).get("extra_body") or {}
+    value = extra.get("thinking_token_budget")
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
@@ -1335,6 +1391,7 @@ class ProxyBackend:
         cancel_event: threading.Event | None = None,
         lane_wait_s: float | None = None,
         selective_thinking: bool = False,
+        thinking_token_budget: int | None = None,
         idle_playbook: bool = False,
         completion_usage: CompletionUsage | None = None,
         correlation_id: str | None = None,
@@ -1459,6 +1516,7 @@ class ProxyBackend:
                 and selective_enabled(served_name_for_backend(self))
                 and call.call_class == "decision.typed"
             )
+            requested_effort = reasoning_effort
             reasoning_effort = effort_for_backend(
                 self,
                 call.call_class,
@@ -1470,6 +1528,15 @@ class ProxyBackend:
             if bounded_thinking:
                 thinking_enabled = True
                 reasoning_effort = 1
+                token_budget: int | None = 256
+            else:
+                token_budget = decision_thinking_budget(
+                    self,
+                    call.call_class,
+                    requested_effort=requested_effort,
+                    effective_effort=reasoning_effort,
+                    explicit_budget=thinking_token_budget,
+                )
             params = self._build_params(
                 system_prompt,
                 user_message,
@@ -1483,8 +1550,8 @@ class ProxyBackend:
             # Provenance binds to the alias actually in the request params,
             # captured here before any await/thread can observe a switch.
             call.request_alias = str(params.get("model") or "")
-            if bounded_thinking:
-                params["extra_body"]["thinking_token_budget"] = 256
+            if token_budget is not None and thinking_budget_enabled(self._base_url, self.model):
+                params.setdefault("extra_body", {})["thinking_token_budget"] = token_budget
             if call.priority is not None:
                 params.setdefault("extra_body", {})["priority"] = call.priority
             if cancel_event is not None:
@@ -1532,6 +1599,7 @@ class ProxyBackend:
             attempt = 0
             retried = False
             priority_dropped = False
+            thinking_budget_dropped = False
             while True:
                 attempt += 1
                 reason = call.handle.cancelled()
@@ -1575,6 +1643,18 @@ class ProxyBackend:
                         _disable_priority(e)
                         params["extra_body"].pop("priority", None)
                         call.priority = None
+                        continue
+                    if (
+                        not is_commentary
+                        and not thinking_budget_dropped
+                        and _sent_thinking_budget(params) is not None
+                        and _rejects_thinking_budget(e)
+                    ):
+                        # Retry once immediately without thinking_token_budget if the
+                        # endpoint rejects it; keep disabled for this session.
+                        thinking_budget_dropped = True
+                        _disable_thinking_budget(e, base_url=self._base_url, model=self.model)
+                        params["extra_body"].pop("thinking_token_budget", None)
                         continue
                     err = self._classify_call_error(e, call)
                     if (

@@ -21,6 +21,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import time
 from collections.abc import Iterable, Sequence
 from typing import Any
 
@@ -107,3 +108,74 @@ def _subjects_in_play(state: dict, decision: Any, extra_text: Iterable[str]) -> 
     ):
         found.add("library")
     return frozenset(found)
+
+
+def deck_subjects(state: dict | None) -> frozenset[str]:
+    """The :data:`SUBJECTS` present in the starting deck or format/commander metadata.
+
+    Never reads live zones (``hand``, ``battlefield``, ``stack``, ``graveyard``,
+    ``exile``), pending decision options, or ``library_in_play`` so callers can
+    build a match-immutable prefix.
+    """
+    if os.environ.get("ARENAMCP_SITUATIONAL_RULES") == "0":
+        return SUBJECTS
+    if not isinstance(state, dict):
+        return frozenset()
+    try:
+        return _deck_subjects(state)
+    except Exception as error:
+        logger.debug("deck situational rules: sending every rule (%s)", error)
+        return SUBJECTS
+
+
+def _deck_subjects(state: dict) -> frozenset[str]:
+    from arenamcp.deck_strategy import commander_ids
+    from arenamcp.match_context import _LIBRARY_EFFECT_RE, _local_card
+
+    found: set[str] = set()
+    fmt = f"{state.get('format_name') or ''} {state.get('event_id') or ''}".lower()
+    if commander_ids(state) or "brawl" in fmt or "commander" in fmt:
+        found.add("commander")
+
+    entries: list[dict[str, Any]] = []
+    catalog_raw = state.get("deck_catalog")
+    if catalog_raw is not None:
+        if not isinstance(catalog_raw, dict):
+            raise TypeError(f"deck_catalog must be a dict, got {type(catalog_raw).__name__}")
+        for card in catalog_raw.values():
+            if not isinstance(card, dict):
+                raise TypeError(f"deck_catalog entry must be a dict, got {type(card).__name__}")
+            entries.append(card)
+    if not entries:
+        deck_cards = state.get("deck_cards")
+        if deck_cards:
+            epoch = int(time.monotonic() // 30)
+            for gid in sorted({gid for gid in deck_cards if isinstance(gid, int) and gid > 4}):
+                card = _local_card(gid, epoch)
+                if isinstance(card, dict):
+                    entries.append(card)
+
+    for card in entries:
+        card_text = f"{card.get('type_line') or ''}\n{card.get('oracle_text') or ''}"
+        if _SET_MECHANICS.search(card_text):
+            found.add("set_mechanics")
+        if _VEHICLE.search(card_text):
+            found.update(("vehicle", "animation"))  # crewing animates the Vehicle
+        if _ANIMATION.search(card_text):
+            found.add("animation")
+        if _EQUIPMENT.search(card_text):
+            found.add("equipment")
+        if _LIBRARY_EFFECT_RE.search(card_text):
+            found.add("library")
+    return frozenset(found)
+
+
+def dynamic_subjects(
+    state: dict | None,
+    decision: Any = None,
+    extra_text: Iterable[str] = (),
+    *,
+    match_subjects: Iterable[str] = (),
+) -> frozenset[str]:
+    """Live situational subjects active right now beyond ``match_subjects``."""
+    return subjects_in_play(state, decision, extra_text) - frozenset(match_subjects)
