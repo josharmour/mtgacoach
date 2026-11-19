@@ -31,13 +31,33 @@ logger = logging.getLogger(__name__)
 SETTINGS_DIR = Path.home() / ".arenamcp"
 SETTINGS_FILE = SETTINGS_DIR / "settings.json"
 
+
+def clamp_voice_volume(value: Any, default: float = 1.0) -> float:
+    """Return a finite voice volume multiplier clamped to ``[0.0, 1.0]``."""
+    import math
+
+    if isinstance(value, bool):
+        return float(default)
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return float(default)
+    if not math.isfinite(numeric):
+        return float(default)
+    return max(0.0, min(1.0, numeric))
+
+
 # Default settings
 DEFAULTS = {
     "voice": "am_adam",  # American Male - Adam
     "voice_speed": 1.5,
     "speech_speed": 1.5,
+    "voice_volume": 1.0,
     "muted": False,
     "auto_speak": True,
+    "kokoro_expressive_blend": True,
+    "chatterbox_fallback_to_kokoro": True,
+    "chatterbox_direct_url": "",
     # Generate + inject a per-deck strategy brief at match start (one LLM
     # call per match, background thread). Without it the in-game advisor is
     # strategy-blind — e.g. it told Josh to cast Ephemerate on a random
@@ -283,6 +303,9 @@ class Settings:
         val = self._data.get(key, default if default is not None else DEFAULTS.get(key))
         if key == "mode" and val != "online":
             return "online"
+        if key == "voice_volume":
+            fallback = clamp_voice_volume(default) if default is not None else 1.0
+            return clamp_voice_volume(val, default=fallback)
         return val
 
     def set(self, key: str, value: Any, save: bool = True) -> None:
@@ -295,6 +318,8 @@ class Settings:
         """
         if key == "mode" and value != "online":
             value = "online"
+        elif key == "voice_volume":
+            value = clamp_voice_volume(value)
         self._data[key] = value
         self._dirty.add(key)
         if save:

@@ -89,9 +89,12 @@ def _native_play_sound(path: str | None, flags: int) -> bool:
     return ok
 
 
-def _samples_to_wav_bytes(samples, sample_rate: int) -> bytes:
+def _samples_to_wav_bytes(samples, sample_rate: int, volume: float = 1.0) -> bytes:
     """Convert float32 numpy samples to WAV bytes in memory."""
+    from arenamcp.settings import clamp_voice_volume
+
     _ensure_numpy()
+    vol = clamp_voice_volume(volume, default=1.0)
     # Kokoro does not guarantee peaks <= 1.0; without normalization hot
     # samples hard-clip at int16 conversion and speech sounds maxed-out /
     # crackly. Only ever scale DOWN, to 0.95 headroom.
@@ -99,6 +102,8 @@ def _samples_to_wav_bytes(samples, sample_rate: int) -> bytes:
         peak = float(np.max(np.abs(samples)))
         if peak > 0.95:
             samples = samples * (0.95 / peak)
+        if vol < 0.999:
+            samples = samples * vol
     int_samples = np.clip(samples * 32767, -32768, 32767).astype(np.int16)
     buf = io.BytesIO()
     with wave.open(buf, "wb") as wf:
@@ -134,7 +139,7 @@ def _trim_leading_quiet(samples, sample_rate: int):
 _winsound_tmp_path: str | None = None
 
 
-def _winsound_play_samples(samples, sample_rate: int, blocking: bool = True) -> None:
+def _winsound_play_samples(samples, sample_rate: int, blocking: bool = True, volume: float = 1.0) -> None:
     """Play samples via winsound using a temp WAV file.
 
     Always uses SND_ASYNC to avoid blocking when the process has no
@@ -145,7 +150,7 @@ def _winsound_play_samples(samples, sample_rate: int, blocking: bool = True) -> 
     global _winsound_tmp_path
     _ensure_numpy()
 
-    wav_data = _samples_to_wav_bytes(samples, sample_rate)
+    wav_data = _samples_to_wav_bytes(samples, sample_rate, volume=volume)
 
     # Write to a persistent temp file (reused across calls)
     if _winsound_tmp_path is None:
@@ -224,6 +229,93 @@ LANG_MAP = {
 }
 
 
+EXPRESSIVE_PARTNERS: dict[str, str] = {
+    "am_adam": "am_fenrir",
+    "am_michael": "am_fenrir",
+    "am_eric": "am_fenrir",
+    "am_liam": "am_puck",
+    "am_echo": "am_fenrir",
+    "am_onyx": "am_fenrir",
+    "am_fenrir": "am_puck",
+    "am_puck": "am_fenrir",
+    "af_heart": "af_bella",
+    "af_nicole": "af_bella",
+    "af_sarah": "af_sky",
+    "af_bella": "af_sky",
+    "af_sky": "af_bella",
+    "af_nova": "af_bella",
+    "bf_emma": "bf_isabella",
+    "bf_alice": "bf_emma",
+    "bf_lily": "bf_isabella",
+    "bf_isabella": "bf_emma",
+    "bm_george": "bm_fable",
+    "bm_lewis": "bm_fable",
+    "bm_daniel": "bm_fable",
+    "bm_fable": "bm_lewis",
+}
+
+CALM_PARTNERS: dict[str, str] = {
+    "am_adam": "am_michael",
+    "am_fenrir": "am_michael",
+    "am_puck": "am_adam",
+    "am_michael": "am_adam",
+    "af_bella": "af_nicole",
+    "af_sky": "af_sarah",
+    "af_heart": "af_nicole",
+    "af_nicole": "af_sarah",
+    "bf_isabella": "bf_alice",
+    "bf_emma": "bf_alice",
+    "bf_alice": "bf_emma",
+    "bm_fable": "bm_george",
+    "bm_lewis": "bm_george",
+    "bm_daniel": "bm_george",
+    "bm_george": "bm_daniel",
+}
+
+_DEFAULT_EXPRESSIVE_BY_PREFIX: dict[str, tuple[str, ...]] = {
+    "af_": ("af_bella", "af_sky"),
+    "am_": ("am_fenrir", "am_puck"),
+    "bf_": ("bf_emma", "bf_isabella"),
+    "bm_": ("bm_fable", "bm_lewis"),
+}
+
+_DEFAULT_CALM_BY_PREFIX: dict[str, tuple[str, ...]] = {
+    "af_": ("af_nicole", "af_sarah"),
+    "am_": ("am_michael", "am_adam"),
+    "bf_": ("bf_alice", "bf_emma"),
+    "bm_": ("bm_george", "bm_daniel"),
+}
+
+EXCITEMENT_BLEND_WEIGHTS: dict[str, float] = {
+    "calm": 0.25,
+    "normal": 0.0,
+    "tense": 0.25,
+    "electric": 0.40,
+}
+
+
+def _resolve_composite_voice(voice_spec: str) -> tuple[str, str | None, float]:
+    """Parse ``voice_a+voice_b:weight`` composite syntax into ``(base, partner, weight)``."""
+    spec = (voice_spec or "").strip()
+    if "+" not in spec:
+        return spec, None, 0.0
+    base_part, rest = spec.split("+", 1)
+    base_id = base_part.strip()
+    weight = 0.35
+    if ":" in rest:
+        partner_part, weight_part = rest.split(":", 1)
+        partner_id = partner_part.strip() or None
+        try:
+            parsed = float(weight_part.strip())
+            if parsed == parsed:  # exclude NaN
+                weight = max(0.0, min(1.0, parsed))
+        except (TypeError, ValueError):
+            weight = 0.35
+    else:
+        partner_id = rest.strip() or None
+    return base_id, partner_id, weight
+
+
 class KokoroTTS:
     """Text-to-speech synthesizer using Kokoro ONNX.
 
@@ -250,6 +342,8 @@ class KokoroTTS:
         voice: str = "am_adam",
         speed: float = 1.0,
         lang: str = "en-us",
+        excitement: str = "normal",
+        expressive_blend: bool | None = None,
     ) -> None:
         """Initialize the TTS synthesizer.
 
@@ -261,6 +355,8 @@ class KokoroTTS:
             voice: Voice ID to use. Default 'am_adam' (American Male Adam).
             speed: Speech speed multiplier. Default 1.0.
             lang: Language code. Default 'en-us'.
+            excitement: Delivery excitement level ('calm', 'normal', 'tense', 'electric').
+            expressive_blend: Override settings.kokoro_expressive_blend when set.
         """
         # Resolve model paths
         if model_path is None:
@@ -276,6 +372,16 @@ class KokoroTTS:
         self._voice = voice
         self._speed = speed
         self._lang = lang
+        self._excitement = excitement if excitement in EXCITEMENT_BLEND_WEIGHTS else "normal"
+        if expressive_blend is None:
+            try:
+                from arenamcp.settings import get_settings
+
+                self._expressive_blend = bool(get_settings().get("kokoro_expressive_blend", True))
+            except Exception:
+                self._expressive_blend = True
+        else:
+            self._expressive_blend = bool(expressive_blend)
 
         # Lazy-loaded model
         self._kokoro: object | None = None
@@ -368,22 +474,73 @@ class KokoroTTS:
 
         return _trim_leading_quiet(samples, sample_rate), sample_rate
 
-    def for_delivery(self, voice: str, speed: float) -> "KokoroTTS":
+    def for_delivery(self, voice: str, speed: float, excitement: str | None = None) -> "KokoroTTS":
         """Share the loaded ONNX session while an earlier render keeps its own settings."""
         delivery = copy.copy(self)
         delivery._voice = voice
         delivery._speed = speed
-        if voice != self._voice:
+        new_excitement = (
+            getattr(self, "_excitement", "normal")
+            if excitement is None
+            else (excitement if excitement in EXCITEMENT_BLEND_WEIGHTS else "normal")
+        )
+        delivery._excitement = new_excitement
+        if voice != self._voice or new_excitement != getattr(self, "_excitement", "normal"):
             delivery._style = None
         return delivery
 
+    def _style_row(self, voice_id: str):
+        _ensure_numpy()
+        pack = np.asarray(self._kokoro.get_voice_style(voice_id))
+        return pack[min(STYLE_TOKENS, len(pack) - 1)], pack.shape
+
+    def _pick_blend_partner(self, base_id: str) -> tuple[str | None, float]:
+        if not getattr(self, "_expressive_blend", True):
+            return None, 0.0
+        excitement = getattr(self, "_excitement", "normal")
+        weight = EXCITEMENT_BLEND_WEIGHTS.get(excitement, 0.0)
+        if weight <= 0.0:
+            return None, 0.0
+        if excitement == "calm":
+            primary, fallback_map = CALM_PARTNERS, _DEFAULT_CALM_BY_PREFIX
+        else:
+            primary, fallback_map = EXPRESSIVE_PARTNERS, _DEFAULT_EXPRESSIVE_BY_PREFIX
+
+        voices = self._kokoro.voices
+        candidate = primary.get(base_id)
+        if candidate and candidate != base_id and candidate in voices:
+            return candidate, weight
+        for fallback in fallback_map.get(base_id[:3], ()):
+            if fallback != base_id and fallback in voices:
+                return fallback, weight
+        return None, 0.0
+
     def _voice_style(self):
-        """The voice with its STYLE_TOKENS row at every length (see STYLE_TOKENS)."""
+        """The voice with its STYLE_TOKENS row (and optional blend) at every length."""
         if self._style is None:
-            if self._voice not in self._kokoro.voices:
+            base_id, explicit_partner, explicit_weight = _resolve_composite_voice(self._voice)
+            if base_id not in self._kokoro.voices:
                 return self._voice  # kokoro_onnx reports the unknown voice
-            pack = np.asarray(self._kokoro.get_voice_style(self._voice))
-            self._style = np.broadcast_to(pack[min(STYLE_TOKENS, len(pack) - 1)], pack.shape)
+            base_row, target_shape = self._style_row(base_id)
+
+            partner_id: str | None = None
+            weight = 0.0
+            if (
+                explicit_partner is not None
+                and explicit_partner in self._kokoro.voices
+                and explicit_weight > 0.0
+            ):
+                partner_id = explicit_partner
+                weight = explicit_weight
+            else:
+                partner_id, weight = self._pick_blend_partner(base_id)
+
+            if partner_id is not None and weight > 0.0:
+                partner_row, _ = self._style_row(partner_id)
+                row = ((1.0 - weight) * base_row + weight * partner_row).astype(base_row.dtype, copy=False)
+            else:
+                row = base_row
+            self._style = np.broadcast_to(row, target_shape)
         return self._style
 
 
@@ -414,6 +571,7 @@ class VoiceOutput:
         voice: str | None = None,
         speed: float | None = None,
         *,
+        volume: float | None = None,
         render_only: bool = False,
     ) -> None:
         """Initialize VoiceOutput.
@@ -422,17 +580,26 @@ class VoiceOutput:
             voice: Kokoro voice ID. If None, loads from settings
                   (default: 'am_adam' - American Male Adam).
             speed: Speech speed multiplier. If None, loads from settings
+                  (default: 1.0).
+            volume: Output volume multiplier in ``[0.0, 1.0]``. If None,
+                   defaults to ``1.0`` in ``render_only`` mode or loads from settings.
             render_only: Render files for a parent that owns mute/playback. Do not
                 inherit playback mute or persist per-utterance voice/speed choices.
-                  (default: 1.0).
         """
         # Load from settings if not specified
-        from arenamcp.settings import get_settings
+        from arenamcp.settings import clamp_voice_volume, get_settings
 
         settings = get_settings()
 
         self._voice = voice if voice is not None else settings.get("voice", "am_adam")
         self._speed = speed if speed is not None else settings.get("voice_speed", 1.0)
+        self._volume = (
+            1.0
+            if render_only and volume is None
+            else clamp_voice_volume(volume if volume is not None else settings.get("voice_volume", 1.0))
+        )
+        self._expressive_blend = bool(settings.get("kokoro_expressive_blend", True))
+        self._excitement = "normal"
         self._device_index = settings.get("device_index", None)
         self._voice_index = 0  # Index into VOICES list
         self._muted = False if render_only else settings.get("muted", False)
@@ -443,8 +610,9 @@ class VoiceOutput:
         self._lang = LANG_MAP.get(lang_code, "en-us")
 
         # Find initial voice index
+        base_voice = _resolve_composite_voice(self._voice)[0]
         for i, (vid, _) in enumerate(self.VOICES):
-            if vid == self._voice:
+            if vid == base_voice:
                 self._voice_index = i
                 break
 
@@ -489,7 +657,13 @@ class VoiceOutput:
     def _ensure_tts(self) -> None:
         """Initialize TTS on first use."""
         if self._tts_engine is None:
-            self._tts_engine = KokoroTTS(voice=self._voice, speed=self._speed, lang=self._lang)
+            self._tts_engine = KokoroTTS(
+                voice=self._voice,
+                speed=self._speed,
+                lang=self._lang,
+                excitement=self._excitement,
+                expressive_blend=self._expressive_blend,
+            )
 
     def _windows_rate(self) -> int:
         """Map Kokoro speed multiplier to Windows SpeechSynthesizer rate."""
@@ -501,10 +675,12 @@ class VoiceOutput:
         if os.name != "nt":
             return False
 
+        sapi_volume = max(0, min(100, int(round(self._volume * 100))))
         script = (
             "Add-Type -AssemblyName System.Speech; "
             "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
             f"$s.Rate = {self._windows_rate()}; "
+            f"$s.Volume = {sapi_volume}; "
             "$inputText = [Console]::In.ReadToEnd(); "
             "if (-not [string]::IsNullOrWhiteSpace($inputText)) { $s.Speak($inputText) }"
         )
@@ -581,6 +757,20 @@ class VoiceOutput:
         """Get the current speed multiplier."""
         return float(self._speed)
 
+    @property
+    def volume(self) -> float:
+        """Get the current output volume multiplier in ``[0.0, 1.0]``."""
+        return float(self._volume)
+
+    def set_volume(self, volume: float) -> float:
+        """Set output volume multiplier directly in ``[0.0, 1.0]``."""
+        from arenamcp.settings import clamp_voice_volume
+
+        self._volume = clamp_voice_volume(volume, default=self._volume)
+        if self._settings is not None:
+            self._settings.set("voice_volume", self._volume)
+        return self._volume
+
     def toggle_mute(self) -> bool:
         """Toggle mute state.
 
@@ -648,7 +838,9 @@ class VoiceOutput:
         self._speed = new_speed
 
         if changed and self._tts_engine is not None:
-            self._tts_engine = self._tts_engine.for_delivery(self._voice, self._speed)
+            self._tts_engine = self._tts_engine.for_delivery(
+                self._voice, self._speed, excitement=self._excitement
+            )
 
         if self._settings is not None:
             self._settings.set("voice_speed", self._speed)
@@ -667,9 +859,10 @@ class VoiceOutput:
         if not voice_id:
             return self._voice
 
+        base_id = _resolve_composite_voice(voice_id)[0]
         found = False
         for idx, (vid, _) in enumerate(self.VOICES):
-            if vid == voice_id:
+            if vid == base_id:
                 self._voice_index = idx
                 found = True
                 break
@@ -682,13 +875,26 @@ class VoiceOutput:
         self._voice = voice_id
 
         if changed and self._tts_engine is not None:
-            self._tts_engine = self._tts_engine.for_delivery(self._voice, self._speed)
+            self._tts_engine = self._tts_engine.for_delivery(
+                self._voice, self._speed, excitement=self._excitement
+            )
 
         if self._settings is not None:
             self._settings.set("voice", voice_id)
         return self._voice
 
-    def render_to_wav_file(self, text: str) -> tuple[str, float] | None:
+    def _delivery_engine(self, excitement: str = "normal"):
+        engine = self._tts_engine
+        if getattr(engine, "_kokoro", None) is None and hasattr(engine, "_ensure_model_loaded"):
+            engine._ensure_model_loaded()
+        if hasattr(engine, "for_delivery"):
+            try:
+                return engine.for_delivery(self._voice, self._speed, excitement=excitement)
+            except TypeError:
+                return engine.for_delivery(self._voice, self._speed)
+        return engine
+
+    def render_to_wav_file(self, text: str, excitement: str = "normal") -> tuple[str, float] | None:
         """Render speech to a temp WAV file for parent-process playback."""
         if self._muted:
             return None
@@ -699,8 +905,8 @@ class VoiceOutput:
 
         with self._speak_lock:
             self._ensure_tts()
-            engine = self._tts_engine
             try:
+                engine = self._delivery_engine(excitement)
                 samples, sample_rate = engine.synthesize(text)
             except (ImportError, FileNotFoundError) as e:
                 logger.warning(
@@ -719,7 +925,7 @@ class VoiceOutput:
             fd, path = tempfile.mkstemp(suffix=".wav", prefix="mtgacoach_pipe_")
             os.close(fd)
             with open(path, "wb") as f:
-                f.write(_samples_to_wav_bytes(samples, sample_rate))
+                f.write(_samples_to_wav_bytes(samples, sample_rate, volume=self._volume))
 
             duration = len(samples) / sample_rate
             logger.info(
@@ -783,13 +989,14 @@ class VoiceOutput:
         )
         return text
 
-    def speak(self, text: str, blocking: bool = True) -> None:
+    def speak(self, text: str, blocking: bool = True, excitement: str = "normal") -> None:
         """Synthesize and play text as speech.
 
         Args:
             text: Text to speak.
             blocking: If True (default), block until audio finishes.
                      If False, same as speak_async().
+            excitement: Delivery excitement level ('calm', 'normal', 'tense', 'electric').
 
         Raises:
             FileNotFoundError: If TTS model files not found.
@@ -810,7 +1017,7 @@ class VoiceOutput:
         text = self._clean_text(text)
 
         if not blocking:
-            self.speak_async(text)
+            self.speak_async(text, excitement=excitement)
             return
 
         self._ensure_tts()
@@ -825,7 +1032,8 @@ class VoiceOutput:
 
             # Synthesize
             try:
-                samples, sample_rate = self._tts_engine.synthesize(text)
+                engine = self._delivery_engine(excitement)
+                samples, sample_rate = engine.synthesize(text)
             except (ImportError, FileNotFoundError) as e:
                 logger.warning(f"Kokoro unavailable ({e}); trying Windows TTS fallback")
                 if self._try_windows_tts_fallback(text, blocking=True):
@@ -846,9 +1054,10 @@ class VoiceOutput:
                 logger.info(f"Speaking (device={self._device_index}): {text[:50]}...")
                 _ensure_playback_backend()
                 if _USE_WINSOUND:
-                    _winsound_play_samples(samples, sample_rate, blocking=True)
+                    _winsound_play_samples(samples, sample_rate, blocking=True, volume=self._volume)
                 elif sd is not None:
-                    sd.play(samples, sample_rate, device=self._device_index)
+                    play_samples = samples * self._volume if self._volume < 0.999 else samples
+                    sd.play(play_samples, sample_rate, device=self._device_index)
                     sd.wait()
                 else:
                     logger.error("No audio backend available")
@@ -858,7 +1067,7 @@ class VoiceOutput:
                 with self._lock:
                     self._is_speaking = False
 
-    def speak_async(self, text: str) -> None:
+    def speak_async(self, text: str, excitement: str = "normal") -> None:
         """Synthesize and play text without blocking.
 
         Returns immediately. Use is_speaking property to check status
@@ -866,6 +1075,7 @@ class VoiceOutput:
 
         Args:
             text: Text to speak.
+            excitement: Delivery excitement level ('calm', 'normal', 'tense', 'electric').
 
         Raises:
             FileNotFoundError: If TTS model files not found.
@@ -884,7 +1094,8 @@ class VoiceOutput:
 
             # Synthesize
             try:
-                samples, sample_rate = self._tts_engine.synthesize(text)
+                engine = self._delivery_engine(excitement)
+                samples, sample_rate = engine.synthesize(text)
             except (ImportError, FileNotFoundError) as e:
                 logger.warning(f"Kokoro unavailable ({e}); trying Windows TTS fallback")
                 if self._try_windows_tts_fallback(text, blocking=False):
@@ -904,9 +1115,10 @@ class VoiceOutput:
                     logger.info(f"Speaking async (device={self._device_index}): {text[:50]}...")
                     _ensure_playback_backend()
                     if _USE_WINSOUND:
-                        _winsound_play_samples(samples, sample_rate, blocking=True)
+                        _winsound_play_samples(samples, sample_rate, blocking=True, volume=self._volume)
                     elif sd is not None:
-                        sd.play(samples, sample_rate, device=self._device_index)
+                        play_samples = samples * self._volume if self._volume < 0.999 else samples
+                        sd.play(play_samples, sample_rate, device=self._device_index)
                         sd.wait()
                     else:
                         logger.error("No audio backend available")

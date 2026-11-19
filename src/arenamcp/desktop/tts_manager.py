@@ -92,11 +92,59 @@ class TtsManager(QObject):
         self._playback_watch.setInterval(150)
         self._playback_watch.timeout.connect(self._check_playback)
 
+        from arenamcp.settings import clamp_voice_volume, get_settings
+
+        self._volume = clamp_voice_volume(get_settings().get("voice_volume", 1.0))
+        AudioPlayback.set_volume(self._volume)
+        self._pcm.set_volume(self._volume)
+        self._gen_volume: dict[int, float] = {}
+        self._remote_meta: dict[int, tuple[bool, str, bool]] = {}
+
         # Tier 5: TTS Speech Worker Stall Watchdog (auto-restarts stuck worker)
         self._busy_timer = QTimer(self)
         self._busy_timer.setSingleShot(True)
         self._busy_timer.setInterval(6000)
         self._busy_timer.timeout.connect(self._on_busy_timeout)
+
+    @property
+    def volume(self) -> float:
+        return self._volume
+
+    def set_volume(self, volume: float) -> float:
+        from arenamcp.settings import clamp_voice_volume
+
+        self._volume = clamp_voice_volume(volume, default=self._volume)
+        AudioPlayback.set_volume(self._volume)
+        self._pcm.set_volume(self._volume)
+        self._gen_volume.pop(self._generation, None)
+        return self._volume
+
+    def _record_gen_volume(self, generation: int, volume: float) -> None:
+        self._gen_volume[generation] = volume
+        stale = [g for g in self._gen_volume if g <= generation - 8]
+        for g in stale:
+            self._gen_volume.pop(g, None)
+        stale_meta = [g for g in self._remote_meta if g <= generation - 8]
+        for g in stale_meta:
+            self._remote_meta.pop(g, None)
+
+    def _volume_for_generation(self, generation: int) -> float:
+        return self._gen_volume.get(generation, self._volume)
+
+    def _play_audio_file(self, path: str, generation: int) -> bool:
+        import inspect
+
+        vol = self._volume_for_generation(generation)
+        try:
+            sig = inspect.signature(AudioPlayback.play_file)
+            accepts_vol = "volume" in sig.parameters or any(
+                p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
+            )
+        except (TypeError, ValueError):
+            accepts_vol = False
+        if accepts_vol:
+            return AudioPlayback.play_file(path, volume=vol)
+        return AudioPlayback.play_file(path)
 
     @property
     def is_running(self) -> bool:
@@ -186,9 +234,14 @@ class TtsManager(QObject):
                 self.speechStatus.emit(speech_id, "failed")
             return
 
-        from arenamcp.settings import get_settings
+        from arenamcp.settings import clamp_voice_volume, get_settings
 
         settings = settings_override if settings_override is not None else get_settings()
+        req_volume = (
+            self._volume
+            if settings_override is None or "voice_volume" not in settings_override
+            else clamp_voice_volume(settings_override["voice_volume"], default=self._volume)
+        )
         selected = provider or str(settings.get("tts_provider") or "kokoro")
         if private and selected == "chatterbox_remote" and settings.get("tts_provider") != selected:
             if speech_id:
@@ -231,6 +284,7 @@ class TtsManager(QObject):
             self._selected_provider = selected
             self._resolve_tracked("superseded")
             self._generation += 1
+            self._record_gen_volume(self._generation, req_volume)
             self._last_text = ""
             self._last_text_generation = -1
             self._remote_generation = self._generation  # Ignore unrelated Kokoro worker events.
@@ -244,8 +298,10 @@ class TtsManager(QObject):
             )
             return
         if selected == "kokoro":
-            from arenamcp.commentary.delivery import kokoro_delivery
+            from arenamcp.commentary.delivery import infer_advice_excitement, kokoro_delivery
 
+            if excitement == "normal" and category != "commentary":
+                excitement = infer_advice_excitement(text)
             text, speed = kokoro_delivery(text, speed, excitement)
             self._last_text, self._last_speed = "" if private else text, speed
         self._selected_provider = selected
@@ -256,6 +312,7 @@ class TtsManager(QObject):
         ):
             self._resolve_tracked("superseded")
             self._generation += 1
+            self._record_gen_volume(self._generation, req_volume)
             self._last_text_generation = self._generation
             self._stop_playback()
             self._speak_fallback(text, speed)
@@ -263,6 +320,8 @@ class TtsManager(QObject):
             return
         if selected.startswith("chatterbox"):
             self._resolve_tracked("superseded")
+            direct_url = str(settings.get("chatterbox_direct_url") or "").strip()
+            fallback_enabled = bool(settings.get("chatterbox_fallback_to_kokoro", True))
             self._request_chatterbox_speech(
                 text=text,
                 voice_id=str(settings.get("voice") or "am_adam")
@@ -279,6 +338,10 @@ class TtsManager(QObject):
                 speech_id=speech_id,
                 excitement=excitement,
                 energy=energy,
+                private=private,
+                direct_url=direct_url,
+                fallback_to_kokoro=fallback_enabled,
+                request_volume=req_volume,
             )
             return
 
@@ -289,6 +352,7 @@ class TtsManager(QObject):
                 voice_id=voice_id,
                 voice_name=voice_name,
                 speed=float(speed),
+                request_volume=req_volume,
             )
             self._track(speech_id)
             return
@@ -300,6 +364,7 @@ class TtsManager(QObject):
         if self._worker_failed:
             self._resolve_tracked("superseded")
             self._generation += 1
+            self._record_gen_volume(self._generation, req_volume)
             self._last_text_generation = self._generation
             self._speak_fallback(text, speed)
             self._track_fallback(speech_id)
@@ -314,6 +379,7 @@ class TtsManager(QObject):
                 self.status_line.emit("Kokoro unavailable — using system voice fallback.")
                 self._resolve_tracked("superseded")
                 self._generation += 1
+                self._record_gen_volume(self._generation, req_volume)
                 self._last_text_generation = self._generation
                 self._speak_fallback(text, speed)
                 self._track_fallback(speech_id)
@@ -323,6 +389,7 @@ class TtsManager(QObject):
         # the old request's late "rendered" line a no-op.
         self._resolve_tracked("superseded")
         self._generation += 1
+        self._record_gen_volume(self._generation, req_volume)
         self._last_text_generation = self._generation
         self._pending_request = {
             "cmd": "render",
@@ -332,6 +399,7 @@ class TtsManager(QObject):
             "voice_id": voice_id,
             "voice_name": voice_name,
             "speed": float(speed),
+            "excitement": excitement,
         }
         self._stop_playback()
         self._stop_say()
@@ -422,10 +490,12 @@ class TtsManager(QObject):
         try:
             safe_text = text.replace("'", "''")
             rate = max(-10, min(10, int((speed - 1.0) * 5)))
+            sapi_vol = max(0, min(100, int(round(self._volume_for_generation(self._generation) * 100))))
             ps_script = (
                 f"Add-Type -AssemblyName System.Speech; "
                 f"$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
                 f"$s.Rate = {rate}; "
+                f"$s.Volume = {sapi_vol}; "
                 f"$s.Speak('{safe_text}')"
             )
             self._say_process = subprocess.Popen(
@@ -551,11 +621,25 @@ class TtsManager(QObject):
         speech_id,
         excitement="normal",
         energy=0.5,
+        private=False,
+        direct_url="",
+        fallback_to_kokoro=None,
+        request_volume=None,
     ):
+        from arenamcp.settings import get_settings
+
         self._generation += 1
         generation = self._generation
         self._remote_generation = generation
         self._last_text_generation = generation
+        if request_volume is not None:
+            self._record_gen_volume(generation, float(request_volume))
+        fb_enabled = (
+            bool(get_settings().get("chatterbox_fallback_to_kokoro", True))
+            if fallback_to_kokoro is None
+            else bool(fallback_to_kokoro)
+        )
+        self._remote_meta[generation] = (bool(private), str(excitement or "normal"), fb_enabled)
         self._pending_request = None
         self._stop_playback()
         self._stop_say()
@@ -564,7 +648,13 @@ class TtsManager(QObject):
         self._remote_cancel = cancelled
         if not self._chatterbox_lock.acquire(blocking=False):
             self._on_remote_failed(
-                generation, text, voice_id, voice_name, speed, "Speech renderer still busy"
+                generation,
+                text,
+                voice_id,
+                voice_name,
+                speed,
+                "Speech renderer still busy",
+                busy_local=True,
             )
             return
         self._busy = True
@@ -574,6 +664,7 @@ class TtsManager(QObject):
         def worker():
             from arenamcp.chatterbox_remote import SpeechCancelled, speech_chunks, stream_hosted
 
+            extra = {"base_url": direct_url} if direct_url else {}
             try:
                 started = time.monotonic()
                 for chunk in speech_chunks(text, limit=600):
@@ -589,6 +680,7 @@ class TtsManager(QObject):
                         cancelled=cancelled,
                         excitement=excitement,
                         energy=energy,
+                        **extra,
                     ):
                         if cancelled.is_set():
                             return
@@ -640,6 +732,7 @@ class TtsManager(QObject):
         self._busy = False
         self._busy_timer.stop()
         self._pcm_generation = generation
+        self._pcm.set_volume(self._volume_for_generation(generation))
         self._pcm.append(data)
 
     def _on_stream_done(self, generation):
@@ -665,11 +758,14 @@ class TtsManager(QObject):
         voice_id: str,
         voice_name: str,
         speed: float,
+        request_volume: float | None = None,
     ) -> None:
         self._generation += 1
         gen = self._generation
         self._remote_generation = gen
         self._last_text_generation = gen
+        if request_volume is not None:
+            self._record_gen_volume(gen, float(request_volume))
         self._stop_playback()
         self._stop_say()
 
@@ -738,7 +834,7 @@ class TtsManager(QObject):
                 self._complete(generation, "superseded")
                 return
             self._stop_say()
-            if AudioPlayback.play_file(path):
+            if self._play_audio_file(path, generation):
                 self._current_audio_path = Path(path)
                 self._playback_started(generation)
                 self.status_line.emit(f"Speech ready ({elapsed:.2f}s synthesis)")
@@ -757,19 +853,63 @@ class TtsManager(QObject):
         voice_name: str,
         speed: float,
         err_msg: str,
+        *,
+        busy_local: bool = False,
     ) -> None:
         if self._closing or generation != self._generation:
+            self._remote_meta.pop(generation, None)
             return
         self._busy = False
         self._busy_timer.stop()
         self._remote_generation = None
         if not self._speech_valid():
+            self._remote_meta.pop(generation, None)
             self._complete(generation, "superseded")
             return
         if getattr(self, "_selected_provider", "kokoro").startswith("chatterbox"):
+            from arenamcp.commentary.delivery import kokoro_delivery
+            from arenamcp.settings import get_settings
+
+            default_fb = bool(get_settings().get("chatterbox_fallback_to_kokoro", True))
+            is_private, req_excitement, fallback_enabled = self._remote_meta.pop(
+                generation, (False, "normal", default_fb)
+            )
             self._pcm.stop()
             if self._remote_cancel is not None:
                 self._remote_cancel.set()
+
+            can_fallback = (
+                not busy_local
+                and fallback_enabled
+                and not self._worker_failed
+                and (not is_private or self.private_render_ready)
+            )
+            if can_fallback and not is_private and not self.is_running:
+                try:
+                    self.start()
+                except Exception:
+                    self._worker_failed = True
+                    can_fallback = False
+
+            if can_fallback:
+                self.status_line.emit("Chatterbox unavailable — falling back to local Kokoro.")
+                fb_text, fb_speed = kokoro_delivery(text, speed, req_excitement)
+                self._last_text = "" if is_private else fb_text
+                self._last_speed = float(fb_speed)
+                self._last_text_generation = generation
+                self._pending_request = {
+                    "cmd": "render",
+                    **({"private": True} if is_private else {}),
+                    "generation": generation,
+                    "text": fb_text,
+                    "voice_id": voice_id,
+                    "voice_name": voice_name,
+                    "speed": float(fb_speed),
+                    "excitement": req_excitement,
+                }
+                self._dispatch_pending()
+                return
+
             self.error_line.emit(
                 f"Chatterbox unavailable: {err_msg} Try Preview again or choose Kokoro in Speech & voices."
             )
@@ -885,7 +1025,7 @@ class TtsManager(QObject):
                     self._dispatch_pending()
                     return
                 self._stop_say()
-                if AudioPlayback.play_file(path):
+                if self._play_audio_file(path, generation):
                     self._current_audio_path = Path(path)
                     self._playback_started(generation)
                 else:

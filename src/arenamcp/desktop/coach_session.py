@@ -105,6 +105,7 @@ class CoachSession(QObject):
     backendHealthChanged = Signal(dict)
     autopilotBugStatusChanged = Signal(dict)
     spokenLine = Signal(str)
+    volumeChanged = Signal(float)
     logEmitted = Signal(str, str)  # message, role
     adviceReceived = Signal(str, str)  # text, label
     deckListChanged = Signal(list, str)  # decks, note
@@ -192,6 +193,10 @@ class CoachSession(QObject):
     @property
     def is_running(self) -> bool:
         return self._process.is_running
+
+    @property
+    def voice_volume(self) -> float:
+        return self._tts.volume
 
     @property
     def last_game_state(self) -> dict[str, Any]:
@@ -644,6 +649,7 @@ class CoachSession(QObject):
                     "voice",
                     "voice_speed",
                     "speech_speed",
+                    "voice_volume",
                     "chatterbox_voice_override",
                     "chatterbox_speed",
                     "chatterbox_server_url",
@@ -662,6 +668,18 @@ class CoachSession(QObject):
         self._process.send_payload(
             {"cmd": "sync_voice_preferences", "voice_speed": speed, "speech_speed": speed}
         )
+
+    def set_speech_volume(self, volume: float, *, persist: bool = True) -> float:
+        """Set coach voice volume multiplier in ``[0.0, 1.0]``."""
+        from arenamcp.settings import clamp_voice_volume, get_settings
+
+        clamped = clamp_voice_volume(volume, default=self._tts.volume)
+        applied = self._tts.set_volume(clamped)
+        if persist:
+            get_settings().set("voice_volume", applied)
+        self._process.send_payload({"cmd": "sync_voice_preferences", "voice_volume": applied})
+        self.volumeChanged.emit(applied)
+        return applied
 
     def set_voice(self, voice_id: str) -> None:
         """Select a Kokoro voice by id in the running engine (saved there too)."""

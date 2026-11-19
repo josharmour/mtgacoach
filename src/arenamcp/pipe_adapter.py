@@ -1007,9 +1007,12 @@ class PipeAdapter:
         if coach is None or coach.settings is None:
             return
 
+        from arenamcp.settings import clamp_voice_volume
+
         voice_id = str(cmd.get("voice", "") or "").strip()
         speed_value = cmd.get("voice_speed")
         muted_value = cmd.get("muted")
+        volume_value = cmd.get("voice_volume")
 
         if voice_id:
             coach.settings.set("voice", voice_id)
@@ -1017,6 +1020,11 @@ class PipeAdapter:
             with contextlib.suppress(TypeError, ValueError):
                 coach.settings.set("voice_speed", float(speed_value))
                 coach.settings.set("speech_speed", float(speed_value))
+        clamped_volume: float | None = None
+        if volume_value is not None:
+            default_vol = clamp_voice_volume(coach.settings.get("voice_volume", 1.0))
+            clamped_volume = clamp_voice_volume(volume_value, default=default_vol)
+            coach.settings.set("voice_volume", clamped_volume)
         if muted_value is not None:
             coach.settings.set("muted", bool(muted_value))
 
@@ -1038,6 +1046,12 @@ class PipeAdapter:
                 pass
             except Exception as e:
                 logger.warning("Failed to sync voice speed %s: %s", speed_value, e)
+
+        if clamped_volume is not None and hasattr(voice_output, "set_volume"):
+            try:
+                voice_output.set_volume(clamped_volume)
+            except Exception as e:
+                logger.warning("Failed to sync voice volume %s: %s", clamped_volume, e)
 
         if muted_value is not None:
             try:

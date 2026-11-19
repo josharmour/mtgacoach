@@ -26,17 +26,19 @@ class _PipeVoiceOutput:
     def __init__(self, ui: Any):
         self._ui = ui
         # Start from the saved voice and speed, not a fixed default.
-        saved_voice, saved_speed = None, 1.0
+        saved_voice, saved_speed, saved_volume = None, 1.0, 1.0
         saved_muted = False
         with contextlib.suppress(Exception):
-            from arenamcp.settings import get_settings
+            from arenamcp.settings import clamp_voice_volume, get_settings
 
             settings = get_settings()
             saved_muted = bool(settings.get("muted", False))
             saved_voice = settings.get("voice")
             saved_speed = float(settings.get("voice_speed", 1.0) or 1.0)
+            saved_volume = clamp_voice_volume(settings.get("voice_volume", 1.0))
         self._voice_index = voice_index(saved_voice)
         self._speed = saved_speed
+        self._volume = saved_volume
         self._muted = saved_muted
 
     @property
@@ -46,6 +48,10 @@ class _PipeVoiceOutput:
     @property
     def speed(self) -> float:
         return self._speed
+
+    @property
+    def volume(self) -> float:
+        return self._volume
 
     def cycle_speed(self) -> float:
         try:
@@ -79,6 +85,13 @@ class _PipeVoiceOutput:
         self._speed = max(0.5, min(2.0, float(speed)))
         self._save("voice_speed", self._speed)
         return self._speed
+
+    def set_volume(self, volume: float) -> float:
+        from arenamcp.settings import clamp_voice_volume
+
+        self._volume = clamp_voice_volume(volume, default=self._volume)
+        self._save("voice_volume", self._volume)
+        return self._volume
 
     @staticmethod
     def _save(key: str, value: Any) -> None:

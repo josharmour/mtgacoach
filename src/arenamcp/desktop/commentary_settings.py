@@ -5,16 +5,19 @@ from __future__ import annotations
 import threading
 from dataclasses import replace
 
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
+    QHBoxLayout,
     QLabel,
     QPushButton,
+    QSlider,
     QVBoxLayout,
+    QWidget,
 )
 
 from arenamcp.chatterbox_remote import HOSTED_BASE, ChatterboxError
@@ -23,6 +26,7 @@ from arenamcp.commentary.config import PERSONAS, CommentaryConfig, speech_rate
 from arenamcp.commentary.setup import VOICE_LABELS, discover, server_voices
 from arenamcp.commentary.voices import VoicePairUnavailable, pair_options, voice_pair
 from arenamcp.kokoro_voices import KOKORO_VOICES
+from arenamcp.settings import clamp_voice_volume
 
 
 def combo(options, value):
@@ -78,6 +82,26 @@ class CommentarySettingsDialog(QDialog):
         self.saved_public_voice = settings.get("commentary_public_voice", "kokoro")
         self.local_available = False
         self.speed_label = QLabel("Speed")
+        self.volume_label = QLabel("Volume")
+        initial_vol = clamp_voice_volume(settings.get("voice_volume", 1.0))
+        initial_pct = max(0, min(100, int(round(initial_vol * 100))))
+        self.volume_row = QWidget()
+        vol_layout = QHBoxLayout(self.volume_row)
+        vol_layout.setContentsMargins(0, 0, 0, 0)
+        vol_layout.setSpacing(8)
+        self.volume = QSlider(Qt.Horizontal)
+        self.volume.setObjectName("dialogVoiceVolumeSlider")
+        self.volume.setAccessibleName("Voice volume")
+        self.volume.setRange(0, 100)
+        self.volume.setSingleStep(5)
+        self.volume.setPageStep(10)
+        self.volume.setValue(initial_pct)
+        self.volume_value = QLabel(f"{initial_pct}%")
+        self.volume_value.setFixedWidth(40)
+        self.volume_value.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        vol_layout.addWidget(self.volume, 1)
+        vol_layout.addWidget(self.volume_value)
+        self.volume.valueChanged.connect(lambda v: self.volume_value.setText(f"{v}%"))
         self.voice = QComboBox()
         self.analyst = QComboBox()
         self.analyst_label = QLabel("Color analyst")
@@ -107,6 +131,7 @@ class CommentarySettingsDialog(QDialog):
             (self.voice_label, self.voice),
             (self.analyst_label, self.analyst),
             (self.speed_label, self.speed),
+            (self.volume_label, self.volume_row),
         ):
             form.addRow(label, control)
         self.status = QLabel()
@@ -339,6 +364,7 @@ class CommentarySettingsDialog(QDialog):
         # the saved pair until real choices are available again.
         values["speech_speed"] = float(self.speed.currentData())
         values["chatterbox_speed"] = values["voice_speed"] = values["speech_speed"]
+        values["voice_volume"] = round(self.volume.value() / 100.0, 2)
         return values
 
     def _apply(self):
@@ -372,6 +398,7 @@ class CommentarySettingsDialog(QDialog):
         self.session.set_speech_enabled(self.enabled.isChecked())
         self.session.set_voice(values["voice"])
         self.session.set_speech_speed(values["speech_speed"])
+        self.session.set_speech_volume(values["voice_volume"], persist=False)
         return True
 
     def _save(self):

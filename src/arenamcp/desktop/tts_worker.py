@@ -131,16 +131,27 @@ def main() -> int:
         text = str(payload.get("text", ""))
         voice_id = str(payload.get("voice_id", "")).strip()
         speed = payload.get("speed")
+        excitement = str(payload.get("excitement") or "normal").strip() or "normal"
 
         private = payload.get("private") is True
         try:
+            import inspect
+
             if voice_id:
                 voice.set_voice(voice_id)
             if speed is not None:
                 voice.set_speed(float(speed))
 
+            sig = inspect.signature(voice.render_to_wav_file)
+            accepts_excitement = "excitement" in sig.parameters or any(
+                p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
+            )
             with _quiet_private_render() if private else contextlib.nullcontext():
-                rendered = voice.render_to_wav_file(text)
+                rendered = (
+                    voice.render_to_wav_file(text, excitement=excitement)
+                    if accepts_excitement
+                    else voice.render_to_wav_file(text)
+                )
             active_voice_id, active_voice_name = voice.current_voice
             if rendered is None:
                 _emit(

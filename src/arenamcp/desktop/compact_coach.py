@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QPushButton,
     QSizePolicy,
+    QSlider,
     QStackedWidget,
     QTextEdit,
     QVBoxLayout,
@@ -875,6 +876,38 @@ class CompactCoachPanel(QWidget):
                 button.show()
             footer.addLayout(controls)
         self.autopilot_bug_btn.setText("Autoplay bug")
+
+        initial_vol = settings.clamp_voice_volume(
+            getattr(self._session, "voice_volume", None),
+            default=settings.clamp_voice_volume(self._settings.get("voice_volume", 1.0)),
+        )
+        initial_pct = max(0, min(100, int(round(initial_vol * 100))))
+        self.volume_control = QWidget()
+        self.volume_control.setObjectName("voiceVolumeRow")
+        vol_layout = QHBoxLayout(self.volume_control)
+        vol_layout.setContentsMargins(0, 1, 0, 1)
+        vol_layout.setSpacing(6)
+        vol_title = QLabel("Vol")
+        vol_title.setProperty("role", "muted")
+        self.volume_slider = QSlider(Qt.Horizontal)
+        self.volume_slider.setObjectName("voiceVolumeSlider")
+        self.volume_slider.setAccessibleName("Coach voice volume")
+        self.volume_slider.setToolTip("Coach voice volume")
+        self.volume_slider.setRange(0, 100)
+        self.volume_slider.setSingleStep(5)
+        self.volume_slider.setPageStep(10)
+        self.volume_slider.setMinimumWidth(64)
+        self.volume_slider.setValue(initial_pct)
+        self.volume_value_label = QLabel(f"{initial_pct}%")
+        self.volume_value_label.setFixedWidth(36)
+        self.volume_value_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        vol_layout.addWidget(vol_title)
+        vol_layout.addWidget(self.volume_slider, 1)
+        vol_layout.addWidget(self.volume_value_label)
+        self.volume_slider.valueChanged.connect(self._on_volume_slider_changed)
+        self.volume_slider.sliderReleased.connect(self._on_volume_slider_released)
+        footer.addWidget(self.volume_control)
+
         contact = QHBoxLayout()
         contact.addWidget(self.support_btn)
         self.support_btn.setProperty("variant", "flat")
@@ -1334,6 +1367,31 @@ class CompactCoachPanel(QWidget):
         bug_status = getattr(self._session, "last_autopilot_bug_status", None)
         if isinstance(bug_status, dict) and bug_status:
             self._on_autopilot_bug_status(bug_status)
+        volume_signal = getattr(self._session, "volumeChanged", None)
+        if volume_signal is not None:
+            volume_signal.connect(self._sync_volume_slider)
+
+    def _on_volume_slider_changed(self, value: int) -> None:
+        pct = max(0, min(100, int(value)))
+        self.volume_value_label.setText(f"{pct}%")
+        setter = getattr(self._session, "set_speech_volume", None)
+        if callable(setter):
+            setter(pct / 100.0, persist=not self.volume_slider.isSliderDown())
+
+    def _on_volume_slider_released(self) -> None:
+        pct = max(0, min(100, int(self.volume_slider.value())))
+        setter = getattr(self._session, "set_speech_volume", None)
+        if callable(setter):
+            setter(pct / 100.0, persist=True)
+
+    def _sync_volume_slider(self, volume: float) -> None:
+        pct = max(0, min(100, int(round(settings.clamp_voice_volume(volume) * 100))))
+        if hasattr(self, "volume_slider"):
+            self.volume_slider.blockSignals(True)
+            self.volume_slider.setValue(pct)
+            self.volume_slider.blockSignals(False)
+        if hasattr(self, "volume_value_label"):
+            self.volume_value_label.setText(f"{pct}%")
 
     def _on_startup_status(self, status: dict[str, Any]) -> None:
         now = time.monotonic()

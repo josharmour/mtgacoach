@@ -17,9 +17,22 @@ class PcmStreamPlayer(QObject):
         self.sink = self.device = None
         self.pending = bytearray()
         self.done = self.playing = False
+        self._volume = 1.0
         self.timer = QTimer(self)
         self.timer.setInterval(10)
         self.timer.timeout.connect(self._pump)
+
+    @property
+    def volume(self) -> float:
+        return self._volume
+
+    def set_volume(self, volume: float) -> float:
+        from arenamcp.settings import clamp_voice_volume
+
+        self._volume = clamp_voice_volume(volume, default=self._volume)
+        if self.sink is not None:
+            self.sink.setVolume(self._volume)
+        return self._volume
 
     def append(self, data):
         if len(self.pending) + len(data) > 20_000_000:
@@ -39,6 +52,7 @@ class PcmStreamPlayer(QObject):
                     raise RuntimeError("No compatible audio output")
                 self.sink = QAudioSink(output, format, self)
                 self.sink.setBufferSize(9600)
+                self.sink.setVolume(self._volume)
                 self.device = self.sink.start()
                 if self.device is None:
                     raise RuntimeError("Audio output unavailable")

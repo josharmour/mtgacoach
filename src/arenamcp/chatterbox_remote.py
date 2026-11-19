@@ -20,30 +20,90 @@ import urllib.request
 import wave
 from pathlib import Path
 
+import requests
+
 VOICES = ("atlas", "mira", "default", "server_default")
 MAX_AUDIO_BYTES = 20_000_000
 HOSTED_BASE = "https://api.mtgacoach.com/v1/chatterbox"
+_SESSION_LOCAL = threading.local()
 
 
-def _hosted_request(path, api_key, payload=None):
+def _http_session() -> requests.Session:
+    session = getattr(_SESSION_LOCAL, "session", None)
+    if session is None:
+        session = requests.Session()
+        _SESSION_LOCAL.session = session
+    return session
+
+
+def hosted_base_url(direct_url: str = "") -> str:
+    """Resolve and validate the Chatterbox base URL (optional direct LAN override)."""
+    raw = (direct_url or os.environ.get("ARENAMCP_CHATTERBOX_URL", "") or "").strip()
+    if not raw:
+        return HOSTED_BASE
+    try:
+        parsed = urllib.parse.urlsplit(raw.rstrip("/"))
+        port = parsed.port
+    except ValueError:
+        raise ChatterboxError(
+            "Use an HTTP(S) Chatterbox URL without embedded credentials or query parameters."
+        ) from None
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+        or (port is not None and not 1 <= port <= 65535)
+    ):
+        raise ChatterboxError(
+            "Use an HTTP(S) Chatterbox URL without embedded credentials or query parameters."
+        )
+    path = parsed.path.rstrip("/")
+    if path.endswith("/speech") or path.endswith("/voices"):
+        path = path[:-7]
+    if not path:
+        path = "/v1/chatterbox"
+    return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
+
+
+def _hosted_headers(api_key: str) -> dict[str, str]:
     if not isinstance(api_key, str) or not api_key.strip() or any(c in api_key for c in "\r\n"):
         raise ChatterboxError("Sign in to Coach to use Chatterbox.")
+    return {
+        "Authorization": "Bearer " + api_key.strip(),
+        "Content-Type": "application/json",
+        "User-Agent": "MTGA-Coach",
+    }
+
+
+def _hosted_request(path, api_key, payload=None, *, base_url=""):
     return urllib.request.Request(
-        HOSTED_BASE + path,
+        hosted_base_url(base_url) + path,
         data=json.dumps(payload).encode() if payload is not None else None,
-        headers={
-            "Authorization": "Bearer " + api_key.strip(),
-            "Content-Type": "application/json",
-            "User-Agent": "MTGA-Coach",
-        },
+        headers=_hosted_headers(api_key),
     )
 
 
-def hosted_voices(api_key, *, opener=None):
+def hosted_voices(api_key, *, opener=None, base_url=""):
     try:
-        request = _hosted_request("/voices", api_key)
-        with (opener or urllib.request.build_opener(_NoRedirect)).open(request, timeout=3) as response:
-            value = json.loads(response.read(16385))
+        headers = _hosted_headers(api_key)
+        resolved_base = hosted_base_url(base_url)
+        if opener is not None:
+            request = urllib.request.Request(resolved_base + "/voices", headers=headers)
+            with opener.open(request, timeout=3) as response:
+                value = json.loads(response.read(16385))
+        else:
+            response = _http_session().get(
+                resolved_base + "/voices",
+                headers=headers,
+                timeout=3,
+                allow_redirects=False,
+            )
+            if response.status_code != 200:
+                raise ValueError()
+            value = json.loads(response.content[:16385])
         voices = value.get("voices")
         if (
             not isinstance(voices, list)
@@ -61,6 +121,24 @@ def hosted_voices(api_key, *, opener=None):
         ) from None
 
 
+def _iter_aligned_pcm(chunks, check):
+    total, pending = 0, b""
+    for data in chunks:
+        check()
+        if not data:
+            continue
+        total += len(data)
+        if total > MAX_AUDIO_BYTES:
+            raise ChatterboxError("Speech server returned too much audio.")
+        pending += data
+        aligned = len(pending) // 2 * 2
+        if aligned:
+            yield pending[:aligned]
+            pending = pending[aligned:]
+    if not total or pending:
+        raise ChatterboxError("Speech server returned empty or incomplete audio.")
+
+
 def stream_hosted(
     *,
     api_key,
@@ -71,8 +149,9 @@ def stream_hosted(
     opener=None,
     excitement="normal",
     energy=0.5,
+    base_url="",
 ):
-    """Yield aligned 24 kHz PCM immediately; no endpoint or speech-key override."""
+    """Yield aligned 24 kHz PCM immediately; optional direct URL override only via base_url/env."""
     if not text.strip() or len(text) > 600 or voice not in VOICES:
         raise ChatterboxError("Chatterbox requires 1–600 characters and an available voice.")
     if not math.isfinite(speed) or not 0.5 <= speed <= 2:
@@ -95,40 +174,73 @@ def stream_hosted(
     if voice != "server_default":
         payload["voice"] = voice
     check()
-    request = _hosted_request("/speech", api_key, payload)
-    total, pending = 0, b""
+    headers = _hosted_headers(api_key)
+    resolved_base = hosted_base_url(base_url)
+
+    if opener is not None:
+        request = urllib.request.Request(
+            resolved_base + "/speech",
+            data=json.dumps(payload).encode(),
+            headers=headers,
+        )
+        try:
+            with opener.open(request, timeout=6) as response:
+                if (
+                    response.headers.get_content_type() != "audio/pcm"
+                    or response.headers.get("X-Sample-Rate") != "24000"
+                ):
+                    raise ChatterboxError("Speech server returned an unsupported audio format.")
+                read = getattr(response, "read1", response.read)
+
+                def _urllib_reads():
+                    while True:
+                        check()
+                        data = read(9600)
+                        if not data:
+                            break
+                        yield data
+
+                yield from _iter_aligned_pcm(_urllib_reads(), check)
+        except ChatterboxError:
+            raise
+        except urllib.error.HTTPError as error:
+            if error.code in (401, 403):
+                raise ChatterboxError("Sign in with an active Coach key to use Chatterbox.") from None
+            if error.code in (429, 503):
+                raise ChatterboxError("Chatterbox is busy. Try again shortly.") from None
+            raise ChatterboxError("Chatterbox request failed.") from None
+        except Exception:
+            raise ChatterboxError("Chatterbox connection interrupted.") from None
+        return
+
     try:
-        with (opener or urllib.request.build_opener(_NoRedirect)).open(request, timeout=6) as response:
-            if (
-                response.headers.get_content_type() != "audio/pcm"
-                or response.headers.get("X-Sample-Rate") != "24000"
-            ):
+        with _http_session().post(
+            resolved_base + "/speech",
+            headers=headers,
+            json=payload,
+            timeout=(4, 6),
+            stream=True,
+            allow_redirects=False,
+        ) as response:
+            if response.status_code in (401, 403):
+                raise ChatterboxError("Sign in with an active Coach key to use Chatterbox.")
+            if response.status_code in (429, 503):
+                raise ChatterboxError("Chatterbox is busy. Try again shortly.")
+            if response.status_code >= 300:
+                raise ChatterboxError("Chatterbox request failed.")
+            content_type = (response.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+            if content_type != "audio/pcm" or response.headers.get("X-Sample-Rate") != "24000":
                 raise ChatterboxError("Speech server returned an unsupported audio format.")
-            read = getattr(response, "read1", response.read)
-            while True:
-                check()
-                data = read(9600)
-                check()
-                if not data:
-                    break
-                total += len(data)
-                if total > MAX_AUDIO_BYTES:
-                    raise ChatterboxError("Speech server returned too much audio.")
-                pending += data
-                aligned = len(pending) // 2 * 2
-                if aligned:
-                    yield pending[:aligned]
-                    pending = pending[aligned:]
-            if not total or pending:
-                raise ChatterboxError("Speech server returned empty or incomplete audio.")
+
+            def _session_reads():
+                for chunk in response.iter_content(chunk_size=9600):
+                    check()
+                    if chunk:
+                        yield chunk
+
+            yield from _iter_aligned_pcm(_session_reads(), check)
     except ChatterboxError:
         raise
-    except urllib.error.HTTPError as error:
-        if error.code in (401, 403):
-            raise ChatterboxError("Sign in with an active Coach key to use Chatterbox.") from None
-        if error.code in (429, 503):
-            raise ChatterboxError("Chatterbox is busy. Try again shortly.") from None
-        raise ChatterboxError("Chatterbox request failed.") from None
     except Exception:
         raise ChatterboxError("Chatterbox connection interrupted.") from None
 

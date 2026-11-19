@@ -39,6 +39,63 @@ def kokoro_delivery(text, speed, excitement):
     return text, max(0.5, min(2.0, speed * cadence))
 
 
+_ELECTRIC_CUES = (
+    "lethal",
+    "for the win",
+    "win the game",
+    "wins the game",
+    "swing all",
+    "attack all",
+    "alpha strike",
+)
+_TENSE_CUES = (
+    "watch out",
+    "be careful",
+    "careful",
+    "must block",
+    "have to block",
+    "need to block",
+    "must answer",
+    "counterspell",
+    "hold up",
+    "open mana",
+    "danger",
+    "warning",
+    "don't block",
+    "do not block",
+    "don't attack",
+    "do not attack",
+)
+_CALM_CUES = (
+    "no attacks",
+    "no blocks",
+    "easy keep",
+    "clear keep",
+    "pass the turn",
+    "pass turn",
+    "nothing to do",
+    "end step",
+)
+
+
+def infer_advice_excitement(text: str) -> str:
+    """Classify coach advice urgency into a delivery excitement level.
+
+    Returns one of ``"calm"``, ``"normal"``, ``"tense"``, or ``"electric"``.
+    """
+    cleaned = str(text or "").strip()
+    if not cleaned:
+        return "normal"
+    lowered = cleaned.lower()
+    if "!" in cleaned or any(cue in lowered for cue in _ELECTRIC_CUES):
+        return "electric"
+    if any(cue in lowered for cue in _TENSE_CUES):
+        return "tense"
+    if any(cue in lowered for cue in _CALM_CUES):
+        return "calm"
+    return "normal"
+
+
 def speech_delivery(item, observation, persona="technical"):
     level = item.excitement
     if level is None and item.category == SpeechCategory.COMMENTARY and observation is not None:
