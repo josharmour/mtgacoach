@@ -102,6 +102,7 @@ class _Model:
         }
         self.high_delay = high_delay
         self.efforts: list = []
+        self.systems: list[str] = []
         self.prompts: list[str] = []
         self.lock = threading.Lock()
 
@@ -111,6 +112,7 @@ class _Model:
         effort = kwargs.get("reasoning_effort")
         with self.lock:
             self.efforts.append(effort)
+            self.systems.append(system)
             self.prompts.append(user)
             queue = self.answers[effort]
             answer = queue.pop(0) if len(queue) > 1 else queue[0]
@@ -705,7 +707,7 @@ def test_other_plays_are_still_asked_about_and_the_prompt_says_why_the_burn_wait
     ["prowess on board", "a kill", "lethal", "their spell on the stack"],
 )
 def test_burn_with_a_use_now_is_not_held(case):
-    ours, theirs, stack, life = (), (), None, 12
+    ours, theirs, stack, life = (), (), [], 12
     if case == "prowess on board":
         ours = [_card(296, "Slickshot Show-Off", ME)]
     elif case == "a kill":

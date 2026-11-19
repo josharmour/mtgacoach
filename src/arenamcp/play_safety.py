@@ -317,6 +317,52 @@ def _uncast_planned_casts(raw_casts: list[str], state: dict, local: Any) -> list
     return uncast
 
 
+_STACK_INTERACTION_RE = re.compile(
+    r"\b(?:counter target|copy target|choose new targets"
+    r"|target(?: [^.\n]*){0,4}\bspells?\b"
+    r"|exile (?:all|each) (?:other )?spells?\b"
+    r"|return target(?: [^.\n]*){0,4}\bspells?\b)",
+    re.IGNORECASE,
+)
+_OWN_STACK_SYNC_ACTIVATION_RE = re.compile(
+    r"\b(?:becomes? (?:a|an) [^.\n]*\bcreature\b"
+    r"|create\b[^.\n]*\btokens?\b"
+    r"|crew\b|saddle\b"
+    r"|untap\b|hexproof\b|indestructible\b|protection\b"
+    r"|phase[sd]? out\b|shroud\b|regenerate\b)",
+    re.IGNORECASE,
+)
+
+
+def _interacts_with_stack_spell(card: dict, effect_text: str = "") -> bool:
+    """Whether a spell or activation intentionally targets/alters spells on the stack."""
+    raw = effect_text or str(card.get("oracle_text") or "")
+    cleaned = re.sub(r"<[^>]*>", "", raw)
+    return bool(_STACK_INTERACTION_RE.search(cleaned))
+
+
+def _offered_ability_from_option(card: dict, option: Any) -> tuple[str, str]:
+    meta = getattr(option, "meta", None) or {}
+    label = str(getattr(option, "label", "") or "")
+    selected = re.search(r"\[([^\[\]]+)\]$", label)
+    ability_text = str(meta.get("ability_text") or (selected[1] if selected else "")).strip()
+    if not ability_text and ":" in label:
+        paren = re.search(r"\(([^()]+\{[^()]+\}[^()]*:[^()]+)\)\s*$", label)
+        if paren:
+            ability_text = paren[1].strip()
+    return _offered_ability(card, {**meta, "ability_text": ability_text})
+
+
+def _activation_spends_mana(cost: str) -> bool:
+    """True when an activation cost requires spending at least one non-zero mana or {X}."""
+    norm = _normalize_mana_symbols(re.sub(r"<[^>]*>", "", str(cost or ""))).strip()
+    if not norm:
+        return False
+    if "{x}" in norm.lower():
+        return True
+    return mana_cost_to_cmc(norm) > 0
+
+
 def own_stack_reserved_option(
     option: Any,
     card: dict,
@@ -327,6 +373,8 @@ def own_stack_reserved_option(
     step_source_active: bool = False,
 ) -> str:
     """Return a non-empty hold reason when ``option`` should wait for our own stack to resolve."""
+    from arenamcp.burn_timing import damage_only, face_damage, instant_speed, their_life
+    from arenamcp.decision_memory import _TURN_STEPS, turn_window
     from arenamcp.target_effects import (
         creature_aura_scope,
         enchant_effect_text,
@@ -337,7 +385,11 @@ def own_stack_reserved_option(
     if not isinstance(state, dict) or not isinstance(card, dict):
         return ""
     meta = getattr(option, "meta", None) or {}
-    if meta.get("actionType") != "ActionType_Cast":
+    action_type = meta.get("actionType")
+    if (
+        action_type not in ("ActionType_Cast", "ActionType_Activate")
+        or getattr(option, "payable", None) is False
+    ):
         return ""
     local = _local_seat(state)
     stack = state.get("stack") or []
@@ -348,44 +400,76 @@ def own_stack_reserved_option(
         for obj in stack
     ):
         return ""
-    turn = state.get("turn") or {}
-    phase = str(turn.get("phase") or "").lower()
-    step = str(turn.get("step") or "").lower()
-    if "combat" in phase or (
-        "main" not in phase and any(tok in step for tok in ("combat", "attack", "block", "damage"))
-    ):
-        return ""
     if any(
         isinstance(c, dict) and (c.get("is_attacking") or c.get("is_blocking"))
         for c in state.get("battlefield") or []
     ):
         return ""
+    turn = state.get("turn") or {}
+    phase = str(turn.get("phase") or "").lower()
+    step = str(turn.get("step") or "").lower()
+    window = turn_window(state)
+    own_resolving_spell = any(str(obj.get("object_kind") or "").upper() != "ABILITY" for obj in stack)
+    in_empty_begin_combat = window == _TURN_STEPS.index("begincombat") and own_resolving_spell
+    if not in_empty_begin_combat and (
+        "combat" in phase
+        or ("main" not in phase and any(tok in step for tok in ("combat", "attack", "block", "damage")))
+    ):
+        return ""
 
     card_name = str(card.get("name") or "").strip()
-    hold_text, raw_casts = _extract_plan_step_details(
-        plan_step, plan_text, state, step_source_active=step_source_active
-    )
-    if card_name and hold_text:
-        uncast = _uncast_planned_casts(raw_casts, state, local)
-        if card_held_by_plan(card_name, hold_text, planned_casts=uncast):
-            return f"held by game plan ({card_name})"
-
-    if (
-        turn.get("active_player") == local
-        and "main" in phase
-        and any(
-            resolves_to_creature(obj) and str(obj.get("object_kind") or "").upper() != "ABILITY"
-            for obj in stack
+    if action_type == "ActionType_Cast":
+        hold_text, raw_casts = _extract_plan_step_details(
+            plan_step, plan_text, state, step_source_active=step_source_active
         )
-    ):
-        scope = creature_aura_scope(card)
-        oracle = str(card.get("oracle_text") or "")
-        if scope == "self" or (
-            scope == "either"
-            and target_effect_is_harmful(enchant_effect_text("Enchant creature", oracle)) is False
-        ):
-            return "waiting for our creature spell on stack to resolve before casting beneficial Aura"
+        if card_name and hold_text:
+            uncast = _uncast_planned_casts(raw_casts, state, local)
+            if card_held_by_plan(card_name, hold_text, planned_casts=uncast):
+                return f"held by game plan ({card_name})"
 
+    if not own_resolving_spell:
+        return ""
+    in_own_stack_window = "main" in phase or in_empty_begin_combat or "end" in phase or "end" in step
+    if not in_own_stack_window:
+        return ""
+
+    if action_type == "ActionType_Cast":
+        if _interacts_with_stack_spell(card):
+            return ""
+        if (
+            turn.get("active_player") == local
+            and ("main" in phase or in_empty_begin_combat)
+            and any(
+                resolves_to_creature(obj) and str(obj.get("object_kind") or "").upper() != "ABILITY"
+                for obj in stack
+            )
+        ):
+            scope = creature_aura_scope(card)
+            oracle = str(card.get("oracle_text") or "")
+            if scope == "self" or (
+                scope == "either"
+                and target_effect_is_harmful(enchant_effect_text("Enchant creature", oracle)) is False
+            ):
+                return "waiting for our creature spell on stack to resolve before casting beneficial Aura"
+        if instant_speed(card) and damage_only(card, state):
+            life = their_life(state)
+            if life is not None and face_damage(card) >= life:
+                return ""
+            return "waiting for our spell on stack to resolve before casting damage-only instant"
+        return ""
+
+    cost, effect = _offered_ability_from_option(card, option)
+    if not cost or not effect:
+        return ""
+    clean_effect = re.sub(r"<[^>]*>", "", effect)
+    if re.search(r"^\s*add\b", clean_effect, re.IGNORECASE):
+        return ""
+    if _interacts_with_stack_spell(card, clean_effect):
+        return ""
+    if _OWN_STACK_SYNC_ACTIVATION_RE.search(clean_effect):
+        return ""
+    if _activation_spends_mana(cost):
+        return "waiting for our spell on stack to resolve before spending mana on side activation"
     return ""
 
 
@@ -2356,6 +2440,416 @@ def empty_team_activation(option, state: dict) -> bool:
         ):
             return False
     return True
+
+
+_MANA_ONLY_COST_RE = re.compile(
+    r"(?:\{(?:\d+|[WUBRGCSX]|(?:2|[WUBRG])/[WUBRG])\})+",
+    re.IGNORECASE,
+)
+_NON_STAT_EFFECT_RE = re.compile(
+    r"\b(?:target|another|each|gains?|has|have|loses?|draw|scry|surveil|damage|token|exile|"
+    r"destroy|sacrifice|tap|untap|mill|discard|return|search|copy|life|flying|trample|"
+    r"first strike|double strike|deathtouch|lifelink|menace|haste|vigilance|hexproof|"
+    r"indestructible|reach|shroud|and|then)\b",
+    re.IGNORECASE,
+)
+_POWER_DIES_RE = re.compile(
+    r"\bdie[sd]?\b[^.\n]*\bpower\b|\bpower\b[^.\n]*\bdie[sd]?\b|\bequal to (?:its|that creature's) power\b",
+    re.IGNORECASE,
+)
+_SELF_WORD_COUNTS = {"a": 1, "an": 1, "one": 1, "two": 2, "three": 3}
+
+
+def _mana_only_activation_cost(cost: str) -> str | None:
+    """Normalized mana cost string when ``cost`` spends only mana (>0 or {X}), else None."""
+    norm = _normalize_mana_symbols(re.sub(r"<[^>]*>", "", str(cost or ""))).strip()
+    cleaned = re.sub(r"[\s,]+", "", norm)
+    if not cleaned or cleaned == "{0}":
+        return None
+    if not _MANA_ONLY_COST_RE.fullmatch(cleaned):
+        return None
+    return cleaned
+
+
+def _pure_self_stat_pump_delta(effect: str, card_name: str = "") -> tuple[int, int] | None:
+    """(dp, dt) when ``effect`` solely buffs this permanent's power/toughness, else None."""
+    text = re.sub(r"\([^)]*\)", " ", re.sub(r"<[^>]*>", "", str(effect or "")))
+    text = " ".join(text.split())
+    if not text or _SORCERY_SPEED.search(text):
+        return None
+    sentences = [s.strip(" .") for s in text.split(".") if s.strip(" .")]
+    main_clauses = [
+        s
+        for s in sentences
+        if not re.match(r"^(?:activate only|do this only|play this ability only)\b", s, re.I)
+    ]
+    if len(main_clauses) != 1:
+        return None
+    main = main_clauses[0]
+    if _NON_STAT_EFFECT_RE.search(main):
+        return None
+    name_alt = f"|{re.escape(card_name.strip())}" if card_name and card_name.strip() else ""
+    self_subj = (
+        rf"(?:this(?:\s+(?:creature|permanent|token|(?!spell\b|player\b|turn\b|ability\b|card\b)[a-z]+))?"
+        rf"|~|cardname{name_alt})"
+    )
+    eot = re.fullmatch(rf"{self_subj} gets? \+(?P<dp>\d+)/\+(?P<dt>\d+) until end of turn", main, re.I)
+    if eot:
+        dp, dt = int(eot.group("dp")), int(eot.group("dt"))
+        return (dp, dt) if (dp > 0 or dt > 0) else None
+    ctr = re.fullmatch(rf"put (?P<n>a|an|one|two|three|\d+) \+1/\+1 counters? on {self_subj}", main, re.I)
+    if ctr:
+        token = ctr.group("n").lower()
+        count = _SELF_WORD_COUNTS.get(token) if token in _SELF_WORD_COUNTS else int(token)
+        return (count, count) if count > 0 else None
+    return None
+
+
+def _stack_targets_set(entry: dict) -> set[int]:
+    raw = entry.get("targeting") or entry.get("target_ids") or ()
+    out: set[int] = set()
+    for val in raw:
+        try:
+            out.add(int(val))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _safe_int(val: Any) -> int | None:
+    try:
+        return int(val)
+    except (TypeError, ValueError):
+        return None
+
+
+def _stack_removal_threatens_card(card: dict, state: dict) -> tuple[bool, bool]:
+    """Return ``(targeted_or_swept, guaranteed_lethal_or_hard_removal)`` from opposing stack entries."""
+    local = _local_seat(state)
+    card_iid = _safe_int(card.get("instance_id"))
+    if local is None or card_iid is None:
+        return False, False
+    stack = [s for s in state.get("stack") or [] if isinstance(s, dict)]
+    if not stack:
+        return False, False
+    indestructible = has_combat_keyword(card, "indestructible")
+    any_threat = False
+    lethal_or_hard = False
+    for entry in stack:
+        if (entry.get("controller_seat_id") or entry.get("owner_seat_id")) == local:
+            continue
+        targets = _stack_targets_set(entry)
+        entry_iid = _safe_int(entry.get("instance_id"))
+        contested = any(
+            other is not entry
+            and (other.get("controller_seat_id") or other.get("owner_seat_id")) == local
+            and (
+                card_iid in _stack_targets_set(other)
+                or (entry_iid is not None and entry_iid in _stack_targets_set(other))
+            )
+            for other in stack
+        )
+        txt = re.sub(r"<[^>]*>", "", str(entry.get("oracle_text") or ""))
+        mass_destroy = bool(re.search(r"\bdestroy all creatures\b", txt, re.IGNORECASE))
+        mass_exile = bool(re.search(r"\bexile all creatures\b", txt, re.IGNORECASE))
+        parsed = damage_effect(entry, state, kicked=False)
+        direct_target = card_iid in targets
+        swept = parsed is not None and parsed[1] == "each"
+        if not (direct_target or mass_destroy or mass_exile or swept):
+            continue
+        any_threat = True
+        if contested or re.search(r"\bpower\b", txt, re.IGNORECASE):
+            continue
+        if mass_exile or (mass_destroy and not indestructible):
+            lethal_or_hard = True
+            continue
+        if parsed is not None:
+            dmg, scope = parsed
+            if direct_target or (scope == "each" and not _damage_protected(card, targeted=False)):
+                req = lethal_damage(card)
+                if req is not None and dmg >= req:
+                    lethal_or_hard = True
+                    continue
+        if direct_target:
+            if re.search(r"\bexile target\b", txt, re.IGNORECASE) or re.search(
+                r"\breturn target\b[^.\n]*\bto (?:its|their) owner['\u2019]s (?:hand|library)\b",
+                txt,
+                re.IGNORECASE,
+            ):
+                lethal_or_hard = True
+                continue
+            if not indestructible and re.search(r"\bdestroy target\b", txt, re.IGNORECASE):
+                lethal_or_hard = True
+                continue
+            shrink = temporary_shrink(_cast_effects(entry))
+            if shrink is not None:
+                chk_card = (
+                    {**card, "toughness": card["modified_toughness"]}
+                    if type(card.get("modified_toughness")) is int
+                    else card
+                )
+                if shrink_would_kill(chk_card, shrink[1]) is True:
+                    lethal_or_hard = True
+    return any_threat, lethal_or_hard
+
+
+def pre_block_pump_hold(option: Any, card: dict, state: dict) -> str:
+    """Wait until Declare Blockers before activating a mana-only pure self-pump in Declare Attackers."""
+    from arenamcp.decision_memory import _TURN_STEPS, turn_window
+
+    if not isinstance(state, dict) or not isinstance(card, dict):
+        return ""
+    meta = getattr(option, "meta", None) or {}
+    if meta.get("actionType") != "ActionType_Activate" or getattr(option, "payable", None) is False:
+        return ""
+    if turn_window(state) != _TURN_STEPS.index("declareattack"):
+        return ""
+    local = _local_seat(state)
+    our_turn = local is not None and (state.get("turn") or {}).get("active_player") == local
+    if not (card.get("is_attacking") or (not our_turn and is_creature_now(card))):
+        return ""
+    if local is not None:
+        player = next(
+            (p for p in state.get("players") or [] if isinstance(p, dict) and p.get("seat_id") == local),
+            None,
+        )
+        pool = (player or {}).get("mana_pool") or {}
+        if isinstance(pool, dict) and any(type(v) is int and v > 0 for v in pool.values()):
+            # Floating mana empties at end of Declare Attackers (CR 500.4); spend before it evaporates.
+            return ""
+    cost, effect = _offered_ability_from_option(card, option)
+    if not _mana_only_activation_cost(cost):
+        return ""
+    delta = _pure_self_stat_pump_delta(effect, str(card.get("name") or ""))
+    if delta is None:
+        return ""
+    if delta[1] > 0 and _stack_removal_threatens_card(card, state)[0]:
+        return ""
+    name = str(card.get("name") or "creature")
+    return f"wait until Declare Blockers before activating {name}'s mana-only pump"
+
+
+def _blockers_for_attacker(card: dict, state: dict) -> list[dict]:
+    """Return known blocking creatures for ``card``, failing closed when multi-attacker blocks are unmapped."""
+    card_iid = _safe_int(card.get("instance_id"))
+    if card_iid is None:
+        return []
+    opp_creatures = _opposing_creatures(state)
+    opp_by_id: dict[int, dict] = {}
+    for perm in opp_creatures:
+        if (pid := _safe_int(perm.get("instance_id"))) is not None:
+            opp_by_id[pid] = perm
+
+    raw_ids = card.get("blocked_by_ids")
+    if raw_ids:
+        assigned = []
+        for bid in raw_ids:
+            bid_int = _safe_int(bid)
+            blk = opp_by_id.get(bid_int) if bid_int is not None else None
+            if blk is None:
+                return []
+            assigned.append(blk)
+        return assigned
+
+    block_info = state.get("block_info")
+    if isinstance(block_info, dict) and block_info:
+        attacker_val = block_info.get(str(card_iid))
+        if attacker_val is None:
+            attacker_val = block_info.get(card_iid)
+        if isinstance(attacker_val, (list, tuple)) and attacker_val:
+            assigned = []
+            for bid in attacker_val:
+                bid_int = _safe_int(bid)
+                blk = opp_by_id.get(bid_int) if bid_int is not None else None
+                if blk is None:
+                    return []
+                assigned.append(blk)
+            return assigned
+        # Windows Plugin.GameState.cs keys block_info as blocker_id -> [attacker_ids].
+        if any(_safe_int(k) in opp_by_id for k in block_info):
+            assigned = []
+            for k, vals in block_info.items():
+                bid = _safe_int(k)
+                if bid in opp_by_id and isinstance(vals, (list, tuple)):
+                    if card_iid in {_safe_int(v) for v in vals}:
+                        assigned.append(opp_by_id[bid])
+            return assigned
+        return []
+
+    local = _local_seat(state)
+    possible_blocked_attackers = sum(
+        1
+        for perm in state.get("battlefield") or []
+        if isinstance(perm, dict)
+        and local is not None
+        and (perm.get("controller_seat_id") or perm.get("owner_seat_id")) == local
+        and perm.get("is_attacking")
+        and perm.get("is_blocked") is not False
+    )
+    if possible_blocked_attackers != 1:
+        return []
+    return [b for b in opp_creatures if b.get("is_blocking")]
+
+
+def _unbounded_combat_mana(state: dict, ours: list[dict], *, main_phase: bool) -> bool:
+    """True when our battlefield has non-land mana sources or multi-mana lands not safely bounded."""
+    for perm in ours:
+        if not isinstance(perm, dict) or perm.get("is_phased_out"):
+            continue
+        text = re.sub(r"<[^>]*>", "", str(perm.get("oracle_text") or ""))
+        if re.search(r"\bactivated abilities\b[^.\n]*\bcost\b[^.\n]*\bless\b", text, re.I):
+            return True
+        if main_phase or perm.get("is_tapped"):
+            continue
+        types = " ".join(str(t) for t in (perm.get("card_types") or perm.get("types") or [])).lower()
+        types += " " + str(perm.get("type_line") or "").lower()
+        is_land = "land" in types
+        if not is_land and (": add" in text.lower() or "treasure" in types):
+            return True
+        if (
+            is_land
+            and text
+            and (
+                re.search(
+                    r"\b(?:for each|twice|additional)\b|\badd (?:two|three|four|five|\d+) mana\b",
+                    text,
+                    re.I,
+                )
+                or (len(re.findall(r"\{[WUBRGCM\d]+\}", text, re.I)) > 1 and " or " not in text.lower())
+            )
+        ):
+            return True
+    return False
+
+
+def _combat_mana_available(state: dict, local: int | None, *, main_phase: bool) -> int | None:
+    from arenamcp.decision_memory import mana_available
+
+    have = mana_available(state)
+    if type(have) is not int:
+        return None
+    if not main_phase and local is not None:
+        player = next(
+            (p for p in state.get("players") or [] if isinstance(p, dict) and p.get("seat_id") == local),
+            None,
+        )
+        pool = (player or {}).get("mana_pool") or {}
+        if isinstance(pool, dict):
+            have += sum(v for v in pool.values() if type(v) is int and v > 0)
+    return have
+
+
+def dead_power_pump_activation(option: Any, card: dict, state: dict) -> str:
+    """Hold a pure +X/+0 mana-only pump that cannot save the creature or kill any blocker."""
+    from arenamcp.decision_memory import _TURN_STEPS, turn_window
+
+    if not isinstance(state, dict) or not isinstance(card, dict):
+        return ""
+    meta = getattr(option, "meta", None) or {}
+    if meta.get("actionType") != "ActionType_Activate" or getattr(option, "payable", None) is False:
+        return ""
+    if not is_creature_now(card):
+        return ""
+    cost, effect = _offered_ability_from_option(card, option)
+    mana_cost = _mana_only_activation_cost(cost)
+    if not mana_cost:
+        return ""
+    delta = _pure_self_stat_pump_delta(effect, str(card.get("name") or ""))
+    if delta is None:
+        return ""
+    dp, dt = delta
+    if dp <= 0 or dt > 0:
+        return ""
+    if any(has_combat_keyword(card, kw) for kw in ("trample", "lifelink", "deathtouch")):
+        return ""
+    if _POWER_DIES_RE.search(str(card.get("oracle_text") or "")):
+        return ""
+    local = _local_seat(state)
+    if local is None:
+        return ""
+    ours = [
+        p
+        for p in state.get("battlefield") or []
+        if isinstance(p, dict) and (p.get("controller_seat_id") or p.get("owner_seat_id")) == local
+    ]
+    for perm in ours:
+        if _POWER_DIES_RE.search(str(perm.get("oracle_text") or "")):
+            return ""
+    for held in state.get("hand") or []:
+        if isinstance(held, dict) and re.search(
+            r"\bequal to\b[^.\n]*\bpower\b", str(held.get("oracle_text") or ""), re.IGNORECASE
+        ):
+            return ""
+
+    name = str(card.get("name") or "creature")
+    if _stack_removal_threatens_card(card, state)[1]:
+        return f"{name} faces lethal removal on stack; +{dp}/+0 cannot save it"
+
+    if not (
+        card.get("is_attacking")
+        and card.get("is_blocked") is True
+        and turn_window(state) == _TURN_STEPS.index("declareblock")
+    ):
+        return ""
+    for perm in ours:
+        ptxt = str(perm.get("oracle_text") or "").lower()
+        if "combat damage" in ptxt and any(w in ptxt for w in ("twice", "double", "additional", "toughness")):
+            return ""
+    blockers = _blockers_for_attacker(card, state)
+    if not blockers:
+        return ""
+
+    phase = str((state.get("turn") or {}).get("phase") or "").lower()
+    main_phase = "main" in phase
+    if "activate only once each turn" in effect.lower():
+        max_acts = 1
+    else:
+        if "{x}" in mana_cost.lower():
+            return ""
+        per_cost = mana_cost_to_cmc(mana_cost)
+        if per_cost <= 0 or _unbounded_combat_mana(state, ours, main_phase=main_phase):
+            return ""
+        have = _combat_mana_available(state, local, main_phase=main_phase)
+        if have is None or have < per_cost:
+            return ""
+        max_acts = have // per_cost
+
+    cur_power = card.get("modified_power") if type(card.get("modified_power")) is int else card.get("power")
+    if type(cur_power) is not int:
+        return ""
+    has_ds = has_combat_keyword(card, "double strike")
+    mult = 2 if has_ds else 1
+    cur_first = max(0, cur_power)
+    max_first = max(0, cur_power + dp * max_acts)
+    cur_dmg = cur_first * mult
+    max_dmg = max_first * mult
+
+    rem_costs: list[int] = []
+    for blk in blockers:
+        if has_combat_keyword(blk, "indestructible"):
+            continue
+        req = lethal_damage(blk)
+        if req is None:
+            return ""
+        rem_costs.append(req)
+    rem_costs.sort()
+
+    def _max_killed(budget: int) -> int:
+        spent, kills = 0, 0
+        for req in rem_costs:
+            if spent + req <= budget:
+                spent += req
+                kills += 1
+            else:
+                break
+        return kills
+
+    if _max_killed(max_dmg) > _max_killed(cur_dmg):
+        return ""
+    if has_ds and _max_killed(max_first) > _max_killed(cur_first):
+        # First-strike damage can kill a blocker before it deals regular combat damage back.
+        return ""
+    return f"{name} is blocked and +{dp}/+0 (up to +{dp * max_acts}/+0) kills no additional blocker"
 
 
 def _cast_effects(card: dict) -> list[str]:

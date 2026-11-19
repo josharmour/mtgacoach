@@ -525,7 +525,13 @@ def test_nn1_kv_cache_prefix_invariance_across_posture_transitions(monkeypatch):
 
     systems = [c["system"] for c in backend.calls]
     assert len(set(systems)) == 1
-    assert systems[0] == shared_match_system_prompt(s_tapped)
+    prepared = prepare_match_context(deepcopy(s_tapped), compact_decision=True, source_ids_complete=True)
+    head, rules = split_deck_reference(prepared["deck_reference_stable"])
+    assert systems[0] == shared_match_system_prompt(
+        s_tapped,
+        reference_head=head,
+        playbook_core="DECK STRATEGY:\nCurve out with bears and pressure life total.",
+    )
     assert ActionPlanner._decision_system_prompt() == ActionPlanner._decision_system_prompt()
 
     users = [c["user"] for c in backend.calls]
@@ -534,13 +540,11 @@ def test_nn1_kv_cache_prefix_invariance_across_posture_transitions(monkeypatch):
     assert "passed turn 4 with 4 open mana (2W/2U)" in users[2]
     assert "OPP POSTURE:" not in users[3]
 
-    # Leading KV-cache prefix through DECISION OUTPUT FORMAT stays byte-identical across all 4 calls.
+    # Leading KV-cache prefix in system stays byte-identical; user starts at RULES through DECISION OUTPUT FORMAT.
     prefixes = [u[: u.index("PENDING DECISION")] for u in users]
     assert len(set(prefixes)) == 1
-    prepared = prepare_match_context(deepcopy(s_tapped), compact_decision=True, source_ids_complete=True)
-    head, rules = split_deck_reference(prepared["deck_reference_stable"])
-    assert prefixes[0].startswith(head)
-    assert rules in prefixes[0]
+    assert head in systems[0]
+    assert prefixes[0].startswith(rules)
     reset_seen_rules()
 
 
@@ -730,7 +734,11 @@ def test_turn_transition_pass_inference_moderate_sweeper_and_reform_prompt(monke
     mgr.observe(t5_main1)
     plan = mgr.maybe_reform(deepcopy(t5_main1))
     assert plan is not None
-    assert gp_be.calls[-1]["system"] == shared_match_system_prompt(t5_main1)
+    gp_prep = prepare_match_context(deepcopy(t5_main1), compact_decision=True, source_ids_complete=True)
+    gp_head, _ = split_deck_reference(gp_prep["deck_reference_stable"])
+    sys_msg = gp_be.calls[-1]["system"]
+    assert sys_msg.startswith(shared_match_system_prompt(t5_main1, reference_head=gp_head))
+    assert "DECK STRATEGY:" in sys_msg
     user_msg = gp_be.calls[-1]["user"]
     assert "OPP POSTURE: sweeper risk high" in user_msg
     assert "OPP CONSTRAINT: ahead on board" in user_msg

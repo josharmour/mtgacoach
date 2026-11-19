@@ -61,15 +61,20 @@ def state(monkeypatch):
     }
 
 
-def assert_full_context(prompt, *, library=True):
-    assert prompt.startswith("DECK REFERENCE")
+def assert_full_context(prompt, *, library=True, system=""):
+    combined = (system + "\n\n" + prompt) if system else prompt
+    if system:
+        assert "DECK REFERENCE" in system
+        assert prompt.startswith("RULES OF THE CARDS SEEN THIS GAME")
+    else:
+        assert prompt.startswith("DECK REFERENCE")
     # The whole deck is listed; rules are quoted for the card in hand, not the
     # library card (2026-10-10: 99 Brawl cards' rules cost ~7k tokens a call).
-    reference = prompt.split("MY LIBRARY", 1)[0]
+    reference = combined.split("MY LIBRARY", 1)[0]
     assert "1x Card 139 [grp:139]" in reference or "\n139 1x Card 139 " in reference
-    assert "Distinct rules for 100." in prompt
-    assert "Distinct rules for 139." not in prompt
-    remaining = prompt.split("MY LIBRARY", 1)[1]
+    assert "Distinct rules for 100." in combined
+    assert "Distinct rules for 139." not in combined
+    remaining = combined.split("MY LIBRARY", 1)[1]
     if library:
         assert "1x Card 139" in remaining
         assert "1x Card 100" not in remaining
@@ -94,18 +99,18 @@ def test_typed_and_legacy_prompts_share_complete_stable_deck(state):
         }
     )
     planner._llm_decision_options(decision, state)
-    first = backend.calls[-1][1]
-    assert_full_context(first, library=False)
+    sys_1, first = backend.calls[-1]
+    assert_full_context(first, library=False, system=sys_1)
     # The strategic policy rides in the system prompt; its tutor rules need a
     # library effect in play (situational_rules).
-    assert "A plan is conditional" in backend.calls[-1][0]
+    assert "A plan is conditional" in sys_1
     assert "For tutors" not in first
     changed = deepcopy(state)
     changed["players"][0]["life_total"] = 5
     changed["turn"]["turn_number"] = 5
     planner._llm_decision_options(decision, changed)
-    second = backend.calls[-1][1]
-    assert backend.calls[-1][0] == backend.calls[0][0]
+    sys_2, second = backend.calls[-1]
+    assert sys_2 == sys_1
     assert first.split("PENDING DECISION:")[0] == second.split("PENDING DECISION:")[0]
     assert first != second
     assert_full_context(
@@ -115,9 +120,9 @@ def test_typed_and_legacy_prompts_share_complete_stable_deck(state):
     scry = deepcopy(state)
     scry["hand"][0]["oracle_text"] = "Scry 2, then draw a card."
     planner._llm_decision_options(decision, scry)
-    third = backend.calls[-1][1]
-    assert_full_context(third)
-    assert backend.calls[-1][0] == backend.calls[0][0]
+    sys_3, third = backend.calls[-1]
+    assert_full_context(third, system=sys_3)
+    assert sys_3 == sys_1
     assert third.split("SITUATIONAL RULES:")[0] == first.split("PENDING DECISION:")[0]
     assert "For tutors" in third
 
@@ -147,7 +152,7 @@ def test_background_strategy_receives_all_draws_and_deck_rules(state):
     manager = GamePlanManager(backend)
     manager.seed("Build the engine, preserve interaction.")
     assert manager.maybe_reform(state) is not None
-    assert_full_context(backend.calls[-1][1])
+    assert_full_context(backend.calls[-1][1], system=backend.calls[-1][0])
 
 
 def test_win_plan_does_not_repeat_shared_deck_passed_by_hotkey(state):

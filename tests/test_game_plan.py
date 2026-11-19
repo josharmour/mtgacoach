@@ -232,8 +232,8 @@ def test_seed_and_prior_plan_are_available_for_adaptation():
     state = _state(turn=2)
     state["deck_reference"] = "DECK REFERENCE\n1x Example Commander | complete rules"
     mgr.maybe_reform(state)
-    assert be.requests[0][1].startswith(state["deck_reference"])
-    assert "Commander copies produce mana" in be.requests[0][1]
+    assert state["deck_reference"] in be.requests[0][0]
+    assert "Commander copies produce mana" in be.requests[0][0]
     # E5: an unchanged opponent turn keeps the plan; adaptation waits for a
     # real reason — here a switch condition the plan itself named (an
     # opponent life threshold, read from live state) starting to hold.
@@ -245,7 +245,11 @@ def test_seed_and_prior_plan_are_available_for_adaptation():
     from arenamcp.match_context import shared_match_system_prompt
 
     assert "develop commander engine" in be.requests[1][1]
-    assert be.requests[1][0] == shared_match_system_prompt(later)
+    assert be.requests[1][0] == shared_match_system_prompt(
+        later,
+        reference_head=later["deck_reference"],
+        playbook_core="DECK STRATEGY:\nCommander copies produce mana for large threats.",
+    )
     assert "Removal and tutoring are conditional" in be.requests[1][1]
     assert "Holding mana or passing is correct" in mgr.plan_text()
 
@@ -663,12 +667,15 @@ def test_compact_opening_uses_playbook_then_reuses_a_covered_turn():
     mgr = GamePlanManager(backend, separate_strategy_planning=True)
     mgr.seed("Use early creatures to enable the finishing attack.")
     opening = _state(turn=1)
-    expected_sys = shared_match_system_prompt(opening)
+    expected_sys = shared_match_system_prompt(
+        opening,
+        playbook_core="DECK STRATEGY:\nUse early creatures to enable the finishing attack.",
+    )
     plan = mgr.maybe_reform(opening)
     assert plan.step_for(3) and plan.switch_if
     assert backend.requests[0][0] == expected_sys
     assert LIVE_PLAN_INSTRUCTIONS in backend.requests[0][1]
-    assert "early creatures" in backend.requests[0][1]
+    assert "early creatures" in backend.requests[0][0]
     assert backend.requests[0][2]["reasoning_effort"] == "none"
     assert backend.caps == [2048]
     assert backend.requests[0][2]["response_format"] == {"type": "json_object"}

@@ -125,7 +125,8 @@ def test_plan_prompt_lists_candidate_lines_to_build_from(fixture, first_line):
     state = _with_catalog(getattr(S, fixture))
     GamePlanManager(backend).maybe_reform(state)
     system, user = backend.calls[0]
-    assert system == shared_match_system_prompt(state)
+    assert system.startswith(shared_match_system_prompt(state))
+    assert "DECK REFERENCE" in system
     instruction = (
         'When BOARD FACTS lists CANDIDATE LINES (a deterministic 2-turn search), build "turns" from one of '
         "them and keep its attack/hold posture unless you name a concrete card or combat reason."
@@ -147,28 +148,31 @@ def test_plan_prompt_without_the_search_only_mentions_candidate_lines_conditiona
     state = _with_catalog(S.G1_T12)
     GamePlanManager(backend).maybe_reform(state)
     system, user = backend.calls[0]
-    assert system == shared_match_system_prompt(state)
+    assert system.startswith(shared_match_system_prompt(state))
+    assert "DECK REFERENCE" in system
     assert "CANDIDATE LINES (2-turn search" not in user
     mentions = [line for line in user.splitlines() if "CANDIDATE LINES" in line]
     assert mentions and all(line.startswith("- When BOARD FACTS lists CANDIDATE LINES") for line in mentions)
 
 
 def test_plan_prompt_keeps_the_deck_and_playbook_ahead_of_the_board():
-    # Prefix caching: system prompt + deck reference + playbook are the same on every plan call.
+    # Prefix caching: system prompt + deck reference + playbook stay identical in system.
     playbook = "UG tempo: flyers and counters; Archive Arbiter is the top end."
+    systems = []
     users = []
     for fixture in (S.G1_T12, S.G1_T14):
         backend = _Backend(PLAN_REPLY)
         manager = GamePlanManager(backend)
         manager.seed(playbook)
         manager.maybe_reform(_with_catalog(fixture))
+        systems.append(backend.calls[0][0])
         users.append(backend.calls[0][1])
-    for user in users:
-        assert user.startswith("DECK REFERENCE")
-        head = user.index("DECK STRATEGY:\n" + playbook)
-        assert head < user.index("Heartstring Puller") < user.index("BOARD FACTS (deterministic")
-    stable = users[0][: users[0].index(playbook) + len(playbook)]
-    assert users[1].startswith(stable)
+    for system, user in zip(systems, users, strict=True):
+        assert "DECK REFERENCE" in system
+        head = system.index("DECK STRATEGY:\n" + playbook)
+        assert system.index("DECK REFERENCE") < head
+        assert user.index("Heartstring Puller") < user.index("BOARD FACTS (deterministic")
+    assert systems[0] == systems[1]
 
 
 # --- telemetry --------------------------------------------------------------------------

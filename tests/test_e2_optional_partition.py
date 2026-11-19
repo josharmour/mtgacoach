@@ -42,7 +42,8 @@ def test_optional_partition_failure_preserves_actual_prompt(monkeypatch, failure
     )
     assert planner._llm_decision_options(menu, _our_main()) == ["pass"]
     assert len(model.prompts) == 1
-    assert model.prompts[0].count(captured) == 1
+    assert model.systems[0].count(captured) == 1
+    assert (model.systems[0] + "\n" + model.prompts[0]).count(captured) == 1
     assert "PENDING DECISION: ActionsAvailable" in model.prompts[0]
     assert "pass: Pass" in model.prompts[0]
 

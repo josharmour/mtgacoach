@@ -158,12 +158,18 @@ def dynamic_strategic_policy(subjects: Iterable[str]) -> str:
     ).strip()
 
 
-def shared_match_system_prompt(state: dict | None = None) -> str:
+def shared_match_system_prompt(
+    state: dict | None = None,
+    *,
+    reference_head: str = "",
+    playbook_core: str = "",
+) -> str:
     """Match-immutable system prompt shared across ``decision.*`` and ``background.game_plan``."""
     from arenamcp.situational_rules import deck_subjects
 
     subjects = deck_subjects(state)
-    return strategic_policy(subjects) + "\n" + compose_rules(SHARED_TACTICAL_RULES_PARTS, subjects)
+    base = strategic_policy(subjects) + "\n" + compose_rules(SHARED_TACTICAL_RULES_PARTS, subjects)
+    return "\n\n".join(part for part in (base, reference_head, playbook_core) if part)
 
 
 def prepared_card(grp_id: int) -> dict[str, Any] | None:

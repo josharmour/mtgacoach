@@ -109,12 +109,15 @@ def test_stable_strategy_leads_the_typed_decision_prompt(state):
     planner = plan(backend)
     decision = build_pending_decision(PASS_DECISION)
     planner._llm_decision_options(decision, state)
+    system = backend.calls[-1][0]
     user = backend.calls[-1][1]
     head, tail = user.split("PENDING DECISION:", 1)
-    # The stable strategy text sits between the deck reference and the volatile
-    # window, so the prefix cache matches from the deck reference through it.
-    assert head.startswith("DECK REFERENCE")
-    assert WIN_ENGINE in head
+    # Match-immutable prefix (DECK REFERENCE + stable strategy) sits in system right
+    # ahead of the request_boundaries KV checkpoint; RULES begins user.
+    assert "DECK REFERENCE" in system
+    assert WIN_ENGINE in system
+    assert system.index("DECK REFERENCE") < system.index(WIN_ENGINE)
+    assert head.startswith("RULES OF THE CARDS SEEN THIS GAME")
     # The per-turn plan facts stay after the volatile window.
     assert ("STRATEGIC ROLE" in tail) or ("FACTS:" in tail)
 
@@ -154,7 +157,8 @@ def test_representative_prompt_prefix_measurement(state, capsys):
         f"user={total_chars} chars (~{total_chars // 4} tok), "
         f"stable prefix={head_chars} chars (~{head_chars // 4} tok, {share:.0%})"
     )
-    assert WIN_ENGINE in user[:head_chars]
+    assert WIN_ENGINE in system
+    assert "DECK REFERENCE" in system
     assert share >= 0.15
 
 

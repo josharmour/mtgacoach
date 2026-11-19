@@ -579,9 +579,13 @@ def _f5bc17dc_t4(phase="Phase_Ending", step="Step_End"):
 def test_f5bc17dc_the_end_step_release_never_reaches_the_reversal_check():
     model = _Model(_reply("pass", "Board unchanged; saving the single red mana for my curve-out next turn."))
     planner = _planner(model)
-    main = _f5bc17dc_t4("Phase_Main1", "")
-    menu = _menu(main, (223, True), (226, True), (227, True))
-    assert planner.plan_decision_options(menu, main) == ["pass"]  # their main 1: the model's pass
+    main1 = _f5bc17dc_t4("Phase_Main1", "")
+    menu = _menu(main1, (223, True), (226, True), (227, True))
+    assert planner.plan_decision_options(menu, main1) == ["pass"]  # their empty main 1: deterministic hold
+    assert len(model.efforts) == 0
+    main2 = _f5bc17dc_t4("Phase_Main2", "")
+    menu = _menu(main2, (223, True), (226, True), (227, True))
+    assert planner.plan_decision_options(menu, main2) == ["pass"]  # their main 2: the model's pass
     end = _f5bc17dc_t4()
     menu = _menu(end, (223, True), (226, True), (227, True))
     picked = planner.plan_decision_options(menu, end)
@@ -605,11 +609,11 @@ def test_an_instant_at_their_end_step_never_reverses_an_earlier_pass():
 
 
 def test_the_reversal_check_says_mana_is_never_saved_for_later():
-    # A reversal that does reach the model (their main 2 here) states the rule the 14:02:30 re-ask broke.
+    # A reversal that does reach the model (their declare-attackers -> main 2 here) states the rule the 14:02:30 re-ask broke.
     model = _Model([_reply("pass", "Saving the red mana for next turn."), _reply("idx:0", "Shock face.")])
     planner = _planner(model)
-    main = _f5bc17dc_t4("Phase_Main1", "")
-    planner.plan_decision_options(_menu(main, (226, True)), main)
+    combat = _f5bc17dc_t4("Phase_Combat", "Step_DeclareAttack")
+    planner.plan_decision_options(_menu(combat, (226, True)), combat)
     later = _f5bc17dc_t4("Phase_Main2", "")
     planner.plan_decision_options(_menu(later, (226, True)), later)
     assert any(

@@ -926,7 +926,19 @@ class AutoQueueNavigator:
             else:
                 self.paused_reason = ""
                 self._retry_at = 0.0
-                self._stage = "resuming" if stage in ("", "off", "waiting_for_match_end", "paused") else stage
+                if self._recent_mode and not self._queue_started:
+                    self._progress_at = now
+                self._stage = (
+                    "resuming"
+                    if stage in ("", "off", "waiting_for_match_end", "paused")
+                    or (
+                        self._recent_mode
+                        and not self._queue_started
+                        and not self._idle_grind
+                        and stage == "home"
+                    )
+                    else stage
+                )
                 self._status("Engine reloaded; continuing navigation for the finished match")
             return True
 
@@ -1044,6 +1056,7 @@ class AutoQueueNavigator:
         self.paused_reason = ""
         self._retry_at = 0.0
         self._failures = self._result_waits = 0
+        self._reset_bridge_result()
         # A result overlay whose clicks did nothing gets fresh clicks (bounded by _CLICK_LIMIT).
         self._attempts.clear()
         self._next_poll = 0.0
@@ -1807,13 +1820,21 @@ class AutoQueueNavigator:
         if not target.get("ok"):
             self._failures += 1
             reason = target.get("error") or "Recent Match is not ready"
+            _RECENT_TERMINAL_ERRORS = (
+                "no available entry",
+                "event page",
+                "free entry",
+                "no available deck",
+                "limited",
+            )
+            reason_lower = reason.lower()
+            terminal = any(word in reason_lower for word in _RECENT_TERMINAL_ERRORS)
             # Result animations can outlast this entire budget. Only time
             # without navigation progress counts toward loading Recent Match.
-            if time.monotonic() - self._progress_at >= 90 or any(
-                word in reason
-                for word in ("no available entry", "event page", "free entry", "no available deck", "limited")
-            ):
-                self._pause(f"Recent Match stopped: {reason}")
+            if terminal:
+                self._pause(f"Recent Match stopped: {reason}", retry=False)
+            elif time.monotonic() - self._progress_at >= 90:
+                self._pause(f"Recent Match stopped: {reason}", retry=True)
             else:
                 self._next_poll = time.monotonic() + 2
                 self._status(f"Waiting for Arena's Recent Match: {reason}")

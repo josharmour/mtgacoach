@@ -238,7 +238,9 @@ def test_learned_zone_policy_reaches_the_model_instead_of_forcing_command_zone(d
     planner = ActionPlanner(backend, deck_strategy_fn=book.render, deck_playbook_fn=lambda: book)
     assert planner.plan_decision_options(decision, state) == ["optional:decline"]
     backend.complete.assert_called_once()
-    assert "DECK DECISION RULES FOR THIS WINDOW" in backend.complete.call_args.args[1]
+    assert "DECK DECISION RULES FOR THIS WINDOW" in (
+        backend.complete.call_args.args[0] + "\n" + backend.complete.call_args.args[1]
+    )
 
 
 def test_report_block_replay_keeps_real_identity_tax_and_legal_alternatives(monkeypatch):

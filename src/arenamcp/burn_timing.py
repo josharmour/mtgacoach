@@ -179,13 +179,19 @@ def their_life(state: dict) -> int | None:
 def _theirs(state: dict) -> list[dict]:
     local = _local_seat(state)
     return [
-        c for c in state.get("battlefield") or [] if local is not None and _controller(c) not in (None, local)
+        c
+        for c in state.get("battlefield") or []
+        if isinstance(c, dict) and local is not None and _controller(c) not in (None, local)
     ]
 
 
 def _ours(state: dict) -> list[dict]:
     local = _local_seat(state)
-    return [c for c in state.get("battlefield") or [] if local is not None and _controller(c) == local]
+    return [
+        c
+        for c in state.get("battlefield") or []
+        if isinstance(c, dict) and local is not None and _controller(c) == local
+    ]
 
 
 def stack_is_ours(state: dict) -> bool:
@@ -595,6 +601,98 @@ def combat_kills(card: dict, state: dict) -> list[str]:
     return found
 
 
+_COMBAT_OR_ATTACK_TRIGGER_RE = re.compile(
+    r"\bwhenever\b[^.\n]*\battack(?:s|ed|ing)?\b"
+    r"|\bat the beginning of (?:each )?combat\b"
+    r"|\b(?:exert|mentor|training|battalion|annihilator|melee|myriad|mobilize|enlist|boast)\b",
+    re.IGNORECASE,
+)
+_BURN_WINDOW_THREAT_RE = re.compile(
+    r"\bgains?\b[^.\n]*\blife\b|\blifelink\b|\blife total becomes\b"
+    r"|\b(?:hexproof|shroud|protection from|indestructible|regenerate)\b"
+    r"|\bprevent (?:all|that|the next)\b[^.\n]*\bdamage\b|\bdamage can['’]t be dealt\b"
+    r"|\bdiscards?\b"
+    r"|\bcan['’]t cast spells\b|\bcan['’]t play\b[^.\n]*\bspells\b"
+    r"|\bgets? [+-](?:\d+|x)/\+(?:[1-9]\d*|x)\b|\b\+\d+/\+\d+ counters?\b",
+    re.IGNORECASE,
+)
+
+
+def _has_combat_or_attack_trigger(card: dict) -> bool:
+    """Whether ``card`` has an attack or beginning-of-combat trigger."""
+    keywords = " ".join(str(k) for k in (card.get("keywords") or []) if k)
+    return bool(_COMBAT_OR_ATTACK_TRIGGER_RE.search(f"{_text(card)} {keywords}"))
+
+
+def _able_to_attack_with_combat_trigger(card: dict, limits: dict, current_turn: Any) -> bool:
+    """True when an opposing creature can legally attack this turn and triggers on combat/attack."""
+    from arenamcp.combat_keywords import has_combat_keyword, is_creature_now
+
+    if not ("creature" in _types(card) or is_creature_now(card)):
+        return False
+    if card.get("is_tapped") or has_combat_keyword(card, "defender"):
+        return False
+    if limits.get(card.get("instance_id"), (False, False))[0]:
+        return False
+    if (
+        type(current_turn) is int
+        and card.get("turn_entered_battlefield") == current_turn
+        and not has_combat_keyword(card, "haste")
+    ):
+        return False
+    return _has_combat_or_attack_trigger(card)
+
+
+def _stack_threatens_burn_window(state: dict) -> bool:
+    """Whether anything opposing on the stack threatens life gain, protection, prevention, or discard."""
+    local = _local_seat(state)
+    for entry in state.get("stack") or []:
+        if not isinstance(entry, dict):
+            continue
+        if local is not None and _controller(entry) == local:
+            continue
+        if _BURN_WINDOW_THREAT_RE.search(_text(entry)):
+            return True
+    return False
+
+
+def opponent_early_window_holds(decision: Any, state: dict) -> list[tuple[Any, dict]]:
+    """Damage-only instant burn on the opponent's turn before Declare Attackers waits.
+
+    In their upkeep, draw, or main 1 with zero opposing creatures, or in
+    begin-combat when no able attacker has a combat/attack trigger, firing
+    burn early discards targeting flexibility unless the stack threatens
+    life gain, protection, damage prevention, discard, or cast lockouts.
+    """
+    local = _local_seat(state)
+    active = (state.get("turn") or {}).get("active_player")
+    if local is None or active is None or active == local:
+        return []
+    window = _window(state)
+    if window not in ("upkeep", "draw", "main1", "begincombat"):
+        return []
+    if _stack_threatens_burn_window(state):
+        return []
+    theirs = _theirs(state)
+    if window in ("upkeep", "draw", "main1"):
+        from arenamcp.combat_keywords import is_creature_now
+
+        if any("creature" in _types(c) or is_creature_now(c) for c in theirs):
+            return []
+    else:
+        from arenamcp.combat_keywords import attached_combat_limits
+
+        limits = attached_combat_limits(state.get("battlefield") or [])
+        current_turn = (state.get("turn") or {}).get("turn_number")
+        if any(_able_to_attack_with_combat_trigger(c, limits, current_turn) for c in theirs):
+            return []
+    return [
+        (option, card)
+        for option, card in _casts(decision, state)
+        if instant_speed(card) and damage_only(card, state)
+    ]
+
+
 def combat_holds(decision: Any, state: dict) -> list[tuple[Any, dict]]:
     """Damage-only instants on the menu in our own combat that kill nothing that matters in it.
 
@@ -935,6 +1033,7 @@ __all__ = [
     "instant_speed",
     "is_sweeper",
     "line_gain_is_face_only",
+    "opponent_early_window_holds",
     "own_stack_holds",
     "own_stack_line_waits",
     "planned_mana",

@@ -60,7 +60,16 @@ def test_our_own_spell_alone_on_the_stack_is_decided_at_low_effort(monkeypatch, 
     monkeypatch.setattr(
         planner_module, "critical_decision", lambda *a, **k: "removal available: Burst Lightning"
     )
-    state, menu = _own_stack_window()
+    state, _ = _own_stack_window()
+    non_damage_instant = _spell(
+        323,
+        "Demand Answers",
+        "Instant",
+        "{1}{R}",
+        "As an additional cost to cast this spell, sacrifice an artifact or discard a card.\nDraw two cards.",
+    )
+    state["hand"].append(non_damage_instant)
+    menu = _cast_menu((321, "Burst Lightning"), (322, "Shock"), (323, "Demand Answers"))
     planner = _planner('{"option_ids": ["pass"], "reasoning": "let Effigy resolve"}')
     with caplog.at_level(logging.INFO, logger="arenamcp.action_planner"):
         assert planner.plan_decision_options(menu, state) == ["pass"]

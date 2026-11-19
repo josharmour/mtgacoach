@@ -18,9 +18,11 @@ LOCAL, OPP = 2, 1
 class _CapturingBackend:
     def __init__(self, reply: str):
         self.reply = reply
+        self.systems: list[str] = []
         self.prompts: list[str] = []
 
     def complete(self, system, user, *args, **kwargs):
+        self.systems.append(system)
         self.prompts.append(user)
         return self.reply
 
@@ -138,13 +140,14 @@ def test_commander_choice_receives_current_deck_strategy_and_engine_text():
     strategy = "Deploy The Notary Hobbits to fund the expensive creatures with their token copies."
     planner.set_game_plan("GAME PLAN: Establish the commander mana engine.")
     assert planner.plan_decision_options(decision, state) == ["idx:0"]
+    system = backend.systems[-1]
     prompt = backend.prompts[-1]
     option = next(line for line in prompt.splitlines() if line.startswith("- idx:0:"))
     assert "YOUR COMMANDER" in option
     assert "Arena confirms payable now" in option
     assert "create two tokens" in prompt
     assert "for each Halfling you control" in prompt
-    assert strategy in prompt
+    assert strategy in system
     assert "GAME PLAN: Establish the commander mana engine." in prompt
 
     # Clearing the coach's analysis at the next match must clear the prompt too
@@ -152,6 +155,7 @@ def test_commander_choice_receives_current_deck_strategy_and_engine_text():
     strategy = None
     planner.set_game_plan(None)
     planner._llm_decision_options(decision, state)
+    assert "DECK STRATEGY:" not in backend.systems[-1]
     assert "DECK STRATEGY:" not in backend.prompts[-1]
     assert "GAME PLAN:" not in backend.prompts[-1]
 

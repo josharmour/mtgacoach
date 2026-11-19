@@ -1204,7 +1204,15 @@ class ActionPlanner(_ActionLegalityMixin):
         dyn_subjects = dynamic_subjects(
             game_state, extra_text=effective_legal_actions or [], match_subjects=match_subjects
         )
-        system_prompt = shared_match_system_prompt(game_state)
+        stable_reference = str(
+            game_state.get("deck_reference_stable") or game_state.get("deck_reference") or ""
+        )
+        reference_head, _seen_rules = split_deck_reference(stable_reference)
+        stable_strategy = self._stable_strategy_context(game_state, request_type="")
+        playbook_core, _playbook_tail = self._playbook_context_parts(stable_strategy, game_state, "")
+        system_prompt = shared_match_system_prompt(
+            game_state, reference_head=reference_head, playbook_core=playbook_core
+        )
         user_message = self._build_action_prompt(
             game_state,
             trigger,
@@ -1213,6 +1221,7 @@ class ActionPlanner(_ActionLegalityMixin):
             match_subjects=match_subjects,
             dyn_subjects=dyn_subjects,
             include_task_rules=True,
+            include_match_prefix=False,
         )
         if want_turn_plan:
             user_message += (
@@ -3463,6 +3472,7 @@ class ActionPlanner(_ActionLegalityMixin):
         match_subjects: Iterable[str] | None = None,
         dyn_subjects: Iterable[str] | None = None,
         include_task_rules: bool = False,
+        include_match_prefix: bool = True,
     ) -> str:
         """Build the user message with formatted game context.
 
@@ -3713,8 +3723,8 @@ class ActionPlanner(_ActionLegalityMixin):
         return "\n\n".join(
             block
             for block in (
-                reference_head,
-                playbook_core,
+                reference_head if include_match_prefix else "",
+                playbook_core if include_match_prefix else "",
                 seen_rules,
                 task_rules,
                 playbook_tail,
@@ -4008,8 +4018,6 @@ class ActionPlanner(_ActionLegalityMixin):
         ordered_blocks = [
             block
             for block in (
-                reference_head,
-                playbook_core,
                 seen_rules,
                 pay_instructions,
                 playbook_tail,
@@ -4024,7 +4032,9 @@ class ActionPlanner(_ActionLegalityMixin):
                 block for block in (pay_instructions, playbook_tail, candidate_rules, volatile_block) if block
             )
             user_message = with_deck_reference(fallback_body, game_state)
-        system_prompt = shared_match_system_prompt(game_state)
+        system_prompt = shared_match_system_prompt(
+            game_state, reference_head=reference_head, playbook_core=playbook_core
+        )
         try:
             response = self._call_llm(
                 system_prompt,
@@ -4848,12 +4858,15 @@ class ActionPlanner(_ActionLegalityMixin):
         decision, sneak_pick = self._sneak_policy(decision, game_state)
         if sneak_pick:
             return sneak_pick
-        decision, own_stack_pick = self._own_stack_continuation_pass(decision, game_state)
-        if own_stack_pick:
-            return own_stack_pick
         decision, held_pick = self._hold_instant_burn(decision, game_state)
         if held_pick:
             return held_pick
+        decision, own_stack_pick = self._own_stack_continuation_pass(decision, game_state)
+        if own_stack_pick:
+            return own_stack_pick
+        decision, pump_pick = self._hold_combat_pumps(decision, game_state)
+        if pump_pick:
+            return pump_pick
         if decision.request_type == "SelectN":
             # "As it enters, choose a color" (Room of Refuge, live 2026-10-07):
             # the colour our hand needs and our lands lack is a counting job.
@@ -5515,7 +5528,6 @@ class ActionPlanner(_ActionLegalityMixin):
         combat_windows = {
             _TURN_STEPS.index(step)
             for step in (
-                "begincombat",
                 "declareattack",
                 "declareblock",
                 "firststrikedamage",
@@ -5525,12 +5537,20 @@ class ActionPlanner(_ActionLegalityMixin):
         }
         window = turn_window(game_state)
         phase = str((game_state.get("turn") or {}).get("phase") or "").lower()
+        own_resolving_spell = any(
+            isinstance(obj, dict) and str(obj.get("object_kind") or "").upper() != "ABILITY"
+            for obj in game_state.get("stack") or []
+        )
+        in_empty_begin_combat = window == _TURN_STEPS.index("begincombat") and own_resolving_spell
         if (
-            (window is not None and window in combat_windows)
-            or "combat" in phase
-            or any(
+            any(
                 isinstance(card, dict) and (card.get("is_attacking") or card.get("is_blocking"))
                 for card in game_state.get("battlefield") or []
+            )
+            or (window is not None and window in combat_windows)
+            or (
+                not in_empty_begin_combat
+                and (window == _TURN_STEPS.index("begincombat") or "combat" in phase)
             )
         ):
             return decision, []
@@ -5657,7 +5677,10 @@ class ActionPlanner(_ActionLegalityMixin):
                 self._last_decision_trace = {"policy": "aura_stack_timing", "held": sorted(held)}
                 return decision, ["pass"]
         if not _local_turn(game_state):
-            return self._release_held_burn(decision, marked)
+            filtered, release_pick = self._release_held_burn(decision, marked)
+            if release_pick or filtered is not decision:
+                return filtered, release_pick
+            return self._hold_opponent_early_burn(decision, marked)
         from arenamcp.decision_memory import _TURN_STEPS, turn_window
 
         window = turn_window(marked)
@@ -5666,6 +5689,204 @@ class ActionPlanner(_ActionLegalityMixin):
         if window is not None and _TURN_STEPS[window] != "end" and _TURN_STEPS[window] != "cleanup":
             return self._hold_for_main_phase(decision, marked)  # upkeep, draw, our combat
         return decision, []
+
+    def _hold_opponent_early_burn(self, decision: Any, game_state: dict[str, Any]) -> tuple[Any, list[str]]:
+        """Opponent upkeep/draw/main1 (empty board) or safe begincombat: hold damage-only instant burn."""
+        try:
+            from arenamcp.burn_timing import opponent_early_window_holds, plan_chip_release
+            from arenamcp.decision_memory import _TURN_STEPS, burn_combo_for, burn_reach, turn_window
+
+            held_pairs = opponent_early_window_holds(decision, game_state)
+            if not held_pairs:
+                return decision, []
+            combo = burn_combo_for(decision, game_state)
+            if combo is not None:
+                held_pairs = [(o, c) for o, c in held_pairs if c.get("name") not in combo.spells]
+            if not held_pairs:
+                return decision, []
+            released, why_chip = plan_chip_release(self._plan_text_now(game_state), held_pairs)
+            if released:
+                logger.info(
+                    "Instant timing: not holding %s on opponent window: %s",
+                    ", ".join(released),
+                    why_chip,
+                )
+                held_pairs = [(o, c) for o, c in held_pairs if str(c.get("name") or "") not in released]
+            if not held_pairs:
+                return decision, []
+            face = 0
+            for option in decision.options:
+                meta = option.meta or {}
+                if option.payable is False or meta.get("actionType") != "ActionType_Cast":
+                    continue
+                card = find_source(game_state, meta)
+                oracle = str(card.get("oracle_text") or "")
+                face += each_opponent_damage(card, game_state) if card else 0
+                burn = burn_reach(oracle, card, game_state) if card else None
+                if burn is not None and (
+                    "any target" in oracle.lower()
+                    or "target opponent" in oracle.lower()
+                    or "target player" in oracle.lower()
+                ):
+                    face += max(damage for _need, damage in burn.variants)
+            life = next(
+                (
+                    _as_int(player.get("life_total"))
+                    for player in game_state.get("players") or []
+                    if not player.get("is_local") and player.get("life_total") is not None
+                ),
+                None,
+            )
+            if (
+                life is None
+                or face >= life
+                # _lethal_this_turn() can return None on opponent's turn; burn lethal is guarded above/below.
+                or _lethal_this_turn(game_state) is True
+                or lethal_reach(decision, game_state) is not None
+            ):
+                return decision, []
+            window_idx = turn_window(game_state)
+            window_name = _TURN_STEPS[window_idx] if window_idx is not None else "early window"
+        except Exception as error:
+            logger.debug("opponent-early-burn hold skipped: %s", error)
+            return decision, []
+        from dataclasses import replace
+
+        names = list(dict.fromkeys(str(c.get("name") or o.label) for o, c in held_pairs))
+        held_ids = {o.option_id for o, _c in held_pairs}
+        logger.info(
+            "Instant timing: holding %s in opponent %s (wait for attackers or end step)",
+            ", ".join(names),
+            window_name,
+        )
+        self._hold_fates().held(game_state, names, f"opponent {window_name} early window")
+        existing_instants = list(getattr(self, "_held_instants", []) or [])
+        self._held_instants = list(dict.fromkeys([*existing_instants, *names]))
+        existing_notes = list(getattr(self, "_held_notes", []) or [])
+        note = (
+            f"INSTANT TIMING: {', '.join(names)} held in opponent {window_name}: wait for declared "
+            "attackers or their end step unless responding to a threat."
+        )
+        if note not in existing_notes:
+            existing_notes.append(note)
+        self._held_notes = existing_notes
+        kept = tuple(o for o in decision.options if o.option_id not in held_ids)
+        filtered = replace(decision, options=kept)
+        if any(o.option_id == "pass" for o in kept) and all(
+            o.option_id == "pass" or o.payable is False for o in kept
+        ):
+            self._last_decision_option_ids = ["pass"]
+            self._last_decision_reasoning = (
+                f"Hold {', '.join(names)} through opponent's {window_name} to preserve targeting flexibility."
+            )
+            self._last_decision_trace = {
+                "policy": "opponent_early_window_hold",
+                "validated_ids": ["pass"],
+                "held": names,
+            }
+            return filtered, ["pass"]
+        return filtered, []
+
+    def _hold_combat_pumps(self, decision: Any, game_state: dict[str, Any]) -> tuple[Any, list[str]]:
+        """Filter out pre-block mana-only self-pumps and dead +X/+0 pumps; auto-pass if only pass remains."""
+        if decision.request_type != "ActionsAvailable" or decision.find("pass") is None:
+            return decision, []
+        from arenamcp.play_safety import dead_power_pump_activation, pre_block_pump_hold
+
+        held_ids: set[str] = set()
+        reasons: list[str] = []
+        for option in decision.options:
+            if option.option_id == "pass" or option.payable is False:
+                continue
+            card = find_source(game_state, option.meta or {})
+            why = pre_block_pump_hold(option, card, game_state) or dead_power_pump_activation(
+                option, card, game_state
+            )
+            if why:
+                held_ids.add(option.option_id)
+                reasons.append(why)
+        if not held_ids:
+            return decision, []
+        from dataclasses import replace
+
+        reason = "; ".join(dict.fromkeys(reasons))
+        logger.info("Combat pump timing: holding %s (%s)", sorted(held_ids), reason)
+        notes = list(getattr(self, "_held_notes", []) or [])
+        note = f"COMBAT PUMP TIMING: {reason}."
+        if note not in notes:
+            notes.append(note)
+        self._held_notes = notes
+        kept = tuple(o for o in decision.options if o.option_id not in held_ids)
+        filtered = replace(decision, options=kept)
+        if any(o.option_id == "pass" for o in kept) and all(
+            o.option_id == "pass" or o.payable is False for o in kept
+        ):
+            self._last_decision_option_ids = ["pass"]
+            self._last_decision_reasoning = f"Pass priority ({reason})."
+            self._last_decision_trace = {
+                "policy": "combat_pump_timing",
+                "validated_ids": ["pass"],
+                "held": sorted(held_ids),
+            }
+            return filtered, ["pass"]
+        return filtered, []
+
+    @staticmethod
+    def _unblocked_combat_pump_notes(decision: Any, game_state: dict[str, Any]) -> list[str]:
+        """Volatile prompt hints for payable mana-only power pumps on unblocked attackers in DeclareBlock."""
+        if getattr(decision, "request_type", None) != "ActionsAvailable" or not _local_turn(game_state):
+            return []
+        from arenamcp.decision_memory import _TURN_STEPS, turn_window
+
+        if turn_window(game_state) != _TURN_STEPS.index("declareblock"):
+            return []
+        from arenamcp.combat_keywords import has_combat_keyword
+        from arenamcp.play_safety import (
+            _mana_only_activation_cost,
+            _offered_ability_from_option,
+            _pure_self_stat_pump_delta,
+        )
+        from arenamcp.sneak import unblocked_attackers
+
+        unblocked = unblocked_attackers(game_state) or []
+        if not unblocked:
+            return []
+        by_id = {
+            _as_int(c.get("instance_id")): c for c in unblocked if _as_int(c.get("instance_id")) is not None
+        }
+        notes: list[str] = []
+        for option in decision.options:
+            meta = getattr(option, "meta", None) or {}
+            if getattr(option, "payable", None) is False or meta.get("actionType") != "ActionType_Activate":
+                continue
+            src_id = _as_int(meta.get("instanceId"))
+            source = by_id.get(src_id) if src_id is not None else None
+            if source is None:
+                continue
+            cost, effect = _offered_ability_from_option(source, option)
+            if not _mana_only_activation_cost(cost):
+                continue
+            delta = _pure_self_stat_pump_delta(effect, str(source.get("name") or ""))
+            if delta is None or delta[0] <= 0:
+                continue
+            dp, dt = delta
+            has_ds = has_combat_keyword(source, "double strike")
+            dmg_bonus = dp * 2 if has_ds else dp
+            ds_tag = " (double strike)" if has_ds else ""
+            if dt > 0 and "counter" in effect.lower():
+                perm = (
+                    "; leaves a permanent +1/+1 counter"
+                    if dt == 1
+                    else f"; leaves {dt} permanent +1/+1 counters"
+                )
+            else:
+                perm = ""
+            name = source.get("name") or "Unblocked attacker"
+            notes.append(
+                f"COMBAT PUMP AVAILABLE: {name} is unblocked before combat damage; activating "
+                f"{option.option_id} (+{dp}/+{dt}{perm}) deals +{dmg_bonus} unblocked combat damage{ds_tag} cleanly."
+            )
+        return notes
 
     def _hold_main_phase_burn(self, decision: Any, game_state: dict[str, Any]) -> tuple[Any, list[str]]:
         """Our main phase: burn whose cast now gains nothing comes off the menu.
@@ -9952,6 +10173,8 @@ class ActionPlanner(_ActionLegalityMixin):
         )
         if activation_note:
             lines.insert(lines.index("OPTIONS:"), activation_note)
+        for pump_hint in self._unblocked_combat_pump_notes(decision, game_state):
+            lines.insert(lines.index("OPTIONS:"), pump_hint)
         if decision.request_type == "SelectTargets":
             # The cast step's reason and the line's target (2026-10-19 10:13:47, match 1e4ccb0c).
             intent_note = self._cast_intent_note(decision, game_state)
@@ -10092,8 +10315,6 @@ class ActionPlanner(_ActionLegalityMixin):
         user_message = "\n\n".join(
             block
             for block in (
-                reference_head,
-                playbook_core,
                 seen_rules,
                 decision_output_format,
                 playbook_tail,
@@ -10227,8 +10448,11 @@ class ActionPlanner(_ActionLegalityMixin):
             else "decision.typed"
         )
         # NN1: system_prompt stays 100% match-immutable (shared across decision.*
-        # and background.game_plan); dynamic subjects ride late in user_message.
-        system_prompt = shared_match_system_prompt(game_state)
+        # and background.game_plan), carrying DECK REFERENCE + playbook_core right
+        # up to the request_boundaries KV checkpoint; dynamic subjects ride late in user_message.
+        system_prompt = shared_match_system_prompt(
+            game_state, reference_head=reference_head, playbook_core=playbook_core
+        )
 
         def ask(
             message: str, *, effort: str | None, budget: float, cancel_event: threading.Event | None = None

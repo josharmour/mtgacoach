@@ -184,9 +184,11 @@ class _Capture:
     def __init__(self, reply):
         self.reply = reply
         self.calls = []
+        self.full_calls = []
 
     def complete(self, system, user, *args, **kwargs):
         self.calls.append(user)
+        self.full_calls.append(system + "\n\n" + user)
         return self.reply
 
 
@@ -213,6 +215,29 @@ def _typed_prompt(state):
     return backend.calls[-1]
 
 
+def _typed_full_prompt(state):
+    from arenamcp.action_planner import ActionPlanner
+    from arenamcp.decisions import build_pending_decision
+
+    decision = build_pending_decision(
+        {
+            "has_pending": True,
+            "request_type": "ActionsAvailable",
+            "can_pass": True,
+            "actions": [
+                {"actionType": "ActionType_Cast", "grpId": 101, "instanceId": 13, "hasAutoTap": True},
+                {"actionType": "ActionType_Pass"},
+            ],
+        },
+        resolve_name=lambda gid: CATALOG.get(gid, {}).get("name", ""),
+        resolve_zone=lambda iid: "hand",
+        activation_unaffordable=lambda action: False,
+    )
+    backend = _Capture('{"option_ids":["pass"]}')
+    ActionPlanner(backend)._llm_decision_options(decision, deepcopy(state))
+    return backend.full_calls[-1]
+
+
 def _coach_prompt(state):
     from types import SimpleNamespace
 
@@ -236,7 +261,7 @@ def test_hand_and_command_zone_rules_are_quoted_once_with_the_deck_reference(mon
     from arenamcp.match_context import reset_seen_rules
 
     monkeypatch.setattr("arenamcp.match_context._local_card", lambda gid, epoch: CATALOG[gid])
-    for build in (_typed_prompt, _coach_prompt, _plan_prompt):
+    for build in (_typed_full_prompt, _coach_prompt, _plan_prompt):
         reset_seen_rules()
         prompt = build(_deck_state())
         # Before: the deck reference, then the hand (once per copy) and the command zone.

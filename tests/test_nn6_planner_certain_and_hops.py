@@ -404,17 +404,17 @@ def test_nn6_opposite_controls_yield_at_hop_limit(case):
         state = _own_stack_state(stack_owner=1, phase="Phase_Combat", attacking=True)
         poll = _cast_and_pass_poll(can_cancel=False)
     elif case == "unreserved_instant_burn":
-        bolt = {
+        opt_spell = {
             "instance_id": 302,
             "grp_id": 99302,
-            "name": "Lightning Bolt",
+            "name": "Opt",
             "type_line": "Instant",
-            "mana_cost": "{R}",
-            "oracle_text": "Lightning Bolt deals 3 damage to any target.",
+            "mana_cost": "{U}",
+            "oracle_text": "Scry 1, then draw a card.",
             "owner_seat_id": 1,
             "controller_seat_id": 1,
         }
-        state = _own_stack_state(stack_owner=1, phase="Phase_Main1", hand_card=bolt)
+        state = _own_stack_state(stack_owner=1, phase="Phase_Main1", hand_card=opt_spell)
         poll = _cast_and_pass_poll(instance_id=302, grp_id=99302, can_cancel=False)
     elif case == "hard_mechanical_cap_substep":
         state = {"match_id": "m1", "local_seat_id": 1}

@@ -6739,7 +6739,7 @@ class GamePlanManager:
         )
         candidate_rules = str(game_state.get("decision_candidate_rules") or "")
         head, rules = split_deck_reference(stable_reference)
-        system_prompt = shared_match_system_prompt(game_state)
+        system_prompt = shared_match_system_prompt(game_state, reference_head=head, playbook_core=shared_core)
 
         self._reform_failure = ""
         model = str(getattr(self._backend, "model", "")).lower()
@@ -6759,8 +6759,6 @@ class GamePlanManager:
         user_message = "\n\n".join(
             block
             for block in (
-                head,
-                shared_core,
                 rules,
                 plan_playbook_tail,
                 candidate_rules,
