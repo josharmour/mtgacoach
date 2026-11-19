@@ -8,7 +8,7 @@ Start with [DEV.md](../DEV.md) to run the code. Use [INSTALL.md](../INSTALL.md) 
 
 | Working on | Reference |
 | --- | --- |
-| Current work | Planned in the maintainer's local `fable-november-upgrades.md` (not published). The earlier 40-item autopilot queue is parked in the [November backlog archive](archive/backlog-2026-11/autopilot-active-work.md). |
+| Current work | Planned in the maintainer's local `neon-november.md` (not published; supersedes the deprecated `fable-november-improvements.md` and `fable-november-upgrades.md`). The earlier 40-item autopilot queue is parked in the [November backlog archive](archive/backlog-2026-11/autopilot-active-work.md). |
 | Reproducing an archived backlog issue | [Evidence index](archive/backlog-2026-11/backlog-evidence-2026-11-01.md), [qualification criteria](archive/backlog-2026-11/backlog-live-qualification-2026-11-01.md), and the receipts beside them. |
 | Arena integration | [Windows and Proton bridge](../bepinex-plugin/README.md), [native Mac bridge build](../spikes/mac-il2cpp/build.sh), [parser diagnostics](PARSER_DIAGNOSTICS.md). |
 | Gameplay features | [Quest-driven Grind](auto-quest.md), [Traditional Limited sideboarding](SIDEBOARD_AUTOMATION.md), [sacrifice continuations](sacrifice-continuation-280.md). |
