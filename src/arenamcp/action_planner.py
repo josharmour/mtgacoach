@@ -5037,6 +5037,7 @@ class ActionPlanner(_ActionLegalityMixin):
                 chosen = self._apply_role_guard(decision, game_state, chosen)
             if decision.request_type == "ActionsAvailable" and len(chosen) == 1:
                 chosen = self._apply_landfall_order(decision, game_state, chosen)
+                chosen = self._apply_land_before_cast_order(decision, game_state, chosen)
                 chosen = self._sequence_sweep(decision, game_state, chosen)
             if chosen and decision.min_weight is not None:
                 chosen = list(dict.fromkeys(chosen))
@@ -7040,6 +7041,44 @@ class ActionPlanner(_ActionLegalityMixin):
         trace = getattr(self, "_last_decision_trace", None)
         if isinstance(trace, dict):
             trace["landfall_order"] = {
+                "replaced": chosen[0],
+                "with": verdict.option_id,
+                "reason": verdict.reason,
+            }
+        return [verdict.option_id]
+
+    def _apply_land_before_cast_order(
+        self, decision: Any, game_state: dict[str, Any], chosen: list[str]
+    ) -> list[str]:
+        """Play a unique plain untapped land before a cast when opponent holds open mana."""
+        land_drop_first = getattr(self, "_land_drop_first", True)
+        if not land_drop_first or self._has_deck_rule("development", "mana"):
+            return chosen
+        try:
+            from arenamcp.landfall_order import land_before_cast_order
+
+            verdict = land_before_cast_order(
+                decision,
+                game_state,
+                chosen[0],
+                land_drop_first=land_drop_first,
+            )
+        except Exception as error:  # the guard never blocks the normal path
+            logger.debug("land before cast order skipped: %s", error)
+            return chosen
+        if verdict is None:
+            return chosen
+        logger.warning(
+            "Land before cast order: %s [model chose %s: %s]",
+            verdict.reason,
+            verdict.cast_name,
+            (getattr(self, "_last_decision_reasoning", "") or "")[:160],
+        )
+        self._last_decision_reasoning = verdict.reason
+        self._last_decision_option_ids = [verdict.option_id]
+        trace = getattr(self, "_last_decision_trace", None)
+        if isinstance(trace, dict):
+            trace["land_before_cast"] = {
                 "replaced": chosen[0],
                 "with": verdict.option_id,
                 "reason": verdict.reason,
@@ -9879,8 +9918,10 @@ class ActionPlanner(_ActionLegalityMixin):
         lines.extend(commander_sacrifice_context(game_state, decision))
         lines.extend(timing_notes(decision, game_state))
         from arenamcp.land_intent import land_payment_notes
+        from arenamcp.landfall_order import bluff_land_notes
 
         lines.extend(land_payment_notes(decision, game_state))
+        lines.extend(bluff_land_notes(decision, game_state))
         lines.extend(getattr(self, "_land_strand_notes", ()))
         from arenamcp.sequence_value import sequence_value_notes, sequence_values
 

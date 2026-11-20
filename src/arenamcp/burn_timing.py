@@ -300,14 +300,64 @@ def _pump_bonus(card: dict) -> int:
     )
 
 
+def _power(card: dict) -> int:
+    power = card.get("modified_power")
+    power = power if type(power) is int else card.get("power")
+    return power if type(power) is int and power > 0 else 0
+
+
+def _toughness(card: dict) -> int:
+    toughness = card.get("modified_toughness")
+    toughness = toughness if type(toughness) is int else card.get("toughness")
+    return toughness if type(toughness) is int and toughness > 0 else 0
+
+
+def _normalize_solver_group(
+    cards: list[dict],
+    used_ids: set[int],
+    next_id: int,
+    *,
+    bonus_fn: Any = None,
+    untapped: bool = False,
+) -> tuple[list[dict], dict[int, dict], int]:
+    """Copy creature dicts with distinct integer ids and resolved P/T for ``combat_solver``."""
+    out: list[dict] = []
+    by_id: dict[int, dict] = {}
+    for card in cards:
+        raw_id = card.get("instance_id")
+        if type(raw_id) is int and raw_id > 0 and raw_id not in used_ids:
+            cid = raw_id
+        else:
+            while next_id in used_ids:
+                next_id += 1
+            cid = next_id
+            next_id += 1
+        used_ids.add(cid)
+        pwr = _power(card)
+        tgh = _toughness(card)
+        if bonus_fn is not None:
+            p_add, t_add = bonus_fn(card)
+            pwr += p_add
+            tgh += t_add
+        copy_card = {**card, "instance_id": cid, "power": pwr, "toughness": tgh}
+        if untapped:
+            copy_card["is_tapped"] = False
+        out.append(copy_card)
+        by_id[cid] = card
+    return out, by_id, next_id
+
+
 def cast_pumped_attackers(state: dict) -> list[str]:
     """Our creatures a noncreature cast now pumps for an attack still to come this turn.
 
     Our turn before attackers are declared, creatures that can attack
     (``combat_strategy.able_attackers``) with prowess or "whenever you cast a
-    noncreature spell, this creature gets +N/+0". After combat the pump buys
-    nothing, so a cast in main 2 or at their end step is worth the same.
+    noncreature spell, this creature gets +N/+0", excluding creatures strictly
+    stonewalled for zero damage and zero blocker kills by untapped blockers.
     """
+    from arenamcp.combat_keywords import attached_combat_limits, is_creature_now
+    from arenamcp.combat_solver import optimal_blocks
+    from arenamcp.combat_strategy import _CANT_BLOCK, able_attackers
     from arenamcp.decision_memory import _TURN_STEPS, turn_window
 
     if not _our_turn(state):
@@ -315,15 +365,55 @@ def cast_pumped_attackers(state: dict) -> list[str]:
     window = turn_window(state)
     if window is None or window > _TURN_STEPS.index("declareattack"):
         return []
-    from arenamcp.combat_strategy import able_attackers
+    able = list(able_attackers(state))
+    pumped = [c for c in able if _pump_bonus(c)]
+    if not pumped:
+        return []
 
-    return [str(c.get("name") or c.get("instance_id")) for c in able_attackers(state) if _pump_bonus(c)]
+    limits = attached_combat_limits(state.get("battlefield") or [])
+    untapped_blockers = [
+        b
+        for b in _theirs(state)
+        if is_creature_now(b)
+        and not b.get("is_tapped")
+        and not b.get("is_phased_out")
+        and not _CANT_BLOCK.search(_text(b))
+        and not limits.get(b.get("instance_id"), (False, False))[1]
+    ]
+    if untapped_blockers:
+        try:
+            used_ids: set[int] = set()
+            next_id = 10_000_000
 
+            def _pump_delta(c: dict) -> tuple[int, int]:
+                b = _pump_bonus(c)
+                if not b:
+                    return (0, 0)
+                text = f"{_text(c)} {' '.join(map(str, c.get('keywords') or []))}"
+                t_add = 1 if re.search(r"\bprowess\b", text, re.I) else 0
+                return (b, t_add)
 
-def _power(card: dict) -> int:
-    power = card.get("modified_power")
-    power = power if type(power) is int else card.get("power")
-    return power if type(power) is int and power > 0 else 0
+            norm_atk, atk_map, next_id = _normalize_solver_group(
+                able, used_ids, next_id, bonus_fn=_pump_delta
+            )
+            norm_blk, _blk_map, _next_id = _normalize_solver_group(untapped_blockers, used_ids, next_id)
+            life = their_life(state)
+            plan = optimal_blocks(
+                norm_atk,
+                norm_blk,
+                your_life=max(1, life if life is not None else 20),
+                deadline_s=0.05,
+                caller="cast_pumped_attackers",
+            )
+            if plan is not None and plan.damage_through <= 0 and not plan.blockers_lost_ids:
+                blocked_ids = {aid for aid in (plan.assignments or {}).values() if aid}
+                stonewalled_ids = set(plan.attackers_killed_ids) | blocked_ids
+                stonewalled = {id(atk_map[cid]) for cid in stonewalled_ids if cid in atk_map}
+                pumped = [c for c in pumped if id(c) not in stonewalled]
+        except Exception as error:
+            logger.debug("cast_pumped_attackers solver check skipped: %s", error)
+
+    return [str(c.get("name") or c.get("instance_id")) for c in pumped]
 
 
 def two_turn_reach(state: dict) -> str:
@@ -334,28 +424,67 @@ def two_turn_reach(state: dict) -> str:
     mana pays for, each spell with the cast pumps of our creatures. A sweeper's
     damage to each of their creatures counts at that weight too (#228): chipping
     their board down is race progress, and it was invisible to the hold math.
-    Blockers, removal and their life gain are ignored: it only stops a hold.
+    When an eligible blocker has lifelink, net combat life loss is capped via
+    ``combat_solver.optimal_blocks`` so a large lifelink wall stops false reach.
     """
     life = their_life(state)
     if life is None or life <= 0 or not _our_turn(state):
         return ""
+    from arenamcp.combat_keywords import attached_combat_limits, has_combat_keyword, is_creature_now
+    from arenamcp.combat_solver import optimal_blocks
+    from arenamcp.combat_strategy import _CANT_BLOCK, able_attackers
     from arenamcp.decision_memory import _TURN_STEPS, mana_available, turn_window
 
     window = turn_window(state)
-    from arenamcp.combat_keywords import attached_combat_limits, is_creature_now
-
     limits = attached_combat_limits(state.get("battlefield") or [])
     creatures = [
         c
         for c in _ours(state)
-        if is_creature_now(c) and not limits.get(c.get("instance_id"), (False, False))[0]
+        if is_creature_now(c)
+        and not c.get("is_phased_out")
+        and not limits.get(c.get("instance_id"), (False, False))[0]
     ]
+    able_now: list[dict] = []
     now = 0
     if window is not None and window <= _TURN_STEPS.index("declareattack"):
-        from arenamcp.combat_strategy import able_attackers
-
-        now = sum(_power(c) for c in able_attackers(state))
+        able_now = list(able_attackers(state))
+        now = sum(_power(c) for c in able_now)
     later = sum(_power(c) for c in creatures)
+
+    all_blockers = [
+        b
+        for b in _theirs(state)
+        if is_creature_now(b)
+        and not b.get("is_phased_out")
+        and not _CANT_BLOCK.search(_text(b))
+        and not limits.get(b.get("instance_id"), (False, False))[1]
+    ]
+    untapped_blockers = [b for b in all_blockers if not b.get("is_tapped")]
+    if now > 0 and any(has_combat_keyword(b, "lifelink") for b in untapped_blockers):
+        try:
+            used: set[int] = set()
+            norm_a, _amap, nid = _normalize_solver_group(able_now, used, 20_000_000)
+            norm_b, _bmap, _nid = _normalize_solver_group(untapped_blockers, used, nid)
+            plan_now = optimal_blocks(
+                norm_a, norm_b, your_life=life, deadline_s=0.05, caller="two_turn_reach_now"
+            )
+            if plan_now is not None:
+                now = min(now, max(0, plan_now.net_life_lost))
+        except Exception as error:
+            logger.debug("two_turn_reach now solver check skipped: %s", error)
+    if later > 0 and any(has_combat_keyword(b, "lifelink") for b in all_blockers):
+        try:
+            used = set()
+            norm_a, _amap, nid = _normalize_solver_group(creatures, used, 30_000_000)
+            norm_b, _bmap, _nid = _normalize_solver_group(all_blockers, used, nid, untapped=True)
+            plan_later = optimal_blocks(
+                norm_a, norm_b, your_life=life, deadline_s=0.05, caller="two_turn_reach_later"
+            )
+            if plan_later is not None:
+                later = min(later, max(0, plan_later.net_life_lost))
+        except Exception as error:
+            logger.debug("two_turn_reach later solver check skipped: %s", error)
+
     per_spell = sum(_pump_bonus(c) for c in creatures)
     hand = [c for c in state.get("hand") or [] if isinstance(c, dict)]
     lands = sum(1 for c in _ours(state) if "land" in _types(c))
@@ -425,7 +554,8 @@ def hold_overrides(decision: Any, state: dict, held: list[tuple[Any, dict]]) -> 
       (:func:`two_turn_reach`): every point of face damage now counts;
     - we have more mana than the end step can spend: the mana left after this
       turn's other plays (:func:`planned_mana`) is more than the held spells
-      cost, so casting one now still leaves the rest castable there.
+      cost, so casting one now still leaves the rest castable there — when the
+      board is creatureless and opponent holds fewer than 2 open lands.
     """
     pumped = cast_pumped_attackers(state)
     if pumped:
@@ -434,6 +564,7 @@ def hold_overrides(decision: Any, state: dict, held: list[tuple[Any, dict]]) -> 
     if reach:
         return f"their life is within reach over two turns ({reach})"
     if held:
+        from arenamcp.combat_keywords import is_creature_now
         from arenamcp.decision_memory import mana_available
 
         names = {str(card.get("name") or "") for _option, card in held}
@@ -441,7 +572,9 @@ def hold_overrides(decision: Any, state: dict, held: list[tuple[Any, dict]]) -> 
             _full_spell_cost(card) for _option, card in {id(card): (o, card) for o, card in held}.values()
         )
         spare = mana_available(state) - planned_mana(decision, state, names)
-        if spare > cost:
+        opp_has_creatures = any(is_creature_now(c) for c in _theirs(state))
+        opp_open_lands = sum(1 for c in _theirs(state) if "land" in _types(c) and not c.get("is_tapped"))
+        if spare > cost and not opp_has_creatures and opp_open_lands < 2:
             return (
                 f"we have more mana than the end step can spend on them ({spare} left after this turn's "
                 f"other plays, {cost} for the held spells)"

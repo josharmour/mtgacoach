@@ -1014,7 +1014,9 @@ def option_note(result: LineSearchResult | ModeComparison | None, option: Any, s
     ActionsAvailable options on our turn (nothing on the stack): the best line
     that starts with this play, e.g. '[LINE best: 7 after T13, 5 after T15]',
     '[LINE: -17 vs best; 4 after T13, 4 after T15]', '[LINE: dead T15]'.
-    'pass' is tagged only in our Main2, or as the best line while only our own
+    'pass' is tagged in our Main2, in our Main1 when passing with no land or
+    cast is itself the best line (or when the best line's sole play is a
+    superfluous hellbent bluff land), or as the best line while only our own
     spell is on the stack and the line's next casts wait for it
     (``burn_timing.own_stack_line_waits``). A modal option needs the decision's
     ``ModeComparison`` (``mode_comparison``) as ``result``:
@@ -1055,14 +1057,42 @@ def _option_note(result, option, state) -> str:
         return ""
     if not model.our_turn or state.get("stack") or model.stack_nonempty or result.posture == "lethal":
         return ""
-    if not _is_pass(option) and _unmodelled_finisher(result, option, state):
-        return ""
+    if not _is_pass(option):
+        if _unmodelled_finisher(result, option, state):
+            return ""
+        if meta.get("actionType") == "ActionType_Play":
+            from arenamcp.landfall_order import superfluous_bluff_land
+
+            if superfluous_bluff_land(option, state):
+                return ""
     best = result.best
     if _is_pass(option):
+        from arenamcp.landfall_order import superfluous_bluff_land
+
+        phase_low = str(model.phase or "").lower()
+        is_main2 = "main2" in phase_low
+        best_step0 = best.steps[0] if best.steps else None
+        bluff_only = (
+            best_step0 is not None
+            and bool(best_step0.land)
+            and not best_step0.casts
+            and superfluous_bluff_land(None, state, land_name=best_step0.land)
+        )
+        if bluff_only and ("main1" in phase_low or is_main2):
+            return _note_for(best, best, is_best=True)
         line = result.first_action.get(("nocast",))
-        if model.phase != "Phase_Main2" or line is None or not line.steps or line.steps[0].land:
+        if line is None or not line.steps or line.steps[0].land:
             return ""
-        return _note_for(line, best, is_best=line.first_sig == best.first_sig)
+        is_best = line.first_sig == best.first_sig
+        if not is_main2 and not (
+            "main1" in phase_low
+            and is_best
+            and best_step0 is not None
+            and not best_step0.land
+            and not best_step0.casts
+        ):
+            return ""
+        return _note_for(line, best, is_best=is_best)
     key = action_key(option, state)
     if key is None:
         return ""

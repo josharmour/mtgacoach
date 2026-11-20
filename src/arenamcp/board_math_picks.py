@@ -15,6 +15,8 @@ from arenamcp.action_types import (
 )
 from arenamcp.cast_notes import unpayable_graveyard_flashback
 from arenamcp.decisions import SELECT_N_DECLINE
+from arenamcp.mulligan_policy import hand_card
+from arenamcp.play_safety import unsafe_play_reason
 from arenamcp.ward import untapped_land_drop
 
 logger = logging.getLogger("arenamcp.action_planner")
@@ -22,6 +24,21 @@ logger = logging.getLogger("arenamcp.action_planner")
 # Cast roles that need a target or a moment only the model would pick
 # (counterspells, combat tricks): never cast blind on our own main phase.
 _REACTIVE_CAST_ROLES = frozenset({"counter", "pump"})
+_REACTIVE_UNMODELLED_ROLES = frozenset({"counter", "pump", "removal", "bounce"})
+
+
+def _has_mandatory_cast_or_etb_target(card: dict[str, Any]) -> bool:
+    """True when non-activated, non-equip cast/ETB rules text requires a target."""
+    text = re.sub(r"<[^>]*>", " ", str(card.get("oracle_text") or ""))
+    text = re.sub(r"\([^)]*\)", " ", text)
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or ":" in line or line.lower().startswith("equip"):
+            continue
+        low = line.lower()
+        if re.search(r"\btarget\b", low) and "up to" not in low:
+            return True
+    return False
 
 
 def _legal_payable(game_state: dict[str, Any], legal_actions: list[str]) -> dict[int, bool | None]:
@@ -210,6 +227,7 @@ def board_math_option_pick(decision: Any, game_state: dict[str, Any]) -> tuple[l
     assessment, option_role = None, None
     step, plan_text, scheduled = None, "", set()
     greedy: set[str] = set()
+    assess_unmodelled: set[str] = set()
     try:
         from arenamcp.board_assessment import assess, option_role
 
@@ -218,6 +236,7 @@ def board_math_option_pick(decision: Any, game_state: dict[str, Any]) -> tuple[l
             first = assessment.lookahead[0]
             plan_text, scheduled = _line_text(first), set(first.casts)
             step = first
+            assess_unmodelled = set(getattr(assessment, "unmodelled", ()) or ())
             if not scheduled:
                 baseline = getattr(getattr(assessment, "line_search", None), "baseline", None)
                 steps = getattr(baseline, "steps", None) or ()
@@ -249,8 +268,12 @@ def board_math_option_pick(decision: Any, game_state: dict[str, Any]) -> tuple[l
             return [first.option_id], first.reason
         return [pick.option_id], plan_text or "no board assessment, so the land drop comes first"
 
+    castable_attr = getattr(step, "castable", None) if step is not None else None
+    step_castable = set(castable_attr) if castable_attr is not None else set()
     picks: list[tuple[int, Any]] = []
     backup_picks: list[tuple[int, Any]] = []
+    unseen_threats: list[tuple[int, Any]] = []
+    proactive_unmodelled: list[tuple[int, Any]] = []
     for option in options:
         meta = option.meta or {}
         if option.payable is not True or meta.get("actionType") != "ActionType_Cast":
@@ -276,6 +299,33 @@ def board_math_option_pick(decision: Any, game_state: dict[str, Any]) -> tuple[l
         cmc = mana_cost_to_cmc(cost)
         if role in ("creature", "planeswalker"):
             backup_picks.append((cmc, option))
+        try:
+            from arenamcp.line_search_moves import unmodelled_effect
+        except Exception:
+            unmodelled_effect = None
+        is_safe_fallback = not unsafe_play_reason(game_state, card, str(meta.get("actionType") or ""), meta)
+        if is_safe_fallback and step is not None and castable_attr is not None:
+            if role in ("creature", "planeswalker") and name not in step_castable:
+                unseen_threats.append((cmc, option))
+            elif role not in _REACTIVE_UNMODELLED_ROLES:
+                types_low = (
+                    f"{card.get('type_line') or ''} {' '.join(str(t) for t in (card.get('card_types') or []))}"
+                ).lower()
+                is_proactive_perm = (
+                    ("artifact" in types_low or "enchantment" in types_low)
+                    and "aura" not in types_low
+                    and "creature" not in types_low
+                    and not (
+                        (card.get("type_line") or card.get("card_types")) and hand_card(card).instant_speed
+                    )
+                )
+                is_unmodelled_perm = (
+                    (bool(unmodelled_effect(card)) if unmodelled_effect is not None else False)
+                    or (name in assess_unmodelled)
+                    or (name not in step_castable)
+                )
+                if is_proactive_perm and is_unmodelled_perm and not _has_mandatory_cast_or_etb_target(card):
+                    proactive_unmodelled.append((cmc, option))
         if step is not None:
             if name not in scheduled and name not in greedy:
                 continue
@@ -296,6 +346,12 @@ def board_math_option_pick(decision: Any, game_state: dict[str, Any]) -> tuple[l
         return [option.option_id], (
             f"{plan_text}; scheduled cast unavailable in menu, deploying biggest payable threat instead"
         )
+    if unseen_threats and not deferred:
+        _, option = max(unseen_threats, key=lambda item: item[0])
+        return [option.option_id], (f"{plan_text}; deploying payable threat not modelled in board-math mana")
+    if proactive_unmodelled and step is not None and not scheduled and not greedy and not deferred:
+        _, option = max(proactive_unmodelled, key=lambda item: item[0])
+        return [option.option_id], (f"{plan_text}; deploying proactive permanent unmodelled by board math")
     if any(option.option_id == "pass" for option in options):
         if deferred:
             later = ", ".join(sorted(deferred))
