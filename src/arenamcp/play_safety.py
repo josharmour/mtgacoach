@@ -378,7 +378,6 @@ def own_stack_reserved_option(
     from arenamcp.target_effects import (
         creature_aura_scope,
         enchant_effect_text,
-        resolves_to_creature,
         target_effect_is_harmful,
     )
 
@@ -436,21 +435,14 @@ def own_stack_reserved_option(
     if action_type == "ActionType_Cast":
         if _interacts_with_stack_spell(card):
             return ""
-        if (
-            turn.get("active_player") == local
-            and ("main" in phase or in_empty_begin_combat)
-            and any(
-                resolves_to_creature(obj) and str(obj.get("object_kind") or "").upper() != "ABILITY"
-                for obj in stack
-            )
-        ):
+        if turn.get("active_player") == local and ("main" in phase or in_empty_begin_combat):
             scope = creature_aura_scope(card)
             oracle = str(card.get("oracle_text") or "")
             if scope == "self" or (
                 scope == "either"
                 and target_effect_is_harmful(enchant_effect_text("Enchant creature", oracle)) is False
             ):
-                return "waiting for our creature spell on stack to resolve before casting beneficial Aura"
+                return "waiting for our spell on stack to resolve before casting beneficial Aura"
         if instant_speed(card) and damage_only(card, state):
             life = their_life(state)
             if life is not None and face_damage(card) >= life:
@@ -3388,6 +3380,67 @@ def pending_ward_reserve_reason(state: dict, card: dict, action_type: str, metad
     return ""
 
 
+def beneficial_aura_only_opposing_host(card: dict, state: dict) -> str:
+    """Withhold a beneficial ``Enchant creature`` Aura when only opposing creatures exist.
+
+    An Aura with an entry payoff (e.g. draw a card) is still allowed as a desperation
+    play when opposing power on board represents lethal against our life total.
+    """
+    from arenamcp.target_effects import (
+        aura_entry_payoff,
+        creature_aura_scope,
+        enchant_effect_text,
+        target_effect_is_harmful,
+    )
+
+    if creature_aura_scope(card) != "either":
+        return ""
+    oracle = str(card.get("oracle_text") or "")
+    if target_effect_is_harmful(enchant_effect_text("Enchant creature", oracle)) is not False:
+        return ""
+    local = _local_seat(state)
+    if local is None:
+        return ""
+    opp_creatures: list[dict] = []
+    for obj in state.get("battlefield") or []:
+        if not isinstance(obj, dict) or not is_creature_now(obj) or obj.get("is_phased_out"):
+            continue
+        seat = obj.get("controller_seat_id") or obj.get("owner_seat_id")
+        if seat is None or seat == local:
+            return ""
+        opp_creatures.append(obj)
+    if not opp_creatures:
+        return ""
+    payoff = aura_entry_payoff(card)
+    if not payoff:
+        return "beneficial Aura has only opposing creatures to enchant"
+    our_life = next(
+        (
+            p.get("life_total")
+            for p in state.get("players") or []
+            if isinstance(p, dict) and p.get("seat_id") == local and type(p.get("life_total")) is int
+        ),
+        None,
+    )
+    opp_power = sum(
+        max(
+            0,
+            int(
+                c.get("modified_power")
+                if type(c.get("modified_power")) is int
+                else (c.get("power") if type(c.get("power")) is int else 0)
+            ),
+        )
+        for c in opp_creatures
+    )
+    if our_life is not None and our_life > 0 and opp_power >= our_life:
+        return ""
+    return (
+        f"beneficial Aura ({payoff} on entry) has only opposing creatures "
+        "to enchant and we are not facing lethal"
+    )
+
+
 def unsafe_play_reason(state: dict, card: dict, action_type: str, metadata: dict | None = None) -> str:
     """Return a reason to withhold a play, not a claim of full MTG legality."""
     action_type = action_type.removeprefix("ActionType_").lower()
@@ -3432,6 +3485,7 @@ def unsafe_play_reason(state: dict, card: dict, action_type: str, metadata: dict
             or temporary_shrink_wasted(card, state)
             or counter_tax_payable_wasted(card, state)
             or x_spell_dead_at_affordable_x(state, card)
+            or beneficial_aura_only_opposing_host(card, state)
         )
         if reason:
             return reason

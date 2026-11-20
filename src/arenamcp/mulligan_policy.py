@@ -18,8 +18,9 @@ from __future__ import annotations
 import logging
 import re
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from itertools import combinations
+from typing import Any
 
 from arenamcp import opening_fetches
 
@@ -89,6 +90,8 @@ class HandCard:
     fetch_life: int = 0
     entry_life: int | None = 0
     fetch_pool: tuple[opening_fetches.FetchTarget, ...] = ()
+    alt_costs: tuple[tuple[int, tuple[frozenset[str], ...]], ...] = ()
+    fetches_basic: bool = False
 
 
 # A spell that can kill or stop a creature: damage it can aim at one (or at
@@ -195,6 +198,80 @@ def _is_permanent(card: HandCard) -> bool:
     return not re.search(r"\binstant\b|\bsorcery\b", card.type_line.lower())
 
 
+_BASIC_FETCH_LAND = re.compile(
+    r"(?:^|\n)\s*(?:\{o?t\}\s*,\s*)?(?:pay \d+ life\s*,\s*)?sacrifice [^:\n]*:\s*"
+    r"search your library for a basic land card[^.\n]*onto the battlefield",
+    re.IGNORECASE,
+)
+
+
+def _cast_costs(
+    card: dict, cost: str, type_line: str
+) -> tuple[int, tuple[frozenset[str], ...], tuple[tuple[int, tuple[frozenset[str], ...]], ...]]:
+    """Return ``(primary_mv, primary_pips, alt_costs)`` from castable faces.
+
+    Split/Room cards concatenate both halves' costs at top level in MTGA DB
+    (e.g., ``{1}{R}{3}{U}{U}``); drop the concatenated cost when both faces are
+    explicit (`` // `` in cost, or >=2 split/Room faces in ``related_faces``).
+    Adventure/Omen and MDFC cards preserve the front face ``cost`` as primary
+    while including alternate castable faces in ``alt_costs``. Empty-cost
+    transforming back faces are ignored.
+    """
+    name = str(card.get("name") or "")
+    types_lower = type_line.lower()
+    faces = [f for f in (card.get("related_faces") or ()) if isinstance(f, dict)]
+
+    if " // " in cost:
+        slash_costs = [
+            (_mana_value(p.strip()), _pips(p.strip())) for p in cost.split(" // ") if _symbols(p.strip())
+        ]
+        if slash_costs:
+            deduped = tuple(dict.fromkeys(slash_costs))
+            primary_mv, primary_pips = min(deduped, key=lambda item: (item[0], len(item[1])))
+            return primary_mv, primary_pips, deduped
+
+    primary_mv, primary_pips = _mana_value(cost), _pips(cost)
+    is_adventure_or_omen = any(
+        (
+            "adventure" in str(f.get("type_line") or "").lower()
+            or "omen" in str(f.get("type_line") or "").lower()
+        )
+        for f in faces
+    )
+
+    if not is_adventure_or_omen and ("//" in name or "room" in types_lower):
+        split_names = {p.strip().lower() for p in re.split(r"\s*///?\s*", name) if p.strip()}
+        face_costs: list[tuple[int, tuple[frozenset[str], ...]]] = []
+        for face in faces:
+            fc = str(face.get("mana_cost") or "")
+            if not _symbols(fc):
+                continue
+            ftl = str(face.get("type_line") or "").lower()
+            fname = str(face.get("name") or "").strip().lower()
+            if "room" in types_lower or "room" in ftl or (split_names and fname in split_names):
+                face_costs.append((_mana_value(fc), _pips(fc)))
+        if len(face_costs) >= 2 or (
+            "room" in types_lower and face_costs and primary_mv > max(mv for mv, _ in face_costs)
+        ):
+            deduped = tuple(dict.fromkeys(face_costs))
+            split_mv, split_pips = min(deduped, key=lambda item: (item[0], len(item[1])))
+            return split_mv, split_pips, deduped
+        if face_costs:
+            deduped = tuple(dict.fromkeys([(primary_mv, primary_pips), *face_costs]))
+            return primary_mv, primary_pips, deduped if len(deduped) > 1 else ()
+
+    alts: list[tuple[int, tuple[frozenset[str], ...]]] = [(primary_mv, primary_pips)]
+    for face in faces:
+        ftl = str(face.get("type_line") or "").lower()
+        if "adventure" not in ftl and "omen" not in ftl:
+            continue
+        fc = str(face.get("mana_cost") or "")
+        if _symbols(fc):
+            alts.append((_mana_value(fc), _pips(fc)))
+    deduped = tuple(dict.fromkeys(alts))
+    return primary_mv, primary_pips, deduped if len(deduped) > 1 else ()
+
+
 def _without_unmet_counter_mana(card: dict, text: str) -> tuple[str, bool]:
     """Rules text minus mana that needs a counter the card lacks, and whether any was cut.
 
@@ -282,13 +359,15 @@ def hand_card(card: dict) -> HandCard:
     needs_carrier = scope == "self" or (
         scope == "either" and target_effect_is_harmful(enchant_effect_text("Enchant creature", text)) is False
     )
+    fetches_basic = is_land and bool(_BASIC_FETCH_LAND.search(text))
+    mana_value, pips, alt_costs = (0, (), ()) if is_land else _cast_costs(card, cost, type_line)
     return HandCard(
         instance_id=int(card.get("instance_id") or 0),
         name=str(card.get("name") or "?"),
         is_land=is_land,
         produces=_land_colors(card) if is_land else frozenset(),
-        mana_value=0 if is_land else _mana_value(cost),
-        pips=() if is_land else _pips(cost),
+        mana_value=mana_value,
+        pips=pips,
         landcycling=_mana_value(cycling.group(1)) if cycling else None,
         instant_speed=instant_speed,
         type_line=type_line,
@@ -298,7 +377,21 @@ def hand_card(card: dict) -> HandCard:
         needs_carrier=needs_carrier,
         makes_carrier=resolves_to_creature(card),
         makes_mana_or_finds_land=False if is_land else _develops_mana(text),
+        alt_costs=alt_costs,
+        fetches_basic=fetches_basic,
     )
+
+
+def _card_cost_options(card: HandCard) -> tuple[tuple[int, tuple[frozenset[str], ...]], ...]:
+    """Castable (mana_value, pips) options for ``card``."""
+    return card.alt_costs or ((card.mana_value, card.pips),)
+
+
+def _mulligan_produces(land: Any) -> frozenset[str]:
+    """Colors this land can provide in mulligan evaluation (including basic fetchlands)."""
+    if getattr(land, "fetches_basic", False):
+        return frozenset(COLORS)
+    return land.produces
 
 
 def _pip_matching(pips: tuple[frozenset[str], ...], lands: list[HandCard]) -> bool:
@@ -309,7 +402,7 @@ def _pip_matching(pips: tuple[frozenset[str], ...], lands: list[HandCard]) -> bo
         if index == len(order):
             return True
         for position, land in enumerate(lands):
-            if position not in used and land.produces & order[index]:
+            if position not in used and _mulligan_produces(land) & order[index]:
                 if assign(index + 1, used | {position}):
                     return True
         return False
@@ -318,18 +411,28 @@ def _pip_matching(pips: tuple[frozenset[str], ...], lands: list[HandCard]) -> bo
 
 
 def colors_reachable(card: HandCard, lands: list[HandCard]) -> bool:
-    """Every colored pip has at least one source among these lands."""
-    sources = frozenset().union(*(land.produces for land in lands)) if lands else frozenset()
-    return all(pip & sources for pip in card.pips)
+    """Every colored pip of at least one castable face has a source among these lands."""
+    sources = frozenset().union(*(_mulligan_produces(land) for land in lands)) if lands else frozenset()
+    return any(all(pip & sources for pip in opt_pips) for _mv, opt_pips in _card_cost_options(card))
+
+
+def _cost_castable(mv: int, pips: tuple[frozenset[str], ...], lands: list[HandCard]) -> bool:
+    if mv > len(lands):
+        return False
+    if any(getattr(land, "fetch_targets", None) is not None for land in lands):
+        norm_lands = [
+            replace(land, produces=frozenset(COLORS))
+            if getattr(land, "fetches_basic", False) and getattr(land, "fetch_targets", None) is None
+            else land
+            for land in lands
+        ]
+        return opening_fetches.can_pay(pips, mv, norm_lands)
+    return _pip_matching(pips, lands)
 
 
 def castable_with(card: HandCard, lands: list[HandCard]) -> bool:
     """Castable using only these lands (land drops on curve, no draws)."""
-    if card.mana_value > len(lands):
-        return False
-    if any(land.fetch_targets is not None for land in lands):
-        return opening_fetches.can_pay(card.pips, card.mana_value, lands)
-    return _pip_matching(card.pips, lands)
+    return any(_cost_castable(mv, pips, lands) for mv, pips in _card_cost_options(card))
 
 
 def _card_value(card: HandCard, lands: list[HandCard], copies: int) -> float:
@@ -345,7 +448,7 @@ def _card_value(card: HandCard, lands: list[HandCard], copies: int) -> float:
         value -= 0.3 * (card.mana_value - 4)
     if not colors_reachable(card, lands):
         value -= 1.0
-    elif not _pip_matching(card.pips, lands):
+    elif not any(_pip_matching(opt_pips, lands) for _mv, opt_pips in _card_cost_options(card)):
         value -= 0.3
     if card.landcycling is not None:
         value = max(value, 1.5 if count >= 2 else 1.0)
@@ -576,12 +679,23 @@ def situation(state: dict, mulligans: int | None = None) -> MulliganSituation:
 def _plays(kept: list[HandCard]) -> tuple[list[HandCard], list[HandCard], list[HandCard]]:
     lands = [card for card in kept if card.is_land]
     spells = [card for card in kept if not card.is_land]
+    sources = frozenset().union(*(_mulligan_produces(land) for land in lands)) if lands else frozenset()
     carrier = any(
-        card.makes_carrier and card.mana_value <= 3 and castable_with(card, lands) for card in spells
+        card.makes_carrier
+        and any(mv <= 3 and _cost_castable(mv, pips, lands) for mv, pips in _card_cost_options(card))
+        for card in spells
     )
     spells = [card for card in spells if not card.needs_carrier or carrier]
-    early = [card for card in spells if card.mana_value <= 3 and castable_with(card, lands)]
-    cheap = [card for card in spells if card.mana_value <= 2 and colors_reachable(card, lands)]
+    early = [
+        card
+        for card in spells
+        if any(mv <= 3 and _cost_castable(mv, pips, lands) for mv, pips in _card_cost_options(card))
+    ]
+    cheap = [
+        card
+        for card in spells
+        if any(mv <= 2 and all(pip & sources for pip in pips) for mv, pips in _card_cost_options(card))
+    ]
     covered = [card for card in spells if colors_reachable(card, lands)]
     return early, cheap, covered
 
@@ -664,19 +778,38 @@ def mulligan_verdict(found: MulliganSituation) -> tuple[str, str] | None:
     return "keep", f"keeping 5 with {len(kept_lands)} land(s); a random 4 is worse"
 
 
+def mulligan_fallback_choice(found: MulliganSituation) -> tuple[str, str]:
+    """Fallback keep/mulligan verdict when ``mulligan_verdict`` left it to the model and the model failed."""
+    if found.keep_size == 7 and len(found.cards) == 7:
+        kept, _bottom = best_keep(found.cards, 7)
+        kept_lands = [card for card in kept if card.is_land]
+        early, _cheap, covered = _plays(kept)
+        has_basic_fetch = any(land.fetches_basic for land in kept_lands)
+        has_affordable_landcycler = any(
+            card.landcycling is not None and card.landcycling <= len(kept_lands)
+            for card in kept
+            if not card.is_land
+        )
+        if not early and len(covered) <= 1 and not has_affordable_landcycler and not has_basic_fetch:
+            return "mulligan", "no early plays or color coverage in 7 cards; a 6-card hand is better"
+    return "keep", "fallback keep"
+
+
 def _turn_note(card: HandCard, lands: list[HandCard]) -> str:
     if castable_with(card, lands):
         return f"castable turn {max(1, card.mana_value)} with these lands"
     if not colors_reachable(card, lands):
+        sources = frozenset().union(*(_mulligan_produces(land) for land in lands)) if lands else frozenset()
         missing = sorted(
-            {color for pip in card.pips for color in pip} - {c for land in lands for c in land.produces}
+            {color for _mv, opt_pips in _card_cost_options(card) for pip in opt_pips for color in pip}
+            - sources
         )
         if any(land.fetch_targets is not None for land in lands):
             return "no verified opening route to " + "/".join(missing)
         return "needs " + "/".join(missing) + " mana this hand cannot make yet"
     if any(land.fetch_targets is not None for land in lands) and card.mana_value <= len(lands):
         return "no verified payment with distinct available land sources"
-    if not _pip_matching(card.pips, lands):
+    if not any(_pip_matching(opt_pips, lands) for _mv, opt_pips in _card_cost_options(card)):
         return "needs more sources of its color than this hand has"
     return f"needs {card.mana_value - len(lands)} more land(s)"
 

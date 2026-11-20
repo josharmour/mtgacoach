@@ -126,6 +126,7 @@ from arenamcp.board_assessment import (
     extra_life_cost,
     face_damage,
     harms_players,
+    has_unmodelled_additional_cost,
     life_loss,
     made_tokens,
     own_subject,
@@ -3114,6 +3115,8 @@ def _unmodelled_effect_reasons(card: dict | None, result: Any = None) -> str:
         role = card_role(card)
         if role == "land":
             return ""
+        if has_unmodelled_additional_cost(card):
+            return "its additional cost"
         name = str(card["name"])
         if _x_unmodelled(card, role):
             return "its X cost"
@@ -3875,6 +3878,8 @@ class Moves:
 
     def _variants(self, hs: HandSpell) -> tuple[tuple, Variant | None]:
         spell, card = hs.spell, hs.spell.card
+        if has_unmodelled_additional_cost(card):
+            return (), None
         info = hand_info(card)
         creature = spell.role == "creature" and _is_creature(card)
         body = (

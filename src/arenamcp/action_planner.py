@@ -4197,7 +4197,7 @@ class ActionPlanner(_ActionLegalityMixin):
             return []
         from arenamcp.decision_consistency import consistent_action
         from arenamcp.removal_windows import invalid_removal_intent
-        from arenamcp.stack_responses import protective_pass
+        from arenamcp.stack_responses import discard_response_pass, protective_pass
 
         invalid_target = invalid_removal_intent(decision, game_state, chosen, self._last_decision_reasoning)
         if invalid_target:
@@ -4246,6 +4246,18 @@ class ActionPlanner(_ActionLegalityMixin):
                 reasoning=reason,
             )
             logger.info("Protection guard: %s", reason)
+        discard_resp = discard_response_pass(decision, game_state, chosen)
+        if discard_resp:
+            option_id, reason = discard_resp
+            chosen = [option_id]
+            self._last_decision_reasoning = reason
+            self._last_decision_option_ids = chosen
+            self._last_decision_trace.update(
+                discard_response_guard={"replaced": "pass", "with": option_id, "reason": reason},
+                selected_ids=chosen,
+                reasoning=reason,
+            )
+            logger.info("Discard response guard: %s", reason)
         trace = getattr(self, "_last_decision_trace", None)
         rejected = set(trace.get("outcome_rejected_ids") or []) if isinstance(trace, dict) else set()
         if rejected.intersection(chosen):
@@ -5554,8 +5566,12 @@ class ActionPlanner(_ActionLegalityMixin):
             )
         ):
             return decision, []
-        if _lethal_this_turn(game_state) is True or lethal_reach(decision, game_state) is not None:
-            return decision, []
+        reach = lethal_reach(decision, game_state)
+        if reach is not None:
+            burn = getattr(reach, "burn", None)
+            life = getattr(reach, "life", None)
+            if type(burn) is not int or type(life) is not int or burn >= life:
+                return decision, []
         payable = [o for o in decision.options if o.option_id != "pass" and o.payable is not False]
         if not payable:
             return decision, []
@@ -5926,14 +5942,14 @@ class ActionPlanner(_ActionLegalityMixin):
                 own_stack_holds,
                 own_stack_line_waits,
                 plan_chip_release,
-                stack_is_ours,
+                stack_is_ours_or_benign,
                 sweeper_hold,
                 two_turn_reach,
             )
             from arenamcp.decision_memory import burn_combo_for, burn_kills_nothing, burn_reach
             from arenamcp.mulligan_policy import hand_card
 
-            if not stack_is_ours(game_state):
+            if not stack_is_ours_or_benign(game_state):
                 return decision, []  # theirs to answer: a response is the point of an instant
             instants: list[tuple[Any, dict]] = []
             sweepers: list[tuple[Any, dict]] = []
@@ -7318,7 +7334,8 @@ class ActionPlanner(_ActionLegalityMixin):
 
         taken = self._mulligans_taken(game_state)
         state = {**game_state, "_mulligans_taken": taken} if taken is not None else game_state
-        verdict = mulligan_policy.mulligan_verdict(mulligan_policy.situation(state))
+        situation = mulligan_policy.situation(state)
+        verdict = mulligan_policy.mulligan_verdict(situation)
         if verdict is not None:
             choice, reason = verdict
             option = "mull:keep" if choice == "keep" else "mull:mull"
@@ -7346,7 +7363,20 @@ class ActionPlanner(_ActionLegalityMixin):
             self.last_llm_failure = "unavailable" if is_llm_unavailable_error(error) else "bad_answer"
             logger.info("mulligan LLM path failed: %s", error)
         if not chosen:
-            chosen = self.deterministic_option_pick(decision)
+            fb_choice, fb_reason = mulligan_policy.mulligan_fallback_choice(situation)
+            fb_option = "mull:mull" if fb_choice == "mulligan" else "mull:keep"
+            if fb_option in decision.option_ids():
+                chosen = [fb_option]
+                self._last_decision_option_ids = chosen
+                self._last_decision_reasoning = fb_reason[:1].upper() + fb_reason[1:] + "."
+                self._last_decision_trace = {
+                    "policy": "mulligan_fallback",
+                    "mulligans_taken": taken,
+                    "validated_ids": chosen,
+                    "reasoning": fb_reason,
+                }
+            else:
+                chosen = self.deterministic_option_pick(decision)
         self._note_mulligan(game_state, chosen[0], taken)
         return chosen
 

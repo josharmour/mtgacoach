@@ -3923,11 +3923,12 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                 if oracle:
                     lines.append(f"     {oracle}")
         try:
-            from arenamcp.stack_responses import shield_response_note
+            from arenamcp.stack_responses import discard_response_note, shield_response_note
 
-            note = shield_response_note(game_state)
+            notes = [n for n in (shield_response_note(game_state), discard_response_note(game_state)) if n]
+            note = "\n".join(notes)
         except Exception as exc:  # a prompt note never breaks the prompt
-            logger.debug("No shield-response note: %s", exc)
+            logger.debug("No stack-response note: %s", exc)
             note = ""
         if note:
             lines.extend(note.splitlines())

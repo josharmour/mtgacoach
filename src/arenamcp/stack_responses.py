@@ -49,6 +49,110 @@ class ShieldResponse:
     fizzles: bool  # every target of the threat is protected: it does nothing
 
 
+@dataclass(frozen=True)
+class DiscardThreat:
+    threat: str
+    opponent_chooses: bool
+    instants_eligible: bool
+
+
+_REVEAL_OR_LOOK_HAND_RE = re.compile(
+    r"\b(?:reveals?\s+(?:their|his or her|your)\s+hand|looks?\s+at\s+[^.\n]*?\bhand)\b",
+    re.IGNORECASE,
+)
+_REVEAL_CHOOSE_WHAT_RE = re.compile(
+    r"\b(?:choose|exile)\s+(?:a|an|up to \w+|\d+)\s+(?P<what>[^.\n]*?\bcards?\b)"
+    r"(?:\s+from\s+(?:it|that player'?s? hand|their hand))?",
+    re.IGNORECASE,
+)
+_REVEAL_LOSS_RE = re.compile(
+    r"\bdiscards?\s+(?:that|those|a|an|\d+|two|three|it|them)\b"
+    r"|\bexiles?\s+(?:a|an|that|those|up to \w+|\d+)[^.\n]*\b(?:card|from\s+(?:it|that player'?s? hand|their hand))\b",
+    re.IGNORECASE,
+)
+_BLIND_FORCED_DISCARD_RE = re.compile(
+    r"(?<!\bunless that player )\b(?:target\s+(?:opponent|player)|each\s+(?:opponent|player)"
+    r"|that player|defending player)\s+discards?\s+"
+    r"(?:(?:a|an|\d+|two|three|four)\s+(?P<what>[^.\n]*?\bcards?\b)|their\s+hand|all\b)",
+    re.IGNORECASE,
+)
+_NON_TYPE_PREFIX_RE = re.compile(
+    r"\bnon[-\s]?(?:creature|land|artifact|enchantment|planeswalker|permanent|instant|sorcery|battle)\b",
+    re.IGNORECASE,
+)
+_EXCLUDES_INSTANT_RE = re.compile(
+    r"\b(?:creature|artifact|enchantment|planeswalker|battle|sorcery|land)\b",
+    re.IGNORECASE,
+)
+_NON_INSTANT_RE = re.compile(r"\bnon[-\s]?instant\b", re.IGNORECASE)
+
+
+def _instants_eligible(what: str) -> bool:
+    if not what:
+        return True
+    low = what.lower()
+    if _NON_INSTANT_RE.search(low):
+        return False
+    if re.search(r"\binstants?\b", low):
+        return True
+    stripped = _NON_TYPE_PREFIX_RE.sub("", low)
+    return not bool(_EXCLUDES_INSTANT_RE.search(stripped))
+
+
+def discard_threat_on_stack(state: dict[str, Any]) -> DiscardThreat | None:
+    """Detect an opposing discard or hand-exile threat on the stack aimed at us."""
+    seat = _local_seat(state)
+    stack = state.get("stack") or []
+    if seat is None or not stack:
+        return None
+    for obj in stack:
+        if not isinstance(obj, dict):
+            continue
+        ctrl = obj.get("controller_seat_id") or obj.get("owner_seat_id")
+        if ctrl in (None, seat):
+            continue
+        raw_lines = [
+            line
+            for line in _clean(str(obj.get("oracle_text") or "")).splitlines()
+            if not line.strip().startswith("as an additional cost")
+        ]
+        text = "\n".join(raw_lines)
+        if not text:
+            continue
+        targets = [t for t in obj.get("targeting") or [] if t is not None]
+        global_opp = bool(re.search(r"\b(?:each\s+(?:opponent|player)|defending player)\b", text))
+        if targets:
+            if seat not in targets and not global_opp:
+                continue
+        elif not re.search(
+            r"\b(?:target\s+(?:opponent|player)|each\s+(?:opponent|player)|defending player)\b",
+            text,
+        ):
+            continue
+        threat_name = str(obj.get("name") or "an opponent's spell")
+        if _REVEAL_OR_LOOK_HAND_RE.search(text):
+            choose = _REVEAL_CHOOSE_WHAT_RE.search(text)
+            if (
+                choose
+                and _REVEAL_LOSS_RE.search(text)
+                and not re.search(r"\bfrom\s+[^.\n]*graveyard\b", text)
+            ):
+                return DiscardThreat(
+                    threat=threat_name,
+                    opponent_chooses=True,
+                    instants_eligible=_instants_eligible(choose.group("what") or ""),
+                )
+        if not re.search(r"\b(?:may discard|(?:its|their) controller discards)\b", text):
+            blind = _BLIND_FORCED_DISCARD_RE.search(text)
+            if blind:
+                return DiscardThreat(
+                    threat=threat_name,
+                    opponent_chooses=False,
+                    instants_eligible=_instants_eligible(blind.group("what") or ""),
+                )
+    return None
+
+
 def untapped_sources(state: dict[str, Any], seat: Any) -> list[SimpleNamespace]:
     """Our untapped lands as mana sources (``produces``) for ``_pip_matching``.
 
@@ -279,3 +383,79 @@ def protective_pass(decision, state, chosen):
             f"Cast {card['name']} before {response.threat} resolves to {mechanism} and save {response.target}.",
         )
     return None
+
+
+def discard_response_note(state: dict[str, Any]) -> str:
+    """One prompt line when an opposing discard spell threatens a castable instant in hand."""
+    threat = discard_threat_on_stack(state)
+    if threat is None or not threat.instants_eligible:
+        return ""
+    seat = _local_seat(state)
+    hand = [c for c in state.get("hand") or [] if isinstance(c, dict)]
+    if seat is None or not hand:
+        return ""
+    sources = untapped_sources(state, seat)
+    answers = tuple(
+        dict.fromkeys(str(c.get("name") or "?") for c in hand if affordable_at_instant_speed(c, sources))
+    )
+    if not answers:
+        return ""
+    if threat.opponent_chooses:
+        return (
+            f"RESPOND NOW: OPP {threat.threat} will look at your hand and force you to discard. "
+            f"Cast {' or '.join(answers)} in response before losing it to discard."
+        )
+    has_lands = any("land" in str(c.get("type_line") or "").lower() for c in hand)
+    if len(hand) <= 2 or not has_lands:
+        return (
+            f"RESPOND NOW: OPP {threat.threat} forces a discard while your hand is tight. "
+            f"Consider casting {' or '.join(answers)} in response rather than discarding it."
+        )
+    return ""
+
+
+def discard_response_pass(decision, state, chosen):
+    """Override a Pass into casting payable instant face burn before opposing discard resolves."""
+    if chosen != ["pass"] or decision.request_type != "ActionsAvailable" or not decision.can_pass:
+        return None
+    local = _local_seat(state)
+    turn = state.get("turn") or state.get("turn_info") or {}
+    if local is None or turn.get("priority_player") != local:
+        return None
+    threat = discard_threat_on_stack(state)
+    if threat is None or not threat.instants_eligible:
+        return None
+    hand = [c for c in state.get("hand") or [] if isinstance(c, dict)]
+    if not threat.opponent_chooses:
+        lands_in_hand = sum(1 for c in hand if "land" in str(c.get("type_line") or "").lower())
+        nonlands_in_hand = len(hand) - lands_in_hand
+        if not (lands_in_hand == 0 and nonlands_in_hand <= 1):
+            return None
+
+    from arenamcp.burn_timing import _cost, damage_only, face_damage, instant_speed
+
+    by_id = {c.get("instance_id"): c for c in hand if c.get("instance_id") is not None}
+    best: tuple[tuple[int, int], Any, dict] | None = None
+    for option in getattr(decision, "options", ()) or ():
+        meta = getattr(option, "meta", None) or {}
+        if getattr(option, "payable", None) is not True or meta.get("actionType") != "ActionType_Cast":
+            continue
+        card = by_id.get(meta.get("instanceId"))
+        if not card or not decision.selection_is_valid([option.option_id]):
+            continue
+        if not (instant_speed(card) and damage_only(card, state)):
+            continue
+        dmg = face_damage(card)
+        if dmg <= 0:
+            continue
+        key = (dmg, _cost(card))
+        if best is None or key > best[0]:
+            best = (key, option, card)
+    if best is None:
+        return None
+    _key, option, card = best
+    name = str(card.get("name") or option.label)
+    return (
+        option.option_id,
+        f"Cast {name} before {threat.threat} resolves and strips it from hand.",
+    )

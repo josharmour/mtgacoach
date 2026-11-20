@@ -452,6 +452,22 @@ def extra_mana_cost(card: dict) -> int:
     return int(paid.group(1)) if paid else 0
 
 
+_UNMODELLED_EXTRA_ACTION = re.compile(r"\b(?:sacrifice|discard|exile|return|tap|blight)\b")
+
+
+def has_unmodelled_additional_cost(card: dict) -> bool:
+    """True when ``card`` has a mandatory non-mana additional cast cost without a mana alternative."""
+    for match in _EXTRA_COST.finditer(_cast_text(card)):
+        what = match.group("what").strip()
+        if not what or re.match(r"^you may\b", what):
+            continue
+        if re.search(r"\bor pay \{o?\d+\}", what):
+            continue
+        if _UNMODELLED_EXTRA_ACTION.search(what):
+            return True
+    return False
+
+
 def card_role(card: dict) -> str:
     """Strategic role of a card for deployment and the role guard.
 
@@ -3089,6 +3105,8 @@ def _spell_value(
     spell: _Spell, *, survival: bool, theirs: list[dict], ours: list[dict] | tuple = ()
 ) -> float:
     card = spell.card
+    if has_unmodelled_additional_cost(card):
+        return 0.0
     their_air = any(_flying(b) for b in theirs)
     if spell.role == "creature":
         power, toughness = _int(card.get("power")) or 0, _int(card.get("toughness")) or 0

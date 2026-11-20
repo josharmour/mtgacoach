@@ -201,6 +201,7 @@ def _line_text(step: Any) -> str:
 def board_math_option_pick(decision: Any, game_state: dict[str, Any]) -> tuple[list[str], str]:
     """A priority-window choice without the model: land drop, then the board-math line."""
     import arenamcp.action_planner as _ap
+    from arenamcp.board_assessment import has_unmodelled_additional_cost
     from arenamcp.mana import mana_cost_to_cmc
 
     fallback = _ap.ActionPlanner.deterministic_option_pick(decision)
@@ -249,6 +250,7 @@ def board_math_option_pick(decision: Any, game_state: dict[str, Any]) -> tuple[l
         return [pick.option_id], plan_text or "no board assessment, so the land drop comes first"
 
     picks: list[tuple[int, Any]] = []
+    backup_picks: list[tuple[int, Any]] = []
     for option in options:
         meta = option.meta or {}
         if option.payable is not True or meta.get("actionType") != "ActionType_Cast":
@@ -269,12 +271,17 @@ def board_math_option_pick(decision: Any, game_state: dict[str, Any]) -> tuple[l
             and unpayable_graveyard_flashback(game_state, card, meta) is not None
         ):
             continue
+        if has_unmodelled_additional_cost(card):
+            continue
+        cmc = mana_cost_to_cmc(cost)
+        if role in ("creature", "planeswalker"):
+            backup_picks.append((cmc, option))
         if step is not None:
             if name not in scheduled and name not in greedy:
                 continue
         elif assessment is not None or role not in ("creature", "planeswalker"):
             continue
-        picks.append((mana_cost_to_cmc(cost), option))
+        picks.append((cmc, option))
     if picks:
         _, option = max(picks, key=lambda item: item[0])
         if step is not None and not scheduled:
@@ -284,6 +291,11 @@ def board_math_option_pick(decision: Any, game_state: dict[str, Any]) -> tuple[l
                 + (", ".join(casts[:-1]) + " and " + casts[-1] if len(casts) > 1 else casts[0])
             )
         return [option.option_id], plan_text or "no board assessment, so the biggest payable creature"
+    if backup_picks and step is not None and (scheduled or greedy) and not deferred:
+        _, option = max(backup_picks, key=lambda item: item[0])
+        return [option.option_id], (
+            f"{plan_text}; scheduled cast unavailable in menu, deploying biggest payable threat instead"
+        )
     if any(option.option_id == "pass" for option in options):
         if deferred:
             later = ", ".join(sorted(deferred))

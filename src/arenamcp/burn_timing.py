@@ -86,6 +86,18 @@ def _cost(card: dict) -> int:
     return _cmc(card.get("mana_cost"))
 
 
+_KICKER_MANA_RE = re.compile(r"\bkicker\s*((?:\{[^}]+\})+)", re.IGNORECASE)
+
+
+def _full_spell_cost(card: dict) -> int:
+    """Base mana cost plus mana kicker cost when present (e.g. Burst Lightning = 5)."""
+    from arenamcp.decision_memory import _cmc
+
+    cost = _cost(card)
+    match = _KICKER_MANA_RE.search(_text(card))
+    return cost + (_cmc(match.group(1)) if match else 0)
+
+
 def _x_spell(card: dict) -> bool:
     return "{x}" in str(card.get("mana_cost") or "").lower()
 
@@ -194,10 +206,57 @@ def _ours(state: dict) -> list[dict]:
     ]
 
 
+_PURE_LIFEGAIN_RE = re.compile(
+    r"\bgains?\s+(?:\d+|one|two|three|four|five|x)\s+life\b|\bgains?\s+life\s+equal\b",
+    re.IGNORECASE,
+)
+_PURE_LIFEGAIN_DISQUALIFIER_RE = re.compile(
+    r"\b(?:draw|draws|create|creates|counter|counters|gets?\s+[+-]|destroy|exile|damage|"
+    r"discard|prevent|hexproof|shroud|protection|indestructible|regenerate|"
+    r"can['’]t cast|search|put|return|sacrifice|tap (?:target|up to|each|all|an?)|"
+    r"untap|lose|loses|if you have \d+ or more life|life total becomes|win the game)\b",
+    re.IGNORECASE,
+)
+_PURE_LAND_SEARCH_RE = re.compile(
+    r"search your library for (?:a |an |up to \w+ )?(?:basic )?"
+    r"(?:land|plains|island|swamp|mountain|forest)\b",
+    re.IGNORECASE,
+)
+_PURE_LAND_SEARCH_DISQUALIFIER_RE = re.compile(
+    r"\b(?:creature|token|damage|destroy|exile|discard|draw|counters?|gets?\s+[+-]|"
+    r"hexproof|shroud|protection|indestructible|prevent|can['’]t cast|lose|loses|"
+    r"gains?\s+[^.\n]*\blife)\b",
+    re.IGNORECASE,
+)
+
+
+def is_benign_stack_entry(entry: dict) -> bool:
+    """True for a pure lifegain or pure land-search opposing ABILITY that non-lethal burn should ignore."""
+    if not isinstance(entry, dict) or str(entry.get("object_kind") or "").upper() != "ABILITY":
+        return False
+    text = _text(entry).strip().lower()
+    if not text:
+        return False
+    if _PURE_LIFEGAIN_RE.search(text) and not _PURE_LIFEGAIN_DISQUALIFIER_RE.search(text):
+        return True
+    if _PURE_LAND_SEARCH_RE.search(text) and not _PURE_LAND_SEARCH_DISQUALIFIER_RE.search(text):
+        return True
+    return False
+
+
 def stack_is_ours(state: dict) -> bool:
     """Whether everything on the stack (possibly nothing) is ours."""
     local = _local_seat(state)
     return all(isinstance(entry, dict) and _controller(entry) == local for entry in state.get("stack") or [])
+
+
+def stack_is_ours_or_benign(state: dict) -> bool:
+    """True when every stack entry is ours or a benign opposing ability (pure lifegain/land-fetch)."""
+    local = _local_seat(state)
+    return all(
+        isinstance(entry, dict) and (_controller(entry) == local or is_benign_stack_entry(entry))
+        for entry in state.get("stack") or []
+    )
 
 
 def _window(state: dict) -> str:
@@ -378,7 +437,9 @@ def hold_overrides(decision: Any, state: dict, held: list[tuple[Any, dict]]) -> 
         from arenamcp.decision_memory import mana_available
 
         names = {str(card.get("name") or "") for _option, card in held}
-        cost = sum(_cost(card) for _option, card in {id(card): (o, card) for o, card in held}.values())
+        cost = sum(
+            _full_spell_cost(card) for _option, card in {id(card): (o, card) for o, card in held}.values()
+        )
         spare = mana_available(state) - planned_mana(decision, state, names)
         if spare > cost:
             return (
@@ -555,7 +616,7 @@ def upkeep_holds(decision: Any, state: dict) -> list[tuple[Any, dict]]:
     want of the mana Shock took, and Slickshot's +2/+0 from Shock was lost.
     Cast in main 1 it does the same, after the land drop and our creatures.
     """
-    if not _our_turn(state) or _window(state) not in ("upkeep", "draw") or not stack_is_ours(state):
+    if not _our_turn(state) or _window(state) not in ("upkeep", "draw") or not stack_is_ours_or_benign(state):
         return []
     return [
         (option, card)
@@ -612,6 +673,8 @@ _BURN_WINDOW_THREAT_RE = re.compile(
     r"|\b(?:hexproof|shroud|protection from|indestructible|regenerate)\b"
     r"|\bprevent (?:all|that|the next)\b[^.\n]*\bdamage\b|\bdamage can['’]t be dealt\b"
     r"|\bdiscards?\b"
+    r"|\bexiles?\s+[^.\n]*\bfrom\s+(?:it|(?:their|that player'?s?|your) hand)\b"
+    r"|\b(?:reveals?\s+(?:their|his or her|your)\s+hand|looks?\s+at\s+[^.\n]*?\bhand)\b"
     r"|\bcan['’]t cast spells\b|\bcan['’]t play\b[^.\n]*\bspells\b"
     r"|\bgets? [+-](?:\d+|x)/\+(?:[1-9]\d*|x)\b|\b\+\d+/\+\d+ counters?\b",
     re.IGNORECASE,
@@ -650,6 +713,8 @@ def _stack_threatens_burn_window(state: dict) -> bool:
         if not isinstance(entry, dict):
             continue
         if local is not None and _controller(entry) == local:
+            continue
+        if is_benign_stack_entry(entry):
             continue
         if _BURN_WINDOW_THREAT_RE.search(_text(entry)):
             return True
@@ -700,10 +765,10 @@ def combat_holds(decision: Any, state: dict) -> list[tuple[Any, dict]]:
     13:58:33 for their end step, went to the face in our declare-blockers step
     (tagged "-7 vs best"; the line kept it for Leonin Vanguard). In combat it
     goes now only to kill a blocker (or a creature that could block, before
-    blocks) or when it is lethal (the caller's check); nothing of theirs is on
-    the stack.
+    blocks) or when it is lethal (the caller's check); nothing threatening of
+    theirs is on the stack.
     """
-    if not _our_turn(state) or _window(state) not in _COMBAT_STEPS or not stack_is_ours(state):
+    if not _our_turn(state) or _window(state) not in _COMBAT_STEPS or not stack_is_ours_or_benign(state):
         return []
     return [
         (option, card)
@@ -1031,6 +1096,7 @@ __all__ = [
     "face_damage",
     "hold_overrides",
     "instant_speed",
+    "is_benign_stack_entry",
     "is_sweeper",
     "line_gain_is_face_only",
     "opponent_early_window_holds",
@@ -1038,6 +1104,7 @@ __all__ = [
     "own_stack_line_waits",
     "planned_mana",
     "stack_is_ours",
+    "stack_is_ours_or_benign",
     "sweeper_hold",
     "their_life",
     "two_turn_reach",
