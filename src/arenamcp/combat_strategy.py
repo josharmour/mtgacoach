@@ -470,11 +470,18 @@ def _search(state: dict, raw: list[dict], budget: int, deadline_s: float) -> Com
             material = sum(_material(cards[identity]) for identity in dead_blockers) - sum(
                 _material(cards[identity]) for identity in dead_attackers
             )
+            # A clean/favorable forced trade (dead_blockers non-empty, material >= 0) carries
+            # initiative value: opponent must either trade equal/better material or take face damage.
+            # Keep the conservative face-damage weight (5) when throwing away an attacker for zero
+            # blockers killed so we never chump-attack into a bigger blocker for minor chip damage.
+            trade_initiative = 0.25 if (dead_blockers and material >= 0.0) else 0.0
+            dmg_weight = 5 if (dead_attackers and not dead_blockers) else 10
             score = (
-                player_damage * 5 / max(1, opponent_life - player_damage)
+                player_damage * dmg_weight / max(1, opponent_life - player_damage)
                 + walker_value
                 + material
-                + (attack_life_gain - net_counterattack) * 5 / max(1, life_after_attack - net_counterattack)
+                + trade_initiative
+                + (attack_life_gain - net_counterattack) * 6 / max(1, life_after_attack - net_counterattack)
                 - walker_crackback_cost(crackback, life_after_attack, our_walkers)
             )
             if player_loses(player_damage, poison_given, cards_milled, ends_game):

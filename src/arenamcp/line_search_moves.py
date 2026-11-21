@@ -2911,6 +2911,75 @@ def _supported_self_etb_trigger(trig: VerifiedTrigger, *, is_creature: bool) -> 
     return False
 
 
+_TEXT_AURA_BUFF_RE = re.compile(
+    r"enchanted creature gets \+(\d+)/\+(\d+)(\s+for each enchantment you control)?(?:\b|$)",
+    re.IGNORECASE,
+)
+_TEXT_AURA_ETB_DRAW_RE = re.compile(
+    r"^\s*when (?:this aura|[^\n,.]+) enters,?\s+draw a card\.?\s*$",
+    re.IGNORECASE,
+)
+_TEXT_AURA_ETB_EXILE_RE = re.compile(
+    r"^\s*when (?:this aura|[^\n,.]+) enters,?\s+exile target (?:nonland permanent|creature) an opponent controls(?: until [^\n.]+)?\.?\s*$",
+    re.IGNORECASE,
+)
+_TEXT_AURA_DISQUALIFIER_RE = re.compile(
+    r"\b(?:can't attack|can't block|loses all abilities|enchant land|doesn't untap|gets -\d|"
+    r"you control enchanted|search your library|whenever\b|choose (?:one|two|three|up to)|at the beginning of)\b",
+    re.IGNORECASE,
+)
+
+
+def _text_buff_aura(
+    card: dict | None, *, our_enchantments: int = 0
+) -> tuple[tuple[int, int], int, bool] | None:
+    """Deterministic text-parser model for simple beneficial creature Auras without CardFacts.
+
+    Returns ``((+P, +T), etb_draws, etb_exile)`` or ``None`` (fail closed on complex/negative Auras).
+    """
+    if not isinstance(card, dict) or _is_creature(card) or "aura" not in _types(card):
+        return None
+    oracle = _text(card)
+    if "•" in oracle or ":" in oracle or not re.search(r"\benchant creature\b", oracle):
+        return None
+    if _TEXT_AURA_DISQUALIFIER_RE.search(oracle):
+        return None
+    if re.search(r"\benchant creature you don't control\b|\benchant creature an opponent controls\b", oracle):
+        return None
+    m = _TEXT_AURA_BUFF_RE.search(oracle)
+    if not m:
+        return None
+    # Check the buff sentence itself for conditional/unsupported scaling ("as long as ...", "for each <other>")
+    buff_line = next(
+        (ln.strip() for ln in oracle.splitlines() if _TEXT_AURA_BUFF_RE.search(ln)),
+        "",
+    )
+    if re.search(r"\bas long as\b|\bif\b", buff_line, re.IGNORECASE):
+        return None
+    if "for each" in buff_line.lower() and not m.group(3):
+        return None
+    p, t = int(m.group(1)), int(m.group(2))
+    if not (0 <= p <= 10 and 0 <= t <= 10 and (p > 0 or t > 0)):
+        return None
+    if m.group(3):
+        scale = max(1, int(our_enchantments) + 1)
+        p = min(10, p * scale)
+        t = min(10, t * scale)
+    etb_draws = 0
+    etb_exile = False
+    for raw_line in oracle.splitlines():
+        line = raw_line.strip()
+        if not line or not re.search(r"\bwhen\b", line, re.IGNORECASE):
+            continue
+        if _TEXT_AURA_ETB_DRAW_RE.match(line):
+            etb_draws += 1
+        elif _TEXT_AURA_ETB_EXILE_RE.match(line):
+            etb_exile = True
+        else:
+            return None  # fail closed on any unparsed "when ..." trigger (dies, leaves, second ETB, etc.)
+    return (p, t), etb_draws, etb_exile
+
+
 def _card_facts_buff_aura(
     record: Any, card: dict
 ) -> tuple[tuple[int, int], tuple[VerifiedTrigger, ...]] | None:
@@ -3082,6 +3151,8 @@ def unmodelled_effect(card: dict | None, result: Any = None) -> str:
             if reason == "a combat trick" and _card_facts_pump_spell(record, card) is not None:
                 _log_record_use(name)
                 return ""
+        if reason == "its effect" and _text_buff_aura(card) is not None:
+            return ""
     return reason
 
 
@@ -4227,6 +4298,47 @@ class Moves:
                     fact_draws=plain.fact_draws or etb_draws,
                     tokens=plain.tokens or (self._tokens(etb_toks) if etb_toks else ()),
                     has_fact_triggers=bool(ongoing),
+                    stays_on_battlefield=True,
+                )
+        if (
+            plain.aura_pump == (0, 0)
+            and not creature
+            and not oracle_modes
+            and not spell.has_x
+            and spell.role != "counter"
+            and "aura" in _types(card)
+            and _unmodelled_effect_reasons(card) == "its effect"
+        ):
+            our_enchs = sum(
+                1
+                for perm in (self.model.our_permanents or ())
+                if isinstance(perm, dict)
+                and (
+                    "CardType_Enchantment" in (perm.get("card_types") or [])
+                    or "enchantment" in str(perm.get("type_line") or "").lower()
+                )
+            )
+            text_aura = _text_buff_aura(card, our_enchantments=our_enchs)
+            if text_aura is not None:
+                t_pump, t_draws, t_exile = text_aura
+                t_reach = (
+                    {
+                        "name": spell.name,
+                        "oracle_text": "Exile target creature an opponent controls.",
+                        "type_line": "",
+                        "_source_types": _types(card),
+                        "_source_colors": colors,
+                        "_source_controller_seat_id": card.get("controller_seat_id"),
+                    }
+                    if t_exile and plain.reach is None
+                    else None
+                )
+                plain = dataclasses.replace(
+                    plain,
+                    aura_pump=t_pump,
+                    requires_our_creature=True,
+                    fact_draws=plain.fact_draws or t_draws,
+                    reach=plain.reach or t_reach,
                     stays_on_battlefield=True,
                 )
         if spell.has_x or spell.role == "counter" or spell.uncastable:

@@ -733,7 +733,7 @@ def test_uncompiled_and_corrupt_card_facts_abstain_in_line_search(monkeypatch):
         "name": "Holy Role",
         "mana_cost": "{W}",
         "type_line": "Enchantment — Aura",
-        "oracle_text": "Enchant creature\nEnchanted creature gets +1/+1.",
+        "oracle_text": "Enchant creature\nEnchanted creature gets +1/+1.\nWhenever enchanted creature attacks, scry 1.",
     }
     # 1. No records -> both keep original unmodelled reasons
     _patch_records(monkeypatch, [])
