@@ -727,7 +727,7 @@ def test_uncompiled_and_corrupt_card_facts_abstain_in_line_search(monkeypatch):
         "name": "Glimmer Seeker",
         "mana_cost": "{1}{W}",
         "type_line": "Enchantment Creature — Spirit",
-        "oracle_text": "Eerie — Whenever an enchantment you control enters, put a +1/+1 counter on target creature.",
+        "oracle_text": "Eerie — Whenever an enchantment you control enters, exile target creature until this leaves the battlefield.",
     }
     aura = {
         "name": "Holy Role",

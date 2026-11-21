@@ -23,14 +23,15 @@ pytestmark = pytest.mark.usefixtures("unlimited_search_deadline")
 
 LOCAL, OPP = 2, 1
 
-# Verified repository Oracle text (BLB.catalog.json / DSK.catalog.json).
+# Unmodelled Aura fixtures (with an attack trigger outside _text_buff_aura) to test the #244 caveat.
 FEATHER = {
     "name": "Feather of Flight",
     "type_line": "Enchantment — Aura",
     "mana_cost": "{1}{W}",
     "oracle_text": (
         "Flash\nEnchant creature\nWhen this Aura enters, draw a card.\n"
-        "Enchanted creature gets +1/+0 and has flying."
+        "Enchanted creature gets +1/+0 and has flying.\n"
+        "Whenever enchanted creature attacks, scry 1."
     ),
 }
 ETHEREAL = {
@@ -39,7 +40,7 @@ ETHEREAL = {
     "mana_cost": "{W}",
     "oracle_text": (
         "Enchant creature\nEnchanted creature gets +1/+1 for each enchantment you control "
-        "and has first strike."
+        "and has first strike.\nWhenever enchanted creature attacks, scry 1."
     ),
 }
 RECRUIT_SPELL = {

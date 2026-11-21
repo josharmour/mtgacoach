@@ -2980,6 +2980,114 @@ def _text_buff_aura(
     return (p, t), etb_draws, etb_exile
 
 
+_ABILITY_WORD_PREFIX_RE = re.compile(r"^[a-z][a-z\s'-]{1,24}\s*(?:—|--|-)\s*", re.IGNORECASE)
+_TEXT_TRIG_LINE_RE = re.compile(r"\b(?:when|whenever|at the beginning of)\b", re.IGNORECASE)
+_TEXT_PERM_DISQUALIFIER_RE = re.compile(
+    r"\b(?:choose (?:one|two|three|up to)|you may|unless|if you do|search your library|"
+    r"exile|destroy|return|sacrifice|discard|mill|copy|create)\b",
+    re.IGNORECASE,
+)
+_TEXT_ENCH_ETB_RE = re.compile(
+    r"^whenever an enchantment (?:you control )?enters(?: and whenever you fully unlock a room)?,\s*(.+?)\.?$",
+    re.IGNORECASE,
+)
+_TEXT_NONCRE_CAST_RE = re.compile(
+    r"^whenever you cast a noncreature spell,\s*(.+?)\.?$",
+    re.IGNORECASE,
+)
+_TEXT_EFF_COUNTER_RE = re.compile(
+    r"^put (?:a|one) \+1/\+1 counter on (target creature|this creature|[^.,\n]+)$",
+    re.IGNORECASE,
+)
+_TEXT_EFF_GAIN_RE = re.compile(r"^you gain (\d+) life$", re.IGNORECASE)
+_TEXT_EFF_DRAW_RE = re.compile(r"^draw a card$", re.IGNORECASE)
+_TEXT_EFF_PUMP_RE = re.compile(
+    r"^(this creature|[^.,\n]+) gets \+(\d+)/\+(\d+) until end of turn$",
+    re.IGNORECASE,
+)
+
+
+def _parse_text_trigger_effect(
+    body: str, card_name: str
+) -> tuple[PutCounters | GainLife | Draw | Pump, str] | None:
+    b = body.strip()
+    if m := _TEXT_EFF_COUNTER_RE.match(b):
+        tgt = m.group(1).strip().lower()
+        if tgt == "target creature":
+            return PutCounters(counter_type="+1/+1", count=1), "target_creature"
+        if tgt == "this creature" or (card_name and tgt == card_name.lower()):
+            return PutCounters(counter_type="+1/+1", count=1), "self"
+        return None
+    if m := _TEXT_EFF_GAIN_RE.match(b):
+        amt = int(m.group(1))
+        if 0 < amt <= 20:
+            return GainLife(amount=amt), "you"
+        return None
+    if _TEXT_EFF_DRAW_RE.match(b):
+        return Draw(count=1), "you"
+    if m := _TEXT_EFF_PUMP_RE.match(b):
+        subj = m.group(1).strip().lower()
+        if subj != "this creature" and not (card_name and subj == card_name.lower()):
+            return None
+        p, t = int(m.group(2)), int(m.group(3))
+        if 0 <= p <= 10 and 0 <= t <= 10 and (p > 0 or t > 0):
+            return Pump(power=p, toughness=t, target="self"), "self"
+        return None
+    return None
+
+
+def _text_permanent_triggers(card: dict | None) -> tuple[VerifiedTrigger, ...] | None:
+    """Deterministic text-parser model for simple permanent trigger engines without CardFacts.
+
+    Covers clean Enchantment-ETB (Eerie/Constellation) and noncreature-cast self-pumps/counters.
+    Fails closed on any unparsed triggered line or complex effect.
+    """
+    if not isinstance(card, dict) or not _is_permanent(card) or "aura" in _types(card):
+        return None
+    name = str(card.get("name") or "")
+    if " // " in name:
+        return None
+    oracle = _text(card)
+    if "•" in oracle or ":" in oracle or _TEXT_PERM_DISQUALIFIER_RE.search(oracle):
+        return None
+    out: list[VerifiedTrigger] = []
+    for raw_line in oracle.splitlines():
+        line = _ABILITY_WORD_PREFIX_RE.sub("", raw_line.strip())
+        if not line or not _TEXT_TRIG_LINE_RE.search(line):
+            continue
+        if m := _TEXT_ENCH_ETB_RE.match(line):
+            parsed = _parse_text_trigger_effect(m.group(1), name)
+            if parsed is None:
+                return None
+            eff, target_hint = parsed
+            out.append(
+                VerifiedTrigger(
+                    event="ENCHANTMENT_ENTERS",
+                    effect=eff,
+                    include_self="enchantment" in _types(card),
+                    controller_scope="ours",
+                    target_hint=target_hint,
+                )
+            )
+        elif m := _TEXT_NONCRE_CAST_RE.match(line):
+            parsed = _parse_text_trigger_effect(m.group(1), name)
+            if parsed is None:
+                return None
+            eff, target_hint = parsed
+            out.append(
+                VerifiedTrigger(
+                    event="CAST_SPELL",
+                    effect=eff,
+                    spell_filter="noncreature",
+                    controller_scope="ours",
+                    target_hint=target_hint,
+                )
+            )
+        else:
+            return None
+    return tuple(out) if out else None
+
+
 def _card_facts_buff_aura(
     record: Any, card: dict
 ) -> tuple[tuple[int, int], tuple[VerifiedTrigger, ...]] | None:
@@ -3152,6 +3260,8 @@ def unmodelled_effect(card: dict | None, result: Any = None) -> str:
                 _log_record_use(name)
                 return ""
         if reason == "its effect" and _text_buff_aura(card) is not None:
+            return ""
+        if reason == "its triggered ability" and _text_permanent_triggers(card) is not None:
             return ""
     return reason
 
@@ -3678,9 +3788,9 @@ class Moves:
         if not isinstance(card, dict):
             return ()
         rec = record if record is not None else _known_record(*_record_key(card))
-        if rec is None:
-            return ()
-        trigs = extract_verified_triggers(rec, card)
+        trigs = extract_verified_triggers(rec, card) if rec is not None else ()
+        if not trigs:
+            trigs = _text_permanent_triggers(card) or ()
         if not trigs:
             return ()
         return self._filter_fact_triggers(card, trigs)
@@ -4321,6 +4431,12 @@ class Moves:
             text_aura = _text_buff_aura(card, our_enchantments=our_enchs)
             if text_aura is not None:
                 t_pump, t_draws, t_exile = text_aura
+                opp_has_exile_target = bool(self.model.theirs) or any(
+                    isinstance(p, dict)
+                    and "CardType_Land" not in (p.get("card_types") or [])
+                    and "land" not in str(p.get("type_line") or "").lower()
+                    for p in self._their_noncreature_permanents()
+                )
                 t_reach = (
                     {
                         "name": spell.name,
@@ -4330,7 +4446,7 @@ class Moves:
                         "_source_colors": colors,
                         "_source_controller_seat_id": card.get("controller_seat_id"),
                     }
-                    if t_exile and plain.reach is None
+                    if t_exile and opp_has_exile_target and plain.reach is None
                     else None
                 )
                 plain = dataclasses.replace(
@@ -4338,9 +4454,35 @@ class Moves:
                     aura_pump=t_pump,
                     requires_our_creature=True,
                     fact_draws=plain.fact_draws or t_draws,
-                    reach=plain.reach or t_reach,
+                    reach=None if (t_exile and not opp_has_exile_target) else (plain.reach or t_reach),
                     stays_on_battlefield=True,
                 )
+        if (
+            not plain.has_fact_triggers
+            and not oracle_modes
+            and not spell.has_x
+            and spell.role != "counter"
+            and _is_permanent(card)
+            and "aura" not in _types(card)
+            and _unmodelled_effect_reasons(card) == "its triggered ability"
+        ):
+            text_trigs = _text_permanent_triggers(card)
+            if text_trigs:
+                ongoing = self._filter_fact_triggers(card, text_trigs)
+                if ongoing:
+                    fid = _int(card.get("instance_id")) or (450_000_000 + hs.index)
+                    if creature and body is not None:
+                        self._fact_triggers[fid] = ongoing
+                        body = {**body, "_fact_iid": fid}
+                    else:
+                        self._spell_fact_triggers[hs.index] = ongoing
+                        self._spell_fact_source_ids[hs.index] = fid
+                    plain = dataclasses.replace(
+                        plain,
+                        body=body,
+                        has_fact_triggers=True,
+                        stays_on_battlefield=True,
+                    )
         if spell.has_x or spell.role == "counter" or spell.uncastable:
             plain, variants = None, []  # never cast proactively (or can't be cast now)
         elif (

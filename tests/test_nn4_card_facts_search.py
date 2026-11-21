@@ -1160,7 +1160,7 @@ def test_rejected_records_do_not_leak_and_noncreature_permanent_gets_variants(mo
         "name": "Unholy Aura",
         "mana_cost": "{1}{B}",
         "type_line": "Enchantment — Aura",
-        "oracle_text": "Enchant creature\nEnchanted creature gets +2/+2.",
+        "oracle_text": "Enchant creature\nEnchanted creature gets +2/+2 and has '{T}: Scry 1.'",
     }
     bad_aura_rec = {
         "schema_version": 1,

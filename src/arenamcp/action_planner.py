@@ -5947,6 +5947,7 @@ class ActionPlanner(_ActionLegalityMixin):
                 sweeper_hold,
                 two_turn_reach,
             )
+            from arenamcp.combat_keywords import is_creature_now
             from arenamcp.decision_memory import burn_combo_for, burn_kills_nothing, burn_reach
             from arenamcp.landfall_order import superfluous_bluff_land
             from arenamcp.mulligan_policy import hand_card
@@ -5956,7 +5957,26 @@ class ActionPlanner(_ActionLegalityMixin):
             instants: list[tuple[Any, dict]] = []
             sweepers: list[tuple[Any, dict]] = []
             bluff_lands: list[tuple[Any, dict]] = []
+            wasted_removal_auras: list[tuple[Any, dict]] = []
             face = 0
+            _local_for_aura = _local_seat(game_state)
+            _opp_bf = []
+            if _local_for_aura is not None:
+                for perm in game_state.get("battlefield") or []:
+                    if not isinstance(perm, dict):
+                        continue
+                    _pctrl = perm.get("controller_seat_id")
+                    if _pctrl is None:
+                        _pctrl = perm.get("owner_seat_id")
+                    # Treat unknown controller (None) as potentially opposing so we fail open.
+                    if _pctrl != _local_for_aura:
+                        _opp_bf.append(perm)
+            _opp_has_nonland = any(
+                "CardType_Land" not in (p.get("card_types") or [])
+                and "land" not in str(p.get("type_line") or "").lower()
+                for p in _opp_bf
+            )
+            _opp_has_creature = any(is_creature_now(p) for p in _opp_bf)
             for option in decision.options:
                 meta = option.meta or {}
                 if meta.get("actionType") == "ActionType_Play":
@@ -5968,6 +5988,25 @@ class ActionPlanner(_ActionLegalityMixin):
                     continue
                 card = find_source(game_state, meta)
                 oracle = str(card.get("oracle_text") or "")
+                # 2026-11-21 live Mythic bug (bug_20261121_101212): never waste an ETB-exile/destroy
+                # Aura (e.g. Sheltered by Ghosts) onto an empty opposing board when it exiles nothing.
+                if (
+                    card
+                    and "aura" in str(card.get("type_line") or "").lower()
+                    and _own_main_phase_with_empty_stack(game_state)
+                ):
+                    _clean_o = re.sub(r"\([^)]*\)", " ", oracle).lower()
+                    _m_rem = re.search(
+                        r"\bwhen (?:this aura|[^\n,.]+) enters(?: the battlefield)?,?\s+(?:exile|destroy) target "
+                        r"(nonland permanent|creature) an opponent controls\b",
+                        _clean_o,
+                    )
+                    if _m_rem:
+                        _need_nonland = _m_rem.group(1) == "nonland permanent"
+                        if (_need_nonland and not _opp_has_nonland) or (
+                            not _need_nonland and not _opp_has_creature
+                        ):
+                            wasted_removal_auras.append((option, card))
                 face += each_opponent_damage(card, game_state) if card else 0
                 burn = burn_reach(oracle, card, game_state) if card else None
                 if burn is None:
@@ -5982,7 +6021,7 @@ class ActionPlanner(_ActionLegalityMixin):
                     sweepers.append((option, card))
             wait = own_stack_line_waits(game_state) if game_state.get("stack") else None
             stacked = own_stack_holds(decision, game_state, wait) if wait is not None else []
-            if not (instants or sweepers or stacked or bluff_lands):
+            if not (instants or sweepers or stacked or bluff_lands or wasted_removal_auras):
                 return decision, []
             combo = burn_combo_for(decision, game_state)
             if combo is not None:
@@ -6018,7 +6057,7 @@ class ActionPlanner(_ActionLegalityMixin):
             ):
                 if not bluff_lands:
                     return decision, []
-                instants, sweepers, stacked = [], [], []
+                instants, sweepers, stacked, wasted_removal_auras = [], [], [], []
             if instants:
                 why = hold_overrides(decision, game_state, instants)
                 if why:
@@ -6057,11 +6096,26 @@ class ActionPlanner(_ActionLegalityMixin):
             | {o.option_id for o, _c in sweepers}
             | {o.option_id for o, _c in stacked}
             | {o.option_id for o, _c in bluff_lands}
+            | {o.option_id for o, _c in wasted_removal_auras}
         )
         if not held_ids:
             return decision, []
         reasons: list[str] = []
         notes: list[str] = []
+        if wasted_removal_auras:
+            names = names_of(wasted_removal_auras)
+            logger.info(
+                "Removal-Aura timing: holding %s (opponent controls no legal nonland/creature permanent to exile/destroy)",
+                ", ".join(names),
+            )
+            reasons.append(
+                f"Holding {', '.join(names)}: its ETB removal has no opposing permanent to exile or destroy; "
+                "save it for an opposing threat."
+            )
+            notes.append(
+                f"REMOVAL AURA HOLD: {', '.join(names)} is held this window because the opponent controls "
+                "no permanent for its ETB exile/destroy trigger; save it for an opposing threat."
+            )
         if bluff_lands:
             names = names_of(bluff_lands)
             logger.info(
