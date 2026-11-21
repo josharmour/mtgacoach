@@ -267,7 +267,14 @@ def board_math_option_pick(decision: Any, game_state: dict[str, Any]) -> tuple[l
     def name_of(option: Any) -> str:
         return str(_ap.find_source(game_state, option.meta or {}).get("name") or "")
 
-    lands = [option for option in options if (option.meta or {}).get("actionType") == "ActionType_Play"]
+    from arenamcp.landfall_order import landfall_first, superfluous_bluff_land
+
+    lands = [
+        option
+        for option in options
+        if (option.meta or {}).get("actionType") == "ActionType_Play"
+        and not superfluous_bluff_land(option, game_state)
+    ]
     if lands:
         wanted = str(step.land or "") if step is not None else ""
         pick = (
@@ -275,7 +282,6 @@ def board_math_option_pick(decision: Any, game_state: dict[str, Any]) -> tuple[l
             or next((option for option in lands if untapped_land_drop(game_state, [option])), None)
             or lands[0]
         )
-        from arenamcp.landfall_order import landfall_first
 
         first = landfall_first(decision, game_state, pick.option_id, planned_names=scheduled | greedy)
         if first is not None:

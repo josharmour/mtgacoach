@@ -5948,15 +5948,22 @@ class ActionPlanner(_ActionLegalityMixin):
                 two_turn_reach,
             )
             from arenamcp.decision_memory import burn_combo_for, burn_kills_nothing, burn_reach
+            from arenamcp.landfall_order import superfluous_bluff_land
             from arenamcp.mulligan_policy import hand_card
 
             if not stack_is_ours_or_benign(game_state):
                 return decision, []  # theirs to answer: a response is the point of an instant
             instants: list[tuple[Any, dict]] = []
             sweepers: list[tuple[Any, dict]] = []
+            bluff_lands: list[tuple[Any, dict]] = []
             face = 0
             for option in decision.options:
                 meta = option.meta or {}
+                if meta.get("actionType") == "ActionType_Play":
+                    if superfluous_bluff_land(option, game_state):
+                        card = find_source(game_state, meta) or {}
+                        bluff_lands.append((option, card))
+                    continue
                 if option.payable is False or meta.get("actionType") != "ActionType_Cast":
                     continue
                 card = find_source(game_state, meta)
@@ -5975,7 +5982,7 @@ class ActionPlanner(_ActionLegalityMixin):
                     sweepers.append((option, card))
             wait = own_stack_line_waits(game_state) if game_state.get("stack") else None
             stacked = own_stack_holds(decision, game_state, wait) if wait is not None else []
-            if not (instants or sweepers or stacked):
+            if not (instants or sweepers or stacked or bluff_lands):
                 return decision, []
             combo = burn_combo_for(decision, game_state)
             if combo is not None:
@@ -6003,10 +6010,15 @@ class ActionPlanner(_ActionLegalityMixin):
                 ),
                 None,
             )
-            if life is None or face >= life or _lethal_this_turn(game_state) is not False:
-                return decision, []
-            if lethal_reach(decision, game_state) is not None:
-                return decision, []  # their life is within reach: never hold burn then (ledger #100)
+            if (
+                life is None
+                or face >= life
+                or _lethal_this_turn(game_state) is not False
+                or lethal_reach(decision, game_state) is not None
+            ):
+                if not bluff_lands:
+                    return decision, []
+                instants, sweepers, stacked = [], [], []
             if instants:
                 why = hold_overrides(decision, game_state, instants)
                 if why:
@@ -6040,11 +6052,30 @@ class ActionPlanner(_ActionLegalityMixin):
 
         instant_ids = {option.option_id for option, _card in instants}
         stacked = [(o, c) for o, c in stacked if o.option_id not in instant_ids]
-        held_ids = instant_ids | {o.option_id for o, _c in sweepers} | {o.option_id for o, _c in stacked}
+        held_ids = (
+            instant_ids
+            | {o.option_id for o, _c in sweepers}
+            | {o.option_id for o, _c in stacked}
+            | {o.option_id for o, _c in bluff_lands}
+        )
         if not held_ids:
             return decision, []
         reasons: list[str] = []
         notes: list[str] = []
+        if bluff_lands:
+            names = names_of(bluff_lands)
+            logger.info(
+                "Bluff land timing: holding %s in hand (>= 6 lands on board, sole card in hand, no mana/landfall need)",
+                ", ".join(names),
+            )
+            reasons.append(
+                f"Holding {', '.join(names)} in hand as a bluff: we already have 6+ lands and no "
+                "landfall, color, or mana-sink need."
+            )
+            notes.append(
+                f"BLUFF LAND: {', '.join(names)} is held in hand as a bluff (6+ lands on board, sole "
+                "card in hand, no color, landfall, or mana-sink need)."
+            )
         if instants:
             names = names_of(instants)
             logger.info(
@@ -9056,6 +9087,17 @@ class ActionPlanner(_ActionLegalityMixin):
             except ValueError:
                 continue
             ctrl = controllers.get(iid)
+            if (
+                ctrl is None
+                and self._targets_only_own_graveyard(oracle)
+                and not self._is_public_permanent(game_state, iid)
+            ):
+                # 2026-11-20 Wary Zone Guard: Player.log summarized the fetch
+                # land's sacrifice, so the land in our graveyard never reached
+                # our state. The source can only target cards in our own
+                # graveyard, so every candidate Arena offers is ours.
+                logger.info("Target %s is outside known zones; source only targets our graveyard", oid)
+                ctrl = local_seat
             if ctrl is None:
                 logger.warning("Declining target %s: current controller is unknown", oid)
                 return [DECLINE_DECISION]
@@ -9165,6 +9207,22 @@ class ActionPlanner(_ActionLegalityMixin):
                 return override
 
         return chosen
+
+    @staticmethod
+    def _targets_only_own_graveyard(oracle: str) -> bool:
+        """True when every target in the source text is a card in our graveyard."""
+        text = re.sub(r"<[^>]+>", "", str(oracle or "")).lower()
+        clauses = re.findall(r"\btargets?\b.*?(?=\btargets?\b|[.;\n]|$)", text)
+        return bool(clauses) and all(re.search(r"\b(?:from|in) your graveyard\b", c) for c in clauses)
+
+    @staticmethod
+    def _is_public_permanent(game_state: dict[str, Any], instance_id: int) -> bool:
+        zones = game_state.get("zones") or {}
+        return any(
+            isinstance(c, dict) and _as_int(c.get("instance_id")) == instance_id
+            for zone in ("battlefield", "stack")
+            for c in game_state.get(zone, zones.get(zone, [])) or []
+        )
 
     @staticmethod
     def _is_graveyard_exile_target(
@@ -10132,18 +10190,44 @@ class ActionPlanner(_ActionLegalityMixin):
             if o.meta.get("actionType") == "ActionType_Activate":
                 source = find_source(game_state, o.meta)
                 note += shrink_note(game_state, source, activation=True, metadata=o.meta)
-                note += " " + json.dumps(
-                    {
-                        "manaCost": o.meta.get("manaCost"),
-                        "source_tapped": source.get("is_tapped"),
-                        "turn_entered_battlefield": source.get("turn_entered_battlefield"),
-                        "current_card_types": source.get("card_types"),
-                        "payment_taps_source": any(
-                            payment.get("instanceId") == source.get("instance_id")
-                            for payment in o.meta.get("autoTapActions") or []
-                        ),
-                    }
+                activate_facts: dict[str, Any] = {
+                    "manaCost": o.meta.get("manaCost"),
+                    "source_tapped": source.get("is_tapped"),
+                    "turn_entered_battlefield": source.get("turn_entered_battlefield"),
+                    "current_card_types": source.get("card_types"),
+                    "payment_taps_source": any(
+                        payment.get("instanceId") == source.get("instance_id")
+                        for payment in o.meta.get("autoTapActions") or []
+                    ),
+                }
+                _turn = game_state.get("turn") or {}
+                _phase = str(_turn.get("phase") or "").lower()
+                _step = str(_turn.get("step") or "").lower()
+                _is_creature = bool(source) and (
+                    "CardType_Creature" in (source.get("card_types") or [])
+                    or "creature" in str(source.get("type_line") or "").lower()
                 )
+                if _is_creature and ("combat" in _phase or "combat" in _step or "declare" in _step):
+                    is_atk = bool(source.get("is_attacking"))
+                    is_blk = bool(source.get("is_blocking"))
+                    blocked_by = source.get("blocked_by") or []
+                    post_blocks = any(
+                        tok in _step
+                        for tok in ("declareblock", "combatdamage", "firststrikedamage", "endcombat")
+                    )
+                    activate_facts["is_attacking"] = is_atk
+                    if is_atk:
+                        if post_blocks:
+                            activate_facts["unblocked_attacker"] = not bool(blocked_by)
+                            note += "  [UNBLOCKED ATTACKER]" if not blocked_by else "  [BLOCKED ATTACKER]"
+                        else:
+                            note += "  [ATTACKING]"
+                    elif is_blk:
+                        activate_facts["is_blocking"] = True
+                        note += "  [BLOCKER]"
+                    else:
+                        note += "  [NOT ATTACKING]"
+                note += " " + json.dumps(activate_facts)
             if decision.request_type in {"CastingTimeOptions", "OptionalAction", "Search"}:
                 note += " " + json.dumps(o.meta, ensure_ascii=False)
             side = ""

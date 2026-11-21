@@ -557,6 +557,9 @@ def hold_overrides(decision: Any, state: dict, held: list[tuple[Any, dict]]) -> 
       cost, so casting one now still leaves the rest castable there — when the
       board is creatureless and opponent holds fewer than 2 open lands.
     """
+    stack = [entry for entry in (state.get("stack") or []) if isinstance(entry, dict)]
+    if stack and _our_turn(state) and not stack_is_ours(state) and stack_is_ours_or_benign(state):
+        return ""
     pumped = cast_pumped_attackers(state)
     if pumped:
         return f"a cast now pumps {', '.join(pumped)} for this turn's attack"

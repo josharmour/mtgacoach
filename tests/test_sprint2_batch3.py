@@ -415,11 +415,11 @@ def test_s2_12b_superfluous_bluff_land_and_prompt_and_controls():
     assert option_note(ls, play_opt, st) == ""
     assert option_note(ls, pass_opt, st).startswith("[LINE best:")
 
-    # Normal entry point injects BLUFF LAND into LLM prompt
+    # Normal entry point deterministically holds the bluff land without calling the LLM
     backend = _CaptureBackend(json.dumps({"option_ids": ["pass"], "reasoning": "Hold bluff."}))
     planner = ActionPlanner(backend)
     assert planner.plan_decision_options(menu, st) == ["pass"]
-    assert "BLUFF LAND:" in backend.calls[0]["user"]
+    assert backend.calls == []
 
     # Control 1: only 5 lands on board -> play it
     st_five = _state(lands_played=0, battlefield=six_lands[:5], hand=[seventh])
