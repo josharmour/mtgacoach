@@ -26,7 +26,10 @@ def find_source(state: dict, metadata: dict, name: str = "") -> dict:
 
 
 def _local_seat(state: dict) -> int | None:
-    return state.get("local_seat_id") or next(
+    seat = state.get("local_seat_id")
+    if seat is not None and not isinstance(seat, bool) and seat != "":
+        return seat
+    return next(
         (player.get("seat_id") for player in state.get("players", []) if player.get("is_local")), None
     )
 
@@ -3441,6 +3444,40 @@ def beneficial_aura_only_opposing_host(card: dict, state: dict) -> str:
     )
 
 
+_OWN_CRE_TARGET_SPELL_RE = re.compile(r"\btarget creature you control\b", re.IGNORECASE)
+
+
+def own_creature_target_missing(card: dict, state: dict) -> str:
+    """Block casting instant/sorcery spells requiring ``target creature you control`` on an empty board."""
+    from arenamcp.target_effects import has_mandatory_target_pattern, resolves_to_creature
+
+    types = (
+        f"{card.get('type_line') or ''} {' '.join(str(t) for t in (card.get('card_types') or []))}".lower()
+    )
+    if not ("instant" in types or "sorcery" in types) or any(
+        perm in types for perm in ("creature", "artifact", "enchantment", "planeswalker", "land", "battle")
+    ):
+        return ""
+    if resolves_to_creature(card) or "battlefield" not in state:
+        return ""
+    if not has_mandatory_target_pattern(str(card.get("oracle_text") or ""), _OWN_CRE_TARGET_SPELL_RE):
+        return ""
+    local = _local_seat(state)
+    if local is None:
+        return ""
+    for obj in state.get("battlefield") or []:
+        if not isinstance(obj, dict) or not is_creature_now(obj) or obj.get("is_phased_out"):
+            continue
+        seat = (
+            obj.get("controller_seat_id")
+            if obj.get("controller_seat_id") is not None
+            else obj.get("owner_seat_id")
+        )
+        if seat is None or seat == local:
+            return ""
+    return "spell requires a target creature you control, but we control no creatures"
+
+
 def unsafe_play_reason(state: dict, card: dict, action_type: str, metadata: dict | None = None) -> str:
     """Return a reason to withhold a play, not a claim of full MTG legality."""
     action_type = action_type.removeprefix("ActionType_").lower()
@@ -3486,6 +3523,7 @@ def unsafe_play_reason(state: dict, card: dict, action_type: str, metadata: dict
             or counter_tax_payable_wasted(card, state)
             or x_spell_dead_at_affordable_x(state, card)
             or beneficial_aura_only_opposing_host(card, state)
+            or own_creature_target_missing(card, state)
         )
         if reason:
             return reason

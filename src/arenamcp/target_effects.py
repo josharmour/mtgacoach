@@ -325,3 +325,26 @@ def target_highlight(value: object) -> str:
 
 def highlight_is_bad(value: object) -> bool:
     return target_highlight(value) in _BAD_HIGHLIGHTS
+
+
+_MODAL_CAST_RE = re.compile(r"\bchoose (?:one|two|three|up to)\b", re.IGNORECASE)
+_OPT_PREFIX_RE = re.compile(r"\b(?:up to (?:\w+|x)|you may(?:\s+\w+){0,4})\s*$", re.IGNORECASE)
+_OPT_INLINE_TARGET_RE = re.compile(r"\bup to (?:\w+|x) target\b", re.IGNORECASE)
+
+
+def has_mandatory_target_pattern(oracle: str, target_re: re.Pattern[str]) -> bool:
+    """True when non-activated ``oracle`` text has an unconditional match for ``target_re``."""
+    cleaned = re.sub(r"<[^>]+>", " ", str(oracle or "")).replace("’", "'")
+    cleaned = re.sub(r"\([^()]*\)", " ", cleaned)
+    cast_text = "\n".join(line for line in cleaned.splitlines() if ":" not in line)
+    if _MODAL_CAST_RE.search(cast_text):
+        return False
+    for match in target_re.finditer(cast_text):
+        if _OPT_INLINE_TARGET_RE.search(match.group(0)):
+            continue
+        clause_start = max(cast_text.rfind(sep, 0, match.start()) for sep in (".", "\n", ";", ",")) + 1
+        prefix = cast_text[clause_start : match.start()]
+        if _OPT_PREFIX_RE.search(prefix):
+            continue
+        return True
+    return False

@@ -3101,8 +3101,23 @@ def _budget_turns(
     return plan
 
 
+def _is_instant_nonpermanent(card: dict) -> bool:
+    """True when ``card`` is an instant-type non-permanent spell that creates no body."""
+    types = _types(card)
+    if "instant" not in types or any(perm in types for perm in _PERMANENT_TYPES):
+        return False
+    from arenamcp.target_effects import resolves_to_creature
+
+    return not resolves_to_creature(card)
+
+
 def _spell_value(
-    spell: _Spell, *, survival: bool, theirs: list[dict], ours: list[dict] | tuple = ()
+    spell: _Spell,
+    *,
+    survival: bool,
+    theirs: list[dict],
+    ours: list[dict] | tuple = (),
+    allow_instant_utility: bool = False,
 ) -> float:
     card = spell.card
     if has_unmodelled_additional_cost(card):
@@ -3138,8 +3153,15 @@ def _spell_value(
     if spell.role == "lifegain":
         match = _LIFEGAIN.search(_text(card))
         return 1 + (int(match.group(1)) / 2 if match and survival else 0)
-    if spell.role == "counter":
+    if spell.role == "counter" or (spell.role == "pump" and _is_instant_nonpermanent(card)):
         return 0.0  # reactive: hold mana for it, don't schedule it
+    if (
+        spell.role in ("draw", "selection")
+        and not survival
+        and not allow_instant_utility
+        and _is_instant_nonpermanent(card)
+    ):
+        return 0.0  # hold instant-speed cantrips/selection unless end-step or searched line justifies main-phase cast
     if spell.role == "ramp":
         return 1.5
     if spell.role == "other" and not survival and not _is_creature(card):
@@ -3400,7 +3422,13 @@ def _schedule(
     are never scheduled.
     """
     for spell in spells:
-        spell.value = _spell_value(spell, survival=survival, theirs=theirs, ours=ours)
+        spell.value = _spell_value(
+            spell,
+            survival=survival,
+            theirs=theirs,
+            ours=ours,
+            allow_instant_utility=instant_only_first,
+        )
     remaining = [s for s in spells if not s.has_x and not s.uncastable and not s.zone_blocked and s.value > 0]
     from arenamcp.legend_rule import resolve_legends
 

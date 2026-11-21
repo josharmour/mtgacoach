@@ -92,6 +92,7 @@ class HandCard:
     fetch_pool: tuple[opening_fetches.FetchTarget, ...] = ()
     alt_costs: tuple[tuple[int, tuple[frozenset[str], ...]], ...] = ()
     fetches_basic: bool = False
+    one_drop_needs_carrier: bool = False
 
 
 # A spell that can kill or stop a creature: damage it can aim at one (or at
@@ -203,6 +204,56 @@ _BASIC_FETCH_LAND = re.compile(
     r"search your library for a basic land card[^.\n]*onto the battlefield",
     re.IGNORECASE,
 )
+
+_OWN_CREATURE_TARGET_RE = re.compile(r"\btarget creature you control\b", re.IGNORECASE)
+_PUMP_TRICK_RE = re.compile(
+    r"\btarget creature\b[^.]*?(?:\bgets? \+|\bgains? "
+    r"(?:hexproof|indestructible|flying|lifelink|vigilance|trample|haste|first strike|double strike|deathtouch|menace)\b"
+    r"|\bput [^.]*\+1/\+1 counter)"
+    r"|\bput [^.]*\+1/\+1 counters? (?:on|onto) [^.]*\btarget creature\b",
+    re.IGNORECASE,
+)
+
+
+def _text_needs_carrier(text: str) -> bool:
+    """True when spell rules text mandates a friendly or pumpable creature target."""
+    from arenamcp.target_effects import has_mandatory_target_pattern, target_effect_is_harmful
+
+    if has_mandatory_target_pattern(text, _OWN_CREATURE_TARGET_RE):
+        return True
+    stripped = re.sub(r"\([^()]*\)", " ", str(text or ""))
+    return bool(
+        has_mandatory_target_pattern(text, _PUMP_TRICK_RE) and target_effect_is_harmful(stripped) is False
+    )
+
+
+def _spell_needs_carrier(card: dict, types: str, text: str) -> bool:
+    """True when an instant/sorcery spell requires a friendly or pumpable creature to do anything."""
+    if "instant" not in types and "sorcery" not in types:
+        return False
+    from arenamcp.target_effects import resolves_to_creature
+
+    if resolves_to_creature(card):
+        return False
+    name = str(card.get("name") or "")
+    cost = str(card.get("mana_cost") or "")
+    if "//" in name or " // " in cost:
+        spell_faces = [
+            face
+            for face in (card.get("related_faces") or ())
+            if isinstance(face, dict)
+            and (
+                "instant" in str(face.get("type_line") or "").lower()
+                or "sorcery" in str(face.get("type_line") or "").lower()
+            )
+            and (resolves_to_creature(face) or str(face.get("oracle_text") or "").strip())
+        ]
+        if len(spell_faces) >= 2:
+            return all(
+                not resolves_to_creature(face) and _text_needs_carrier(str(face.get("oracle_text") or ""))
+                for face in spell_faces
+            )
+    return _text_needs_carrier(text)
 
 
 def _cast_costs(
@@ -356,11 +407,38 @@ def hand_card(card: dict) -> HandCard:
 
     instant_speed = "instant" in types or bool(flash)
     scope = creature_aura_scope(card)
-    needs_carrier = scope == "self" or (
-        scope == "either" and target_effect_is_harmful(enchant_effect_text("Enchant creature", text)) is False
+    needs_carrier = (
+        scope == "self"
+        or (
+            scope == "either"
+            and target_effect_is_harmful(enchant_effect_text("Enchant creature", text)) is False
+        )
+        or (not is_land and _spell_needs_carrier(card, types, text))
     )
     fetches_basic = is_land and bool(_BASIC_FETCH_LAND.search(text))
     mana_value, pips, alt_costs = (0, (), ()) if is_land else _cast_costs(card, cost, type_line)
+    one_drop_needs_carrier = False
+    if not is_land and alt_costs and mana_value > 1:
+        adv_faces = [
+            face
+            for face in (card.get("related_faces") or ())
+            if isinstance(face, dict)
+            and (
+                "adventure" in str(face.get("type_line") or "").lower()
+                or "omen" in str(face.get("type_line") or "").lower()
+            )
+            and _symbols(str(face.get("mana_cost") or ""))
+            and _mana_value(str(face.get("mana_cost") or "")) <= 1
+        ]
+        if adv_faces and all(
+            _spell_needs_carrier(
+                face,
+                str(face.get("type_line") or "").lower(),
+                _clean(face.get("oracle_text") or ""),
+            )
+            for face in adv_faces
+        ):
+            one_drop_needs_carrier = True
     return HandCard(
         instance_id=int(card.get("instance_id") or 0),
         name=str(card.get("name") or "?"),
@@ -379,6 +457,7 @@ def hand_card(card: dict) -> HandCard:
         makes_mana_or_finds_land=False if is_land else _develops_mana(text),
         alt_costs=alt_costs,
         fetches_basic=fetches_basic,
+        one_drop_needs_carrier=one_drop_needs_carrier,
     )
 
 
@@ -729,6 +808,16 @@ def mulligan_verdict(found: MulliganSituation) -> tuple[str, str] | None:
     # Shock)" here, from a tie broken by list position, and the bottom step's
     # model followed it "consistent with my earlier keep decision".
 
+    if keep_size == 7:
+        next_bottom = max(0, (found.mulligans or 0) + 1 - max(0, found.free_mulligans))
+        next_keep = max(0, len(cards) - next_bottom)
+        if lands <= 1:
+            return "mulligan", f"{lands} land(s) in 7 cards; a {next_keep}-card hand is better"
+        if lands >= 6:
+            return "mulligan", f"{lands} lands in 7 cards; a {next_keep}-card hand is better"
+    if keep_size == 6 and lands in (0, 7):
+        return "mulligan", f"{lands} lands in the 7 shown: unkeepable even at 6"
+
     if (
         keep_size in (7, 6, None)
         and sum(card.needs_carrier for card in kept) >= 2
@@ -749,18 +838,8 @@ def mulligan_verdict(found: MulliganSituation) -> tuple[str, str] | None:
                 or sum(card.mana_value <= 2 and _is_permanent(card) for card in castable) >= 2
             ):
                 return "keep", f"2 lands on the draw with cheap plays ({_names(cheap)})"
-        if keep_size is None:
-            return None
-        next_bottom = max(0, (found.mulligans or 0) + 1 - max(0, found.free_mulligans))
-        next_keep = max(0, len(cards) - next_bottom)
-        if lands <= 1:
-            return "mulligan", f"{lands} land(s) in 7 cards; a {next_keep}-card hand is better"
-        if lands >= 6:
-            return "mulligan", f"{lands} lands in 7 cards; a {next_keep}-card hand is better"
         return None
     if keep_size == 6:
-        if lands in (0, 7):
-            return "mulligan", f"{lands} lands in the 7 shown: unkeepable even at 6"
         if 2 <= len(kept_lands) <= 4 and landish <= 4.5 and early:
             return (
                 "keep",
@@ -790,8 +869,29 @@ def mulligan_fallback_choice(found: MulliganSituation) -> tuple[str, str]:
             for card in kept
             if not card.is_land
         )
-        if not early and len(covered) <= 1 and not has_affordable_landcycler and not has_basic_fetch:
+        if not kept_lands or (
+            not early and len(covered) <= 1 and not has_affordable_landcycler and not has_basic_fetch
+        ):
             return "mulligan", "no early plays or color coverage in 7 cards; a 6-card hand is better"
+    elif found.keep_size == 6 and len(found.cards) == 7:
+        kept, _bottom = best_keep(found.cards, 6)
+        kept_lands = [card for card in kept if card.is_land]
+        if not kept_lands:
+            return "mulligan", "0 lands in 6 cards; a 5-card hand is better"
+        if len(kept_lands) == 1:
+            has_one_drop = any(
+                not card.is_land
+                and not card.needs_carrier
+                and not card.one_drop_needs_carrier
+                and castable_with(card, kept_lands)
+                for card in kept
+            )
+            has_basic_fetch = any(land.fetches_basic for land in kept_lands)
+            has_affordable_landcycler = any(
+                card.landcycling is not None and card.landcycling <= 1 for card in kept if not card.is_land
+            )
+            if not has_one_drop and not has_basic_fetch and not has_affordable_landcycler:
+                return "mulligan", "1 land with no castable 1-drop in 6 cards; a 5-card hand is better"
     return "keep", "fallback keep"
 
 

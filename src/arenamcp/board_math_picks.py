@@ -215,6 +215,20 @@ def _line_text(step: Any) -> str:
     return "the board-math line " + (", then ".join(parts) if parts else "casts nothing payable this turn")
 
 
+def _is_instant_noncreature(card: dict[str, Any], role: str) -> bool:
+    """True when ``card`` is an instant-speed noncreature/nonplaneswalker spell that creates no body."""
+    from arenamcp.target_effects import resolves_to_creature
+
+    if role in ("creature", "planeswalker") or resolves_to_creature(card):
+        return False
+    types_low = (
+        f"{card.get('type_line') or ''} {' '.join(str(t) for t in (card.get('card_types') or []))}".lower()
+    )
+    if "creature" in types_low or "planeswalker" in types_low:
+        return False
+    return bool(card.get("type_line") or card.get("card_types")) and hand_card(card).instant_speed
+
+
 def board_math_option_pick(decision: Any, game_state: dict[str, Any]) -> tuple[list[str], str]:
     """A priority-window choice without the model: land drop, then the board-math line."""
     import arenamcp.action_planner as _ap
@@ -270,10 +284,12 @@ def board_math_option_pick(decision: Any, game_state: dict[str, Any]) -> tuple[l
 
     castable_attr = getattr(step, "castable", None) if step is not None else None
     step_castable = set(castable_attr) if castable_attr is not None else set()
-    picks: list[tuple[int, Any]] = []
+    picks: list[tuple[tuple[bool, int], Any]] = []
     backup_picks: list[tuple[int, Any]] = []
     unseen_threats: list[tuple[int, Any]] = []
     proactive_unmodelled: list[tuple[int, Any]] = []
+    greedy_standin_names: list[str] = []
+    held_greedy_instant = False
     for option in options:
         meta = option.meta or {}
         if option.payable is not True or meta.get("actionType") != "ActionType_Cast":
@@ -297,6 +313,7 @@ def board_math_option_pick(decision: Any, game_state: dict[str, Any]) -> tuple[l
         if has_unmodelled_additional_cost(card):
             continue
         cmc = mana_cost_to_cmc(cost)
+        is_inst_noncre = _is_instant_noncreature(card, role)
         if role in ("creature", "planeswalker"):
             backup_picks.append((cmc, option))
         try:
@@ -327,21 +344,31 @@ def board_math_option_pick(decision: Any, game_state: dict[str, Any]) -> tuple[l
                 if is_proactive_perm and is_unmodelled_perm and not _has_mandatory_cast_or_etb_target(card):
                     proactive_unmodelled.append((cmc, option))
         if step is not None:
-            if name not in scheduled and name not in greedy:
-                continue
+            if name not in scheduled:
+                if name in greedy and is_inst_noncre:
+                    held_greedy_instant = True
+                    continue
+                if name not in greedy:
+                    continue
+                greedy_standin_names.append(name)
         elif assessment is not None or role not in ("creature", "planeswalker"):
             continue
-        picks.append((cmc, option))
+        picks.append(((not is_inst_noncre, cmc), option))
     if picks:
         _, option = max(picks, key=lambda item: item[0])
         if step is not None and not scheduled:
-            casts = sorted(greedy)
+            casts = sorted(set(greedy_standin_names) or greedy)
             plan_text = (
                 "the best searched line holds this turn, so the greedy schedule's cast stands in: "
                 + (", ".join(casts[:-1]) + " and " + casts[-1] if len(casts) > 1 else casts[0])
             )
         return [option.option_id], plan_text or "no board assessment, so the biggest payable creature"
-    if backup_picks and step is not None and (scheduled or greedy) and not deferred:
+    if (
+        backup_picks
+        and step is not None
+        and (scheduled or (greedy and not held_greedy_instant))
+        and not deferred
+    ):
         _, option = max(backup_picks, key=lambda item: item[0])
         return [option.option_id], (
             f"{plan_text}; scheduled cast unavailable in menu, deploying biggest payable threat instead"
@@ -349,7 +376,13 @@ def board_math_option_pick(decision: Any, game_state: dict[str, Any]) -> tuple[l
     if unseen_threats and not deferred:
         _, option = max(unseen_threats, key=lambda item: item[0])
         return [option.option_id], (f"{plan_text}; deploying payable threat not modelled in board-math mana")
-    if proactive_unmodelled and step is not None and not scheduled and not greedy and not deferred:
+    if (
+        proactive_unmodelled
+        and step is not None
+        and not scheduled
+        and (not greedy or held_greedy_instant)
+        and not deferred
+    ):
         _, option = max(proactive_unmodelled, key=lambda item: item[0])
         return [option.option_id], (f"{plan_text}; deploying proactive permanent unmodelled by board math")
     if any(option.option_id == "pass" for option in options):
@@ -435,9 +468,9 @@ def line_fallback_option_pick(
     if decision.request_type != "ActionsAvailable" or not _ap._own_main_phase_with_empty_stack(game_state):
         return None
     try:
-        from arenamcp.board_assessment import assess
+        from arenamcp.board_assessment import assess, card_role
         from arenamcp.line_guard import line_fallback_pick
-        from arenamcp.line_search import action_key
+        from arenamcp.line_search import WIN, action_key
 
         assessment = assess(game_state)
         result = getattr(assessment, "line_search", None)
@@ -461,12 +494,38 @@ def line_fallback_option_pick(
                 return None
         best = result.best
         aimed = dict(best.steps[0].targets) if best.steps else {}
-        line_aimed = str(_ap.find_source(game_state, meta).get("name") or "") in aimed
+        pick_card = _ap.find_source(game_state, meta)
+        line_aimed = str(pick_card.get("name") or "") in aimed
         current = decision.find(board_pick[0]) if len(board_pick) == 1 else None
         if current is not None and current.option_id != "pass":
             key = action_key(current, game_state)
             if key is not None and key in best.first_actions:
-                if (current.meta or {}).get("actionType") == "ActionType_Play" or not line_aimed:
+                cur_meta = current.meta or {}
+                cur_card = (
+                    _ap.find_source(game_state, cur_meta)
+                    if cur_meta.get("actionType") == "ActionType_Cast"
+                    else {}
+                )
+                urgent = bool(
+                    getattr(assessment, "survival_mode", False)
+                    or (best.cls == WIN and best.win_at == 1)
+                    or (best.steps and best.steps[0].attack)
+                    or result.only_survivor
+                    or result.only_first_attack_survivor
+                    or result.dead_in_greedy is not None
+                )
+                if (
+                    cur_meta.get("actionType") == "ActionType_Play"
+                    or not line_aimed
+                    or (
+                        not urgent
+                        and cur_card
+                        and pick_card
+                        and meta.get("actionType") == "ActionType_Cast"
+                        and not _is_instant_noncreature(cur_card, card_role(cur_card))
+                        and _is_instant_noncreature(pick_card, card_role(pick_card))
+                    )
+                ):
                     return None
         return picked, f"the best searched line is {best.summary()}"
     except Exception as error:
