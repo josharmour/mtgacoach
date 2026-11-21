@@ -229,6 +229,36 @@ def _is_instant_noncreature(card: dict[str, Any], role: str) -> bool:
     return bool(card.get("type_line") or card.get("card_types")) and hand_card(card).instant_speed
 
 
+_COMBAT_KEYWORD_RE = re.compile(
+    r"\b(?:flying|first strike|double strike|deathtouch|lifelink|menace|trample|vigilance|haste|ward|hexproof|indestructible)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_holdable_flash_creature(card: dict[str, Any], role: str) -> bool:
+    """True for a Flash creature without Haste that gains ambush/mana-flexibility by waiting."""
+    types_low = (
+        f"{card.get('type_line') or ''} {' '.join(str(t) for t in (card.get('card_types') or []))}".lower()
+    )
+    if role != "creature" and "creature" not in types_low:
+        return False
+    if not (bool(card.get("type_line") or card.get("card_types")) and hand_card(card).instant_speed):
+        return False
+    rules = re.sub(r"\([^)]*\)", " ", str(card.get("oracle_text") or "")).lower()
+    return not bool(re.search(r"\bhaste\b", rules))
+
+
+def _creature_stat_tiebreak(card: dict[str, Any]) -> int:
+    """Deterministic tie-breaker for same-CMC creatures (power + toughness + keyword count)."""
+    if card.get("power") is None or card.get("toughness") is None:
+        return 0
+    p = _as_int(card.get("power"))
+    t = _as_int(card.get("toughness"))
+    rules = re.sub(r"\([^)]*\)", " ", str(card.get("oracle_text") or ""))
+    kw_bonus = len(set(m.group(0).lower() for m in _COMBAT_KEYWORD_RE.finditer(rules)))
+    return p + t + kw_bonus
+
+
 def board_math_option_pick(decision: Any, game_state: dict[str, Any]) -> tuple[list[str], str]:
     """A priority-window choice without the model: land drop, then the board-math line."""
     import arenamcp.action_planner as _ap
@@ -290,9 +320,9 @@ def board_math_option_pick(decision: Any, game_state: dict[str, Any]) -> tuple[l
 
     castable_attr = getattr(step, "castable", None) if step is not None else None
     step_castable = set(castable_attr) if castable_attr is not None else set()
-    picks: list[tuple[tuple[bool, int], Any]] = []
-    backup_picks: list[tuple[int, Any]] = []
-    unseen_threats: list[tuple[int, Any]] = []
+    picks: list[tuple[tuple[bool, bool, int, int], Any]] = []
+    backup_picks: list[tuple[tuple[bool, int, int], Any]] = []
+    unseen_threats: list[tuple[tuple[bool, int, int], Any]] = []
     proactive_unmodelled: list[tuple[int, Any]] = []
     greedy_standin_names: list[str] = []
     held_greedy_instant = False
@@ -320,8 +350,10 @@ def board_math_option_pick(decision: Any, game_state: dict[str, Any]) -> tuple[l
             continue
         cmc = mana_cost_to_cmc(cost)
         is_inst_noncre = _is_instant_noncreature(card, role)
+        is_flash_cre = _is_holdable_flash_creature(card, role)
+        stat_score = _creature_stat_tiebreak(card)
         if role in ("creature", "planeswalker"):
-            backup_picks.append((cmc, option))
+            backup_picks.append(((not is_flash_cre, cmc, stat_score), option))
         try:
             from arenamcp.line_search_moves import unmodelled_effect
         except Exception:
@@ -329,7 +361,7 @@ def board_math_option_pick(decision: Any, game_state: dict[str, Any]) -> tuple[l
         is_safe_fallback = not unsafe_play_reason(game_state, card, str(meta.get("actionType") or ""), meta)
         if is_safe_fallback and step is not None and castable_attr is not None:
             if role in ("creature", "planeswalker") and name not in step_castable:
-                unseen_threats.append((cmc, option))
+                unseen_threats.append(((not is_flash_cre, cmc, stat_score), option))
             elif role not in _REACTIVE_UNMODELLED_ROLES:
                 types_low = (
                     f"{card.get('type_line') or ''} {' '.join(str(t) for t in (card.get('card_types') or []))}"
@@ -351,7 +383,7 @@ def board_math_option_pick(decision: Any, game_state: dict[str, Any]) -> tuple[l
                     proactive_unmodelled.append((cmc, option))
         if step is not None:
             if name not in scheduled:
-                if name in greedy and is_inst_noncre:
+                if name in greedy and (is_inst_noncre or is_flash_cre):
                     held_greedy_instant = True
                     continue
                 if name not in greedy:
@@ -359,7 +391,7 @@ def board_math_option_pick(decision: Any, game_state: dict[str, Any]) -> tuple[l
                 greedy_standin_names.append(name)
         elif assessment is not None or role not in ("creature", "planeswalker"):
             continue
-        picks.append(((not is_inst_noncre, cmc), option))
+        picks.append(((not is_inst_noncre, not is_flash_cre, cmc, stat_score), option))
     if picks:
         _, option = max(picks, key=lambda item: item[0])
         if step is not None and not scheduled:
