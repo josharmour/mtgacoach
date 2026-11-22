@@ -125,7 +125,7 @@ class DeckBuilderDialog(QDialog):
             "tracker), MTGGoldfish (metagame + budget), MTGTop8 (tournament), and Moxfield (community). "
             "Where the coach's own autopilot has at least 20 recorded games with a matching deck, its "
             "measured Arena win rate is shown; decks without data are never given one. "
-            "Other sources (such as Untapped.gg) can be checked by pasting a deck export below."
+            "Any other Arena deck export can be checked by pasting it below."
         )
         intro.setWordWrap(True)
         layout.addWidget(intro)
@@ -165,12 +165,6 @@ class DeckBuilderDialog(QDialog):
         self.list_scope.setAccessibleName("List scope")
         self.list_scope.addItems(["Best-of-1 (60-card main deck)", "Full list (with Bo3 sideboard)"])
         self.list_scope.currentIndexChanged.connect(self._render)
-        source = QPushButton("Untapped Standard ↗")
-        source.clicked.connect(lambda: open_url("https://mtga.untapped.gg/constructed/standard/decks"))
-        brawl_source = QPushButton("Untapped Brawl ↗")
-        brawl_source.clicked.connect(
-            lambda: open_url("https://mtga.untapped.gg/commanders/competitive-brawl/decks")
-        )
         for widget in (
             self.refresh_button,
             self.mode,
@@ -183,8 +177,6 @@ class DeckBuilderDialog(QDialog):
         for widget in (
             self.order,
             self.list_scope,
-            source,
-            brawl_source,
         ):
             actions2.addWidget(widget)
         layout.addLayout(actions2)
