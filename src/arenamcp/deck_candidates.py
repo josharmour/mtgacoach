@@ -250,8 +250,21 @@ def load_candidates(
     index = collection_index(collection, database)
     candidates = []
     for fmt in formats:
-        label = FORMATS.get(fmt.lower(), fmt.title())
-        for rank, entry in enumerate(client.get_metagame(fmt), 1):
+        fmt_low = fmt.lower()
+        label = FORMATS.get(fmt_low, fmt.title())
+        entries = list(client.get_metagame(fmt_low))
+        if fmt_low in ("standard", "brawl"):
+            seen_urls = {str(e.get("url") or "") for e in entries}
+            try:
+                for extra in client.get_metagame(f"{fmt_low}/full"):
+                    url = str(extra.get("url") or "")
+                    if url and url not in seen_urls:
+                        seen_urls.add(url)
+                        entries.append(extra)
+            except Exception as exc:
+                logger.debug("Full %s metagame unavailable: %s", fmt_low, exc)
+        arena_meta_label = "paper metagame" if fmt_low == "standard" else "Arena metagame"
+        for rank, entry in enumerate(entries, 1):
             # A single unreachable source page (site blocking, a removed
             # list) must not blank the whole suggestion table; skip it and
             # say so in the log.
@@ -278,7 +291,7 @@ def load_candidates(
                 **deck,
                 "source_rank": rank,
                 "format": label,
-                "source": f"MTGGoldfish {label} ({'budget list' if budget else 'paper metagame'})",
+                "source": f"MTGGoldfish {label} ({'budget list' if budget else arena_meta_label})",
                 "checked_at": deck.get("checked_at") or "unavailable",
                 "export": exported,
                 "cost": cost,
@@ -295,7 +308,7 @@ def load_candidates(
 # rate below twenty decided games is noise, not signal, and is never shown.
 ARENA_MIN_GAMES = 20
 
-FORMATS = {"standard": "Standard", "brawl": "Brawl"}
+FORMATS = {"standard": "Standard", "brawl": "Brawl", "historic": "Historic"}
 
 
 def normalize_deck_name(name: str) -> str:

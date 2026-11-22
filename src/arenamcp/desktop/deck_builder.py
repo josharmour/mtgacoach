@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import logging
 
 from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal
@@ -76,7 +77,15 @@ class _LoadDecks(QRunnable):
                     )
                     warning = f"{warning} Fleet results unavailable ({fleet_error}); {source_note}.".strip()
                     logger.warning("fleet autopilot results unavailable: %s", fleet_error)
-                decks = rank_candidates(load_candidates(self.collection, self.wildcards), results)
+                params = inspect.signature(load_candidates).parameters
+                raw_decks = (
+                    load_candidates(
+                        self.collection, self.wildcards, formats=("standard", "brawl", "historic")
+                    )
+                    if "formats" in params
+                    else load_candidates(self.collection, self.wildcards)
+                )
+                decks = rank_candidates(raw_decks, results)
             else:
                 database = pricing_database()
                 self.deck["export"] = arena_export(self.deck, database=database)
@@ -124,8 +133,22 @@ class DeckBuilderDialog(QDialog):
         self.refresh_button = QPushButton("Read collection and find decks")
         self.refresh_button.clicked.connect(self.refresh)
         self.mode = QComboBox()
-        self.mode.addItems(["Owned cards only", "Within my wildcard balance", "All candidates"])
+        self.mode.addItems(
+            [
+                "Owned cards only",
+                "Within my wildcard balance",
+                "All candidates",
+                "Close (≤ 4 extra wildcards)",
+            ]
+        )
         self.mode.currentIndexChanged.connect(self._render)
+        self.format_filter = QComboBox()
+        self.format_filter.setAccessibleName("Format filter")
+        self.format_filter.addItem("All formats", "all")
+        self.format_filter.addItem("Standard", "standard")
+        self.format_filter.addItem("Brawl", "brawl")
+        self.format_filter.addItem("Historic", "historic")
+        self.format_filter.currentIndexChanged.connect(self._render)
         self.order = QComboBox()
         self.order.setAccessibleName("Deck ordering")
         self.order.addItems(["Fewest wildcards first", "Highest measured win rate first"])
@@ -134,9 +157,21 @@ class DeckBuilderDialog(QDialog):
         self.list_scope.setAccessibleName("List scope")
         self.list_scope.addItems(["Best-of-1 (60-card main deck)", "Full list (with Bo3 sideboard)"])
         self.list_scope.currentIndexChanged.connect(self._render)
-        source = QPushButton("Untapped Arena decks ↗")
+        source = QPushButton("Untapped Standard ↗")
         source.clicked.connect(lambda: open_url("https://mtga.untapped.gg/constructed/standard/decks"))
-        for widget in (self.refresh_button, self.mode, self.order, self.list_scope, source):
+        brawl_source = QPushButton("Untapped Brawl ↗")
+        brawl_source.clicked.connect(
+            lambda: open_url("https://mtga.untapped.gg/commanders/competitive-brawl/decks")
+        )
+        for widget in (
+            self.refresh_button,
+            self.mode,
+            self.format_filter,
+            self.order,
+            self.list_scope,
+            source,
+            brawl_source,
+        ):
             actions.addWidget(widget)
         layout.addLayout(actions)
         self.balance_label = QLabel("")
@@ -223,12 +258,15 @@ class DeckBuilderDialog(QDialog):
         if self._checking_paste:
             self._candidates.extend(candidates)
             self.mode.setCurrentIndex(2)
+            self.format_filter.setCurrentIndex(0)
         else:
             self._candidates = candidates
             self._source_warning = error if candidates else ""
         self._render()
         if self._checking_paste and candidates:
-            self.table.selectRow(next(i for i, deck in enumerate(self._visible) if deck is candidates[-1]))
+            idx = next((i for i, deck in enumerate(self._visible) if deck is candidates[-1]), -1)
+            if idx >= 0:
+                self.table.selectRow(idx)
         self._checking_paste = False
         if error and not candidates:
             self.status.setText(error + " You can still paste a source deck export to check its cost.")
@@ -258,14 +296,30 @@ class DeckBuilderDialog(QDialog):
     def _active_order_key(self, deck: dict) -> tuple:
         return cost_order_key({"cost": self._active_cost(deck), "source_rank": deck.get("source_rank", 999)})
 
+    def _matches_mode(self, deck: dict, mode: int) -> bool:
+        if mode == 2:
+            return True
+        cost = self._active_cost(deck)
+        if mode == 0:
+            return bool(cost.get("owned"))
+        if mode == 1:
+            return bool(cost.get("affordable"))
+        # Mode 3: Close to affordable (<= 4 total extra wildcards needed, no unresolved cards)
+        if cost.get("unknown"):
+            return False
+        if cost.get("affordable"):
+            return True
+        short = self._shortfall_for(cost)
+        return bool(short) and sum(short.values()) <= 4
+
     def _render(self):
         mode = self.mode.currentIndex()
-        filtered = [
-            d
-            for d in self._candidates
-            if mode == 2 or bool(self._active_cost(d).get("owned" if mode == 0 else "affordable"))
+        fmt = self.format_filter.currentData() if hasattr(self, "format_filter") else "all"
+        pool = [
+            d for d in self._candidates if fmt == "all" or str(d.get("format") or "").strip().lower() == fmt
         ]
-        if filtered or not self._candidates:
+        filtered = [d for d in pool if self._matches_mode(d, mode)]
+        if filtered or not pool:
             if self.order.currentIndex() == 0:
                 self._visible = sorted(filtered, key=self._active_order_key)
             else:
@@ -284,7 +338,7 @@ class DeckBuilderDialog(QDialog):
             # Never show an empty table: when no candidate fits the filter,
             # show every candidate nearest first (fewest wildcards to craft)
             # and say so, instead of leaving the customer with nothing.
-            self._visible = sorted(self._candidates, key=self._active_order_key)
+            self._visible = sorted(pool, key=self._active_order_key)
             fallback = True
         self.table.setRowCount(0)
         for deck in self._visible:
@@ -330,9 +384,11 @@ class DeckBuilderDialog(QDialog):
             )
         else:
             count_word = "deck matches" if len(self._visible) == 1 else "decks match"
+            total_pool = len(pool)
+            of_total = f" of {total_pool}" if total_pool > len(self._visible) else ""
             self.status.setText(
-                f"{len(self._visible)} {count_word} this filter. "
-                "Try All candidates or paste another deck if none fit."
+                f"{len(self._visible)}{of_total} {count_word} this filter. "
+                "Try Close or All candidates, or paste another deck."
             )
         if self._source_warning:
             self.status.setText(self.status.text() + "\n" + self._source_warning)

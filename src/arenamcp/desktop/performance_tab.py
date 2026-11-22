@@ -6,10 +6,11 @@ Historical mixed ratings remain in storage but are never presented as performanc
 from __future__ import annotations
 
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
+    QComboBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -151,7 +152,111 @@ def _format_deck_result(entry: dict) -> str:
     line = f"{entry['name']} · {entry['games']} games · {entry['wins']}W–{entry['losses']}L"
     if entry["win_rate"] is not None:
         line += f" · {entry['win_rate'] * 100:.0f}% win rate"
+    elif entry["games"] > 0:
+        pct = entry["wins"] / entry["games"] * 100
+        line += f" · {pct:.0f}% (small sample)"
     return line
+
+
+def _parse_record_ts(ts: str) -> datetime | None:
+    if not ts:
+        return None
+    try:
+        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
+
+
+def filter_records(
+    records,
+    *,
+    window_days: int | None = None,
+    format_filter: str = "all",
+    now: datetime | None = None,
+) -> list:
+    """Filter MatchRecords by time window (days) and canonical format bucket."""
+    ref_now = now or datetime.now(timezone.utc)
+    if ref_now.tzinfo is None:
+        ref_now = ref_now.replace(tzinfo=timezone.utc)
+    cutoff = (ref_now - timedelta(days=window_days)) if window_days is not None else None
+    fmt = (format_filter or "all").strip().lower()
+    out = []
+    for rec in records:
+        if cutoff is not None:
+            ts = _parse_record_ts(getattr(rec, "timestamp", "") or "")
+            if ts is None or ts < cutoff:
+                continue
+        if fmt != "all":
+            bucket = _canonical_queue(getattr(rec, "format_name", "") or "")
+            if fmt == "other":
+                if bucket in ("standard", "brawl"):
+                    continue
+            elif bucket != fmt:
+                continue
+        out.append(rec)
+    return out
+
+
+def compute_performance_summary(records) -> dict:
+    """Compute W-L, win rate, current streak, average turns, and top opponent color matchups."""
+    wins = 0
+    losses = 0
+    turns_sum = 0
+    turns_count = 0
+    streak_char = ""
+    streak_len = 0
+    vs_colors: dict[str, list[int]] = {}
+    for rec in records:
+        res = (getattr(rec, "result", "") or "").lower()
+        if res not in ("win", "loss"):
+            continue
+        is_win = res == "win"
+        if is_win:
+            wins += 1
+        else:
+            losses += 1
+        ch = "W" if is_win else "L"
+        if not streak_char:
+            streak_char = ch
+            streak_len = 1
+        elif streak_char == ch and streak_len > 0:
+            streak_len += 1
+        else:
+            # Streak ended at first mismatch (records are newest-first)
+            streak_len = -abs(streak_len)
+        t = int(getattr(rec, "turns", 0) or 0)
+        if t > 0:
+            turns_sum += t
+            turns_count += 1
+        colors = "".join(sorted(set(getattr(rec, "opponent_colors_seen", None) or [])))
+        if colors:
+            slot = vs_colors.setdefault(colors, [0, 0])
+            slot[0] += 1 if is_win else 0
+            slot[1] += 0 if is_win else 1
+    total = wins + losses
+    matchups = sorted(
+        (
+            {
+                "colors": c,
+                "wins": wl[0],
+                "losses": wl[1],
+                "games": wl[0] + wl[1],
+                "win_rate": wl[0] / (wl[0] + wl[1]),
+            }
+            for c, wl in vs_colors.items()
+        ),
+        key=lambda m: (-m["games"], -m["win_rate"], m["colors"]),
+    )
+    return {
+        "wins": wins,
+        "losses": losses,
+        "total": total,
+        "win_rate": (wins / total) if total else None,
+        "avg_turns": (turns_sum / turns_count) if turns_count else None,
+        "streak": f"{streak_char}{abs(streak_len)}" if streak_char else "",
+        "matchups": matchups[:6],
+    }
 
 
 def _fmt_ts(ts: str) -> str:
@@ -202,6 +307,24 @@ class PerformanceTab(QWidget):
         header.addWidget(refresh, 0, Qt.AlignTop)
         lay.addLayout(header)
 
+        filters = QHBoxLayout()
+        self.window_filter = QComboBox()
+        self.window_filter.addItem("All time", None)
+        self.window_filter.addItem("Today (24h)", 1)
+        self.window_filter.addItem("Last 7 days", 7)
+        self.window_filter.addItem("Last 30 days", 30)
+        self.window_filter.currentIndexChanged.connect(self.refresh)
+        self.format_filter = QComboBox()
+        self.format_filter.addItem("All formats", "all")
+        self.format_filter.addItem("Standard", "standard")
+        self.format_filter.addItem("Brawl", "brawl")
+        self.format_filter.addItem("Other", "other")
+        self.format_filter.currentIndexChanged.connect(self.refresh)
+        filters.addWidget(self.window_filter)
+        filters.addWidget(self.format_filter)
+        filters.addStretch(1)
+        lay.addLayout(filters)
+
         # Per-deck autopilot results (hidden until at least one autopilot
         # game with a known deck is recorded).
         self._decks_caption = QLabel("AUTOPILOT RESULTS BY DECK")
@@ -213,6 +336,16 @@ class PerformanceTab(QWidget):
         self._decks.setProperty("role", "muted")
         self._decks.hide()
         lay.addWidget(self._decks)
+
+        self._matchups_caption = QLabel("OPPONENT COLOR MATCHUPS")
+        self._matchups_caption.setProperty("role", "caption")
+        self._matchups_caption.hide()
+        lay.addWidget(self._matchups_caption)
+        self._matchups = QLabel("")
+        self._matchups.setWordWrap(True)
+        self._matchups.setProperty("role", "muted")
+        self._matchups.hide()
+        lay.addWidget(self._matchups)
 
         if not _USE_TABLES:
             from .match_history_cards import MatchHistoryCards
@@ -335,15 +468,18 @@ class PerformanceTab(QWidget):
             # results written by the coach subprocess are always visible.
             history = MatchHistory()
             all_records = list(reversed(history.get_recent(history.total_games)))
-            # The per-deck section follows the same ladder filter as the table
-            # above it, but draws from the FULL filtered history (no row
+            # The per-deck section follows the same ladder and UI filters as the
+            # table above it, drawing from the FULL filtered history (no row
             # limit) so the 20-game sample floor stays reachable.
+            window_days = self.window_filter.currentData() if hasattr(self, "window_filter") else None
+            fmt_filter = self.format_filter.currentData() if hasattr(self, "format_filter") else "all"
+            filtered = filter_records(all_records, window_days=window_days, format_filter=fmt_filter)
             if self._ladder:
-                deck_records = [rec for rec in all_records if ranked_ladder(rec.format_name) == self._ladder]
+                deck_records = [rec for rec in filtered if ranked_ladder(rec.format_name) == self._ladder]
                 records = deck_records[:RANK_HISTORY_LIMIT]
             else:
-                deck_records = all_records
-                records = all_records[:_MAX_ROWS]
+                deck_records = filtered
+                records = filtered[:_MAX_ROWS]
         except Exception:
             deck_records = []
             records = []
@@ -360,7 +496,7 @@ class PerformanceTab(QWidget):
                 self._show_record(row)
             else:
                 self._detail.setText("Select a game to review its recorded result.")
-            self._update_summary(records)
+            self._update_summary(records, deck_records)
             self._update_deck_results(deck_records)
             return
 
@@ -435,7 +571,7 @@ class PerformanceTab(QWidget):
                     self._visible_table().selectRow(r)
                     break
 
-        self._update_summary(records)
+        self._update_summary(records, deck_records)
         self._update_deck_results(deck_records)
 
     def _update_deck_results(self, records) -> None:
@@ -448,13 +584,35 @@ class PerformanceTab(QWidget):
         self._decks.setVisible(has_entries)
         self._decks_caption.setVisible(has_entries)
 
-    def _update_summary(self, records) -> None:
-        wins = sum((r.result or "").lower() == "win" for r in records)
-        losses = sum((r.result or "").lower() == "loss" for r in records)
-        total = wins + losses
-        win_rate = (wins / total * 100) if total else 0.0
+        stats = compute_performance_summary(records)
+        matchups = stats["matchups"]
+        if hasattr(self, "_matchups"):
+            if matchups:
+                text = " · ".join(
+                    f"vs {m['colors']}: {m['wins']}W–{m['losses']}L ({m['win_rate'] * 100:.0f}%)"
+                    for m in matchups
+                )
+                self._matchups.setText(text)
+            self._matchups.setVisible(bool(matchups))
+            self._matchups_caption.setVisible(bool(matchups))
 
-        summary = f"{len(records)} shown · {wins}W / {losses}L ({win_rate:.0f}% win rate)"
+    def _update_summary(self, records, all_filtered=None) -> None:
+        pool = all_filtered if all_filtered is not None else records
+        stats = compute_performance_summary(pool)
+        wins = stats["wins"]
+        losses = stats["losses"]
+        win_rate = (stats["win_rate"] * 100) if stats["win_rate"] is not None else 0.0
+
+        extras = []
+        if stats["streak"]:
+            extras.append(f"Streak {stats['streak']}")
+        if stats["avg_turns"] is not None:
+            extras.append(f"Avg {stats['avg_turns']:.1f} turns")
+        extra_str = (" · " + " · ".join(extras)) if extras else ""
+        shown_part = (
+            f"{len(records)} of {len(pool)} shown" if len(pool) > len(records) else f"{len(records)} shown"
+        )
+        summary = f"{shown_part} · {wins}W / {losses}L ({win_rate:.0f}% win rate){extra_str}"
         if self._ladder:
             summary = (
                 f"Ranked {self._ladder} · {summary}"
