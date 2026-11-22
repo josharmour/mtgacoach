@@ -52,6 +52,55 @@ class _AutoQueueMixin(AutoQuestMixin):
             return AUTO_QUEUE_LOSS_LIMIT
         return max(0, val)
 
+    def _auto_queue_mode(self) -> str:
+        """Auto-queue mode: 'same' (repeat current deck) or 'winning' (queue strongest deck)."""
+        raw = None
+        if hasattr(self, "settings"):
+            raw = self.settings.get("auto_queue_mode")
+            try:
+                from arenamcp.settings import Settings
+
+                if isinstance(self.settings, Settings) and "auto_queue_mode" not in getattr(
+                    self.settings, "_dirty", ()
+                ):
+                    disk_val = Settings().get("auto_queue_mode")
+                    if disk_val is not None:
+                        raw = disk_val
+            except Exception:
+                pass
+        return "winning" if str(raw or "").strip().lower() == "winning" else "same"
+
+    def _resolve_winning_queue_target(self) -> dict[str, object] | None:
+        """Evaluate queueable constructed/Brawl decks and return the top winning target."""
+        if self._auto_queue_mode() != "winning":
+            return None
+        try:
+            from arenamcp.between_match_coach import QUEUE_PLAN_LABEL, evaluate_live_queue_plan
+
+            plan = evaluate_live_queue_plan()
+            if plan.recommended is None:
+                return None
+            target = plan.recommended.to_target()
+            sig = (target["deck_id"], target["event_id"])
+            if getattr(self, "_winning_queue_last_sig", None) != sig:
+                self._winning_queue_last_sig = sig
+                rec = plan.recommended
+                rec_str = (
+                    f"{rec.wins}W-{rec.losses}L ({rec.rate:.0%})" if rec.total > 0 else "no recent record"
+                )
+                msg = (
+                    f"Auto-queue (Winning decks): targeting {rec.label} in {rec.event_id} "
+                    f"({rec_str}).\n{plan.summary}"
+                )
+                logger.info("Auto-queue winning target: %s in %s (%s)", rec.label, rec.event_id, rec_str)
+                advice = getattr(getattr(self, "ui", None), "advice", None)
+                if callable(advice):
+                    advice(msg, QUEUE_PLAN_LABEL)
+            return target
+        except Exception:
+            logger.debug("Could not resolve winning auto-queue target", exc_info=True)
+            return None
+
     def _loss_stop_detail(self, limit: int) -> str:
         if limit == AUTO_QUEUE_LOSS_LIMIT:
             return LOSS_STOP_DETAIL
@@ -343,6 +392,7 @@ class _AutoQueueMixin(AutoQuestMixin):
         self._auto_queue_last_noted = None
         self._auto_queue_observed_match = None
         self._auto_queue_faulted = False
+        self._winning_queue_last_sig = None
         self._suspend_auto_queue()
         # An idle Grind arm belongs to that explicit session, never ordinary
         # auto-queue or a later Grind session.
@@ -350,10 +400,15 @@ class _AutoQueueMixin(AutoQuestMixin):
         if navigator is not None and getattr(navigator, "_idle_grind", False) is True:
             self._auto_queue_navigator = None
         self.ui.status("AUTO_QUEUE", "ON" if enabled else "OFF")
-        self.ui.status(
-            "AUTO_QUEUE_DETAIL",
-            "Autoplay must be on; replaying the first Recent Match when Arena is idle." if enabled else "",
-        )
+        if enabled:
+            detail = (
+                "Autoplay must be on; evaluating winning decks when Arena is idle."
+                if self._auto_queue_mode() == "winning"
+                else "Autoplay must be on; replaying the first Recent Match when Arena is idle."
+            )
+        else:
+            detail = ""
+        self.ui.status("AUTO_QUEUE_DETAIL", detail)
         return self._auto_queue_enabled
 
     def _suspend_auto_queue(self) -> None:
@@ -473,6 +528,16 @@ class _AutoQueueMixin(AutoQuestMixin):
             self._auto_queue_restart_pending = self._auto_queue_enabled
             self._suspend_auto_queue()
             return False
+        if not getattr(self, "_auto_quest", None):
+            winning_target = self._resolve_winning_queue_target()
+            if winning_target and hasattr(navigator, "start_idle_grind"):
+                if navigator.start_idle_grind(winning_target, state):
+                    logger.info(
+                        "Auto queue (Winning decks): queueing %s with %r from idle Home",
+                        winning_target.get("event_id"),
+                        winning_target.get("deck_name"),
+                    )
+                    return True
         if native:
             # Recover completion evidence for the persistent duplicate guard.
             # Age is immaterial here: the guard compares it with the prior
@@ -698,6 +763,10 @@ class _AutoQueueMixin(AutoQuestMixin):
                 quest = getattr(self, "_auto_quest", None)
                 if quest and quest.get("target"):
                     completed = {**completed, **quest["target"]}
+                elif not quest:
+                    winning_target = self._resolve_winning_queue_target()
+                    if winning_target:
+                        completed = {**completed, **winning_target}
                 navigator.note_match_end(completed, confirmed_match_end=True)
                 self._auto_queue_last_noted = match_id
                 self._auto_queue_observed_match = match_id

@@ -675,13 +675,15 @@ class AutoQueueNavigator:
         enters the completion history or engine reload checkpoint.
         """
         from arenamcp.auto_quest import FREE_EVENTS
+        from arenamcp.between_match_coach import QUEUEABLE_FREE_EVENTS
 
+        allowed_events = FREE_EVENTS | QUEUEABLE_FREE_EVENTS
         with self._lock:
             if (
                 not self.enabled
                 or self.active
                 or target.get("quest_mode") is not True
-                or target.get("event_id") not in FREE_EVENTS
+                or target.get("event_id") not in allowed_events
                 or not str(target.get("deck_id") or "").strip()
                 or not str(target.get("deck_name") or "").strip()
                 or state.get("pending_decision")
@@ -1907,8 +1909,9 @@ class AutoQueueNavigator:
                 event_name = self._last_event_id or "AIBotMatch"
                 if getattr(self, "_quest_mode", False):
                     from arenamcp.auto_quest import FREE_EVENTS
+                    from arenamcp.between_match_coach import QUEUEABLE_FREE_EVENTS
 
-                    if event_name not in FREE_EVENTS or not self._quest_deck_id:
+                    if event_name not in (FREE_EVENTS | QUEUEABLE_FREE_EVENTS) or not self._quest_deck_id:
                         self._pause("Quest queue or deck is not verified")
                         return
                 self._status(f"Re-queueing for {event_name} via bridge...")

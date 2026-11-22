@@ -638,6 +638,15 @@ class CompactCoachPanel(QWidget):
         self.after_match_popover = VoiceStylePopover(self, "After this match")
         self.after_match_popover.setAccessibleName("After this match")
         self.after_match_popover.add_button(self.auto_queue_btn)
+        self.auto_queue_winning_btn = QPushButton("Winning decks: Off")
+        self.auto_queue_winning_btn.setObjectName("autoQueueWinningButton")
+        self.auto_queue_winning_btn.setProperty("state", "off")
+        self.auto_queue_winning_btn.setToolTip(
+            "Evaluate your queueable constructed/Brawl decks from recent match history and "
+            "automatically queue your highest-win-rate deck. Requires Autoplay to be on."
+        )
+        self.auto_queue_winning_btn.clicked.connect(self._toggle_auto_queue_winning)
+        self.after_match_popover.add_button(self.auto_queue_winning_btn)
         self.loss_limit_btn = QPushButton()
         self.loss_limit_btn.setObjectName("lossLimitButton")
         self.loss_limit_btn.setToolTip(
@@ -1263,21 +1272,71 @@ class CompactCoachPanel(QWidget):
         )
         self.append_log(msg, role="status")
 
+    def _current_auto_queue_mode(self) -> str:
+        raw = self._settings.get("auto_queue_mode")
+        return "winning" if str(raw or "").strip().lower() == "winning" else "same"
+
+    def _rearm_if_safeguard_tripped(self) -> None:
+        # An explicit re-arm after the safety stop works even with the
+        # engine offline. Ordinary navigation retries retain every loss.
+        streak = settings.Settings().get("auto_queue_streak") or {}
+        limit = self._current_loss_limit()
+        if limit > 0 and streak.get("losses", 0) >= limit:
+            cut = max(time.time(), float(streak.get("through") or 0.0))
+            fresh = {"since": cut, "rearmed_at": cut, "through": cut, "losses": 0}
+            if streak.get("last"):
+                fresh["last"] = streak["last"]
+            self._settings.set("auto_queue_streak", fresh)
+
+    def _log_queue_plan_on_start(self, mode: str) -> None:
+        try:
+            from arenamcp.between_match_coach import evaluate_live_queue_plan
+
+            plan = evaluate_live_queue_plan()
+            if not plan.decks:
+                return
+            if mode == "winning":
+                self.append_log(f"Auto-queue (Winning decks) ON.\n{plan.summary}", role="status")
+            else:
+                tip = ""
+                if len(plan.decks) >= 2 and plan.recommended is not None:
+                    best = plan.recommended
+                    if best.total >= 5 and best.rate >= 0.50:
+                        tip = (
+                            f"\nTip: {best.label} is your strongest deck ({best.wins}W-{best.losses}L, "
+                            f"{best.rate:.0%}) — use 'Winning decks' to auto-queue it."
+                        )
+                self.append_log(f"Auto-queue (Same deck) ON.\n{plan.summary}{tip}", role="status")
+        except Exception:
+            pass
+
     def _toggle_auto_queue(self) -> None:
-        self._auto_queue_enabled = not self._auto_queue_enabled
+        mode = self._current_auto_queue_mode()
+        turning_on = (not self._auto_queue_enabled) or (mode != "same")
+        self._auto_queue_enabled = turning_on
+        self._settings.set("auto_queue_mode", "same")
         if self._auto_queue_enabled:
-            # An explicit re-arm after the safety stop works even with the
-            # engine offline. Ordinary navigation retries retain every loss.
-            streak = settings.Settings().get("auto_queue_streak") or {}
-            limit = self._current_loss_limit()
-            if limit > 0 and streak.get("losses", 0) >= limit:
-                cut = max(time.time(), float(streak.get("through") or 0.0))
-                fresh = {"since": cut, "rearmed_at": cut, "through": cut, "losses": 0}
-                if streak.get("last"):
-                    fresh["last"] = streak["last"]
-                self._settings.set("auto_queue_streak", fresh)
+            self._rearm_if_safeguard_tripped()
+            self._log_queue_plan_on_start("same")
         self._settings.set("auto_queue_enabled", self._auto_queue_enabled)
         self._auto_queue_detail = "Waiting for Autoplay and match status." if self._auto_queue_enabled else ""
+        self._render_auto_queue_status()
+        self._session.set_auto_queue(self._auto_queue_enabled)
+
+    def _toggle_auto_queue_winning(self) -> None:
+        mode = self._current_auto_queue_mode()
+        turning_on = (not self._auto_queue_enabled) or (mode != "winning")
+        self._auto_queue_enabled = turning_on
+        self._settings.set("auto_queue_mode", "winning" if turning_on else "same")
+        if self._auto_queue_enabled:
+            self._rearm_if_safeguard_tripped()
+            self._log_queue_plan_on_start("winning")
+        self._settings.set("auto_queue_enabled", self._auto_queue_enabled)
+        self._auto_queue_detail = (
+            "Evaluating winning decks — waiting for Autoplay and match status."
+            if self._auto_queue_enabled
+            else ""
+        )
         self._render_auto_queue_status()
         self._session.set_auto_queue(self._auto_queue_enabled)
 
@@ -1301,9 +1360,16 @@ class CompactCoachPanel(QWidget):
     def _render_auto_queue_status(self) -> None:
         enabled = self._auto_queue_enabled
         grind = getattr(self, "_grind_enabled", False)
-        self.auto_queue_btn.setText(f"Auto-queue: {'On' if enabled else 'Off'}")
-        self.auto_queue_btn.setProperty("state", "on" if enabled else "off")
+        mode = self._current_auto_queue_mode()
+        same_on = enabled and mode == "same"
+        winning_on = enabled and mode == "winning"
+        self.auto_queue_btn.setText(f"Auto-queue: {'On' if same_on else 'Off'}")
+        self.auto_queue_btn.setProperty("state", "on" if same_on else "off")
         theme.repolish(self.auto_queue_btn)
+        if hasattr(self, "auto_queue_winning_btn"):
+            self.auto_queue_winning_btn.setText(f"Winning decks: {'On' if winning_on else 'Off'}")
+            self.auto_queue_winning_btn.setProperty("state", "on" if winning_on else "off")
+            theme.repolish(self.auto_queue_winning_btn)
         raw_detail = self._auto_queue_detail.strip()
         detail = raw_detail
         if detail and not detail.lower().startswith("auto-queue"):
@@ -1313,6 +1379,8 @@ class CompactCoachPanel(QWidget):
         if hasattr(self, "after_match_btn"):
             if grind:
                 btn_text = "Grind: On"
+            elif winning_on:
+                btn_text = "Queue: Winning"
             elif enabled:
                 btn_text = "Queue: On"
             else:

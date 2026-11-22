@@ -356,3 +356,269 @@ def test_compact_coach_loss_limit_button_cycles():
         assert panel._settings.get("auto_queue_loss_limit") == exp_val
         assert panel.loss_limit_btn.text == exp_label
     assert len(logged) == 4
+
+
+def test_evaluate_queueable_decks_ranks_proven_winning_deck_above_noise_and_cold_deck():
+    from arenamcp.between_match_coach import evaluate_queueable_decks
+
+    now = datetime(2026, 11, 21, 18, 0, tzinfo=timezone.utc)
+    # Deck A: proven 32W-29L (52.5%)
+    recs = [
+        _rec(
+            i,
+            "win" if i < 32 else "loss",
+            deck_id="id-a",
+            deck_name="Deck Alpha",
+            hours_ago=48 - i * 0.5,
+            now=now,
+        )
+        for i in range(61)
+    ]
+    # Deck B: struggling 2W-9L (18.2%)
+    recs += [
+        _rec(
+            200 + i,
+            "win" if i < 2 else "loss",
+            deck_id="id-b",
+            deck_name="Deck Beta",
+            hours_ago=5 - i * 0.2,
+            now=now,
+        )
+        for i in range(11)
+    ]
+    # Deck C: 1W-0L (100% tiny sample noise)
+    recs.append(_rec(300, "win", deck_id="id-c", deck_name="Deck Noise", hours_ago=1.0, now=now))
+
+    pairs = [
+        {"deck_id": "d-b", "deck_name": "Deck Beta", "event_id": "Ladder", "deck_identity": "id-b"},
+        {"deck_id": "d-c", "deck_name": "Deck Noise", "event_id": "Ladder", "deck_identity": "id-c"},
+        {"deck_id": "d-a", "deck_name": "Deck Alpha", "event_id": "Ladder", "deck_identity": "id-a"},
+        # Paid draft event must be ignored
+        {
+            "deck_id": "d-draft",
+            "deck_name": "Draft Pile",
+            "event_id": "PremierDraft_FDN",
+            "deck_identity": "id-d",
+        },
+    ]
+    plan = evaluate_queueable_decks(recs, pairs, now=now, account_id="acct1")
+    assert len(plan.decks) == 3
+    assert plan.recommended is not None
+    assert plan.recommended.deck_name == "Deck Alpha"
+    assert plan.decks[-1].deck_name == "Deck Beta"
+    assert "Deck Alpha" in plan.summary and "Recommended" in plan.summary
+    assert "Draft Pile" not in plan.summary
+
+    empty_plan = evaluate_queueable_decks(recs, [], now=now)
+    assert empty_plan.recommended is None
+    assert empty_plan.decks == ()
+
+
+def test_load_queueable_pairs_filters_to_free_constructed_events(tmp_path):
+    import json
+
+    from arenamcp.between_match_coach import load_queueable_pairs
+
+    log_file = tmp_path / "Player.log"
+    ev_free = json.dumps(
+        {
+            "request": json.dumps(
+                {"EventName": "Ladder", "Summary": {"DeckId": "deck-1", "Name": "My Ladder Deck"}}
+            )
+        }
+    )
+    ev_paid = json.dumps(
+        {
+            "request": json.dumps(
+                {"EventName": "QuickDraft_FDN", "Summary": {"DeckId": "deck-2", "Name": "Draft Deck"}}
+            )
+        }
+    )
+    log_file.write_text(f"==> EventSetDeckV3 {ev_free}\n==> EventSetDeckV3 {ev_paid}\n", encoding="utf-8")
+    pairs = load_queueable_pairs(log_path=log_file)
+    assert len(pairs) == 1
+    assert pairs[0]["deck_id"] == "deck-1"
+    assert pairs[0]["deck_name"] == "My Ladder Deck"
+    assert pairs[0]["event_id"] == "Ladder"
+
+
+def test_auto_queue_winning_mode_resolves_target_and_dedupes_advice(monkeypatch):
+    from arenamcp.between_match_coach import QUEUE_PLAN_LABEL, QueueableDeck, QueuePlan
+
+    deck = QueueableDeck("d-a", "Deck Alpha", "Ladder", "id-a", 32, 29)
+    fake_plan = QueuePlan(decks=(deck,), recommended=deck, summary="Queueable decks (1 found)")
+    monkeypatch.setattr(
+        "arenamcp.between_match_coach.evaluate_live_queue_plan", lambda log_path=None: fake_plan
+    )
+
+    # Same mode returns None
+    h_same = _QueueHarness()
+    h_same.settings.set("auto_queue_mode", "same")
+    assert h_same._resolve_winning_queue_target() is None
+
+    # Winning mode returns target (with quest_mode=True) and announces once per target signature
+    h_win = _QueueHarness()
+    h_win.settings.set("auto_queue_mode", "winning")
+    target = h_win._resolve_winning_queue_target()
+    assert target == {"deck_id": "d-a", "deck_name": "Deck Alpha", "event_id": "Ladder", "quest_mode": True}
+    assert len(h_win.ui.advices) == 1
+    assert h_win.ui.advices[0][1] == QUEUE_PLAN_LABEL
+
+    # Second call with same target does not duplicate advice
+    assert h_win._resolve_winning_queue_target() == target
+    assert len(h_win.ui.advices) == 1
+
+
+def test_winning_target_arms_auto_queue_navigator_for_ladder_and_historic_ladder():
+    from arenamcp.auto_queue import AutoQueueNavigator
+    from arenamcp.between_match_coach import QueueableDeck
+
+    for event_id in ("Ladder", "Historic_Ladder"):
+        nav = AutoQueueNavigator(
+            backend=object(),
+            get_game_state=lambda: {},
+            bridge=None,
+        )
+        nav.set_enabled(True)
+        deck = QueueableDeck("deck-99", "Deck Alpha", event_id, "id-a", 32, 29)
+        target = deck.to_target()
+        assert nav.start_idle_grind(target, {}) is True
+        assert nav._quest_mode is True
+        assert nav._quest_deck_id == "deck-99"
+        assert nav._last_event_id == event_id
+
+        # Post-match note_match_end with merged winning target also preserves quest_mode + deck_id
+        nav2 = AutoQueueNavigator(
+            backend=object(),
+            get_game_state=lambda: {},
+            bridge=None,
+        )
+        nav2.set_enabled(True)
+        completed = {"match_id": "m-end-1", "event_id": "Play", "deck_name": "Old Deck", **target}
+        assert nav2.note_match_end(completed, confirmed_match_end=True) is True
+        assert nav2._quest_mode is True
+        assert nav2._quest_deck_id == "deck-99"
+        assert nav2._last_event_id == event_id
+
+
+def test_load_queueable_pairs_enriches_identity_and_handles_corrupt_or_missing_logs(tmp_path, monkeypatch):
+    import json
+
+    from arenamcp.between_match_coach import load_queueable_pairs
+    from arenamcp.deck_library import DeckRecord
+
+    # Missing file returns []
+    assert load_queueable_pairs(log_path=tmp_path / "does_not_exist.log") == []
+
+    # Corrupt / non-dict JSON lines do not crash, and valid lines get enriched via load_log_decks([path])
+    log_file = tmp_path / "Player.log"
+    ev_valid = json.dumps(
+        {
+            "request": json.dumps(
+                {"EventName": "Historic_Ladder", "Summary": {"DeckId": "deck-42", "Name": ""}}
+            )
+        }
+    )
+    ev_bad_shape = json.dumps({"request": json.dumps(["not-a-dict"])})
+    ev_bad_summary = json.dumps({"request": json.dumps({"EventName": "Ladder", "Summary": "oops"})})
+    log_file.write_text(
+        f"==> EventSetDeckV3 {ev_bad_shape}\n"
+        f"==> EventSetDeckV3 {ev_bad_summary}\n"
+        f"==> EventSetDeckV3 {ev_valid}\n",
+        encoding="utf-8",
+    )
+
+    seen_paths = []
+
+    def _fake_load_log_decks(paths=None):
+        seen_paths.append(paths)
+        return {"deck-42": DeckRecord(deck_id="deck-42", name="Enriched Deck", main=[(100, 4)])}
+
+    monkeypatch.setattr("arenamcp.deck_library.load_log_decks", _fake_load_log_decks)
+    pairs = load_queueable_pairs(log_path=log_file)
+    assert seen_paths == [[log_file]]
+    assert len(pairs) == 1
+    assert pairs[0]["deck_name"] == "Enriched Deck"
+    assert pairs[0]["deck_identity"] != ""
+
+
+def test_compact_coach_same_vs_winning_auto_queue_toggles(monkeypatch):
+    from PySide6.QtWidgets import QApplication
+
+    from arenamcp.between_match_coach import QueueableDeck, QueuePlan
+    from arenamcp.desktop.compact_coach import CompactCoachPanel
+
+    app = QApplication.instance() or QApplication([])
+    assert app is not None
+
+    deck_a = QueueableDeck("d-a", "Deck Alpha", "Ladder", "id-a", 32, 29)
+    deck_b = QueueableDeck("d-b", "Deck Beta", "Ladder", "id-b", 2, 9)
+    fake_plan = QueuePlan(decks=(deck_a, deck_b), recommended=deck_a, summary="Queueable decks (2 found)")
+    monkeypatch.setattr(
+        "arenamcp.between_match_coach.evaluate_live_queue_plan", lambda log_path=None: fake_plan
+    )
+
+    class _Btn:
+        def __init__(self) -> None:
+            self.text = ""
+            self.props: dict[str, str] = {}
+            self.tooltip = ""
+
+        def setText(self, t: str) -> None:
+            self.text = t
+
+        def setProperty(self, k: str, v: str) -> None:
+            self.props[k] = v
+
+        def setToolTip(self, t: str) -> None:
+            self.tooltip = t
+
+    class _Lbl:
+        def __init__(self) -> None:
+            self.text = ""
+            self.visible = False
+
+        def setText(self, t: str) -> None:
+            self.text = t
+
+        def setVisible(self, v: bool) -> None:
+            self.visible = v
+
+    panel = CompactCoachPanel.__new__(CompactCoachPanel)
+    panel._settings = _FakeSettings({})
+    panel._auto_queue_enabled = False
+    panel._auto_queue_detail = ""
+    panel._grind_enabled = False
+    panel.auto_queue_btn = _Btn()
+    panel.auto_queue_winning_btn = _Btn()
+    panel.after_match_btn = _Btn()
+    panel.auto_queue_status_label = _Lbl()
+    sent: list[bool] = []
+    panel._session = type("_S", (), {"set_auto_queue": lambda self, en: sent.append(en)})()
+    logged: list[str] = []
+    panel.append_log = lambda msg, role="status": logged.append(msg)
+    monkeypatch.setattr("arenamcp.desktop.compact_coach.theme.repolish", lambda w: None)
+
+    # 1. Click Winning decks ON
+    panel._toggle_auto_queue_winning()
+    assert panel._auto_queue_enabled is True
+    assert panel._settings.get("auto_queue_mode") == "winning"
+    assert panel.auto_queue_winning_btn.text == "Winning decks: On"
+    assert panel.auto_queue_btn.text == "Auto-queue: Off"
+    assert panel.after_match_btn.text == "Queue: Winning"
+    assert any("Auto-queue (Winning decks) ON" in m for m in logged)
+
+    # 2. Switch directly to Same deck
+    panel._toggle_auto_queue()
+    assert panel._auto_queue_enabled is True
+    assert panel._settings.get("auto_queue_mode") == "same"
+    assert panel.auto_queue_btn.text == "Auto-queue: On"
+    assert panel.auto_queue_winning_btn.text == "Winning decks: Off"
+    assert panel.after_match_btn.text == "Queue: On"
+    assert any("Tip: Deck Alpha" in m for m in logged)
+
+    # 3. Turn Off
+    panel._toggle_auto_queue()
+    assert panel._auto_queue_enabled is False
+    assert panel.after_match_btn.text == "After match…"
+    assert sent == [True, True, False]
