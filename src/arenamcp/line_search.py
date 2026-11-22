@@ -1770,7 +1770,7 @@ def _plan_attackers(search: _Search, mid: Any, text: str, label: str, issues: li
     for body in named:
         if body["instance_id"] in mid.our_tapped or not body["_can_attack"]:
             continue
-        if search.sick(body, node.k, node.abs_turn, mid.entered):
+        if search.sick(body, node.k, node.abs_turn, mid.entered, mid.haste_ids):
             sick_bodies.append(body)
             continue
         ids.append(body["instance_id"])

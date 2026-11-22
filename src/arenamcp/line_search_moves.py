@@ -1569,6 +1569,7 @@ class Variant:
     has_fact_triggers: bool = False
     fact_draws: int = 0
     stays_on_battlefield: bool = True
+    grants_haste: bool = False
 
 
 @dataclass(eq=False)
@@ -1656,6 +1657,7 @@ class Mid:
         "pumps", "persistent", "their_tapped", "responses", "response_case", "response_cache",
         "public_response", "opponent_discards", "entry_draw_used", "entry_draw_branches", "draws",
         "entry_draw_blocked", "fact_permanents", "fact_triggers_used", "fragile_investments", "risk_penalty",
+        "haste_ids",
     )  # fmt: skip
 
     def copy(self) -> Mid:
@@ -1864,12 +1866,18 @@ def make_tokens(specs, turn: int, rules, first_id: int) -> tuple[dict, ...]:
     """Solver bodies for ``token_specs`` output, ids ``first_id``, ``first_id + 1``, ..."""
     bodies = []
     for count, power, toughness, keywords, name in specs or ():
+        real_keywords = [k for k in keywords if not k.startswith("_")]
+        text_lines = [k.capitalize() for k in real_keywords]
+        if "_cant_block" in keywords:
+            text_lines.append("This creature can't block.")
+        oracle_text = "\n".join(text_lines)
+        type_line = "Legendary Token Creature" if "_legendary" in keywords else "Token Creature"
         for _ in range(count):
             card = {
                 "instance_id": first_id + len(bodies), "name": name, "power": power, "toughness": toughness,
-                "keywords": [k for k in keywords if k != "_legendary"],
-                "oracle_text": "\n".join(k.capitalize() for k in keywords if k != "_legendary"),
-                "type_line": "Legendary Token Creature" if "_legendary" in keywords else "Token Creature", "card_types": ["CardType_Creature"], "object_kind": "TOKEN",
+                "keywords": list(real_keywords),
+                "oracle_text": oracle_text,
+                "type_line": type_line, "card_types": ["CardType_Creature"], "object_kind": "TOKEN",
             }  # fmt: skip
             body = _body(card, turn, rules)
             if body is not None:
@@ -2033,6 +2041,108 @@ def _x_unmodelled(card: dict, role: str) -> bool:
     if "x" not in str(card.get("mana_cost") or "").lower():
         return False
     return role not in ("draw", "selection", "counter") and not card_flow(_cast_text(card))
+
+
+_X_TOKEN_SPELL_RE = re.compile(
+    r"^create x (?P<p>\d+)/(?P<t>\d+) (?P<desc>[a-z ,'-]*?)\bcreature tokens?(?P<tail>.*)$"
+)
+_X_TOKEN_KEYWORDS_SET = frozenset(_TOKEN_KEYWORDS)
+_X_TOKEN_CANT_BLOCK_CLAUSE = '"this creature can\'t block."'
+
+
+def _text_x_token_spell(card: dict) -> tuple[int, int, tuple[str, ...], str, bool] | None:
+    """Generic parser for single-{X} instant/sorcery creature-token makers.
+
+    Matches spells whose entire cast text creates X P/T creature tokens with
+    known combat keywords and/or ``"This creature can't block."``, optionally
+    followed by a haste grant (``"Creatures you control gain haste until end of
+    turn."`` or ``"They / Those tokens gain haste until end of turn."``).
+
+    Fails closed (returns ``None``) on permanents, ``{X}{X}`` costs, modal
+    bullets, extra conditions (e.g. ``if X is 5 or more``), Convoke/Delve, or
+    any unmodelled keyword/clause.
+    """
+    if not isinstance(card, dict):
+        return None
+    types = _types(card)
+    if not re.search(r"\b(?:instant|sorcery)\b", types):
+        return None
+    if re.search(r"\b(?:creature|enchantment|artifact|planeswalker|battle|land)\b", types):
+        return None
+    mana_cost = str(card.get("mana_cost") or "").lower()
+    if mana_cost.count("{x}") != 1:
+        return None
+    raw = _text(card)
+    if not raw or "•" in raw:
+        return None
+    lines: list[str] = []
+    seen: set[str] = set()
+    for raw_line in raw.splitlines():
+        line = " ".join(raw_line.split())
+        if not line or line in seen:
+            continue
+        seen.add(line)
+        lines.append(line)
+    joined = " ".join(lines).strip()
+    match = _X_TOKEN_SPELL_RE.match(joined)
+    if match is None:
+        return None
+    power = int(match.group("p"))
+    toughness = int(match.group("t"))
+    if power < 0 or toughness <= 0:
+        return None
+    desc = match.group("desc")
+    if _TOKEN_UNREAD.search(desc) or "legendary" in desc.split():
+        return None
+    tail = match.group("tail").strip()
+    keywords: set[str] = set()
+    if tail.startswith("."):
+        after = tail[1:].strip()
+    elif tail.startswith("with "):
+        rest = tail[len("with ") :].strip()
+        if rest.startswith(_X_TOKEN_CANT_BLOCK_CLAUSE):
+            keywords.add("_cant_block")
+            after = rest[len(_X_TOKEN_CANT_BLOCK_CLAUSE) :].strip()
+        else:
+            # Parse known combat keywords, optionally ending with 'and "this creature can\'t block."'
+            cant_block_pos = rest.find(_X_TOKEN_CANT_BLOCK_CLAUSE)
+            if cant_block_pos >= 0:
+                kw_part = rest[:cant_block_pos].strip()
+                if kw_part.endswith(" and"):
+                    kw_part = kw_part[:-4].strip()
+                elif kw_part.endswith(","):
+                    kw_part = kw_part[:-1].strip()
+                else:
+                    return None
+                keywords.add("_cant_block")
+                after = rest[cant_block_pos + len(_X_TOKEN_CANT_BLOCK_CLAUSE) :].strip()
+            else:
+                dot = rest.find(".")
+                if dot < 0:
+                    return None
+                kw_part = rest[:dot].strip()
+                after = rest[dot + 1 :].strip()
+            if not kw_part:
+                return None
+            parts = [p.strip() for p in re.split(r",\s*and\s+|,\s*|\s+and\s+", kw_part) if p.strip()]
+            if not parts or any(p not in _X_TOKEN_KEYWORDS_SET for p in parts):
+                return None
+            keywords.update(parts)
+    else:
+        return None
+    grants_haste = False
+    if not after:
+        pass
+    elif after == "creatures you control gain haste until end of turn.":
+        grants_haste = True
+        keywords.add("haste")
+    elif after in ("they gain haste until end of turn.", "those tokens gain haste until end of turn."):
+        keywords.add("haste")
+    else:
+        return None
+    words = [w for w in re.split(r"[\s,]+", desc) if w and w not in _TOKEN_DESC_SKIP]
+    name = (" ".join(words).title() or "Creature") + " token"
+    return (power, toughness, tuple(sorted(keywords)), name, grants_haste)
 
 
 _RECORD_USE_LOGGED: set[str] = set()
@@ -3263,6 +3373,8 @@ def unmodelled_effect(card: dict | None, result: Any = None) -> str:
             return ""
         if reason == "its triggered ability" and _text_permanent_triggers(card) is not None:
             return ""
+        if reason == "its X cost" and _text_x_token_spell(card) is not None:
+            return ""
     return reason
 
 
@@ -3412,6 +3524,7 @@ def _modelled(var: Variant) -> bool:
         or var.temp_pump != (0, 0)
         or var.has_fact_triggers
         or var.fact_draws > 0
+        or var.grants_haste
     )
 
 
@@ -4483,8 +4596,44 @@ class Moves:
                         has_fact_triggers=True,
                         stays_on_battlefield=True,
                     )
-        if spell.has_x or spell.role == "counter" or spell.uncastable:
+        if spell.role == "counter" or spell.uncastable:
             plain, variants = None, []  # never cast proactively (or can't be cast now)
+        elif spell.has_x:
+            plain, variants = None, []
+            x_tok = _text_x_token_spell(card)
+            if x_tok is not None and not oracle_modes:
+                x_p, x_t, x_kw, x_name, x_haste = x_tok
+                max_mana = max(len(self.model.sources_now), len(self.model.sources_all)) + min(
+                    3, len(self.model.hand_lands) + 1
+                )
+                max_x = min(10, max_mana - spell.mana_value)
+                xs: list[int] = []
+                if x_haste and max_mana >= spell.mana_value:
+                    xs.append(0)
+                if max_x >= 1:
+                    xs.extend(range(1, max_x + 1))
+                for x_val in xs:
+                    toks = self._tokens([(x_val, x_p, x_t, x_kw, x_name)]) if x_val > 0 else ()
+                    variants.append(
+                        Variant(
+                            hs.index,
+                            "cast",
+                            None,
+                            f"X={x_val}",
+                            None,
+                            0,
+                            None,
+                            False,
+                            False,
+                            spell.mana_value + x_val,
+                            spell.pips,
+                            bool(info.instant_speed),
+                            loss=extra_life,
+                            tokens=toks,
+                            grants_haste=x_haste,
+                            stays_on_battlefield=False,
+                        )
+                    )
         elif (
             not _modelled(plain)
             and not any(classify(spell.name, b)[0] != "other" for b in oracle_modes)
@@ -4904,8 +5053,8 @@ class Moves:
             - node.risk_penalty,
         )
 
-    def sick(self, body, k, abs_turn, entered) -> bool:
-        if self.haste or has_combat_keyword(body, "haste"):
+    def sick(self, body, k, abs_turn, entered, haste_ids=()) -> bool:
+        if self.haste or has_combat_keyword(body, "haste") or body["instance_id"] in haste_ids:
             return False
         turn = entered.get(body["instance_id"])
         if turn is not None:
@@ -5871,7 +6020,7 @@ class Moves:
             return False
         if sum(target is not None for _var, target in casts) > 1:
             return False
-        if any(var.requires_our_creature for var, _target in casts):
+        if any(var.requires_our_creature or var.grants_haste for var, _target in casts):
             return True
         if not self._fact_triggers_possible:
             return False
@@ -5956,7 +6105,7 @@ class Moves:
                     continue
                 if (
                     post_combat_t
-                    and var.temp_pump != (0, 0)
+                    and (var.temp_pump != (0, 0) or var.grants_haste)
                     and not var.counter
                     and not var.face
                     and not var.tokens
@@ -6212,6 +6361,7 @@ class Moves:
         mid.entry_draw_branches = ()
         mid.entry_draw_blocked = entry_draw_blocked
         mid.entered = dict(node.entered)
+        mid.haste_ids = set()
         mid.hand = list(node.hand)
         mid.lands = [x for x in node.lands if land is None or x.iid != land.iid]
         mid.played = list(node.played) + ([land.source] if land is not None else [])
@@ -6469,16 +6619,22 @@ class Moves:
 
     def _best_pump_target(self, mid: Mid) -> dict:
         """Pick our creature best able to convert a temporary pump into combat impact this turn."""
-        k, abs_turn, entered, tapped = mid.node.k, mid.node.abs_turn, mid.entered, mid.our_tapped
+        k, abs_turn, entered, tapped, haste_ids = (
+            mid.node.k,
+            mid.node.abs_turn,
+            mid.entered,
+            mid.our_tapped,
+            mid.haste_ids,
+        )
         return max(
             mid.ours,
             key=lambda b: (
                 bool(
                     b.get("_can_attack")
                     and b["instance_id"] not in tapped
-                    and not self.sick(b, k, abs_turn, entered)
+                    and not self.sick(b, k, abs_turn, entered, haste_ids)
                 ),
-                bool(not self.sick(b, k, abs_turn, entered)),
+                bool(not self.sick(b, k, abs_turn, entered, haste_ids)),
                 b["power"],
                 b["toughness"],
                 -b["instance_id"],
@@ -6492,6 +6648,9 @@ class Moves:
             mid.pumps[new_id] = mid.pumps.pop(old_id)
         if old_id in mid.entered:
             mid.entered[new_id] = mid.entered.pop(old_id)
+        if old_id in mid.haste_ids:
+            mid.haste_ids.discard(old_id)
+            mid.haste_ids.add(new_id)
         if old_id in mid.our_tapped:
             mid.our_tapped.discard(old_id)
             mid.our_tapped.add(new_id)
@@ -6892,6 +7051,8 @@ class Moves:
                     mid.opp_life += self._enters_under_them(body, mid.our_tapped)
                 if body is var.body and not mid.entry_draw_blocked:
                     self._entry_draw(mid, body)
+            if var.grants_haste:
+                mid.haste_ids.update(b["instance_id"] for b in mid.ours)
             if var.ephemeral and var.body is not None:
                 # Evoke sacrifices it as its enters trigger resolves (#A1 review round
                 # 5): the ETB effects above resolved, and the body is gone before any
@@ -7124,7 +7285,7 @@ class Moves:
             for b in mid.ours
             if b["instance_id"] not in mid.our_tapped
             and b["_can_attack"]
-            and not self.sick(b, node.k, node.abs_turn, mid.entered)
+            and not self.sick(b, node.k, node.abs_turn, mid.entered, mid.haste_ids)
         ]
         if not able:
             return [("none", ())], True
@@ -7338,6 +7499,7 @@ class Moves:
             attackers
             and not mid.attack_first
             and not any(a["instance_id"] in self._scale_base for a in attackers)
+            and not any(v.grants_haste for v, _target in mid.casts)
         ):
             post_combat = tuple(
                 self.spells[var.spell].name for var, _target in mid.casts if self._attack_neutral(var)
@@ -7601,11 +7763,21 @@ class Moves:
         return tuple(
             hs.name
             for hs in self.spells
-            if not hs.spell.has_x
-            and not hs.spell.uncastable
+            if not hs.spell.uncastable
             and not self.banned(hs, bans)
-            and hs.spell.mana_value <= len(sources)
-            and _pip_matching(hs.spell.pips, sources)
+            and (
+                (
+                    not hs.spell.has_x
+                    and hs.spell.mana_value <= len(sources)
+                    and _pip_matching(hs.spell.pips, sources)
+                )
+                or (
+                    hs.spell.has_x
+                    and any(
+                        v.mana_value <= len(sources) and _pip_matching(v.pips, sources) for v in hs.variants
+                    )
+                )
+            )
         )
 
     # -- their turn ------------------------------------------------------------------------
