@@ -709,3 +709,69 @@ def test_winning_queue_target_reports_strategy_ready_and_triggers_missing_study(
     h_missing._resolve_winning_queue_target()
     assert "studying deck in background" in h_missing.ui.advices[0][0]
     assert analyzed == ["d-a"]
+
+
+def test_decks_tab_hides_starter_precons_placeholder_dates_and_no_commander_noise():
+    from PySide6.QtWidgets import QApplication
+
+    from arenamcp.desktop.decks_tab import (
+        DecksTab,
+        _clean_archetype,
+        _fmt_when,
+        _is_starter_precon,
+    )
+
+    app = QApplication.instance() or QApplication([])
+    assert app is not None
+
+    assert _fmt_when("0001-01-01T00:00:00Z") == ""
+    assert _fmt_when("2026-11-21T21:27:00Z") == "2026-11-21 21:27"
+    assert _clean_archetype("RW go-wide token aggro (no designated commander)") == "RW go-wide token aggro"
+    assert (
+        _clean_archetype("Mono-red goblin token swarm aggro (60-card, no designated commander)")
+        == "Mono-red goblin token swarm aggro"
+    )
+    assert _is_starter_precon({"name": "?=?Loc/Decks/Precon/CC_ANB_B", "wins": 0, "losses": 0}) is True
+    assert _is_starter_precon({"name": "?=?Loc/Decks/Precon/CC_ANB_B", "wins": 2, "losses": 1}) is False
+    assert _is_starter_precon({"name": "Deck Alpha", "wins": 0, "losses": 0}) is False
+
+    tab = DecksTab(session=None)
+    decks = [
+        {
+            "deck_id": "d-real",
+            "name": "Deck Alpha",
+            "format": "Standard",
+            "cards": 60,
+            "complete": True,
+            "last_played": "0001-01-01T00:00:00Z",
+            "strategy": {"status": "ready", "archetype": "RW aggro (no designated commander)"},
+        },
+        {
+            "deck_id": "d-precon",
+            "name": "?=?Loc/Decks/Precon/CC_ANB_B",
+            "format": "Alchemy",
+            "cards": 60,
+            "complete": True,
+            "last_played": "0001-01-01T00:00:00Z",
+            "strategy": {"status": "ready", "archetype": "Mono-Black midrange"},
+        },
+    ]
+    tab.set_decks(decks, "")
+    assert [d["deck_id"] for d in tab._decks] == ["d-real"]
+    assert tab.starter_toggle_btn.isHidden() is False
+    assert tab.starter_toggle_btn.text() == "Show starter decks (1)"
+    if tab._table is not None:
+        assert tab._table.item(0, 3).text() == "RW aggro"
+        assert tab._table.item(0, 4).text() == ""
+    else:
+        btn_txt = tab._deck_buttons["d-real"].text()
+        assert "RW aggro" in btn_txt
+        assert "no designated commander" not in btn_txt
+        assert "0001-01-01" not in btn_txt
+
+    # Toggling starter decks on reveals the precon deck
+    tab.starter_toggle_btn.setChecked(True)
+    tab._toggle_starter_decks()
+    assert [d["deck_id"] for d in tab._decks] == ["d-real", "d-precon"]
+    assert tab.starter_toggle_btn.text() == "Hide starter decks (1)"
+    tab.close()

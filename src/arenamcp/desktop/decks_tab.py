@@ -10,6 +10,7 @@ expensive analysis never runs while the first turns are being played.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from PySide6.QtCore import Qt
@@ -58,11 +59,34 @@ _STAGE_TEXT = {
 }
 
 
+_NO_COMMANDER_RE = re.compile(
+    r"\s*\([^)]*\bno designated commander\b[^)]*\)",
+    re.IGNORECASE,
+)
+
+
+def _clean_archetype(text: str) -> str:
+    """Strip '(no designated commander)' boilerplate from 60-card deck archetypes."""
+    cleaned = _NO_COMMANDER_RE.sub("", str(text or "")).strip()
+    return cleaned or str(text or "").strip()
+
+
+def _is_starter_precon(deck: dict[str, Any]) -> bool:
+    """True for Arena's built-in '?=?Loc/...' starter/precon localization keys with no play history."""
+    name = str(deck.get("name") or "").strip()
+    if not name.startswith("?=?Loc/"):
+        return False
+    if deck.get("is_winning_pick"):
+        return False
+    return int(deck.get("wins") or 0) + int(deck.get("losses") or 0) == 0
+
+
 def _status_text(strategy: dict[str, Any]) -> tuple[str, str]:
     """(label, tone) for the Strategy column."""
     status = str(strategy.get("status") or "unknown")
     if status == "ready":
-        return (str(strategy.get("archetype") or "Ready")[:48], "good")
+        arch = _clean_archetype(str(strategy.get("archetype") or "Ready"))
+        return ((arch or "Ready")[:48], "good")
     if status == "building":
         return (_STAGE_TEXT.get(str(strategy.get("stage") or ""), "Building…"), "accent")
     if status == "incomplete":
@@ -76,7 +100,9 @@ def _status_text(strategy: dict[str, Any]) -> tuple[str, str]:
 
 def _fmt_when(value: str) -> str:
     text = str(value or "").strip('"')
-    return text[:16].replace("T", " ") if text else ""
+    if not text or text.startswith("0001-01-01"):
+        return ""
+    return text[:16].replace("T", " ")
 
 
 def _section(title: str, body: str) -> str:
@@ -91,7 +117,9 @@ def report_html(report: dict[str, Any], name: str = "") -> str:
     if name:
         parts.append(theme.block(theme.span(name, None, size="title", weight=700), gap=2))
     if report.get("archetype"):
-        parts.append(theme.block(theme.span(report["archetype"], "accent", weight=600), gap=8))
+        parts.append(
+            theme.block(theme.span(_clean_archetype(report["archetype"]), "accent", weight=600), gap=8)
+        )
     if report.get("summary"):
         parts.append(_section("IN SHORT", theme.span(report["summary"])))
     if report.get("primary_plan"):
@@ -185,6 +213,9 @@ class DecksTab(QWidget):
     def __init__(self, session: Any = None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._session = session
+        self._all_decks: list[dict[str, Any]] = []
+        self._last_note: str = ""
+        self._show_starter_decks: bool = False
         self._decks: list[dict[str, Any]] = []
         self._reports: dict[str, dict[str, Any]] = {}
         self._names: dict[str, str] = {}
@@ -223,6 +254,13 @@ class DecksTab(QWidget):
         )
         self.collection_btn.clicked.connect(self.refresh_collection)
         header.addWidget(self.collection_btn, 0, Qt.AlignTop)
+        self.starter_toggle_btn = QPushButton("Show starter decks")
+        self.starter_toggle_btn.setCheckable(True)
+        self.starter_toggle_btn.setChecked(False)
+        self.starter_toggle_btn.setVisible(False)
+        self.starter_toggle_btn.setToolTip("Show or hide Arena's built-in starter/precon decks")
+        self.starter_toggle_btn.clicked.connect(self._toggle_starter_decks)
+        header.addWidget(self.starter_toggle_btn, 0, Qt.AlignTop)
         lay.addLayout(header)
         self.builder_btn = QPushButton("Build a stronger deck")
         self.builder_btn.setToolTip("Find source decks using owned cards or your wildcard balance")
@@ -401,9 +439,30 @@ class DecksTab(QWidget):
         row = rows[0].row()
         return self._decks[row]["deck_id"] if 0 <= row < len(self._decks) else None
 
+    def _toggle_starter_decks(self) -> None:
+        self._show_starter_decks = bool(self.starter_toggle_btn.isChecked())
+        self._render_deck_list()
+
     def set_decks(self, decks: list[dict[str, Any]], note: str = "") -> None:
+        self._all_decks = [dict(d) for d in decks if isinstance(d, dict)]
+        self._last_note = note
+        self._render_deck_list()
+
+    def _render_deck_list(self) -> None:
         selected = self.selected_deck_id()
-        self._decks = [dict(d) for d in decks if isinstance(d, dict)]
+        hidden_starters = sum(1 for d in self._all_decks if _is_starter_precon(d))
+        if self._show_starter_decks:
+            self._decks = list(self._all_decks)
+        else:
+            self._decks = [d for d in self._all_decks if not _is_starter_precon(d)]
+        if hasattr(self, "starter_toggle_btn"):
+            self.starter_toggle_btn.setVisible(hidden_starters > 0)
+            self.starter_toggle_btn.setText(
+                f"Hide starter decks ({hidden_starters})"
+                if self._show_starter_decks
+                else f"Show starter decks ({hidden_starters})"
+            )
+        note = self._last_note
         if self._card_study is not None:
             current = self._deck_at(self._card_study.deck_id)
             if not current or current[1].get("identity") != self._card_study.identity:
@@ -481,7 +540,8 @@ class DecksTab(QWidget):
                 self._deck_rows.removeWidget(button)
                 self._deck_rows.insertWidget(row, button)
             wr_part = f" · {wr_label}" if wr_label != "—" else ""
-            text = f"{cells[0]} · {cells[1]} · {cells[2]} cards{wr_part}\n{label} · {cells[4]}"
+            when_part = f" · {cells[4]}" if cells[4] else ""
+            text = f"{cells[0]} · {cells[1]} · {cells[2]} cards{wr_part}\n{label}{when_part}"
             button.setText(text.replace("&", "&&"))
             button.setAccessibleName(text)
             button.setChecked(key == self._selected_id)
