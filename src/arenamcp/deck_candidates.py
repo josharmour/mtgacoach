@@ -236,70 +236,231 @@ def pricing_database():
         native.close()
 
 
+def _build_candidate_row(
+    entry: dict,
+    deck: dict,
+    *,
+    rank: int,
+    fmt_low: str,
+    label: str,
+    source_label: str,
+    source_site: str,
+    collection: dict,
+    wildcards: dict,
+    database,
+    index,
+) -> dict | None:
+    try:
+        exported = arena_export(deck, format_name=fmt_low, database=database)
+        bo1 = bo1_variant(deck, database=database)
+        bo1_export = arena_export(bo1, format_name=fmt_low, database=database) if bo1 is not None else None
+    except (ValueError, OSError, KeyError) as exc:
+        logger.warning(
+            "Skipping %s source %r (%s): %s",
+            label,
+            entry.get("name"),
+            entry.get("url"),
+            exc,
+        )
+        return None
+    cost = compare_collection(deck, collection, wildcards, database, index=index)
+    row = {
+        **entry,
+        **deck,
+        "source_rank": rank,
+        "format": label,
+        "source": source_label,
+        "source_site": source_site,
+        "checked_at": deck.get("checked_at") or "unavailable",
+        "export": exported,
+        "cost": cost,
+    }
+    if bo1 is not None and bo1_export is not None:
+        row["bo1_export"] = bo1_export
+        row["bo1_cost"] = compare_collection(bo1, collection, wildcards, database, index=index)
+    return row
+
+
+def _fetch_mtggoldfish_entries(client, fmt_low: str) -> list[tuple[dict, str]]:
+    entries = list(client.get_metagame(fmt_low))
+    if fmt_low in ("standard", "brawl"):
+        seen_urls = {str(e.get("url") or "") for e in entries}
+        try:
+            for extra in client.get_metagame(f"{fmt_low}/full"):
+                url = str(extra.get("url") or "")
+                if url and url not in seen_urls:
+                    seen_urls.add(url)
+                    entries.append(extra)
+        except Exception as exc:
+            logger.debug("Full %s metagame unavailable: %s", fmt_low, exc)
+    arena_meta_label = "paper metagame" if fmt_low == "standard" else "Arena metagame"
+    label = FORMATS.get(fmt_low, fmt_low.title())
+    return [
+        (
+            entry,
+            f"MTGGoldfish {label} ({'budget list' if entry.get('budget') else arena_meta_label})",
+        )
+        for entry in entries
+    ]
+
+
 def load_candidates(
-    collection: dict, wildcards: dict, formats: tuple[str, ...] = ("standard", "brawl")
+    collection: dict,
+    wildcards: dict,
+    formats: tuple[str, ...] = ("standard", "brawl"),
+    *,
+    sources: tuple[str, ...] = ("mtggoldfish",),
 ) -> list[dict]:
-    """Public MTGGoldfish sources: every listed archetype plus its budget
-    lists, across the formats the coach is used in (ranked Standard and
-    Brawl). Ordered cheapest to craft first; no invented win-rate statistics.
+    """Load public metagame deck candidates across the requested formats and sources.
+
+    Supported ``sources``: ``"mtggoldfish"``, ``"aetherhub"``, ``"mtgtop8"``,
+    and ``"moxfield"``. Defaults to ``("mtggoldfish",)`` for backward
+    compatibility; pass ``ALL_SOURCES`` to aggregate all four. Ordered cheapest
+    to craft first; no invented win-rate statistics.
     """
+    from concurrent.futures import ThreadPoolExecutor
+
+    from arenamcp.meta_sources import AetherHubClient, MoxfieldClient, MTGTop8Client
     from arenamcp.mtggoldfish import MTGGoldfishClient
 
-    client = MTGGoldfishClient()
     database = pricing_database()
     index = collection_index(collection, database)
-    candidates = []
+    active_sources = tuple(s.lower() for s in sources)
+    candidates: list[dict] = []
+
+    goldfish = MTGGoldfishClient() if "mtggoldfish" in active_sources else None
+    aetherhub = AetherHubClient() if "aetherhub" in active_sources else None
+    mtgtop8 = MTGTop8Client() if "mtgtop8" in active_sources else None
+    moxfield = MoxfieldClient() if "moxfield" in active_sources else None
+
+    # Gather work items: (rank, fmt_low, label, source_site, source_label, entry, fetch_fn)
+    work: list[tuple[int, str, str, str, str, dict, object]] = []
     for fmt in formats:
         fmt_low = fmt.lower()
         label = FORMATS.get(fmt_low, fmt.title())
-        entries = list(client.get_metagame(fmt_low))
-        if fmt_low in ("standard", "brawl"):
-            seen_urls = {str(e.get("url") or "") for e in entries}
+
+        if goldfish is not None:
             try:
-                for extra in client.get_metagame(f"{fmt_low}/full"):
-                    url = str(extra.get("url") or "")
-                    if url and url not in seen_urls:
-                        seen_urls.add(url)
-                        entries.append(extra)
+                for rank, (entry, src_label) in enumerate(_fetch_mtggoldfish_entries(goldfish, fmt_low), 1):
+                    work.append(
+                        (
+                            rank,
+                            fmt_low,
+                            label,
+                            "MTGGoldfish",
+                            src_label,
+                            entry,
+                            lambda e=entry, c=goldfish: c.get_deck_list(e["url"]),
+                        )
+                    )
             except Exception as exc:
-                logger.debug("Full %s metagame unavailable: %s", fmt_low, exc)
-        arena_meta_label = "paper metagame" if fmt_low == "standard" else "Arena metagame"
-        for rank, entry in enumerate(entries, 1):
-            # A single unreachable source page (site blocking, a removed
-            # list) must not blank the whole suggestion table; skip it and
-            # say so in the log.
+                logger.warning("MTGGoldfish %s metagame failed: %s", fmt_low, exc)
+
+        if aetherhub is not None:
             try:
-                deck = client.get_deck_list(entry["url"])
-                exported = arena_export(deck, format_name=fmt.lower(), database=database)
-                bo1 = bo1_variant(deck, database=database)
-                bo1_export = (
-                    arena_export(bo1, format_name=fmt.lower(), database=database) if bo1 is not None else None
-                )
-            except (ValueError, OSError, KeyError) as exc:
-                logger.warning(
-                    "Skipping %s source %r (%s): %s",
-                    label,
-                    entry.get("name"),
-                    entry.get("url"),
-                    exc,
-                )
-                continue
-            budget = bool(entry.get("budget"))
-            cost = compare_collection(deck, collection, wildcards, database, index=index)
-            row = {
-                **entry,
-                **deck,
-                "source_rank": rank,
-                "format": label,
-                "source": f"MTGGoldfish {label} ({'budget list' if budget else arena_meta_label})",
-                "checked_at": deck.get("checked_at") or "unavailable",
-                "export": exported,
-                "cost": cost,
-            }
-            if bo1 is not None and bo1_export is not None:
-                row["bo1_export"] = bo1_export
-                row["bo1_cost"] = compare_collection(bo1, collection, wildcards, database, index=index)
+                is_brawl = fmt_low == "brawl"
+                src_label = f"AetherHub {label} (Arena tracker)"
+                for rank, entry in enumerate(aetherhub.get_metagame(fmt_low), 1):
+                    work.append(
+                        (
+                            rank,
+                            fmt_low,
+                            label,
+                            "AetherHub",
+                            src_label,
+                            entry,
+                            lambda e=entry, c=aetherhub, b=is_brawl: c.get_deck_list(e["url"], is_brawl=b),
+                        )
+                    )
+            except Exception as exc:
+                logger.warning("AetherHub %s metagame failed: %s", fmt_low, exc)
+
+        if mtgtop8 is not None:
+            try:
+                src_label = f"MTGTop8 {label} (tournament)"
+                for rank, entry in enumerate(mtgtop8.get_metagame(fmt_low), 1):
+                    work.append(
+                        (
+                            rank,
+                            fmt_low,
+                            label,
+                            "MTGTop8",
+                            src_label,
+                            entry,
+                            lambda e=entry, c=mtgtop8: c.get_deck_list(e["url"]),
+                        )
+                    )
+            except Exception as exc:
+                logger.warning("MTGTop8 %s metagame failed: %s", fmt_low, exc)
+
+        if moxfield is not None:
+            try:
+                src_label = f"Moxfield {label} (community)"
+                for rank, entry in enumerate(moxfield.get_metagame(fmt_low), 1):
+                    work.append(
+                        (
+                            rank,
+                            fmt_low,
+                            label,
+                            "Moxfield",
+                            src_label,
+                            entry,
+                            lambda e=entry, c=moxfield: c.get_deck_list(e.get("public_id") or e["url"]),
+                        )
+                    )
+            except Exception as exc:
+                logger.warning("Moxfield %s search failed: %s", fmt_low, exc)
+
+    def _run_item(item):
+        rank, fmt_low, label, source_site, src_label, entry, fetch_fn = item
+        try:
+            deck = fetch_fn()
+        except Exception as exc:
+            logger.warning(
+                "Skipping %s source %r (%s): %s",
+                label,
+                entry.get("name"),
+                entry.get("url"),
+                exc,
+            )
+            return None
+        return _build_candidate_row(
+            entry,
+            deck,
+            rank=rank,
+            fmt_low=fmt_low,
+            label=label,
+            source_label=src_label,
+            source_site=source_site,
+            collection=collection,
+            wildcards=wildcards,
+            database=database,
+            index=index,
+        )
+
+    # Deduplicate work items by URL before dispatching to the thread pool so
+    # two workers can never read/write the same per-deck cache file at once.
+    deduped_work = []
+    seen_work_urls: set[str] = set()
+    for item in work:
+        entry_url = str(item[5].get("url") or "")
+        if entry_url and entry_url in seen_work_urls:
+            continue
+        if entry_url:
+            seen_work_urls.add(entry_url)
+        deduped_work.append(item)
+
+    if len(active_sources) == 1 and active_sources[0] == "mtggoldfish":
+        # Preserve sequential execution for single-source / unit-test callers.
+        rows = [_run_item(item) for item in deduped_work]
+    else:
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            rows = list(pool.map(_run_item, deduped_work))
+
+    for row in rows:
+        if row is not None:
             candidates.append(row)
+
     candidates.sort(key=cost_order_key)
     return candidates
 
@@ -309,6 +470,7 @@ def load_candidates(
 ARENA_MIN_GAMES = 20
 
 FORMATS = {"standard": "Standard", "brawl": "Brawl", "historic": "Historic"}
+ALL_SOURCES = ("aetherhub", "mtggoldfish", "mtgtop8", "moxfield")
 
 
 def normalize_deck_name(name: str) -> str:

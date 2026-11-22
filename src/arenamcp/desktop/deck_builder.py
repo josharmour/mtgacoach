@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 )
 
 from arenamcp.deck_candidates import (
+    ALL_SOURCES,
     RARITIES,
     arena_export,
     bo1_variant,
@@ -78,13 +79,12 @@ class _LoadDecks(QRunnable):
                     warning = f"{warning} Fleet results unavailable ({fleet_error}); {source_note}.".strip()
                     logger.warning("fleet autopilot results unavailable: %s", fleet_error)
                 params = inspect.signature(load_candidates).parameters
-                raw_decks = (
-                    load_candidates(
-                        self.collection, self.wildcards, formats=("standard", "brawl", "historic")
-                    )
-                    if "formats" in params
-                    else load_candidates(self.collection, self.wildcards)
-                )
+                kwargs = {}
+                if "formats" in params:
+                    kwargs["formats"] = ("standard", "brawl", "historic")
+                if "sources" in params:
+                    kwargs["sources"] = ALL_SOURCES
+                raw_decks = load_candidates(self.collection, self.wildcards, **kwargs)
                 decks = rank_candidates(raw_decks, results)
             else:
                 database = pricing_database()
@@ -121,11 +121,11 @@ class DeckBuilderDialog(QDialog):
             "Find a deck you can build with your cards or wildcards, then import it into Arena. "
             "Find this again in Decks → Build a stronger deck.\n"
             "Auto-queue is turned off when you enter this workspace; turn it back on when ready to play.\n"
-            "Suggestions: Standard and Brawl decks from MTGGoldfish — every archetype the source "
-            "lists plus its budget lists, ordered cheapest to craft first. Where the coach's own "
-            "autopilot has at least 20 recorded games with a matching deck, its measured Arena win "
-            "rate is shown; decks without data are never given one. "
-            "Other sources can be checked by pasting a deck export below."
+            "Suggestions aggregate Standard, Brawl, and Historic decks from AetherHub (Arena Bo1 & Brawl "
+            "tracker), MTGGoldfish (metagame + budget), MTGTop8 (tournament), and Moxfield (community). "
+            "Where the coach's own autopilot has at least 20 recorded games with a matching deck, its "
+            "measured Arena win rate is shown; decks without data are never given one. "
+            "Other sources (such as Untapped.gg) can be checked by pasting a deck export below."
         )
         intro.setWordWrap(True)
         layout.addWidget(intro)
@@ -149,6 +149,14 @@ class DeckBuilderDialog(QDialog):
         self.format_filter.addItem("Brawl", "brawl")
         self.format_filter.addItem("Historic", "historic")
         self.format_filter.currentIndexChanged.connect(self._render)
+        self.source_filter = QComboBox()
+        self.source_filter.setAccessibleName("Source filter")
+        self.source_filter.addItem("All sources", "all")
+        self.source_filter.addItem("AetherHub (Arena tracker)", "aetherhub")
+        self.source_filter.addItem("MTGGoldfish", "mtggoldfish")
+        self.source_filter.addItem("MTGTop8 (tournament)", "mtgtop8")
+        self.source_filter.addItem("Moxfield (community)", "moxfield")
+        self.source_filter.currentIndexChanged.connect(self._render)
         self.order = QComboBox()
         self.order.setAccessibleName("Deck ordering")
         self.order.addItems(["Fewest wildcards first", "Highest measured win rate first"])
@@ -167,13 +175,19 @@ class DeckBuilderDialog(QDialog):
             self.refresh_button,
             self.mode,
             self.format_filter,
+            self.source_filter,
+        ):
+            actions.addWidget(widget)
+        layout.addLayout(actions)
+        actions2 = QHBoxLayout()
+        for widget in (
             self.order,
             self.list_scope,
             source,
             brawl_source,
         ):
-            actions.addWidget(widget)
-        layout.addLayout(actions)
+            actions2.addWidget(widget)
+        layout.addLayout(actions2)
         self.balance_label = QLabel("")
         self.balance_label.setWordWrap(True)
         layout.addWidget(self.balance_label)
@@ -259,6 +273,7 @@ class DeckBuilderDialog(QDialog):
             self._candidates.extend(candidates)
             self.mode.setCurrentIndex(2)
             self.format_filter.setCurrentIndex(0)
+            self.source_filter.setCurrentIndex(0)
         else:
             self._candidates = candidates
             self._source_warning = error if candidates else ""
@@ -315,8 +330,20 @@ class DeckBuilderDialog(QDialog):
     def _render(self):
         mode = self.mode.currentIndex()
         fmt = self.format_filter.currentData() if hasattr(self, "format_filter") else "all"
+        src = self.source_filter.currentData() if hasattr(self, "source_filter") else "all"
+
+        def _matches_source(deck: dict) -> bool:
+            if src == "all":
+                return True
+            site = str(deck.get("source_site") or "").strip().lower()
+            if site:
+                return site == src
+            return src in str(deck.get("source") or "").lower()
+
         pool = [
-            d for d in self._candidates if fmt == "all" or str(d.get("format") or "").strip().lower() == fmt
+            d
+            for d in self._candidates
+            if (fmt == "all" or str(d.get("format") or "").strip().lower() == fmt) and _matches_source(d)
         ]
         filtered = [d for d in pool if self._matches_mode(d, mode)]
         if filtered or not pool:
