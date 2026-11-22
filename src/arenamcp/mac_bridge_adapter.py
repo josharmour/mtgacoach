@@ -1200,16 +1200,30 @@ class MacBridgeAdapter:
             raise AdapterError("queue_match requires an exact cached deck GUID") from exc
         if not identifier.int or str(identifier) != deck_id:
             raise AdapterError("queue_match requires an exact non-empty cached deck GUID")
-        if command.get("event") != "Play":
-            raise AdapterError("Native queue_match only supports free Standard Play (event=Play)")
-        if command.get("format", "Standard") != "Standard":
-            raise AdapterError("Native queue_match only supports Standard decks")
+        from arenamcp.between_match_coach import QUEUEABLE_FREE_EVENTS
+
+        event = command.get("event")
+        if not isinstance(event, str) or event not in QUEUEABLE_FREE_EVENTS:
+            raise AdapterError(
+                f"Native queue_match only supports free/ranked constructed events, not {event!r}"
+            )
+        standard_event = event in {"Play", "Ladder"}
+        requested_fmt = command.get("format")
+        if standard_event and requested_fmt not in (None, "Standard"):
+            raise AdapterError("Native Standard queue_match only supports Standard decks")
         matches = [r for r in self._cached_deck_records(timeout) if r["deck_id"] == deck_id]
         if len(matches) != 1:
             raise AdapterError(f"Expected exactly one cached deck {deck_id}; found {len(matches)}")
         target = matches[0]
-        if target["format"] != "Standard":
-            raise AdapterError("The selected cached deck is not Standard")
+        target_fmt = target.get("format")
+        if standard_event:
+            if target_fmt != "Standard":
+                raise AdapterError("The selected cached deck is not Standard")
+        else:
+            if not isinstance(target_fmt, str) or not target_fmt:
+                raise AdapterError("The selected cached deck has no readable format")
+            if requested_fmt is not None and target_fmt != requested_fmt:
+                raise AdapterError(f"The selected cached deck format {target_fmt!r} != {requested_fmt!r}")
         if not target["piles"].get("main", {}).get("cards"):
             raise AdapterError("The selected cached deck has no readable main pile")
 
@@ -1233,7 +1247,8 @@ class MacBridgeAdapter:
             if self._run(ops, timeout)[active["ref"]] is not False:
                 raise AdapterError("Cannot queue while the deck editor is active or unknown")
 
-        self._validate_queue_deck(target["handle"], timeout)
+        if standard_event:
+            self._validate_queue_deck(target["handle"], timeout)
 
         ops = _Ops()
         # Re-find Home and check its activity in the submission frame.
@@ -1241,7 +1256,7 @@ class MacBridgeAdapter:
         game_object = ops.get(home, "gameObject")
         ops.expect_member(game_object, "activeInHierarchy", True)
         summary = ops.get(H(target["handle"]), "Summary")
-        ops.expect_member(summary, "Format", "Standard")
+        ops.expect_member(summary, "Format", "Standard" if standard_event else target_fmt)
         deck_guid = ops.add("get", target=summary, member="DeckId", depth=0, retain_value=True)
         ops.expect_class(deck_guid, "Guid")
         # Guard the same boxed value passed to JoinMatchMaking against a stale
@@ -1255,11 +1270,14 @@ class MacBridgeAdapter:
             ops.expect_member(deck_guid, "_" + name, value)
         # Recalculate in the submission frame as well, so a changed deck or
         # inventory cannot bypass the earlier read-only validation gate.
-        validation_start = len(ops.ops)
-        validation, _ = self._queue_deck_validation_ops(ops, target["handle"])
-        ops.expect_member(validation, "IsValid", True)
-        validation_end = len(ops.ops)
-        ops.call(home, "JoinMatchMaking", {"str": "Play"}, deck_guid)
+        validation_start = -1
+        validation_end = -1
+        if standard_event:
+            validation_start = len(ops.ops)
+            validation, _ = self._queue_deck_validation_ops(ops, target["handle"])
+            ops.expect_member(validation, "IsValid", True)
+            validation_end = len(ops.ops)
+        ops.call(home, "JoinMatchMaking", {"str": event}, deck_guid)
         try:
             self._run(ops, timeout)
         except AdapterError as exc:
@@ -1276,7 +1294,7 @@ class MacBridgeAdapter:
                     "for the deck Guid; no fallback deck was selected"
                 ) from exc
             raise
-        return {"ok": True, "submitted_type": "QueueMatch", "event": "Play", "deck_id": deck_id}
+        return {"ok": True, "submitted_type": "QueueMatch", "event": event, "deck_id": deck_id}
 
     @staticmethod
     def _expect_queue_guid(ops: _Ops, value: dict, deck_id: str) -> None:

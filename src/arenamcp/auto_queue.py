@@ -1259,6 +1259,9 @@ class AutoQueueNavigator:
 
             # Bridge auto-queue is used on platforms without native desktop input (e.g. Windows via BepInEx),
             # or when explicitly supported by the connected runtime (bepinex).
+            from arenamcp.auto_quest import FREE_EVENTS
+            from arenamcp.between_match_coach import QUEUEABLE_FREE_EVENTS
+
             can_bridge_queue = (
                 bridge
                 and getattr(bridge, "connected", False)
@@ -1268,7 +1271,10 @@ class AutoQueueNavigator:
                         getattr(bridge, "client_runtime", "") == "il2cpp-macos"
                         and (
                             self._recent_mode
-                            or (getattr(self, "_quest_mode", False) and self._last_event_id == "Play")
+                            or (
+                                getattr(self, "_quest_mode", False)
+                                and self._last_event_id in (FREE_EVENTS | QUEUEABLE_FREE_EVENTS)
+                            )
                         )
                     )
                 )

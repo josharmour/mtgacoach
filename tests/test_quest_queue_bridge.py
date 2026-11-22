@@ -323,11 +323,20 @@ def test_duplicate_identity_fails_closed(arena):
 
 
 @pytest.mark.parametrize(
-    "event", [None, "", "Ladder", "AIBotMatch", "Play_Brawl_Historic", "PremierDraft", "play"]
+    "event", [None, "", "AIBotMatch", "PremierDraft", "QuickDraft_FDN", "Sealed_FDN", "play"]
 )
-def test_only_explicit_free_standard_play(arena, event):
+def test_only_explicit_free_or_ranked_events(arena, event):
     assert not queue(arena, event=event)["ok"]
     assert not arena.calls and not arena.batches
+
+
+def test_queues_standard_ladder_with_full_validation(arena):
+    result = queue(arena, event="Ladder")
+    assert result == {"ok": True, "submitted_type": "QueueMatch", "event": "Ladder", "deck_id": DECK_B_GUID}
+    assert len(arena.calls) == 1
+    assert arena.calls[0][0] == "JoinMatchMaking"
+    assert arena.calls[0][1][0] == {"str": "Ladder"}
+    assert arena.calls[0][1][1]["$c"] == "System.Guid"
 
 
 @pytest.mark.parametrize("fmt", [None, "", "Historic", "Alchemy", "Brawl", "standard"])

@@ -638,12 +638,12 @@ class CompactCoachPanel(QWidget):
         self.after_match_popover = VoiceStylePopover(self, "After this match")
         self.after_match_popover.setAccessibleName("After this match")
         self.after_match_popover.add_button(self.auto_queue_btn)
-        self.auto_queue_winning_btn = QPushButton("Winning decks: Off")
+        self.auto_queue_winning_btn = QPushButton("Queue mode: Same deck")
         self.auto_queue_winning_btn.setObjectName("autoQueueWinningButton")
         self.auto_queue_winning_btn.setProperty("state", "off")
         self.auto_queue_winning_btn.setToolTip(
-            "Evaluate your queueable constructed/Brawl decks from recent match history and "
-            "automatically queue your highest-win-rate deck. Requires Autoplay to be on."
+            "Switch Auto-queue between repeating the same deck and automatically queueing your "
+            "highest-win-rate deck from recent match history."
         )
         self.auto_queue_winning_btn.clicked.connect(self._toggle_auto_queue_winning)
         self.after_match_popover.add_button(self.auto_queue_winning_btn)
@@ -1311,34 +1311,41 @@ class CompactCoachPanel(QWidget):
             pass
 
     def _toggle_auto_queue(self) -> None:
+        """Master Auto-queue on/off toggle (uses the currently selected queue mode)."""
         mode = self._current_auto_queue_mode()
-        turning_on = (not self._auto_queue_enabled) or (mode != "same")
-        self._auto_queue_enabled = turning_on
-        self._settings.set("auto_queue_mode", "same")
+        self._auto_queue_enabled = not self._auto_queue_enabled
         if self._auto_queue_enabled:
             self._rearm_if_safeguard_tripped()
-            self._log_queue_plan_on_start("same")
+            self._log_queue_plan_on_start(mode)
         self._settings.set("auto_queue_enabled", self._auto_queue_enabled)
-        self._auto_queue_detail = "Waiting for Autoplay and match status." if self._auto_queue_enabled else ""
+        if self._auto_queue_enabled:
+            self._auto_queue_detail = (
+                "Evaluating winning decks — waiting for Autoplay and match status."
+                if mode == "winning"
+                else "Waiting for Autoplay and match status."
+            )
+        else:
+            self._auto_queue_detail = ""
         self._render_auto_queue_status()
         self._session.set_auto_queue(self._auto_queue_enabled)
 
     def _toggle_auto_queue_winning(self) -> None:
-        mode = self._current_auto_queue_mode()
-        turning_on = (not self._auto_queue_enabled) or (mode != "winning")
-        self._auto_queue_enabled = turning_on
-        self._settings.set("auto_queue_mode", "winning" if turning_on else "same")
-        if self._auto_queue_enabled:
+        """Switch Queue mode between Same deck and Winning decks without turning Auto-queue off."""
+        new_mode = "same" if self._current_auto_queue_mode() == "winning" else "winning"
+        self._settings.set("auto_queue_mode", new_mode)
+        if not self._auto_queue_enabled and new_mode == "winning":
+            self._auto_queue_enabled = True
+            self._settings.set("auto_queue_enabled", True)
             self._rearm_if_safeguard_tripped()
-            self._log_queue_plan_on_start("winning")
-        self._settings.set("auto_queue_enabled", self._auto_queue_enabled)
-        self._auto_queue_detail = (
-            "Evaluating winning decks — waiting for Autoplay and match status."
-            if self._auto_queue_enabled
-            else ""
-        )
+        if self._auto_queue_enabled:
+            self._log_queue_plan_on_start(new_mode)
+            self._auto_queue_detail = (
+                "Evaluating winning decks — waiting for Autoplay and match status."
+                if new_mode == "winning"
+                else "Waiting for Autoplay and match status."
+            )
+            self._session.set_auto_queue(True)
         self._render_auto_queue_status()
-        self._session.set_auto_queue(self._auto_queue_enabled)
 
     def _clear_loss_safeguard(self) -> None:
         """Reset the consecutive-loss safeguard and immediately resume Auto-queue."""
@@ -1361,13 +1368,13 @@ class CompactCoachPanel(QWidget):
         enabled = self._auto_queue_enabled
         grind = getattr(self, "_grind_enabled", False)
         mode = self._current_auto_queue_mode()
-        same_on = enabled and mode == "same"
         winning_on = enabled and mode == "winning"
-        self.auto_queue_btn.setText(f"Auto-queue: {'On' if same_on else 'Off'}")
-        self.auto_queue_btn.setProperty("state", "on" if same_on else "off")
+        self.auto_queue_btn.setText(f"Auto-queue: {'On' if enabled else 'Off'}")
+        self.auto_queue_btn.setProperty("state", "on" if enabled else "off")
         theme.repolish(self.auto_queue_btn)
         if hasattr(self, "auto_queue_winning_btn"):
-            self.auto_queue_winning_btn.setText(f"Winning decks: {'On' if winning_on else 'Off'}")
+            mode_label = "Winning decks" if mode == "winning" else "Same deck"
+            self.auto_queue_winning_btn.setText(f"Queue mode: {mode_label}")
             self.auto_queue_winning_btn.setProperty("state", "on" if winning_on else "off")
             theme.repolish(self.auto_queue_winning_btn)
         raw_detail = self._auto_queue_detail.strip()
