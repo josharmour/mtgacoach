@@ -176,16 +176,31 @@ class LossStreakMixin:
                 from arenamcp import __version__
 
                 # Evidence-led fallback is always available, including offline.
+                brief = None
+                try:
+                    from arenamcp.between_match_coach import summarize_between_matches
+                    from arenamcp.match_history import MatchHistory
+
+                    history = MatchHistory()
+                    brief = summarize_between_matches(
+                        history.get_recent(history.total_games),
+                        consecutive_losses=len(job["matches"]),
+                    )
+                except Exception:
+                    logger.debug("Could not load match history for loss-streak review", exc_info=True)
+
                 if gaps or missing:
                     recommendation = (
                         "Review a support report: gameplay logs are incomplete or contain missed decisions. "
                         "This does not prove a bug or that automation caused the losses."
                     )
+                elif brief is not None:
+                    recommendation = brief.message
                 else:
                     recommendation = (
-                        "Consider a deck modification after reviewing the three matches: compare early hand "
-                        "and battlefield development before changing the mana curve or interaction. "
-                        "Three losses alone do not establish a deck defect or justify crafting cards."
+                        "Review the three matches before making changes: compare early hand "
+                        "and battlefield development. Three losses alone do not establish a "
+                        "deck defect or justify building a new deck."
                     )
                 report = {
                     "schema": 1,
@@ -200,6 +215,11 @@ class LossStreakMixin:
                 }
                 coach = getattr(self, "_coach", None)
                 if coach and not missing:
+                    brief_ctx = (
+                        f" Local match-history summary: {brief.headline} {brief.detail}"
+                        if brief is not None
+                        else ""
+                    )
                     try:
                         report["analysis"] = (
                             coach.generate_post_match_analysis(
@@ -208,10 +228,14 @@ class LossStreakMixin:
                                 match_duration_turns=0,
                                 deck_strategy=(
                                     "Review THREE separate consecutive lost matches with the SAME deck. "
-                                    "Use only supplied evidence. Choose a supported deck modification, alternative deck "
-                                    "archetype, or recommend a support report. State missing evidence and uncertainty. "
-                                    "Do not invent card names, logs, causes, or claim a bug from losses alone. "
-                                    "Never claim a report was sent. Do not attribute autoplay decisions to the player."
+                                    "Use only supplied evidence." + brief_ctx + " "
+                                    "Give concrete, grounded between-match advice: identify the main "
+                                    "gameplay or matchup pattern across the three games. Do NOT suggest "
+                                    "building a brand-new deck if the deck is net-positive over recent "
+                                    "games or if the player already has a stronger proven deck in history. "
+                                    "State missing evidence and uncertainty. Do not invent card names, "
+                                    "logs, causes, or claim a bug from losses alone. Never claim a report "
+                                    "was sent. Do not attribute autoplay decisions to the player."
                                 ),
                                 narration_mode="autopilot",
                                 priority=10,

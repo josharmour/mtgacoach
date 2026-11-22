@@ -638,6 +638,14 @@ class CompactCoachPanel(QWidget):
         self.after_match_popover = VoiceStylePopover(self, "After this match")
         self.after_match_popover.setAccessibleName("After this match")
         self.after_match_popover.add_button(self.auto_queue_btn)
+        self.loss_limit_btn = QPushButton()
+        self.loss_limit_btn.setObjectName("lossLimitButton")
+        self.loss_limit_btn.setToolTip(
+            "Cycle how many consecutive match losses pause Auto-queue (3, 5, 7, or Off)."
+        )
+        self.loss_limit_btn.clicked.connect(self._cycle_auto_queue_loss_limit)
+        self._render_loss_limit_button()
+        self.after_match_popover.add_button(self.loss_limit_btn)
         self.after_match_btn = QPushButton("After match…")
         self.after_match_btn.setObjectName("afterMatchButton")
         self.after_match_btn.clicked.connect(
@@ -1219,15 +1227,50 @@ class CompactCoachPanel(QWidget):
         if ok:
             self._session.set_auto_quest(True, "mastery", minutes)
 
+    _LOSS_LIMIT_CYCLE = (3, 5, 7, 0)
+
+    def _current_loss_limit(self) -> int:
+        from arenamcp.standalone_auto_queue import AUTO_QUEUE_LOSS_LIMIT
+
+        raw = self._settings.get("auto_queue_loss_limit")
+        if raw is None:
+            return AUTO_QUEUE_LOSS_LIMIT
+        try:
+            return max(0, int(raw))
+        except (TypeError, ValueError):
+            return AUTO_QUEUE_LOSS_LIMIT
+
+    def _render_loss_limit_button(self) -> None:
+        if not hasattr(self, "loss_limit_btn"):
+            return
+        limit = self._current_loss_limit()
+        label = "Loss stop: Off" if limit == 0 else f"Loss stop: {limit} losses"
+        self.loss_limit_btn.setText(label)
+
+    def _cycle_auto_queue_loss_limit(self) -> None:
+        current = self._current_loss_limit()
+        try:
+            idx = self._LOSS_LIMIT_CYCLE.index(current)
+            nxt = self._LOSS_LIMIT_CYCLE[(idx + 1) % len(self._LOSS_LIMIT_CYCLE)]
+        except ValueError:
+            nxt = self._LOSS_LIMIT_CYCLE[0]
+        self._settings.set("auto_queue_loss_limit", nxt)
+        self._render_loss_limit_button()
+        msg = (
+            "Auto-queue loss stop disabled (won't auto-pause on loss streaks)."
+            if nxt == 0
+            else f"Auto-queue loss stop set to {nxt} consecutive losses."
+        )
+        self.append_log(msg, role="status")
+
     def _toggle_auto_queue(self) -> None:
         self._auto_queue_enabled = not self._auto_queue_enabled
         if self._auto_queue_enabled:
-            from arenamcp.standalone_auto_queue import AUTO_QUEUE_LOSS_LIMIT
-
             # An explicit re-arm after the safety stop works even with the
             # engine offline. Ordinary navigation retries retain every loss.
             streak = settings.Settings().get("auto_queue_streak") or {}
-            if streak.get("losses", 0) >= AUTO_QUEUE_LOSS_LIMIT:
+            limit = self._current_loss_limit()
+            if limit > 0 and streak.get("losses", 0) >= limit:
                 cut = max(time.time(), float(streak.get("through") or 0.0))
                 fresh = {"since": cut, "rearmed_at": cut, "through": cut, "losses": 0}
                 if streak.get("last"):

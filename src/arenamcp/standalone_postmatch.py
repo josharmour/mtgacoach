@@ -1118,17 +1118,45 @@ class _PostMatchMixin(LossStreakMixin):
                 pass
         history = MatchHistory()
         history.add_record(rec)
+        brief = None
         try:
-            self._offer_deck_building(history, rec)
+            brief = self._emit_between_match_brief(history, rec)
+        except Exception as error:
+            logger.debug("Between-match brief unavailable: %s", error)
+        try:
+            self._offer_deck_building(history, rec, brief=brief)
         except Exception as error:
             logger.debug("Deck-building invitation unavailable: %s", error)
 
-    def _offer_deck_building(self, history, record) -> None:
+    def _emit_between_match_brief(self, history, record):
+        from arenamcp.between_match_coach import BETWEEN_MATCH_LABEL, summarize_between_matches
+
+        if record.result not in ("win", "loss"):
+            return None
+        streak = getattr(self, "_auto_queue_streak", None) or {}
+        consecutive_losses = int(streak.get("losses", 0) or 0) if record.result == "loss" else 0
+        brief = summarize_between_matches(
+            history.get_recent(history.total_games),
+            record,
+            consecutive_losses=consecutive_losses,
+        )
+        if brief is None:
+            return None
+        advice = getattr(getattr(self, "ui", None), "advice", None)
+        if callable(advice):
+            advice(brief.message, BETWEEN_MATCH_LABEL)
+        return brief
+
+    def _offer_deck_building(self, history, record, *, brief=None) -> None:
         from arenamcp.deck_recommendation import ADVICE_LABEL, claim_invitation, invitation
         from arenamcp.ladder import RankLog, ranked_ladder
         from arenamcp.watcher import DEFAULT_LOG_PATH, _normalize_log_path
 
         if record.result not in ("win", "loss") or ranked_ladder(record.format_name) != "Constructed":
+            return
+        # Never nag the player to build a brand-new deck when their current deck
+        # is net-positive or they already have a stronger proven deck to switch back to.
+        if brief is not None and brief.action in ("keep_queueing", "switch_deck"):
             return
         reader = getattr(self, "_deck_invitation_rank_log", None)
         if reader is None:

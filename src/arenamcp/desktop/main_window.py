@@ -541,19 +541,32 @@ class MainWindow(QMainWindow):
         dialog.setWindowTitle("Auto-queue paused — loss safeguard")
         dialog.setTextFormat(Qt.PlainText)
         dialog.setText(text)
-        dialog.setInformativeText(
-            "You can clear the safeguard to resume queueing immediately, or review deck suggestions "
-            "matched to the cards you own and the wildcards you've collected."
+        suppress_deck_builder = (
+            "No deck switch needed." in text or "switch back before trying to build a new deck." in text
         )
+        if suppress_deck_builder:
+            dialog.setInformativeText(
+                "You can clear the safeguard to resume queueing immediately, or change the "
+                "Loss stop threshold in After match…."
+            )
+        else:
+            dialog.setInformativeText(
+                "You can clear the safeguard to resume queueing immediately, or review deck suggestions "
+                "matched to the cards you own and the wildcards you've collected."
+            )
         clear_btn = dialog.addButton("Clear safeguard", QMessageBox.AcceptRole)
-        suggest_btn = dialog.addButton("Suggest decks (cards & wildcards)", QMessageBox.ActionRole)
+        suggest_btn = (
+            None
+            if suppress_deck_builder
+            else dialog.addButton("Suggest decks (cards & wildcards)", QMessageBox.ActionRole)
+        )
         dialog.addButton("Keep paused", QMessageBox.RejectRole)
         dialog.setDefaultButton(clear_btn)
 
         def chosen(button):
             if button is clear_btn:
                 self.coach_panel._clear_loss_safeguard()
-            elif button is suggest_btn:
+            elif suggest_btn is not None and button is suggest_btn:
                 self.coach_panel._open_safeguard_deck_suggestions()
 
         dialog.buttonClicked.connect(chosen)
