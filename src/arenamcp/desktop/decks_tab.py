@@ -30,7 +30,25 @@ from PySide6.QtWidgets import (
 from . import theme
 from .deck_editor import DeckEditorDialog, NewDeckDialog
 
-_COLUMNS = ["Deck", "Format", "Cards", "Strategy", "Last played"]
+_COLUMNS = ["Deck", "Format", "Cards", "Strategy", "Last played", "Win rate"]
+
+
+def _fmt_win_rate(deck: dict[str, Any]) -> tuple[str, str]:
+    """(label, tone) for the Win rate column and macOS deck row."""
+    wins = int(deck.get("wins") or 0)
+    losses = int(deck.get("losses") or 0)
+    total = wins + losses
+    is_pick = bool(deck.get("is_winning_pick"))
+    if total > 0:
+        pct = round(100 * wins / total)
+        text = f"{pct}% ({wins}W-{losses}L)"
+        if is_pick:
+            return (f"★ {text}", "good")
+        return (text, "good" if wins >= losses else "warn")
+    if is_pick:
+        return ("★ Best pick", "accent")
+    return ("—", "muted")
+
 
 _STAGE_TEXT = {
     "cache": "Loaded",
@@ -234,7 +252,7 @@ class DecksTab(QWidget):
             self._table.setSelectionMode(QTableWidget.SingleSelection)
             self._table.setShowGrid(False)
             self._table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-            for column in (1, 2, 4):
+            for column in (1, 2, 4, 5):
                 self._table.horizontalHeader().setSectionResizeMode(column, QHeaderView.ResizeToContents)
             self._table.itemSelectionChanged.connect(self._on_selection_changed)
             lay.addWidget(self._table, 1)
@@ -412,6 +430,12 @@ class DecksTab(QWidget):
         complete = sum(1 for d in self._decks if d.get("complete"))
         ready = sum(1 for d in self._decks if (d.get("strategy") or {}).get("status") == "ready")
         summary = f"{len(self._decks)} decks, {complete} with card lists, {ready} with a strategy."
+        pick = next((d for d in self._decks if d.get("is_winning_pick")), None)
+        if pick is not None:
+            wr_label, _wr_tone = _fmt_win_rate(pick)
+            ev = str(pick.get("winning_event") or "").strip()
+            ev_part = f" in {ev}" if ev else ""
+            summary += f" Winning decks pick: {pick.get('name', '')} ({wr_label}{ev_part})."
         if note:
             summary += f" {note}"
         if not self._decks:
@@ -433,12 +457,14 @@ class DecksTab(QWidget):
 
     def _set_row(self, row: int, deck: dict[str, Any]) -> None:
         label, tone = _status_text(deck.get("strategy") or {})
+        wr_label, wr_tone = _fmt_win_rate(deck)
         cells = [
             deck.get("name", ""),
             deck.get("format", ""),
             str(deck.get("cards") or "") if deck.get("complete") else "?",
             label,
             _fmt_when(deck.get("last_played", "")),
+            wr_label,
         ]
         if self._table is None:
             key = deck["deck_id"]
@@ -454,7 +480,8 @@ class DecksTab(QWidget):
             if self._deck_rows.indexOf(button) != row:
                 self._deck_rows.removeWidget(button)
                 self._deck_rows.insertWidget(row, button)
-            text = f"{cells[0]} · {cells[1]} · {cells[2]} cards\n{label} · {cells[4]}"
+            wr_part = f" · {wr_label}" if wr_label != "—" else ""
+            text = f"{cells[0]} · {cells[1]} · {cells[2]} cards{wr_part}\n{label} · {cells[4]}"
             button.setText(text.replace("&", "&&"))
             button.setAccessibleName(text)
             button.setChecked(key == self._selected_id)
@@ -464,6 +491,8 @@ class DecksTab(QWidget):
             item.setFlags(item.flags() & ~Qt.ItemIsEditable)
             if column == 3:
                 item.setForeground(theme.qcolor(tone))
+            elif column == 5:
+                item.setForeground(theme.qcolor(wr_tone))
             if column == 0:
                 item.setToolTip(f"{deck.get('source', '')} · {deck.get('deck_id', '')}")
             self._table.setItem(row, column, item)

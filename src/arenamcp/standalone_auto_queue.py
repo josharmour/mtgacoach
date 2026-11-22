@@ -88,11 +88,18 @@ class _AutoQueueMixin(AutoQuestMixin):
                 rec_str = (
                     f"{rec.wins}W-{rec.losses}L ({rec.rate:.0%})" if rec.total > 0 else "no recent record"
                 )
+                strategy_note = self._winning_deck_strategy_status(rec.deck_id)
                 msg = (
                     f"Auto-queue (Winning decks): targeting {rec.label} in {rec.event_id} "
-                    f"({rec_str}).\n{plan.summary}"
+                    f"({rec_str}{strategy_note}).\n{plan.summary}"
                 )
-                logger.info("Auto-queue winning target: %s in %s (%s)", rec.label, rec.event_id, rec_str)
+                logger.info(
+                    "Auto-queue winning target: %s in %s (%s%s)",
+                    rec.label,
+                    rec.event_id,
+                    rec_str,
+                    strategy_note,
+                )
                 advice = getattr(getattr(self, "ui", None), "advice", None)
                 if callable(advice):
                     advice(msg, QUEUE_PLAN_LABEL)
@@ -100,6 +107,30 @@ class _AutoQueueMixin(AutoQuestMixin):
         except Exception:
             logger.debug("Could not resolve winning auto-queue target", exc_info=True)
             return None
+
+    def _winning_deck_strategy_status(self, deck_id: str) -> str:
+        """Report playbook readiness for *deck_id* and kick off a background study if missing."""
+        try:
+            library = getattr(self, "_deck_library", None) or {}
+            record = library.get(deck_id)
+            if record is None or not getattr(record, "complete", False):
+                return ""
+            status_fn = getattr(self, "deck_strategy_status", None)
+            if not callable(status_fn):
+                return ""
+            st = (status_fn(record) or {}).get("status")
+            if st == "ready":
+                return " · strategy ready"
+            if st == "building":
+                return " · studying deck"
+            if st in ("none", "error"):
+                analyze = getattr(self, "analyze_deck_async", None)
+                if callable(analyze):
+                    analyze(deck_id, refresh=False)
+                    return " · studying deck in background"
+        except Exception:
+            logger.debug("Could not check winning-deck strategy status", exc_info=True)
+        return ""
 
     def _loss_stop_detail(self, limit: int) -> str:
         if limit == AUTO_QUEUE_LOSS_LIMIT:

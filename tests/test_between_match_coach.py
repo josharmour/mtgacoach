@@ -623,3 +623,89 @@ def test_compact_coach_same_vs_winning_auto_queue_toggles(monkeypatch):
     assert panel.auto_queue_btn.text == "Auto-queue: Off"
     assert panel.after_match_btn.text == "After match…"
     assert sent == [True, True, False]
+
+
+def test_decks_tab_shows_win_rate_and_winning_decks_pick():
+    from PySide6.QtWidgets import QApplication
+
+    from arenamcp.desktop.decks_tab import DecksTab, _fmt_win_rate
+
+    app = QApplication.instance() or QApplication([])
+    assert app is not None
+
+    assert _fmt_win_rate({"wins": 32, "losses": 29, "is_winning_pick": True}) == ("★ 52% (32W-29L)", "good")
+    assert _fmt_win_rate({"wins": 2, "losses": 9, "is_winning_pick": False}) == ("18% (2W-9L)", "warn")
+    assert _fmt_win_rate({"wins": 0, "losses": 0, "is_winning_pick": False}) == ("—", "muted")
+
+    tab = DecksTab(session=None)
+    decks = [
+        {
+            "deck_id": "d-a",
+            "name": "Deck Alpha",
+            "format": "Standard",
+            "cards": 60,
+            "complete": True,
+            "last_played": "2026-11-21T20:00:00Z",
+            "strategy": {"status": "ready", "archetype": "Aggro"},
+            "wins": 32,
+            "losses": 29,
+            "win_rate": 32 / 61,
+            "is_winning_pick": True,
+            "winning_event": "Ladder",
+        },
+        {
+            "deck_id": "d-b",
+            "name": "Deck Beta",
+            "format": "Standard",
+            "cards": 60,
+            "complete": True,
+            "last_played": "2026-11-21T19:00:00Z",
+            "strategy": {"status": "none"},
+            "wins": 2,
+            "losses": 9,
+            "win_rate": 2 / 11,
+            "is_winning_pick": False,
+            "winning_event": "",
+        },
+    ]
+    tab.set_decks(decks, "")
+    assert "Winning decks pick: Deck Alpha (★ 52% (32W-29L) in Ladder)" in tab._summary.text()
+    if tab._table is not None:
+        assert tab._table.item(0, 5).text() == "★ 52% (32W-29L)"
+        assert tab._table.item(1, 5).text() == "18% (2W-9L)"
+    else:
+        assert "★ 52% (32W-29L)" in tab._deck_buttons["d-a"].text()
+        assert "18% (2W-9L)" in tab._deck_buttons["d-b"].text()
+    tab.close()
+
+
+def test_winning_queue_target_reports_strategy_ready_and_triggers_missing_study(monkeypatch):
+    from arenamcp.between_match_coach import QueueableDeck, QueuePlan
+    from arenamcp.deck_library import DeckRecord
+
+    deck = QueueableDeck("d-a", "Deck Alpha", "Ladder", "id-a", 32, 29)
+    fake_plan = QueuePlan(decks=(deck,), recommended=deck, summary="Queueable decks (1 found)")
+    monkeypatch.setattr(
+        "arenamcp.between_match_coach.evaluate_live_queue_plan", lambda log_path=None: fake_plan
+    )
+
+    # 1. Strategy already ready -> reports "· strategy ready" and does not trigger study
+    h_ready = _QueueHarness()
+    h_ready.settings.set("auto_queue_mode", "winning")
+    h_ready._deck_library = {"d-a": DeckRecord(deck_id="d-a", name="Deck Alpha", main=[(100, 4)])}
+    h_ready.deck_strategy_status = lambda rec: {"status": "ready"}
+    analyzed: list[str] = []
+    h_ready.analyze_deck_async = lambda did, refresh=False: analyzed.append(did)
+    h_ready._resolve_winning_queue_target()
+    assert "strategy ready" in h_ready.ui.advices[0][0]
+    assert analyzed == []
+
+    # 2. Strategy missing -> triggers background study and reports it
+    h_missing = _QueueHarness()
+    h_missing.settings.set("auto_queue_mode", "winning")
+    h_missing._deck_library = {"d-a": DeckRecord(deck_id="d-a", name="Deck Alpha", main=[(100, 4)])}
+    h_missing.deck_strategy_status = lambda rec: {"status": "none"}
+    h_missing.analyze_deck_async = lambda did, refresh=False: analyzed.append(did)
+    h_missing._resolve_winning_queue_target()
+    assert "studying deck in background" in h_missing.ui.advices[0][0]
+    assert analyzed == ["d-a"]

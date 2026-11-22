@@ -170,7 +170,44 @@ class _DeckLibraryMixin:
 
         library = getattr(self, "_deck_library", {}) or {}
         rows = [deck_payload(record, self.deck_strategy_status(record)) for record in library.values()]
-        # Most recently played first; decks without a card list last.
+        # Enrich with 14-day win/loss records and highlight the active Winning decks pick.
+        try:
+            from arenamcp.between_match_coach import deck_win_records, evaluate_live_queue_plan
+            from arenamcp.match_history import MatchHistory
+
+            history = MatchHistory()
+            records = history.get_recent(history.total_games)
+            account_id = ""
+            for rec in reversed(records):
+                acct = (getattr(rec, "local_account_id", "") or "").strip()
+                if acct:
+                    account_id = acct
+                    break
+            by_ident, by_name = deck_win_records(records, account_id=account_id)
+            plan = evaluate_live_queue_plan()
+            rec_deck = plan.recommended
+            for row in rows:
+                ident = str(row.get("identity") or "").strip()
+                name_low = str(row.get("name") or "").strip().casefold()
+                wl = by_ident.get(ident) if ident else None
+                if wl is None:
+                    wl = by_name.get(name_low)
+                wins, losses = wl if wl is not None else (0, 0)
+                total = wins + losses
+                row["wins"] = wins
+                row["losses"] = losses
+                row["win_rate"] = (wins / total) if total > 0 else None
+                is_pick = bool(
+                    rec_deck is not None
+                    and (
+                        row.get("deck_id") == rec_deck.deck_id or (ident and ident == rec_deck.deck_identity)
+                    )
+                )
+                row["is_winning_pick"] = is_pick
+                row["winning_event"] = rec_deck.event_id if is_pick and rec_deck is not None else ""
+        except Exception as error:
+            logger.debug("Deck win-rate enrichment skipped: %s", error)
+        # Winning decks pick first, then most recently played; decks without a card list last.
         rows.sort(
             key=lambda row: (
                 not row["complete"],
@@ -179,6 +216,7 @@ class _DeckLibraryMixin:
             )
         )
         rows.sort(key=lambda row: str(row.get("last_played") or ""), reverse=True)
+        rows.sort(key=lambda row: not bool(row.get("is_winning_pick")))
         rows.sort(key=lambda row: not row["complete"])
         return rows
 
@@ -410,9 +448,20 @@ class _DeckLibraryMixin:
             return
         library = getattr(self, "_deck_library", None) or self.collect_decks()[0]
         records = [record for record in library.values() if record.complete and not record.snapshot]
-        # Newest first; decks never played last (matches the Decks window order).
+        # Winning decks pick first, then newest played; decks never played last.
+        winning_id = ""
+        try:
+            from arenamcp.between_match_coach import evaluate_live_queue_plan
+
+            plan = evaluate_live_queue_plan()
+            if plan.recommended is not None:
+                winning_id = plan.recommended.deck_id
+        except Exception:
+            pass
         records.sort(key=lambda record: (record.last_played == "", record.name.lower()))
         records.sort(key=lambda record: record.last_played, reverse=True)
+        if winning_id:
+            records.sort(key=lambda record: record.deck_id != winning_id)
         for record in records:
             if cancel.is_set() or self._deck_library_in_match():
                 return

@@ -471,6 +471,51 @@ def load_queueable_pairs(log_path: Path | None = None) -> list[dict[str, str]]:
     return result
 
 
+def deck_win_records(
+    records: Iterable[MatchRecord],
+    *,
+    now: datetime | None = None,
+    window_days: int = 14,
+    account_id: str = "",
+) -> tuple[dict[str, tuple[int, int]], dict[str, tuple[int, int]]]:
+    """Aggregate recent (wins, losses) by deck_identity and case-folded deck_name."""
+    ref_now = now or datetime.now(timezone.utc)
+    if ref_now.tzinfo is None:
+        ref_now = ref_now.replace(tzinfo=timezone.utc)
+    cutoff = ref_now - timedelta(days=max(1, window_days))
+
+    by_ident: dict[str, list[int]] = {}
+    by_name: dict[str, list[int]] = {}
+    seen_ids: set[str] = set()
+    for rec in reversed([r for r in records if isinstance(r, MatchRecord) and r.result in ("win", "loss")]):
+        if rec.match_id:
+            if rec.match_id in seen_ids:
+                continue
+            seen_ids.add(rec.match_id)
+        if account_id:
+            rec_acct = (getattr(rec, "local_account_id", "") or "").strip()
+            if rec_acct and rec_acct != account_id:
+                continue
+        ts = _parse_ts(rec.timestamp)
+        if ts is not None and ts < cutoff:
+            continue
+        is_win = 1 if rec.result == "win" else 0
+        ident = (getattr(rec, "deck_identity", "") or "").strip()
+        if ident:
+            slot = by_ident.setdefault(ident, [0, 0])
+            slot[0] += is_win
+            slot[1] += 1 - is_win
+        name = (getattr(rec, "deck_name", "") or "").strip().casefold()
+        if name:
+            slot = by_name.setdefault(name, [0, 0])
+            slot[0] += is_win
+            slot[1] += 1 - is_win
+    return (
+        {k: (v[0], v[1]) for k, v in by_ident.items()},
+        {k: (v[0], v[1]) for k, v in by_name.items()},
+    )
+
+
 def evaluate_queueable_decks(
     records: Iterable[MatchRecord],
     pairs: Iterable[dict[str, str]],
