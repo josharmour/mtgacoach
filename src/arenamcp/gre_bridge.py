@@ -80,6 +80,7 @@ def _infer_specific_decision_type(
     request_payload: Any,
     request_type: str | None,
     request_class: str | None,
+    poll: dict[str, Any] | None = None,
 ) -> str | None:
     """Infer a concrete decision type from generic bridge selection payloads."""
     from arenamcp.basic_land_choice import basic_land_ids
@@ -88,6 +89,8 @@ def _infer_specific_decision_type(
         return "choose_basic_land_type"
     if _is_color_choice_context(existing_ctx, request_payload):
         return "choose_color"
+    if _is_zone_choice_context(existing_ctx, request_payload, poll):
+        return "choose_zone"
     values: list[str] = []
     for key in (
         "prompt",
@@ -157,11 +160,36 @@ def _is_color_choice_context(existing_ctx: dict[str, Any], request_payload: Any)
     )
 
 
+def _is_zone_choice_context(
+    existing_ctx: dict[str, Any],
+    request_payload: Any,
+    poll: dict[str, Any] | None = None,
+) -> bool:
+    """True when this SelectN chooses zone instance IDs (e.g. Finale of Devastation)."""
+    from arenamcp.decisions import _context_request_conflicts, is_zone_id_type
+
+    poll_rid = (0, 0)
+    if isinstance(poll, dict):
+        poll_rid = (int(poll.get("game_state_id") or 0), int(poll.get("msg_id") or 0))
+        if poll.get("select_n_is_zone"):
+            return True
+        if poll.get("select_n_id_type"):
+            return is_zone_id_type(poll.get("select_n_id_type"))
+    payload = request_payload if isinstance(request_payload, dict) else {}
+    if payload.get("idType"):
+        return is_zone_id_type(payload.get("idType"))
+    if _context_request_conflicts(poll_rid, existing_ctx):
+        return False
+    return existing_ctx.get("type") == "choose_zone" or is_zone_id_type(existing_ctx.get("id_type"))
+
+
 def _label_for_decision_type(decision_type: str, count: Any = None) -> str | None:
     if decision_type == "choose_basic_land_type":
         return "Choose a Basic Land Type"
     if decision_type == "choose_color":
         return "Choose a Color"
+    if decision_type == "choose_zone":
+        return "Select Zones" if isinstance(count, int) and count > 1 else "Select Zone"
     if decision_type == "scry":
         suffix = f" {count}" if count not in (None, "", 1) else ""
         return f"Scry{suffix}"
@@ -2641,6 +2669,7 @@ def enrich_snapshot_from_pending_response(
         request_type,
         request_class,
         decision_type,
+        poll=poll,
     )
 
     if decision_type == "distribution":
@@ -3028,6 +3057,7 @@ def _decision_context_family(context: dict[str, Any]) -> str | None:
         "choose",
         "choose_color",
         "choose_basic_land_type",
+        "choose_zone",
         "choose_creature",
         "choose_land",
         "choose_enchantment",
@@ -3087,6 +3117,8 @@ def _refine_generic_selection_type(
     request_type: str | None,
     request_class: str | None,
     decision_type: str | None,
+    *,
+    poll: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Promote a generic "selection" type into a more specific one when the
     request payload has enough hints (count, ZoneToSearch, etc.).
@@ -3098,12 +3130,17 @@ def _refine_generic_selection_type(
     if current_type not in _GENERIC_SELECTION_TYPES and decision_type not in _GENERIC_SELECTION_TYPES:
         return existing_ctx
 
-    inferred_type = _infer_specific_decision_type(existing_ctx, request_payload, request_type, request_class)
+    inferred_type = _infer_specific_decision_type(
+        existing_ctx, request_payload, request_type, request_class, poll=poll
+    )
     if not inferred_type:
         return existing_ctx
 
     if snapshot.get("pending_decision") in _GENERIC_SELECTION_LABELS:
-        better_label = _label_for_decision_type(inferred_type, existing_ctx.get("count"))
+        count = existing_ctx.get("max") if inferred_type == "choose_zone" else existing_ctx.get("count")
+        if inferred_type == "choose_zone" and count is None and isinstance(poll, dict):
+            count = poll.get("select_n_max")
+        better_label = _label_for_decision_type(inferred_type, count)
         if better_label:
             snapshot["pending_decision"] = better_label
     logger.debug(

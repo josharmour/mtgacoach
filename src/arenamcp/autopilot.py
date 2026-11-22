@@ -249,6 +249,7 @@ class AutopilotEngine(
         from arenamcp.request_tracker import RequestTracker
 
         self._request_tracker = RequestTracker()
+        self._blind_select_n_auto_responded: set[tuple[Any, Any]] = set()
         self._runaway_tripped_turn: int | None = None
         self._escape_budget_turn: int = -1
         self._escape_count_this_turn: int = 0
@@ -1995,6 +1996,8 @@ class AutopilotEngine(
             return False
         if "SelectN" in breq + bcls:
             from arenamcp.card_name_choice import is_card_name_request
+            from arenamcp.decisions import build_pending_decision, is_zone_selection_request
+            from arenamcp.request_tracker import decision_fingerprint, request_window
 
             try:
                 pending = self._gre_bridge.get_pending_actions() or {}
@@ -2002,6 +2005,17 @@ class AutopilotEngine(
                 return False
             if is_card_name_request(pending):
                 return False  # Naming a card is strategic, never an arbitrary escape.
+            if is_zone_selection_request(pending):
+                # Arena rejects AutoResp on zone-selection SelectNReq with
+                # FailureReason_UnexpectedMessage (bug_20261122_000617).
+                return False
+            attempted = getattr(self, "_blind_select_n_auto_responded", None)
+            if attempted:
+                live_decision = build_pending_decision(pending)
+                if live_decision is not None:
+                    key = (decision_fingerprint(live_decision), request_window(game_state))
+                    if key in attempted:
+                        return False  # Already tried AutoResp for this SelectN window.
         if any(
             kind in breq + bcls
             for kind in (
@@ -3123,6 +3137,8 @@ class AutopilotEngine(
             self._progress_guard.reset()
         with contextlib.suppress(Exception):
             self._request_tracker.reset()
+        if hasattr(self, "_blind_select_n_auto_responded"):
+            self._blind_select_n_auto_responded.clear()
         planner = getattr(self, "_planner", None)
         if planner is not None:
             planner._turn_memo = None
@@ -3359,6 +3375,8 @@ class AutopilotEngine(
                 self._last_typed_play = None
                 self._runaway_tripped_turn = None
                 self._request_tracker.reset()
+                if hasattr(self, "_blind_select_n_auto_responded"):
+                    self._blind_select_n_auto_responded.clear()
                 self._progress_guard.reset()
                 self._max_seen_turn = 0
             self._max_seen_turn = max(self._max_seen_turn, turn_num)
@@ -5640,6 +5658,7 @@ class AutopilotEngine(
 
         from arenamcp.decisions import (
             build_pending_decision,
+            is_zone_selection_request,
             native_sole_pass_request,
             select_n_needs_arena_default,
             submit_option,
@@ -5939,8 +5958,13 @@ class AutopilotEngine(
                 )
                 self._state = AutopilotState.IDLE
                 return True
+            blind_key = (fp, request_window(game_state))
+            attempted = getattr(self, "_blind_select_n_auto_responded", None)
             if (
                 select_n_needs_arena_default(decision)
+                and not is_zone_selection_request(fresh_poll)
+                and (attempted is None or blind_key not in attempted)
+                and self._request_tracker.rejections(fp) == 0
                 and self._progress_bridge(game_state, poll=fresh_poll).auto_respond()
             ):
                 # A selection whose every legal answer includes objects nobody
@@ -5949,7 +5973,15 @@ class AutopilotEngine(
                 # capture records no zone for them). The request cannot be
                 # cancelled, so declining outright would stall; Arena's own
                 # default is a legal, completed answer — the same fallback the
-                # stuck-window escape trusts.
+                # stuck-window escape trusts. Record both the tracker submit
+                # and a per-(fp, window) one-shot guard so a rejected AutoResp
+                # (FailureReason_UnexpectedMessage) or transient empty poll
+                # never loops (bug_20261122_000617).
+                if attempted is not None:
+                    if len(attempted) >= 32:
+                        attempted.clear()
+                    attempted.add(blind_key)
+                self._request_tracker.note_submitted(fp, request_window(game_state))
                 self._log_execution_path(
                     ExecutionPath.GRE_AWARE,
                     f"typed-decision {decision.request_type}: Arena's default (no identified options)",

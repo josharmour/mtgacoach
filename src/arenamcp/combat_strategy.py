@@ -234,6 +234,7 @@ def _search(state: dict, raw: list[dict], budget: int, deadline_s: float) -> Com
     if local is None or opponent is None:
         return None
     local_id, opponent_id = local["seat_id"], opponent["seat_id"]
+    opp_commanders = set(opponent.get("commander_ids") or ())
     your_life, opponent_life = int(local.get("life_total", 20)), int(opponent.get("life_total", 20))
     battlefield = state.get("battlefield") or []
     cards = {card["instance_id"]: card for card in battlefield if card.get("instance_id")}
@@ -467,9 +468,14 @@ def _search(state: dict, raw: list[dict], budget: int, deadline_s: float) -> Com
                         walker_value += 9 + min(remaining_loyalty, 6)
                     else:
                         walker_value += min(amount, remaining_loyalty) * 0.5
-            material = sum(_material(cards[identity]) for identity in dead_blockers) - sum(
-                _material(cards[identity]) for identity in dead_attackers
-            )
+            # An opposing commander returns to the command zone rather than
+            # staying permanently gone, so trading into it is worth less
+            # material credit than permanently removing a non-commander card
+            # (2026-11-22 match 639f4fba T15: Titan of Industry into Aerid).
+            material = sum(
+                _material(cards[identity]) * (0.6 if identity in opp_commanders else 1.0)
+                for identity in dead_blockers
+            ) - sum(_material(cards[identity]) for identity in dead_attackers)
             # A clean/favorable forced trade (dead_blockers non-empty, material >= 0) carries
             # initiative value: opponent must either trade equal/better material or take face damage.
             # Keep the conservative face-damage weight (5) when throwing away an attacker for zero
@@ -3027,6 +3033,8 @@ def walker_saving_blocks(
     legal: dict[int, set[int]],
     cards: dict,
     local_seat,
+    *,
+    own_commanders: set[int] | frozenset[int] = frozenset(),
 ) -> dict[int, int]:
     """Extra blocks that keep one of our attacked planeswalkers alive, as blocker id -> attacker id.
 
@@ -3050,30 +3058,54 @@ def walker_saving_blocks(
         if remaining is None or remaining <= 0:
             continue
         aimed = [a for a in attackers if a.get("attack_target_id") == walker.get("instance_id")]
+        if not aimed or not all(_known_body(a) for a in aimed):
+            continue
 
         def damage(plan: dict[int, int], aimed=aimed) -> int:
             return sum(
                 _resolve_attacker(
-                    a, [by_id[b] for b, t in plan.items() if t == a["instance_id"]]
+                    {**a, "combat_hit_bonus": 0} if a.get("combat_hit_bonus") else a,
+                    [by_id[b] for b, t in plan.items() if t == a["instance_id"] and b in by_id],
                 ).damage_through
                 for a in aimed
             )
 
         plan = {**assignments, **added}
-        if not aimed or damage(plan) < remaining:
+        if damage(plan) < remaining:
             continue
         options = []
         for blocker_id, allowed in legal.items():
             blocker = by_id.get(blocker_id)
-            if blocker is None or blocker_id in used or _material(blocker) >= walker_value(remaining):
+            if (
+                blocker is None
+                or not _known_body(blocker)
+                or blocker_id in used
+                or _material(blocker) >= walker_value(remaining)
+            ):
                 continue
+            is_cmd = 1 if blocker_id in own_commanders else 0
+            is_non_token = (
+                0
+                if blocker.get("is_token") or "token" in str(blocker.get("object_kind") or "").lower()
+                else 1
+            )
             for attacker in aimed:
-                if attacker["instance_id"] in allowed:
-                    trial = {**plan, blocker_id: attacker["instance_id"]}
-                    if damage(trial) < remaining:
-                        options.append((_material(blocker), blocker_id, attacker["instance_id"]))
+                if attacker["instance_id"] not in allowed:
+                    continue
+                assigned_count = sum(1 for t in plan.values() if t == attacker["instance_id"])
+                # Adding a single blocker to an unblocked menace attacker is illegal.
+                if _has(attacker, "menace") and assigned_count == 0:
+                    continue
+                cap = max_blockers(attacker, cards)
+                if cap is not None and assigned_count >= cap:
+                    continue
+                trial = {**plan, blocker_id: attacker["instance_id"]}
+                if damage(trial) < remaining:
+                    options.append(
+                        (_material(blocker), is_cmd, is_non_token, blocker_id, attacker["instance_id"])
+                    )
         if options:
-            _cost, blocker_id, attacker_id = min(options)
+            _cost, _cmd, _tok, blocker_id, attacker_id = min(options)
             added[blocker_id] = attacker_id
             used.add(blocker_id)
     return added
@@ -3485,7 +3517,15 @@ def safe_default_blocks(state: dict, pending: dict | None = None) -> tuple[dict[
     for blocker in wasteful_chump_blocks(state, assignments, pending):
         assignments.pop(blocker, None)
     assignments.update(
-        walker_saving_blocks(attackers, blockers, assignments, legal, cards, local.get("seat_id"))
+        walker_saving_blocks(
+            attackers,
+            blockers,
+            assignments,
+            legal,
+            cards,
+            local.get("seat_id"),
+            own_commanders=set(local.get("commander_ids") or ()),
+        )
     )
     # The greedy fallback (large boards) can put one blocker on a menace attacker.
     assignments = repair_menace_blocks(state, assignments, pending)[0]

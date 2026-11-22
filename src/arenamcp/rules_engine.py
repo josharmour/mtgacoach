@@ -1239,6 +1239,10 @@ class RulesEngine:
             names = decision_context.get("option_cards") or decision_context.get("options") or []
             return [f"Choose color: {name}" for name in names if name]
 
+        if dec_type == "choose_zone":
+            names = decision_context.get("option_cards") or decision_context.get("options") or []
+            return [f"Choose zone: {name}" for name in names if name]
+
         if dec_type == "optional_action":
             # MTGA is presenting a yes/no prompt (e.g. "Send your commander to
             # the command zone instead of the graveyard?"). Without these,

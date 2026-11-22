@@ -883,6 +883,33 @@ def _handle_select_n_req(game_state: "GameState", msg: dict) -> bool:
                 "prompt_source_id": prompt_source_id,
             }
 
+    # Zone choices (e.g. Finale of Devastation: "Search your library and/or graveyard"):
+    # option IDs are ZoneInfo zoneIds, never card instance/grp IDs.
+    zone_choices: list[dict[str, Any]] = []
+    if color_ids is None and land_ids is None and not prompt_choices:
+        from arenamcp.decisions import format_zone_label, is_zone_id_type
+
+        if is_zone_id_type(id_type):
+            selection_type = "choose_zone"
+            decision_text = "Select Zones" if max_select > 1 else "Select Zone"
+            for oid in option_ids:
+                zone = game_state.zones.get(oid)
+                zone_type_name = zone.zone_type.name if zone is not None else ""
+                owner_seat = zone.owner_seat_id if zone is not None else None
+                label = (
+                    format_zone_label(zone.zone_type, owner_seat, game_state.local_seat_id)
+                    if zone is not None
+                    else ""
+                )
+                zone_choices.append(
+                    {
+                        "id": oid,
+                        "zone_type": zone_type_name,
+                        "owner_seat_id": owner_seat,
+                        "label": label,
+                    }
+                )
+
     # "Choose a creature type" (Herald's Horn): SubType enum values, never cards (ledger #186).
     from arenamcp.creature_type_choice import subtype_names, subtype_selection_ids
 
@@ -893,12 +920,17 @@ def _handle_select_n_req(game_state: "GameState", msg: dict) -> bool:
     option_cards: list[str] = [option["name"] for option in color_options(color_ids or [])]
     option_cards += [option["name"] for option in basic_land_options(land_ids or [])]
     option_cards += [choice["text"] or f"Choice #{choice['id']}" for choice in prompt_choices]
+    option_cards += [choice["label"] or f"Zone #{choice['id']}" for choice in zone_choices]
     if subtype_ids:
         names = subtype_names()
         option_cards += [names.get(subtype) or f"Creature type #{subtype}" for subtype in subtype_ids]
     for oid in (
         option_ids[:20]
-        if color_ids is None and land_ids is None and not prompt_choices and not subtype_ids
+        if color_ids is None
+        and land_ids is None
+        and not prompt_choices
+        and not zone_choices
+        and not subtype_ids
         else []
     ):
         grp_id = 0
@@ -961,6 +993,8 @@ def _handle_select_n_req(game_state: "GameState", msg: dict) -> bool:
     if prompt_choices:
         game_state.decision_context["prompt_choices"] = prompt_choices
         game_state.decision_context.update(prompt_source)
+    if zone_choices:
+        game_state.decision_context["zone_choices"] = zone_choices
     return False
 
 
@@ -1004,10 +1038,15 @@ def _select_n_prompt_info(
             info.update(_resolve_request_source_context(game_state, source_id))
             info["prompt_source_id"] = source_id
         text = info.get("prompt_text") or ""
-        hand_ids = {obj.instance_id for obj in game_state.hand}
-        if text and option_ids and all(i in hand_ids for i in option_ids):
-            from arenamcp.decisions import _LOSS_PROMPT
+        from arenamcp.decisions import _LOSS_PROMPT, is_zone_id_type
 
+        hand_ids = {obj.instance_id for obj in game_state.hand}
+        if (
+            text
+            and option_ids
+            and not is_zone_id_type(req.get("idType"))
+            and all(i in hand_ids for i in option_ids)
+        ):
             info["hand_loss"] = next((kind for kind, pattern in _LOSS_PROMPT if pattern.search(text)), None)
     except Exception as error:  # enrichment only: the decision itself must still be captured
         logger.debug(f"SelectN prompt enrichment failed: {error}")

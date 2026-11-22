@@ -3811,12 +3811,18 @@ class MacBridgeAdapter:
     @staticmethod
     def _require_automatic_response_safe(snapshot: Snapshot) -> None:
         from arenamcp.card_name_choice import is_card_name_list
+        from arenamcp.decisions import is_zone_id_type
 
         if snapshot.request_class == "SelectNRequest" and is_card_name_list(
             enum_name(field(snapshot.request, "ListType")),
             enum_name(field(snapshot.request, "StaticList")),
         ):
             raise AdapterError("Card-name selection requires an explicit TitleId, not AutoRespond")
+        if snapshot.request_class == "SelectNRequest" and (
+            snapshot.getters.get("IsZoneSelection")
+            or is_zone_id_type(enum_name(field(snapshot.request, "IdType")))
+        ):
+            raise AdapterError("Zone selection requires explicit zone IDs, not AutoRespond")
 
     def _cmd_auto_respond(self, command: dict, timeout: float | None) -> dict:
         snapshot = self._require(timeout)

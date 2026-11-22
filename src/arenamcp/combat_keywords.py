@@ -231,8 +231,8 @@ def is_creature_now(card: dict) -> bool:
     untapped; the attack would have taken them from 30 to 3.
     """
     types = card.get("card_types")
-    if isinstance(types, list) and any(str(t).startswith("CardType_") for t in types):
-        return "CardType_Creature" in types
+    if isinstance(types, list) and types:
+        return any(str(t).removeprefix("CardType_") == "Creature" for t in types)
     return "creature" in str(card.get("type_line") or "").lower()
 
 

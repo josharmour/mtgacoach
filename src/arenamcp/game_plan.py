@@ -5439,7 +5439,17 @@ class GamePlanManager:
             phase == "main2" and plan_board_changes(plan, state, threats_only=True)
         ):
             return None
-        return plan.step_for((state.get("turn") or {}).get("turn_number"))
+        step = plan.step_for((state.get("turn") or {}).get("turn_number"))
+        if step is None:
+            return None
+        # When the board changed or a planned attacker left since the plan was
+        # formed, strategy_block already tells the model to re-check attacks.
+        # Drop the stale attack string here so sync_turn_plan_from_game_plan
+        # does not keep has_pending_attack_intent() True and overrule an
+        # explicit model hold (2026-11-22 match 639f4fba T15).
+        if step.get("attack") and (plan_board_changes(plan, state) or plan_attackers_gone(plan, state)):
+            step = {**step, "attack": ""}
+        return step
 
     def strategy_block(self, game_state: dict[str, Any] | None, *, with_lines: bool = True) -> str:
         """Fresh ROLE + this turn + facts for ``game_state``, then the plan spine.

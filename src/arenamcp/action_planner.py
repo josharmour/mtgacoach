@@ -1519,6 +1519,9 @@ class ActionPlanner(_ActionLegalityMixin):
         self._ensure_free_blocks(
             plan, game_state, decision_context or game_state.get("decision_context") or {}
         )
+        self._ensure_walker_saving_blocks(
+            plan, game_state, decision_context or game_state.get("decision_context") or {}
+        )
         self._follow_line_attack(
             plan, game_state, decision_context or game_state.get("decision_context") or {}
         )
@@ -1763,7 +1766,11 @@ class ActionPlanner(_ActionLegalityMixin):
             return
         local_seat = local.get("seat_id")
         annotate_death_swings(state.get("battlefield") or [])
-        cards = {c.get("instance_id"): c for c in state.get("battlefield", [])}
+        cards = {
+            c.get("instance_id"): c
+            for c in state.get("battlefield", [])
+            if isinstance(c, dict) and c.get("instance_id") is not None
+        }
         attackers = [
             c
             for c in cards.values()
@@ -1784,6 +1791,9 @@ class ActionPlanner(_ActionLegalityMixin):
             return
         if any(not isinstance(c.get("power"), int) for c in attackers):
             return
+        face_attackers = [a for a in attackers if a.get("attack_target_id") not in cards]
+        if not face_attackers:
+            return
         action = plan.actions[0]
         planned = {} if declined else action.blocker_instance_assignments or {}
         through = 0
@@ -1796,22 +1806,23 @@ class ActionPlanner(_ActionLegalityMixin):
             if atk.get("attack_target_id") not in cards:
                 hit_loss |= outcome.player_loses
                 alternate = alternate.hit(outcome.poison_given, outcome.cards_milled)
-            through += outcome.damage_through - _death_life(atk, outcome)[0]
+                through += outcome.damage_through
+            through -= _death_life(atk, outcome)[0]
         # An extra combat follows this one (Aurelia, ledger #191): its damage through the blockers
         # these blocks leave counts as this turn's.
-        through += extra_combat_damage(state, attackers, planned)
+        through += extra_combat_damage(state, face_attackers, planned)
         hit_loss |= alternate.lost or alternate.draw_loses
         lethal = hit_loss or through >= life
         if not lethal and life - through > BLOCK_DANGER_LIFE:
             return
         allowed = blocker_options(context.get("raw_blockers") or [], context.get("blocker_options"))
         survival = optimal_blocks(
-            attackers, blockers, life, blocker_allowed_attackers=allowed or None, defender=loss_state(state)
+            face_attackers, blockers, life, blocker_allowed_attackers=allowed or None, defender=loss_state(state)
         )
         if survival is None or not survival.assignments:
             return
         survival_through = survival.net_life_lost + extra_combat_damage(
-            state, attackers, survival.assignments
+            state, face_attackers, survival.assignments
         )
         if survival.player_loses or survival.draw_loss_pending or survival_through >= life:
             return
@@ -1904,6 +1915,100 @@ class ActionPlanner(_ActionLegalityMixin):
         action.reasoning = (action.reasoning + " " if action.reasoning else "") + f"Free block: {reasons}."
         plan.fallback_reason = "planner_free_block"
         plan.overall_strategy = f"Free block: {reasons}."
+        plan.voice_advice = plan.spoken_actions()
+
+    def _ensure_walker_saving_blocks(self, plan: ActionPlan, state: dict, context: dict) -> None:
+        """Add cheap blocks that save an attacked planeswalker the plan left to die.
+
+        2026-11-22 T14 (match 639f4fba): Studious First-Year (6/6) attacked
+        6-loyalty Nissa, Who Shakes the World; the plan declined all blocks
+        and let Nissa die instead of chumping with a 1/1 Hobbit token.
+        Uses :func:`combat_strategy.walker_saving_blocks` only for unassigned
+        blockers cheaper than the threatened planeswalker.
+        """
+        if str(context.get("type") or "").lower() != "declare_blockers" or len(plan.actions) != 1:
+            return
+        action = plan.actions[0]
+        declined = action.action_type in (ActionType.CLICK_BUTTON, ActionType.PASS_PRIORITY)
+        if action.action_type != ActionType.DECLARE_BLOCKERS and not declined:
+            return
+        planned = {} if declined else dict(action.blocker_instance_assignments or {})
+        if not declined and len(planned) != len(action.blocker_assignments or {}):
+            return
+        local = next((p for p in state.get("players", []) if p.get("is_local")), None)
+        if local is None:
+            return
+        local_seat = local.get("seat_id")
+        from arenamcp.attack_potential import pumped_attackers
+        from arenamcp.combat_solver import blocker_options
+        from arenamcp.combat_strategy import (
+            _known_body,
+            phantom_attackers,
+            walker_saving_blocks,
+            with_hit_bonus,
+        )
+
+        cards = {
+            c.get("instance_id"): c
+            for c in state.get("battlefield") or []
+            if isinstance(c, dict) and c.get("instance_id") is not None
+        }
+        attackers = [
+            c
+            for c in cards.values()
+            if c.get("is_attacking") and (c.get("controller_seat_id") or c.get("owner_seat_id")) != local_seat
+        ]
+        if not attackers:
+            return
+        phantoms = phantom_attackers(
+            state, [c.get("instance_id") for c in attackers], context.get("raw_blockers")
+        )
+        attackers = with_hit_bonus(
+            pumped_attackers([c for c in attackers if c.get("instance_id") not in phantoms], state),
+            state,
+            local_seat,
+        )
+        legal_ids = {int(i) for i in context.get("legal_blocker_ids") or [] if str(i).isdigit()}
+        blockers = [cards[i] for i in legal_ids if i in cards and _known_body(cards[i])]
+        if not attackers or not blockers:
+            return
+        allowed = blocker_options(context.get("raw_blockers") or [], context.get("blocker_options"))
+        if not allowed:
+            return
+        added = walker_saving_blocks(
+            attackers,
+            blockers,
+            planned,
+            allowed,
+            cards,
+            local_seat,
+            own_commanders=set(local.get("commander_ids") or ()),
+        )
+        if not added:
+            return
+
+        def label(iid):
+            card = cards.get(iid, {})
+            token = card.get("is_token") or "token" in str(card.get("object_kind", "")).lower()
+            return f"{'*' if token else ''}{card.get('name', 'Creature')} [id:{iid}]"
+
+        if declined:
+            action = plan.actions[0] = GameAction(action_type=ActionType.DECLARE_BLOCKERS)
+        parts = []
+        for blocker_id, attacker_id in added.items():
+            action.blocker_instance_assignments[blocker_id] = attacker_id
+            action.blocker_assignments[label(blocker_id)] = label(attacker_id)
+            walker_id = cards.get(attacker_id, {}).get("attack_target_id")
+            walker_name = cards.get(walker_id, {}).get("name", "planeswalker")
+            parts.append(
+                f"{cards.get(blocker_id, {}).get('name', 'Creature')} blocks "
+                f"{cards.get(attacker_id, {}).get('name', 'Attacker')} to save {walker_name}"
+            )
+        summary = "; ".join(parts)
+        logger.warning("Walker-saving block guard: adding %s", summary)
+        action.reasoning = (action.reasoning + " " if action.reasoning else "") + f"Save planeswalker: {summary}."
+        plan.fallback_reason = "planner_walker_block"
+        plan.overall_strategy = f"Save planeswalker: {summary}."
         plan.voice_advice = plan.spoken_actions()
 
     def _check_losing_attacks(self, plan: ActionPlan, state: dict, context: dict) -> None:

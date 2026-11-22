@@ -1449,7 +1449,16 @@ class _BridgeSubmitMixin:
             if c.get("selectedDamageRecipient")
         }
         if taxes(game_state) and held_ids - {e["attackerInstanceId"] for e in attacker_entries}:
-            return self._withdraw_taxed_attack(bridge, game_state)
+            if not attacker_entries:
+                return self._withdraw_taxed_attack(bridge, game_state)
+            # Stale over-declared attackers are held on this request, but we
+            # have a smaller payable subset to declare. Withdraw the stale
+            # selection first, wait for the refreshed empty DeclareAttackers
+            # request, and submit `attacker_entries` on that fresh request.
+            refreshed = self._clear_held_attackers_for_redeclare(bridge, pending)
+            if refreshed is None:
+                return None
+            pending = refreshed
 
         if not attacker_entries:
             # Empty attacker list = "attack with nobody / Done (confirm attackers)".
@@ -1562,6 +1571,48 @@ class _BridgeSubmitMixin:
         note = getattr(self, "_note_attack_declared", None)
         if callable(note):
             note(game_state, [entry.get("attackerInstanceId") for entry in entries or []], pending)
+
+    def _clear_held_attackers_for_redeclare(
+        self, bridge: Any, pending: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """Withdraw stale held attackers and return the refreshed empty DeclareAttackers pending."""
+        resp = bridge.submit_attackers_raw([], withdraw=True)
+        if not resp or not resp.get("ok"):
+            logger.warning(
+                "Bridge declare_attackers: withdraw before thinned re-declare failed (%s); refusing submit",
+                resp,
+            )
+            return None
+        if resp.get("needs_finalize"):
+            native = pending.get("bridge_runtime") in ("il2cpp-macos", "il2cpp-android")
+            bepinex = pending.get("bridge_runtime") in (None, "", "bepinex")
+            from arenamcp.gre_bridge import _version_tuple
+
+            verified = native or (
+                bepinex and _version_tuple(getattr(bridge, "plugin_version", None)) >= _version_tuple("0.7.2")
+            )
+            request_key = (pending.get("game_state_id"), pending.get("msg_id"))
+            outcome, _ = self._await_attack_selection(
+                bridge, request_key, [], verified, require_submit=True
+            )
+            if outcome != "acknowledged":
+                logger.warning(
+                    "Bridge declare_attackers: refreshed empty request after withdraw was not "
+                    "acknowledged (%s); refusing thinned re-declare",
+                    outcome,
+                )
+                return None
+        try:
+            refreshed = bridge.get_pending_actions() or {}
+        except Exception:
+            refreshed = {}
+        if not refreshed.get("has_pending") or "DeclareAttacker" not in refreshed.get("request_class", ""):
+            logger.warning(
+                "Bridge declare_attackers: pending after withdraw is %s, not DeclareAttacker",
+                refreshed.get("request_class"),
+            )
+            return None
+        return refreshed
 
     def _withdraw_taxed_attack(self, bridge: Any, game_state: dict[str, Any]) -> ClickResult | None:
         """Answer a taxed attack request with a withdrawn no-attack (#210).
@@ -2417,6 +2468,34 @@ class _BridgeSubmitMixin:
             desired_names = [action.card_name.lower().strip()]
 
         from arenamcp.card_name_choice import is_card_name_request
+        from arenamcp.decisions import is_zone_selection_request
+
+        if is_zone_selection_request(pending):
+            from arenamcp.decisions import build_pending_decision, submit_option
+
+            decision = build_pending_decision(pending)
+            if decision is None or not desired_names:
+                return None
+            chosen = []
+            for name in desired_names:
+                matches = [
+                    option.option_id
+                    for option in decision.options
+                    if option.meta.get("choice") == "zone"
+                    and (
+                        option.label.casefold() == name.casefold()
+                        or name.casefold() in option.label.casefold()
+                    )
+                ]
+                if len(matches) != 1:
+                    return None
+                chosen.extend(matches)
+            if not decision.selection_is_valid(chosen):
+                return None
+            if submit_option(bridge, decision, chosen):
+                return ClickResult(True, 0, 0, "select_n", "GRE bridge")
+            self._gre_bridge_failed_methods.add("select_n")
+            return None
 
         if is_card_name_request(pending):
             from arenamcp.decisions import build_pending_decision, submit_option
@@ -2822,6 +2901,10 @@ class _BridgeSubmitMixin:
             return False  # A deck needs explicit review/submission, never a gameplay default.
 
         from arenamcp.card_name_choice import is_card_name_request
+        from arenamcp.decisions import is_zone_selection_request
+
+        if is_zone_selection_request(pending):
+            return False  # Arena rejects SubmitArbitrary/AutoResp on zone selections.
 
         if is_card_name_request(pending):
             return False  # A card name needs an explicit choice, never arbitrary/AutoRespond.
@@ -2932,9 +3015,12 @@ class _BridgeSubmitMixin:
             if res is not None and res.success:
                 return _ok("select_n/search min-or-arbitrary")
             from arenamcp.basic_land_choice import basic_land_ids
+            from arenamcp.decisions import is_zone_selection_request
 
             if basic_land_ids(pending) is not None:
                 return False  # Never turn a missing basic-land choice into SubmitArbitrary.
+            if is_zone_selection_request(pending):
+                return False  # Arena rejects SubmitArbitrary/AutoResp on zone selections.
             if bridge.submit_selection([]):
                 return _ok("empty selection (SubmitArbitrary)")
 
@@ -3011,6 +3097,10 @@ class _BridgeSubmitMixin:
                 return _ok("default order")
 
         # Universal fallback: MTGA's own "do the default" for this request.
+        from arenamcp.decisions import is_zone_selection_request
+
+        if is_zone_selection_request(pending):
+            return False
         if bridge.auto_respond():
             return _ok("auto_respond")
         return False

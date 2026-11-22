@@ -617,6 +617,118 @@ def _is_prompt_index_type(id_type: Any) -> bool:
     return "promptparameterindex" in _enum_text(id_type).lower().replace("_", "")
 
 
+_ZONE_DISPLAY_NAMES = {
+    "BATTLEFIELD": "Battlefield",
+    "HAND": "Hand",
+    "GRAVEYARD": "Graveyard",
+    "EXILE": "Exile",
+    "LIBRARY": "Library",
+    "STACK": "Stack",
+    "LIMBO": "Limbo",
+    "COMMAND": "Command Zone",
+    "PENDING": "Pending",
+    "REVEALED": "Revealed",
+}
+
+
+def is_zone_id_type(id_type: Any) -> bool:
+    """True when a SelectN's IdType names zones (IdType_ZoneInstanceId / ZoneInstanceId)."""
+    return "zoneinstanceid" in _enum_text(id_type).lower().replace("_", "")
+
+
+def format_zone_label(
+    zone_type: Any,
+    owner_seat_id: int | None = None,
+    local_seat_id: int | None = None,
+) -> str:
+    """Human/model-readable label for a zone instance ('Your Library', 'Your Graveyard', 'Exile', ...)."""
+    raw = getattr(zone_type, "name", None) or _enum_text(zone_type)
+    normalized = str(raw or "").strip().upper().removeprefix("ZONETYPE_")
+    if not normalized or normalized == "UNKNOWN":
+        return ""
+    base = _ZONE_DISPLAY_NAMES.get(normalized, normalized.replace("_", " ").title())
+    if owner_seat_id is not None and owner_seat_id > 0:
+        if local_seat_id is not None:
+            owner_prefix = "Your" if owner_seat_id == local_seat_id else "Opponent's"
+        else:
+            owner_prefix = f"Player {owner_seat_id}'s"
+        return f"{owner_prefix} {base}"
+    return base
+
+
+def _context_request_conflicts(request_id: tuple[int, int], context: dict[str, Any]) -> bool:
+    """True when both request_id and context['request_id'] are non-zero and disagree."""
+    if not any(request_id):
+        return False
+    raw = context.get("request_id")
+    if not isinstance(raw, (list, tuple)) or len(raw) != 2:
+        return False
+    try:
+        ctx_rid = (int(raw[0] or 0), int(raw[1] or 0))
+    except (TypeError, ValueError):
+        return False
+    return any(ctx_rid) and ctx_rid != request_id
+
+
+def _log_zone_choices(
+    ids: list[int],
+    poll_context: dict[str, Any] | None = None,
+    request_id: tuple[int, int] = (0, 0),
+) -> dict[int, dict[str, Any]]:
+    """Resolved zone choices ({zone_id: {id, zone_type, owner_seat_id, label}}) from decision context."""
+    if not ids:
+        return {}
+    state = _live_game_state()
+    state_ctx = getattr(state, "decision_context", None) if state is not None else None
+    contexts = []
+    if isinstance(poll_context, dict):
+        contexts.append(poll_context)
+    if isinstance(state_ctx, dict) and not _context_request_conflicts(request_id, state_ctx):
+        contexts.append(state_ctx)
+    for context in contexts:
+        choices = {
+            int(choice.get("id") or 0): choice
+            for choice in context.get("zone_choices") or []
+            if isinstance(choice, dict) and int(choice.get("id") or 0) > 0
+        }
+        if choices and all(i in choices for i in ids):
+            return choices
+    return {}
+
+
+def is_zone_selection_request(poll: dict[str, Any] | None) -> bool:
+    """True when a SelectN poll asks the player to choose zone instance IDs (e.g. Finale of Devastation)."""
+    if not isinstance(poll, dict):
+        return False
+    if poll.get("select_n_is_zone"):
+        return True
+    payload = poll.get("request_payload") if isinstance(poll.get("request_payload"), dict) else {}
+    id_type = poll.get("select_n_id_type") or payload.get("idType")
+    if id_type:
+        return is_zone_id_type(id_type)
+    try:
+        ids = [int(raw) for raw in poll.get("select_n_ids") or []]
+    except (TypeError, ValueError):
+        return False
+    if not ids:
+        return False
+    request_id = (int(poll.get("game_state_id") or 0), int(poll.get("msg_id") or 0))
+    poll_ctx = poll.get("decision_context") if isinstance(poll.get("decision_context"), dict) else None
+    if _log_zone_choices(ids, poll_ctx, request_id):
+        return True
+    state = _live_game_state()
+    state_ctx = getattr(state, "decision_context", None) if state is not None else None
+    contexts = [poll_ctx] if isinstance(poll_ctx, dict) else []
+    if isinstance(state_ctx, dict) and not _context_request_conflicts(request_id, state_ctx):
+        contexts.append(state_ctx)
+    for ctx in contexts:
+        if is_zone_id_type(ctx.get("id_type")):
+            ctx_ids = ctx.get("option_ids") or []
+            if ctx_ids and list(ctx_ids) == ids:
+                return True
+    return False
+
+
 def _log_prompt_choices(ids: list[int]) -> dict[int, dict[str, Any]]:
     """The log's prompt-choice context for these ids ({id: {prompt_id, text}}), or {}.
 
@@ -1251,6 +1363,10 @@ def _build_select_n(
         )
         if prompt_decision is not None:
             return prompt_decision
+        zone_decision = _build_zone_choice(poll, request_id, can_cancel, source_label)
+        if zone_decision is not None or is_zone_selection_request(poll):
+            # Zone-ID requests must never fall through to card-instance resolution.
+            return zone_decision
     weights = poll.get("select_n_weights") or []
     if weights and len(weights) != len(ids):
         return None
@@ -2034,6 +2150,120 @@ def _build_prompt_choice(
         max_select=max(1, int(poll.get("select_n_max", 1))),
         can_cancel=can_cancel,
         source_label=source_label,
+    )
+
+
+def _build_zone_choice(
+    poll: dict[str, Any],
+    request_id: tuple[int, int],
+    can_cancel: bool,
+    source_label: str,
+) -> PendingDecision | None:
+    """A SelectN whose IDs are GRE zone instance IDs (e.g. Finale of Devastation: Library/Graveyard).
+
+    IDs come from Arena's ZoneInfo table (game_state.zones), never card objects.
+    Each known zone becomes a decidable option ("Your Library", "Your Graveyard");
+    an unresolved zone ID stays blind (no ``choice`` tag) so the model never guesses
+    between opaque zone numbers.
+    """
+    if not is_zone_selection_request(poll):
+        return None
+    try:
+        ids = list(dict.fromkeys(oid for raw in poll.get("select_n_ids") or [] if (oid := int(raw)) > 0))
+    except (TypeError, ValueError):
+        return None
+    if not ids:
+        return None
+    payload = poll.get("request_payload") if isinstance(poll.get("request_payload"), dict) else {}
+    poll_ctx = poll.get("decision_context") if isinstance(poll.get("decision_context"), dict) else {}
+    state = _live_game_state()
+    state_ctx = getattr(state, "decision_context", None) if state is not None else None
+    state_ctx = state_ctx if isinstance(state_ctx, dict) else {}
+    raw_ctx_rid = state_ctx.get("request_id")
+    same_request = bool(
+        any(request_id)
+        and isinstance(raw_ctx_rid, (list, tuple))
+        and len(raw_ctx_rid) == 2
+        and tuple(int(v or 0) for v in raw_ctx_rid) == request_id
+    )
+    zones = getattr(state, "zones", None) if state is not None else None
+    local_seat = getattr(state, "local_seat_id", None) if state is not None else None
+    log_choices = _log_zone_choices(ids, poll_ctx, request_id)
+
+    source_id = int(
+        poll.get("source_instance_id")
+        or payload.get("sourceId")
+        or next(iter(_prompt_card_ids(poll)), 0)
+        or poll_ctx.get("prompt_source_id")
+        or poll_ctx.get("source_id")
+        or (same_request and (state_ctx.get("prompt_source_id") or state_ctx.get("source_id")))
+        or 0
+    )
+
+    options: list[DecisionOption] = []
+    for oid in ids:
+        zone_type_str = ""
+        owner_seat_id: int | None = None
+        label = ""
+        zone = zones.get(oid) if isinstance(zones, dict) else None
+        if zone is not None:
+            zone_type = getattr(zone, "zone_type", None)
+            zone_type_str = str(getattr(zone_type, "name", "") or _enum_text(zone_type))
+            owner_seat_id = getattr(zone, "owner_seat_id", None)
+            label = format_zone_label(zone_type, owner_seat_id, local_seat)
+        if not label and oid in log_choices:
+            entry = log_choices[oid]
+            zone_type_str = str(entry.get("zone_type") or zone_type_str)
+            owner_seat_id = entry.get("owner_seat_id", owner_seat_id)
+            label = str(entry.get("label") or "") or format_zone_label(
+                zone_type_str, owner_seat_id, local_seat
+            )
+        if label:
+            meta: dict[str, Any] = {
+                "choice": "zone",
+                "zoneId": oid,
+                "zoneType": zone_type_str,
+                "ownerSeatId": owner_seat_id,
+                "sourceId": source_id,
+                "identity_known": True,
+            }
+        else:
+            label = f"Zone #{oid}"
+            meta = {"zoneId": oid, "sourceId": source_id, "identity_known": False}
+        options.append(DecisionOption(option_id=f"sel:{oid}", label=label, meta=meta))
+
+    selection_context = poll.get("select_n_context") or payload.get("context")
+    option_context = poll.get("select_n_option_context") or payload.get("optionContext")
+    allow_cancel = _normalize_allow_cancel(
+        poll.get("allow_cancel")
+        or payload.get("allowCancel")
+        or poll_ctx.get("allow_cancel")
+        or (state_ctx.get("allow_cancel") if same_request else "")
+    )
+    if can_cancel and allow_cancel == "AllowCancel_Continue":
+        options.append(
+            DecisionOption(
+                option_id=SELECT_N_DECLINE,
+                label="Decline (take no selection and continue)",
+                meta={"identity_known": True, "choice": "decline"},
+            )
+        )
+    raw_min = poll.get("select_n_min")
+    raw_max = poll.get("select_n_max")
+    min_select = int(raw_min) if raw_min is not None else 1
+    max_select = max(min_select, int(raw_max) if raw_max is not None else 1)
+    return PendingDecision(
+        request_id=request_id,
+        request_type="SelectN",
+        options=tuple(options),
+        min_select=min_select,
+        max_select=max_select,
+        can_cancel=can_cancel,
+        source_label=source_label,
+        source_instance_id=source_id,
+        selection_context=selection_context or None,
+        option_context=option_context or None,
+        allow_cancel=allow_cancel,
     )
 
 
@@ -3477,6 +3707,35 @@ def select_n_note(decision: Any, state: dict[str, Any]) -> str:
         rules = clean_rules_text(rules, name)
         note = "CARD NAME CHOICE: choose a name from these known-card candidates; this does not cast or discard it."
         return note + (f" {name}: {rules[:400]}" if name and rules else "")
+    if (
+        decision.options
+        and any(option.meta.get("choice") == "zone" for option in decision.options)
+        and all(
+            option.meta.get("choice") == "zone" or option.option_id == SELECT_N_DECLINE
+            for option in decision.options
+        )
+    ):
+        prompt = decision_prompt_text(decision, state)
+        name, rules = asking_card(decision, state)
+        rules = clean_rules_text(rules, name)
+        asked = []
+        if prompt:
+            asked.append(f'Arena asks: "{prompt}"')
+        if name:
+            asked.append(f"asked by {name}" + (f" ({rules[:280]})" if rules else ""))
+        lines = ["ZONE CHOICE: choose which zone(s) to apply this effect to (e.g., which zone(s) to search)."]
+        if asked:
+            lines.append("SELECTION: " + "; ".join(asked) + ".")
+        if decision.min_select < decision.max_select:
+            lines.append(
+                f"This selection allows {decision.min_select} to {decision.max_select} zones; "
+                "you may select one zone or multiple zones as appropriate."
+            )
+        if SELECT_N_DECLINE in decision.option_ids():
+            lines.append(
+                f"OPTIONAL SELECTION: Choosing {SELECT_N_DECLINE} declines this selection and continues."
+            )
+        return "\n".join(lines)
     choice_note = prompt_choice_note(decision, state)
     if choice_note:
         return choice_note

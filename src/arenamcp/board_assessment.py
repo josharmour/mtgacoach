@@ -194,6 +194,13 @@ _LAND_SEARCH = re.compile(
     r"search your library for (?:a|up to \w+) (?:basic )?lands?[^.]*?\bonto the battlefield"
 )
 _LIFEGAIN = re.compile(r"\byou gain (\d+) life\b")
+# Reactive protection instants ("Target permanent you control gains hexproof and
+# indestructible until end of turn. You gain 2 life.") must not be classified as
+# proactive lifegain/selection spells for Main-1 line search (2026-11-22 match
+# b37a03c3 T2: LINES ranked Tamiyo's Safekeeping on a Forest above passing).
+_PROTECTION_INSTANT = re.compile(
+    r"\b(?:gains?|have)\b[^.\n]*\b(?:hexproof|indestructible|shroud|protection from)\b[^.\n]*\buntil end of turn\b"
+)
 _CYCLING = re.compile(r"\b(?:basic )?(?:land|plains|island|swamp|mountain|forest|wastes)?cycling\b")
 _PUMP = re.compile(
     r"\btarget creature (?:you control )?gets? \+\d|\benchant creature\b|\+1/\+1 counters? on target"
@@ -497,6 +504,8 @@ def card_role(card: dict) -> str:
         return "ramp"
     if _DRAW.search(text):
         return "draw"
+    if "instant" in types and _PROTECTION_INSTANT.search(text):
+        return "pump" if _PUMP.search(text) else "other"
     if _SELECTION.search(text):
         return "selection"
     if _LIFEGAIN.search(text):
@@ -3153,7 +3162,11 @@ def _spell_value(
     if spell.role == "lifegain":
         match = _LIFEGAIN.search(_text(card))
         return 1 + (int(match.group(1)) / 2 if match and survival else 0)
-    if spell.role == "counter" or (spell.role == "pump" and _is_instant_nonpermanent(card)):
+    if (
+        spell.role == "counter"
+        or (spell.role == "pump" and _is_instant_nonpermanent(card))
+        or (_is_instant_nonpermanent(card) and _PROTECTION_INSTANT.search(_text(card)))
+    ):
         return 0.0  # reactive: hold mana for it, don't schedule it
     if (
         spell.role in ("draw", "selection")

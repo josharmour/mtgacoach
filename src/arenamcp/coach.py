@@ -2217,6 +2217,19 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                     for choice in decision_context["prompt_choices"]
                 ]
                 lines.append(f"Options: {', '.join(texts)}")
+            elif dec_type == "choose_zone" and decision_context.get("zone_choices"):
+                source = decision_context.get("source_card") or "an effect"
+                oracle = self._clean_oracle_for_prompt(
+                    self._remove_reminder_text(str(decision_context.get("source_oracle_text") or ""))
+                ).strip()
+                lines.append(f"!!! DECISION: SELECT ZONE(S) for {source} !!!")
+                if oracle:
+                    lines.append(f"Source text: {oracle}")
+                labels = [
+                    str(choice.get("label") or f"Zone #{choice.get('id')}")
+                    for choice in decision_context["zone_choices"]
+                ]
+                lines.append(f"Options: {', '.join(labels)}")
             elif dec_type in _simple and _simple[dec_type] is not None:
                 lines.extend(_simple[dec_type](decision_context))
             elif dec_type == "casting_time_options":
@@ -2723,7 +2736,8 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         if self._is_impending(card):
             flags.append("IMPENDING")
         if card.get("is_attacking"):
-            flags.append("ATK")
+            atk_target = self._attack_target_label(card, game_state)
+            flags.append(f"ATK->{atk_target}" if atk_target else "ATK")
         if card.get("is_blocking"):
             flags.append("BLK")
         if card.get("is_phased_out"):
@@ -2933,7 +2947,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                 f"!! ATTACK TAX: {', '.join(t.name for t in relevant)} — attacking the player costs {{{per}}} PER CREATURE.",
                 f"   With {mana} supported mana available, at most {mana // per if per else 0} attacker(s) "
                 "before excluding their mana taps. BUDGET MANA BEFORE CASTING SPELLS; "
-                "attacking mana creatures cannot also pay. Main-phase floating mana clears before combat.",
+                "non-vigilant attacking mana creatures cannot also pay. Main-phase floating mana clears before combat.",
             ]
         taxes = self._detect_attack_taxes(opp_cards)
         if not taxes:
@@ -3207,8 +3221,6 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             from arenamcp.combat_strategy import with_hit_bonus
 
             attacking = with_hit_bonus(attacking, board, (local_player or {}).get("seat_id"))
-        flying_atk = [c for c in attacking if _has(c, "flying")]
-        ground_atk = [c for c in attacking if not _has(c, "flying")]
         your_creatures = [
             c
             for c in your_cards
@@ -3230,7 +3242,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             for c in attacking + your_creatures
             for stat in ("power", "toughness")
         ):
-            lines.append(f"Attackers: {', '.join(self._attacker_label_map(attacking).values())}")
+            lines.append(f"Attackers: {', '.join(self._attacker_label_map(attacking, game_state=board).values())}")
             lines.append(
                 "Combat estimates unavailable: some creature stats are UNKNOWN, not zero. "
                 "Use current rules and Arena's legal blocking choices."
@@ -3243,8 +3255,18 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         def unblocked(card: dict) -> int:
             return _resolve_attacker(card, []).damage_through
 
-        fly_dmg = sum(unblocked(c) for c in flying_atk)
-        gnd_dmg = sum(unblocked(c) for c in ground_atk)
+        own_perm_by_id = {
+            c.get("instance_id"): c
+            for c in your_cards
+            if isinstance(c, dict) and c.get("instance_id") is not None
+        }
+        face_attacking = [c for c in attacking if c.get("attack_target_id") not in own_perm_by_id]
+        perm_attacking = [c for c in attacking if c.get("attack_target_id") in own_perm_by_id]
+        face_flying_atk = [c for c in face_attacking if _has(c, "flying")]
+        face_ground_atk = [c for c in face_attacking if not _has(c, "flying")]
+
+        fly_dmg = sum(unblocked(c) for c in face_flying_atk)
+        gnd_dmg = sum(unblocked(c) for c in face_ground_atk)
         total_incoming = fly_dmg + gnd_dmg
         your_life = local_player.get("life_total", 20) if local_player else 20
 
@@ -3259,7 +3281,10 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             p = c.get("power") or 0
             t = c.get("toughness") or 0
             tags = self._combat_keyword_flags(c)
-            if c.get("combat_hit_bonus"):
+            atk_target = self._attack_target_label(c, board)
+            if atk_target:
+                tags += f" [-> {atk_target}]"
+            if c.get("combat_hit_bonus") and c in face_attacking:
                 tags += f" (+{c['combat_hit_bonus']} more if it hits you: its combat-damage trigger)"
             if _atk_counts[n] > 1:
                 _atk_seen[n] = _atk_seen.get(n, 0) + 1
@@ -3273,11 +3298,44 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             lines.append(
                 f"\u26a0\ufe0f No blocks \u2192 {total_incoming} dmg \u2192 DEAD (from {your_life} life)! Must block!"
             )
+        elif perm_attacking and total_incoming == 0:
+            lines.append(f"No blocks \u2192 0 dmg to you ({your_life} life)")
         else:
             lines.append(
                 f"No blocks \u2192 take {total_incoming} dmg \u2192 {life_after_no_blocks} life remaining"
             )
-        if flying_atk and not flyer_blockers:
+        if perm_attacking:
+            from arenamcp.combat_strategy import loyalty as _walker_loyalty
+
+            dmg_by_perm: dict[int, int] = {}
+            for c in perm_attacking:
+                tid = c.get("attack_target_id")
+                walker_atk = {**c, "combat_hit_bonus": 0} if c.get("combat_hit_bonus") else c
+                dmg_by_perm[tid] = dmg_by_perm.get(tid, 0) + unblocked(walker_atk)
+            for tid, dmg in dmg_by_perm.items():
+                target = own_perm_by_id[tid]
+                tname = target.get("name", "Permanent")
+                ttype = str(target.get("type_line") or "").lower()
+                if "planeswalker" in ttype or "planeswalker" in [
+                    str(x).lower() for x in (target.get("card_types") or ())
+                ]:
+                    loy = _walker_loyalty(target)
+                    if loy is not None:
+                        if dmg >= loy:
+                            lines.append(
+                                f"\u26a0\ufe0f Planeswalker under attack: {tname} ({loy} loyalty) faces "
+                                f"{dmg} unblocked dmg \u2014 DIES if unblocked!"
+                            )
+                        else:
+                            lines.append(
+                                f"Planeswalker under attack: {tname} ({loy} loyalty) faces "
+                                f"{dmg} unblocked dmg \u2192 {loy - dmg} loyalty remaining"
+                            )
+                    else:
+                        lines.append(f"Planeswalker under attack: {tname} faces {dmg} unblocked dmg")
+                else:
+                    lines.append(f"Permanent under attack: {tname} faces {dmg} unblocked dmg")
+        if face_flying_atk and not flyer_blockers:
             lines.append(f"\u26a0\ufe0f {fly_dmg} UNBLOCKABLE!")
         dth_atk = [c for c in attacking if _has(c, "deathtouch")]
         if dth_atk:
@@ -3285,7 +3343,11 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                 f"\u26a0\ufe0f DEATHTOUCH: {', '.join(c.get('name', '?') for c in dth_atk)} \u2014 any blocker DIES regardless of toughness!"
             )
 
-        damage_through = self._compute_optimal_blocking_damage(attacking, your_creatures, allowed_map)
+        damage_through = (
+            self._compute_optimal_blocking_damage(face_attacking, your_creatures, allowed_map)
+            if face_attacking
+            else 0
+        )
         life_after_blocks = your_life - damage_through
         if damage_through < total_incoming:
             if any(_has(c, "lifelink") for c in your_creatures):
@@ -3385,14 +3447,55 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                     else c
                     for c in attacking
                 ]
-            solver_plan = optimal_blocks(
-                attacking,
-                usable_blockers,
-                your_life,
-                blocker_allowed_attackers=allowed_map or None,
-                recovery_credit=recovery.credit if recovery.commanders else None,
-                trick_exposure=exposure,
+                face_attacking = [c for c in attacking if c.get("attack_target_id") not in own_perm_by_id]
+            solver_plan = (
+                optimal_blocks(
+                    face_attacking,
+                    usable_blockers,
+                    your_life,
+                    blocker_allowed_attackers=allowed_map or None,
+                    recovery_credit=recovery.credit if recovery.commanders else None,
+                    trick_exposure=exposure,
+                )
+                if face_attacking
+                else None
             )
+            if perm_attacking and usable_blockers:
+                from arenamcp.combat_solver import _can_block
+                from arenamcp.combat_strategy import walker_saving_blocks
+
+                cards_by_id = {
+                    c.get("instance_id"): c
+                    for c in board_cards
+                    if isinstance(c, dict) and c.get("instance_id") is not None
+                }
+                base_assign = dict(solver_plan.assignments) if solver_plan is not None else {}
+                w_legal = allowed_map or {
+                    c["instance_id"]: {
+                        a["instance_id"]
+                        for a in attacking
+                        if a.get("instance_id") is not None and _can_block(a, c)
+                    }
+                    for c in usable_blockers
+                    if c.get("instance_id") is not None
+                }
+                walker_adds = walker_saving_blocks(
+                    attacking,
+                    usable_blockers,
+                    base_assign,
+                    w_legal,
+                    cards_by_id,
+                    (local_player or {}).get("seat_id"),
+                    own_commanders=set((local_player or {}).get("commander_ids") or ()),
+                )
+                if walker_adds:
+                    save_parts = [
+                        f"{cards_by_id.get(b, {}).get('name', 'Creature')} blocks "
+                        f"{cards_by_id.get(a, {}).get('name', 'Attacker')} to save "
+                        f"{cards_by_id.get(cards_by_id.get(a, {}).get('attack_target_id'), {}).get('name', 'planeswalker')}"
+                        for b, a in walker_adds.items()
+                    ]
+                    lines.append("Recommended planeswalker-saving blocks: " + "; ".join(save_parts))
             if solver_plan is not None:
                 life_after_blocks = your_life - solver_plan.net_life_lost
                 lines.append(f"Computed optimal blocks: {solver_plan.explanation}")
@@ -4683,7 +4786,32 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         found = [kw.upper().replace(" ", "-") for kw in self._COMBAT_KEYWORDS if has_combat_keyword(card, kw)]
         return f" [{','.join(found)}]" if found else ""
 
-    def _attacker_label_map(self, attackers: list[dict]) -> dict[int, str]:
+    @staticmethod
+    def _attack_target_label(card: dict, game_state: dict[str, Any] | None) -> str:
+        """Name (and loyalty, if planeswalker) of a battlefield permanent this attacker targets, or ''."""
+        target_id = card.get("attack_target_id")
+        if not isinstance(target_id, int) or isinstance(target_id, bool) or not game_state:
+            return ""
+        for perm in game_state.get("battlefield") or ():
+            if isinstance(perm, dict) and perm.get("instance_id") == target_id:
+                name = str(perm.get("name") or "").strip()
+                if not name:
+                    return ""
+                ttype = str(perm.get("type_line") or "").lower()
+                if "planeswalker" in ttype or "planeswalker" in [
+                    str(x).lower() for x in (perm.get("card_types") or ())
+                ]:
+                    from arenamcp.combat_strategy import loyalty as _walker_loyalty
+
+                    loy = _walker_loyalty(perm)
+                    if loy is not None:
+                        return f"{name} ({loy} loyalty)"
+                return name
+        return ""
+
+    def _attacker_label_map(
+        self, attackers: list[dict], *, game_state: dict[str, Any] | None = None
+    ) -> dict[int, str]:
         """instance_id -> ``Name #N P/T [KEYWORDS]`` labels, deduped by name."""
         names = [c.get("name", "?") for c in attackers]
         counts = Counter(names)
@@ -4696,7 +4824,11 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             if counts[n] > 1:
                 seen[n] = seen.get(n, 0) + 1
                 label = f"{n} #{seen[n]}"
-            out[int(c.get("instance_id") or 0)] = f"{label} {p}/{t}{self._combat_keyword_flags(c)}"
+            atk_target = self._attack_target_label(c, game_state)
+            target_suffix = f" [-> {atk_target}]" if atk_target else ""
+            out[int(c.get("instance_id") or 0)] = (
+                f"{label} {p}/{t}{self._combat_keyword_flags(c)}{target_suffix}"
+            )
         return out
 
     def _format_block_decision_details(
@@ -4714,7 +4846,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         attackers = self._collect_block_decision_attackers(game_state)
         if not attackers:
             return lines
-        label_by_id = self._attacker_label_map(attackers)
+        label_by_id = self._attacker_label_map(attackers, game_state=game_state)
         lines.append(
             "Attackers: " + ", ".join(label_by_id[int(a.get("instance_id") or 0)] for a in attackers)
         )
