@@ -129,3 +129,11 @@ def test_clean_deck_prose_strips_square_bracket_ids_and_parenthetical_no_command
     # Opposite control: prose about having no commander in play and short brackets stay intact.
     control = "If there is no commander in play (when you have no commander), create a [1/1] Servo token [OK] (2026)."
     assert clean_deck_prose(control) == control
+
+
+def test_clean_deck_prose_preserves_multiline_indentation():
+    multiline = "Trade the recoverable original, then recast it to rebuild token copies.\n  Unless: lethal"
+    assert clean_deck_prose(multiline) == multiline
+
+    with_id = "Trade Cetacean Ops (106625)  early.\n  Unless: lethal"
+    assert clean_deck_prose(with_id) == "Trade Cetacean Ops early.\n  Unless: lethal"

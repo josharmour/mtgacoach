@@ -26,7 +26,7 @@ STUDY_PLAYBOOK_VERSION = 3
 PLAYBOOK_VERSION = 4
 
 _PROSE_GRP_ID_RE = re.compile(
-    r"\s*(?:\((?:(?:grp_id|id)\s*:?\s*|#)?\d{5,7}(?:\s*,\s*(?:(?:grp_id|id)\s*:?\s*|#)?\d{5,7})*\)"
+    r"[ \t]*(?:\((?:(?:grp_id|id)\s*:?\s*|#)?\d{5,7}(?:\s*,\s*(?:(?:grp_id|id)\s*:?\s*|#)?\d{5,7})*\)"
     r"|\[(?:(?:grp_id|id)\s*:?\s*|#)?\d{5,7}(?:\s*,\s*(?:(?:grp_id|id)\s*:?\s*|#)?\d{5,7})*\])",
     re.IGNORECASE,
 )
@@ -46,8 +46,8 @@ def clean_deck_prose(text: object) -> str:
     cleaned = re.sub(r"\(\s*\)", "", cleaned)
     cleaned = re.sub(r"\(\s*,\s*", "(", cleaned)
     cleaned = re.sub(r"\s*,\s*\)", ")", cleaned)
-    cleaned = re.sub(r"\s+([,.;:)])", r"\1", cleaned)
-    return re.sub(r" {2,}", " ", cleaned).strip()
+    cleaned = re.sub(r"[ \t]+([,.;:)])", r"\1", cleaned)
+    return re.sub(r"(?<=\S) {2,}", " ", cleaned).strip()
 
 
 DECK_ANALYSIS_PROMPT = (
