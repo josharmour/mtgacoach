@@ -910,6 +910,60 @@ def test_game_ending_during_farewell_does_not_send_concede():
     assert harness.advice == ["Good game."]
 
 
+def test_post_farewell_abort_on_new_turn_clears_conceded_and_allows_later_concede():
+    harness = Harness(bug_state(turn=18), farewell={"ok": True})
+    original_wait = harness.controller._wait
+
+    def wait(event, seconds):
+        if seconds == 1.0:
+            # Opponent passes turn without attacking during the 1s Good Game gap.
+            harness.state = bug_state(active=1, phase="Phase_Main1", turn=19)
+            harness.controller._wait = original_wait
+        return original_wait(event, seconds)
+
+    harness.controller._wait = wait
+    harness.observe()
+    harness.run_countdown()
+    assert harness.concedes == []
+    assert harness.states[-1] == "aborted"
+    assert "new turn" in harness.events[-1]["reason"]
+    assert harness.controller.snapshot()["conceded"] == []
+    assert harness.controller.concede_in_progress(("fra", 1)) is False
+
+    # Later turn with lethal board still arms and concedes normally.
+    harness.state = bug_state(turn=20)
+    harness.observe()
+    harness.run_countdown()
+    assert len(harness.concedes) == 1
+    assert harness.states[-1] == "conceded"
+
+
+def test_aborted_countdowns_on_earlier_turns_do_not_block_later_turns_but_same_turn_is_capped():
+    harness = Harness(bug_state(turn=14))
+
+    for turn in (14, 16):
+        for _ in range(2):
+            harness.state = bug_state(turn=turn)
+            harness.observe()
+            assert len(harness.threads) == 1
+            harness.state = bug_state(hand=[dict(ISLAND), dict(DARKNESS)], turn=turn)
+            harness.observe(times=1)
+            assert harness.states[-1] == "aborted"
+            harness.run_countdown()
+        # Same turn is capped after 2 arms even when lethal returns.
+        harness.state = bug_state(turn=turn)
+        harness.observe()
+        assert harness.threads == []
+
+    # Turn 18 (5th arm overall in the same game) still arms and concedes.
+    harness.state = bug_state(turn=18)
+    harness.observe()
+    assert len(harness.threads) == 1
+    harness.run_countdown()
+    assert len(harness.concedes) == 1
+    assert harness.states[-1] == "conceded"
+
+
 def test_game_ending_during_refused_concede_does_not_request_manual_concede():
     harness = Harness(bug_state(), result={"ok": False, "error": "Match state is MatchComplete"})
     harness.on_concede = lambda: setattr(harness, "game_over", True)

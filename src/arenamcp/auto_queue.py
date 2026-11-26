@@ -1729,10 +1729,18 @@ class AutoQueueNavigator:
                     self._progress("the bridge observed Home")
                 return False  # queue on this observation while the Home controller is active
             if time.monotonic() - self._progress_at >= _RESULT_READY_WAIT_S:
-                self._pause("Arena did not reach Home after the match")
+                self._pause(
+                    "Arena is not on the Home screen — click Home in Arena, then re-enable Auto-queue."
+                    if self._idle_grind
+                    else "Arena did not reach Home after the match"
+                )
             else:
                 self._next_poll = time.monotonic() + 1.0
-                self._status("Waiting for Arena to reach Home")
+                self._status(
+                    "Waiting for Arena's Home screen — click Home in Arena so Auto-queue can start."
+                    if self._idle_grind
+                    else "Waiting for Arena to reach Home"
+                )
             return True
         if not isinstance(state, dict) or not state.get("is_open"):
             return False

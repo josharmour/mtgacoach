@@ -90,8 +90,10 @@ FAREWELL = "Good game."
 # long so the bubble shows before the game ends on their screen. Until
 # 2026-10-20 the farewell was only spoken and shown in the coach's own feed.
 FAREWELL_EMOTE_GAP_S = 1.0
-# Countdowns per game: a flickering estimate must not re-announce forever.
-MAX_ARMS_PER_GAME = 3
+# Countdowns per turn: a flickering estimate must not re-announce endlessly on
+# the same turn, while later turns still get fresh attempts if a stalling
+# opponent passes and causes earlier countdowns to abort.
+MAX_ARMS_PER_TURN = 2
 # How long to watch for the game end after a concede before warning.
 CONFIRM_S = 10.0
 # The verdict must hold on this many observations, at least MIN_GAP_S apart,
@@ -1842,7 +1844,7 @@ class ConcedeController:
                 "recommended": game_key in self._recommended,
                 "declined": game_key in self._declined,
                 "conceded": game_key in self._conceded,
-                "arms": int(self._arms.get(game_key, 0)),
+                "arms": int(self._arms.get((game_key, turn), 0)),
             }
 
     def resume_from(self, saved: Any) -> None:
@@ -1869,7 +1871,9 @@ class ConcedeController:
                     _remember(store, game_key)
             arms = _int(saved.get("arms")) or 0
             if arms:
-                _remember(self._arms, game_key, max(arms, self._arms.get(game_key, 0)))
+                saved_turn = _int(saved.get("turn")) or 0
+                key = (game_key, saved_turn)
+                _remember(self._arms, key, max(arms, self._arms.get(key, 0)))
         logger.info(
             "[CONCEDE] restored after the engine reload (game %r): recommended=%s declined=%s conceded=%s",
             game_key,
@@ -1911,7 +1915,7 @@ class ConcedeController:
         if not self._steady(game_key):
             return estimate
 
-        can_arm, why_not = self._can_arm(game_key)
+        can_arm, why_not = self._can_arm(game_key, turn)
         seconds = self.countdown_s()
         with self._lock:
             first = game_key not in self._recommended
@@ -1962,7 +1966,7 @@ class ConcedeController:
             )
         self._last_logged = key
 
-    def _can_arm(self, game_key: Any) -> tuple[bool, str]:
+    def _can_arm(self, game_key: Any, turn: int = 0) -> tuple[bool, str]:
         if not self._autopilot_on():
             return False, "autoplay is off"
         if not self.enabled():
@@ -1978,8 +1982,8 @@ class ConcedeController:
                 return False, "you cancelled the auto-concede this game"
             if game_key in self._conceded:
                 return False, "already conceded this game"
-            if self._arms.get(game_key, 0) >= MAX_ARMS_PER_GAME:
-                return False, "too many countdowns this game"
+            if self._arms.get((game_key, turn), 0) >= MAX_ARMS_PER_TURN:
+                return False, "too many countdowns this turn"
         return True, ""
 
     def _arm(
@@ -1992,6 +1996,8 @@ class ConcedeController:
         record_state: dict | None,
     ) -> bool:
         turn = state.get("turn") or {}
+        turn_number = _int(turn.get("turn_number")) or 0
+        arm_key = (game_key, turn_number)
         local, _ = _seats(state)
         with self._emit_lock:
             with self._lock:
@@ -1999,14 +2005,14 @@ class ConcedeController:
                     self._armed is not None
                     or game_key in self._declined
                     or game_key in self._conceded
-                    or self._arms.get(game_key, 0) >= MAX_ARMS_PER_GAME
+                    or self._arms.get(arm_key, 0) >= MAX_ARMS_PER_TURN
                 ):
                     return False
                 armed = _Armed(
                     token=next(self._tokens),
                     game_key=game_key,
                     match_id=state.get("match_id"),
-                    turn=_int(turn.get("turn_number")) or 0,
+                    turn=turn_number,
                     local=local,
                     seconds=seconds,
                     estimate=estimate,
@@ -2015,7 +2021,7 @@ class ConcedeController:
                     record_state=record_state,
                 )
                 self._armed = armed
-                _remember(self._arms, game_key, self._arms.get(game_key, 0) + 1)
+                _remember(self._arms, arm_key, self._arms.get(arm_key, 0) + 1)
             logger.warning(
                 "[CONCEDE] auto-concede offered (countdown %d, %ds, confidence %.2f, game %r)",
                 armed.token,
@@ -2146,7 +2152,11 @@ class ConcedeController:
             # The emote deliberately waits; Arena can finish combat during that gap.
             problem, fresh = self._verify(armed)
             if problem:
-                self._emit({"state": "aborted", "id": armed.token, "reason": problem})
+                with self._emit_lock:
+                    with self._lock:
+                        self._conceded.pop(armed.game_key, None)
+                    logger.warning("[CONCEDE] countdown %d aborted after farewell: %s", armed.token, problem)
+                    self._emit({"state": "aborted", "id": armed.token, "reason": problem})
                 return
             try:
                 result = self._concede_fn(fresh)
@@ -2156,7 +2166,11 @@ class ConcedeController:
                 result = {"ok": bool(result)}
             if not result.get("ok") and self._safe(self._game_over) and not armed.ended_at_arm:
                 # A natural game end can also race the bridge call itself.
-                self._emit({"state": "aborted", "id": armed.token, "reason": "the game is over"})
+                with self._emit_lock:
+                    with self._lock:
+                        self._conceded.pop(armed.game_key, None)
+                    logger.warning("[CONCEDE] countdown %d aborted: the game is over", armed.token)
+                    self._emit({"state": "aborted", "id": armed.token, "reason": "the game is over"})
                 return
             if result.get("ok"):
                 logger.warning("[CONCEDE] concede sent for game %r: %s", armed.game_key, result)

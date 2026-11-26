@@ -117,10 +117,35 @@ def compact_context(system, context, *, reply_system=None, pair_for=None):
         "hand_changed": 6,
     }
     ranked = sorted(new, key=lambda k: weights.get(facts.get(k, {}).get("kind"), 0), reverse=True)
-    order = ranked[:2]
+    causal_kinds = {"cast", "permanent_entered", "resolved", "spell_cast", "spell_resolved"}
+    needs_causal = any(
+        facts.get(k, {}).get("kind") == "outcome"
+        and not (facts.get(k, {}).get("data") or {}).get("source_grp_id")
+        and not (facts.get(k, {}).get("data") or {}).get("source_id")
+        for k in ranked[:2]
+    )
+    causal_events: list[str] = []
+    if needs_causal:
+        causal_key = next(
+            (k for k in ranked[2:] if facts.get(k, {}).get("kind") in causal_kinds),
+            None,
+        )
+        if causal_key is None:
+            ranked_top = set(ranked[:2])
+            causal_key = next(
+                (
+                    ref
+                    for ref in reversed(context.get("play_sequence", ()))
+                    if ref not in ranked_top and ref in facts and facts[ref].get("kind") in causal_kinds
+                ),
+                None,
+            )
+        if causal_key is not None:
+            causal_events = [causal_key]
+    order = ranked[:2] + causal_events
     order += ["state:turn", "state:local_seat"] + [k for k in facts if k.startswith("state:player:")]
     related = []
-    for key in ranked[:2]:
+    for key in ranked[:2] + causal_events:
         data = facts.get(key, {}).get("data", {})
         gid = data.get("grp_id") or data.get("source_grp_id")
         if gid:
@@ -276,7 +301,7 @@ def compact_context(system, context, *, reply_system=None, pair_for=None):
     handoff = (
         result.get("editorial_question", {}).get("check_these_refs", ()) if result.get("partner_call") else ()
     )
-    order = ranked[:2] + annotations + list(reads) + list(handoff) + order[len(ranked[:2]) :]
+    order = ranked[:2] + causal_events + annotations + list(reads) + list(handoff) + order[len(ranked[:2]) :]
     sequence = [ref for ref in context.get("play_sequence", ()) if ref in facts][-4:]
     if sequence:
         result["play_sequence"] = list(sequence)

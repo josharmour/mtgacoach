@@ -114,6 +114,10 @@ class CoachSession(QObject):
     limitedDeckPreviewChanged = Signal(dict)
     collectionChanged = Signal(dict)  # owned cards + wildcard balances (#204)
     deckOpResult = Signal(dict)  # update_deck / create_deck / craft result (#204)
+    availableEventsChanged = Signal(dict)
+    eventDeckBuilt = Signal(dict)
+    eventQueueStateChanged = Signal(dict)
+    eventReentryPromptRequested = Signal(dict)
     bugReportSaved = Signal(str, str)  # path, error
     # A user-initiated /bugreport is waiting for explicit confirmation before
     # anything is published. Payload: request_id, destination, title, body,
@@ -733,6 +737,40 @@ class CoachSession(QObject):
         """Choose whether autoplay may repeat the recent queue after a match."""
         self._process.send_payload({"cmd": "set_auto_queue", "enabled": bool(enabled)})
 
+    def set_auto_queue_mode(self, mode: str) -> None:
+        """Set Auto-queue mode ('same', 'winning', or 'draft')."""
+        self._process.send_payload({"cmd": "set_auto_queue_mode", "mode": str(mode)})
+
+    def request_available_events(self) -> None:
+        """Request the live list of playable MTG Arena events and wallet balances."""
+        self._process.send_payload({"cmd": "list_available_events"})
+
+    def build_event_deck(self, request: dict[str, Any]) -> None:
+        """Ask the engine to clone & adapt a near-qualifying deck for an event."""
+        self._process.send_payload({"cmd": "build_event_deck", **dict(request)})
+
+    def configure_event_queue(self, config: dict[str, Any]) -> None:
+        """Configure Event / Draft auto-queue mode with the chosen event & fee approval."""
+        self._process.send_payload({"cmd": "configure_event_queue", "config": dict(config)})
+
+    def respond_event_reentry(
+        self,
+        request_id: str,
+        action: str,
+        currency: str = "",
+        quantity: int = 0,
+    ) -> None:
+        """Respond to a post-run or paid-entry prompt in Event / Draft mode."""
+        self._process.send_payload(
+            {
+                "cmd": "respond_event_reentry",
+                "request_id": str(request_id),
+                "action": str(action),
+                "currency": str(currency),
+                "quantity": int(quantity or 0),
+            }
+        )
+
     def clear_loss_safeguard(self, *, enable_auto_queue: bool = True) -> None:
         """Clear any persisted loss-safeguard streak and optionally resume Auto-queue."""
         from arenamcp.settings import get_settings
@@ -1145,6 +1183,18 @@ class CoachSession(QObject):
 
         elif ev_type == "deck_op":
             self.deckOpResult.emit({k: v for k, v in event.items() if k != "type"})
+
+        elif ev_type == "available_events":
+            self.availableEventsChanged.emit({k: v for k, v in event.items() if k != "type"})
+
+        elif ev_type == "event_deck_built":
+            self.eventDeckBuilt.emit({k: v for k, v in event.items() if k != "type"})
+
+        elif ev_type == "event_queue_state":
+            self.eventQueueStateChanged.emit({k: v for k, v in event.items() if k != "type"})
+
+        elif ev_type == "event_reentry_prompt":
+            self.eventReentryPromptRequested.emit({k: v for k, v in event.items() if k != "type"})
 
         elif ev_type == "request_engine_reload":
             # Sent between matches when the engine's code changed on disk

@@ -103,11 +103,15 @@ PASSTHROUGH = {"ping", "reflect_batch"}
 # plugin's reply ({"scenes": ...}) lacks the pack fields the draft driver reads.
 BEPINEX_RUNTIME = "bepinex"
 BEPINEX_REFLECT_COMMANDS = frozenset(
-    {"confirm_draft_pick", "create_deck", "dismiss_survey", "event_play", "finish_sealed_open",
-     "get_collection", "get_deck_editor", "get_decks", "dev_challenge_preflight", "dev_challenge_record_offer", "dev_challenge_verify_offer", "get_draft_state", "get_event_page",
-     "get_limited_pool", "get_match_end", "get_screen",
-     "get_survey", "go_to_event", "leave_match", "preview_draft_pick", "set_limited_deck",
-     "submit_draft_pick", "submit_limited_deck", "update_deck"}
+    {"confirm_draft_pick", "create_deck", "dismiss_rewards_panel", "dismiss_survey", "enter_event",
+     "event_play", "finish_sealed_open", "get_collection", "get_constructed_deck_select",
+     "get_deck_editor", "get_decks", "dev_challenge_preflight", "dev_challenge_record_offer",
+     "dev_challenge_verify_offer", "get_draft_state", "get_event_page", "get_limited_pool",
+     "get_match_end", "get_packet_options", "get_screen", "get_survey", "get_table_draft_state",
+     "go_to_event", "leave_match", "list_available_events", "preview_draft_pick",
+     "ready_table_draft", "resign_event", "select_event_deck", "set_limited_deck",
+     "submit_draft_pick", "submit_event_choice", "submit_limited_deck", "submit_packet",
+     "update_deck", "validate_deck_for_format"}
 )  # fmt: skip
 
 DECISION_TYPES = {
@@ -645,11 +649,14 @@ class MacBridgeAdapter:
         {"ping", "get_pending_actions", "get_game_state", "get_timer_state", "get_match_info",
          "get_screen", "get_draft_state", "get_event_page", "get_deck_editor", "get_survey",
          "get_match_end", "get_limited_pool", "preview_draft_pick", "get_replay_status", "list_replays",
-         "get_recent_match", "get_sideboard_state"}
+         "get_recent_match", "get_sideboard_state", "list_available_events",
+         "get_table_draft_state", "get_constructed_deck_select", "get_packet_options",
+         "validate_deck_for_format"}
     )  # fmt: skip
     _LOGGED_RESULT_KEYS = frozenset(
         {"ok", "submitted_type", "survey_skipped", "waiting", "already_home", "step", "event_name",
-         "module", "scope", "game_number", "turn", "gems_added", "deck_id", "error"}
+         "module", "scope", "game_number", "turn", "gems_added", "deck_id", "currency_type",
+         "quantity", "draft_id", "packet_id", "choice", "error"}
     )  # fmt: skip
 
     def _require(self, timeout: float | None, *classes: str) -> Snapshot:
@@ -680,6 +687,9 @@ class MacBridgeAdapter:
         ("event_page", EVENT_PAGE_CONTROLLER),
         ("home", "HomePageContentController"),
         ("sealed_open", SEALED_OPEN),
+        ("table_draft_queue", "Wotc.Mtga.Wrapper.Draft.TableDraftQueueContentController"),
+        ("packet_select", "Wotc.Mtga.Wrapper.PacketSelect.PacketSelectContentController"),
+        ("constructed_deck_select", "ConstructedDeckSelectController"),
         # Only found while shown: the prefab is instantiated inactive at
         # MatchEndScene.Init and FindAnyObjectByType skips inactive objects.
         ("survey", SURVEY),
@@ -687,8 +697,11 @@ class MacBridgeAdapter:
 
     def _cmd_get_screen(self, command: dict, timeout: float | None) -> dict:
         """Which wrapper screens are active, in one read-only batch."""
+        from arenamcp.event_bridge import REWARDS_PANEL_CONTROLLER
+
         ops = _Ops()
         refs = [ops.add("find", **{"class": cls}, depth=0, optional=True) for _key, cls in self._SCREENS]
+        rewards_ref = ops.add("find", **{"class": REWARDS_PANEL_CONTROLLER}, depth=0, optional=True)
         values = self._run(ops, timeout)
         found = {
             key: bool(handle(values[ref["ref"]]))
@@ -702,6 +715,17 @@ class MacBridgeAdapter:
             editor = self._run(ops, timeout)
             found["deck_builder"] = bool(editor[active["ref"]])
             found["sideboarding"] = found["deck_builder"] and bool(editor[sideboarding["ref"]])
+        rewards_h = handle(values[rewards_ref["ref"]])
+        if rewards_h:
+            ops_r = _Ops()
+            container = ops_r.get(H(rewards_h), "_container", optional=True)
+            c_active = ops_r.get(container, "activeInHierarchy", optional=True)
+            r_vals = self._run(ops_r, timeout)
+            found["rewards_panel"] = (
+                True if r_vals[container["ref"]] is None else bool(r_vals[c_active["ref"]])
+            )
+        else:
+            found["rewards_panel"] = False
         return {"ok": True, **found}
 
     def _cmd_get_draft_state(self, command: dict, timeout: float | None) -> dict:
@@ -998,6 +1022,7 @@ class MacBridgeAdapter:
         "Draft",
         "HumanDraft",
         "DeckSelect",
+        "Jumpstart",
         "TransitionToMatches",
         "WinLossGate",
         "WinNoGate",
@@ -1548,23 +1573,69 @@ class MacBridgeAdapter:
         return [{"grp_id": grp_id, "count": count} for grp_id, count in sorted(cards.items())]
 
     def _cmd_get_event_page(self, command: dict, timeout: float | None) -> dict:
-        found = self._find(EVENT_PAGE_CONTROLLER, timeout)
-        if not found:
-            return {"ok": True, "is_open": False}
-        ops = _Ops()
-        context = ops.get(H(found), "_currentEventContext")
-        player_event = ops.get(context, "PlayerEvent")
-        course = ops.get(player_event, "CourseData")
-        module = ops.get(course, "CurrentModule")
-        info = ops.get(player_event, "EventInfo")
-        name = ops.get(info, "InternalEventName")
-        values = self._run(ops, timeout)
-        return {
-            "ok": True,
-            "is_open": True,
-            "event_name": str(values[name["ref"]] or ""),
-            "module": enum_name(values[module["ref"]]),
-        }
+        from arenamcp.event_bridge import read_event_page
+
+        return read_event_page(self, timeout)
+
+    def _cmd_list_available_events(self, command: dict, timeout: float | None) -> dict:
+        from arenamcp.event_bridge import list_available_events
+
+        return list_available_events(self, timeout)
+
+    def _cmd_get_table_draft_state(self, command: dict, timeout: float | None) -> dict:
+        from arenamcp.event_bridge import get_table_draft_state
+
+        return get_table_draft_state(self, timeout)
+
+    def _cmd_ready_table_draft(self, command: dict, timeout: float | None) -> dict:
+        from arenamcp.event_bridge import ready_table_draft
+
+        return ready_table_draft(self, timeout)
+
+    def _cmd_enter_event(self, command: dict, timeout: float | None) -> dict:
+        from arenamcp.event_bridge import enter_event
+
+        return enter_event(self, command, timeout)
+
+    def _cmd_dismiss_rewards_panel(self, command: dict, timeout: float | None) -> dict:
+        from arenamcp.event_bridge import dismiss_rewards_panel
+
+        return dismiss_rewards_panel(self, timeout)
+
+    def _cmd_get_constructed_deck_select(self, command: dict, timeout: float | None) -> dict:
+        from arenamcp.event_bridge import get_constructed_deck_select
+
+        return get_constructed_deck_select(self, timeout)
+
+    def _cmd_select_event_deck(self, command: dict, timeout: float | None) -> dict:
+        from arenamcp.event_bridge import select_event_deck
+
+        return select_event_deck(self, command, timeout)
+
+    def _cmd_validate_deck_for_format(self, command: dict, timeout: float | None) -> dict:
+        from arenamcp.event_bridge import validate_deck_for_format
+
+        return validate_deck_for_format(self, command, timeout)
+
+    def _cmd_submit_event_choice(self, command: dict, timeout: float | None) -> dict:
+        from arenamcp.event_bridge import submit_event_choice
+
+        return submit_event_choice(self, command, timeout)
+
+    def _cmd_get_packet_options(self, command: dict, timeout: float | None) -> dict:
+        from arenamcp.event_bridge import get_packet_options
+
+        return get_packet_options(self, timeout)
+
+    def _cmd_submit_packet(self, command: dict, timeout: float | None) -> dict:
+        from arenamcp.event_bridge import submit_packet
+
+        return submit_packet(self, command, timeout)
+
+    def _cmd_resign_event(self, command: dict, timeout: float | None) -> dict:
+        from arenamcp.event_bridge import resign_event
+
+        return resign_event(self, command, timeout)
 
     def _cmd_event_play(self, command: dict, timeout: float | None) -> dict:
         """Press the event page's Play button, only in a stage that cannot pay."""

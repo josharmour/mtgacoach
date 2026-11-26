@@ -4623,7 +4623,11 @@ class ActionPlanner(_ActionLegalityMixin):
         return ledger
 
     def _single_option_answer(
-        self, decision: Any, native_sole_pass: tuple[int, int] | None = None
+        self,
+        decision: Any,
+        native_sole_pass: tuple[int, int] | None = None,
+        *,
+        payment_selection_approved: bool = False,
     ) -> list[str] | None:
         """#226(a): one legal action left — submit it without the model.
 
@@ -4639,15 +4643,47 @@ class ActionPlanner(_ActionLegalityMixin):
           modes) — with one candidate the interesting question is still
           cast-or-decline / find-or-fail, and the harmful-target gates are
           model-pick features;
+        - SelectN unless it is a non-cancellable 1-of-1 mandatory choice OR a
+          payment-selection cost already cleared by the optional-cost gate;
         - a filtered or unbound lone ``pass`` (or decline) — the model's pass reasoning feeds the
           decision memory and the reversal check, and several guards key on
           it;
-        - anything with a cancel (a decline escape is a real choice);
+        - anything with a cancel (a decline escape is a real choice, except an
+          already-approved payment selection);
         - an unpayable option, a count that cannot be 1, or a family whose
           own validation rejects the pick.
         """
         if len(decision.options) != 1:
             return None
+        if decision.request_type == "SelectN":
+            option = decision.options[0]
+            is_payment = bool(getattr(decision, "is_payment_selection", False)) or (
+                str(getattr(decision, "source_label", "") or "").lower().startswith("pay non-mana cost")
+            )
+            cancel_allowed = (not decision.can_cancel) or (payment_selection_approved and is_payment)
+            if (
+                not cancel_allowed
+                or decision.min_select != 1
+                or decision.max_select != 1
+                or decision.min_weight is not None
+                or option.option_id in ("pass", DECLINE_DECISION, NO_TARGETS_DECISION, SELECT_N_DECLINE)
+                or (getattr(option, "meta", None) or {}).get("identity_known") is False
+                or (getattr(option, "meta", None) or {}).get("repeatedSelectAllowed")
+            ):
+                return None
+            chosen = [option.option_id]
+            try:
+                valid = decision.selection_is_valid(chosen) and not decision.selection_is_valid([])
+            except Exception:
+                return None
+            if not valid:
+                return None
+            why = f"Only {option.label or option.option_id} is legal in this window; submitting it directly."
+            self._last_decision_option_ids = chosen
+            self._last_decision_reasoning = why
+            self._last_decision_trace = {"policy": "single_option", "validated_ids": chosen}
+            logger.info("typed-decision: %s — no LLM choice", why)
+            return chosen
         if decision.request_type not in ("ActionsAvailable", "OptionalAction"):
             # Selection families (targets, searches, groups, modes) keep their
             # model call even with one candidate: cast-or-decline, fail-to-find
@@ -5218,7 +5254,11 @@ class ActionPlanner(_ActionLegalityMixin):
                     len(decision.options),
                 )
                 decision = filtered
-        single = self._single_option_answer(decision, game_state.get("_native_sole_pass_request"))
+        single = self._single_option_answer(
+            decision,
+            game_state.get("_native_sole_pass_request"),
+            payment_selection_approved=bool(game_state.get("_payment_selection_approved")),
+        )
         if single is not None:
             return single
         reused = self._reusable_answer(decision, game_state)
@@ -8233,7 +8273,13 @@ class ActionPlanner(_ActionLegalityMixin):
         return True
 
     def _planned_follow_up_kills(
-        self, decision: Any, game_state: dict[str, Any], card: dict[str, Any] | None, damage: int
+        self,
+        decision: Any,
+        game_state: dict[str, Any],
+        card: dict[str, Any] | None,
+        damage: int,
+        *,
+        is_shrink: bool = False,
     ) -> bool:
         """More burn in hand finishes this target: burn the reasoning names, or a burn combo.
 
@@ -8258,24 +8304,82 @@ class ActionPlanner(_ActionLegalityMixin):
         reasoning = str(getattr(self, "_last_decision_reasoning", "") or "")
         follow_up = named_burn_damage(reasoning, game_state, played)
         if follow_up > 0 and damage_would_kill(card, damage + follow_up):
-            logger.info(
-                "Keeping the target: %d damage plus %d from the burn the reasoning names kills %s",
-                damage,
-                follow_up,
-                card.get("name"),
-            )
-            return True
+            if not is_shrink or self._named_shrink_follow_up_castable(game_state, played, reasoning):
+                logger.info(
+                    "Keeping the target: %d %s plus %d from the burn the reasoning names kills %s",
+                    damage,
+                    "shrink" if is_shrink else "damage",
+                    follow_up,
+                    card.get("name"),
+                )
+                return True
         combo = stack_burn_combo_on(
             game_state,
             _as_int(card.get("instance_id")),
             source_id=played["instance_id"],
             source_name=played["name"],
             damage=damage,
+            allow_shrink=is_shrink,
         )
         if combo is None:
             return False
         logger.info("Keeping the target: burn combo %s", combo.text())
         return True
+
+    def _named_shrink_follow_up_castable(
+        self, game_state: dict[str, Any], played: dict[str, Any], reasoning: str
+    ) -> bool:
+        """Verify named burn in hand is castable now and affordable when lands/mana are modeled."""
+        from arenamcp.decision_memory import _TURN_STEPS, _cmc, _types, mana_available, turn_window
+        from arenamcp.play_safety import damage_effect
+
+        local_seat = _local_seat(game_state)
+        turn = game_state.get("turn") or {}
+        active = turn.get("active_player")
+        sorcery_ok = turn_window(game_state) in (_TURN_STEPS.index("main1"), _TURN_STEPS.index("main2")) and (
+            active is None or local_seat is None or active == local_seat
+        )
+        text = f" {' '.join(re.findall(r'''[a-z0-9']+''', reasoning.lower()))} "
+        own_words = set(re.findall(r"[a-z0-9']+", str(played.get("name") or "").lower()))
+        named_cards: list[dict[str, Any]] = []
+        for hand_card in game_state.get("hand") or []:
+            if not isinstance(hand_card, dict) or hand_card.get("instance_id") == played.get("instance_id"):
+                continue
+            words = re.findall(r"[a-z0-9']+", str(hand_card.get("name") or "").lower())
+            if not words or set(words) == own_words:
+                continue
+            distinct = [w for w in words if len(w) >= 4 and w not in own_words]
+            if not (f" {' '.join(words)} " in text or any(f" {w} " in text for w in distinct)):
+                continue
+            parsed = damage_effect(hand_card, game_state)
+            if not parsed or parsed[1] == "each":
+                continue
+            types = _types(hand_card)
+            if "instant" not in types and not ("sorcery" in types and sorcery_ok):
+                continue
+            named_cards.append(hand_card)
+        if not named_cards:
+            return False
+        has_mana_model = any(
+            c.get("controller_seat_id") == local_seat and "land" in _types(c)
+            for c in game_state.get("battlefield") or []
+        ) or any(
+            isinstance(p, dict) and p.get("seat_id") == local_seat and p.get("mana_pool")
+            for p in game_state.get("players") or []
+        )
+        if not has_mana_model:
+            return True
+        stack_card = next(
+            (
+                s
+                for s in game_state.get("stack") or []
+                if isinstance(s, dict) and s.get("instance_id") == played.get("instance_id")
+            ),
+            None,
+        )
+        stack_cmc = _cmc(stack_card.get("mana_cost")) if stack_card is not None else 0
+        have = mana_available(game_state)
+        return any(stack_cmc + _cmc(c.get("mana_cost")) <= have for c in named_cards)
 
     def _prefer_lethal_damage_target(
         self, decision: Any, game_state: dict[str, Any], chosen: list[str], *, fallback: bool = False
@@ -8843,7 +8947,7 @@ class ActionPlanner(_ActionLegalityMixin):
         claims = claimed_kills(self._last_decision_reasoning, self._opposing_creatures(game_state))
         if not claims and shrink_has_use_without_kill(game_state):
             return chosen
-        verdict = self._prefer_lethal_shrink_target(decision, game_state, chosen)
+        verdict = self._prefer_lethal_shrink_target(decision, game_state, chosen, fallback=False)
         if verdict != chosen:
             logger.warning(
                 "typed-decision: %s; overriding the model's %s (%s)",
@@ -8909,7 +9013,7 @@ class ActionPlanner(_ActionLegalityMixin):
         picked = self._follow_line_target(decision, game_state, picked)
         picked = self._prefer_lethal_damage_target(decision, game_state, picked, fallback=True)
         if picked not in sentinels:
-            picked = self._prefer_lethal_shrink_target(decision, game_state, picked)
+            picked = self._prefer_lethal_shrink_target(decision, game_state, picked, fallback=True)
         if picked and picked not in sentinels:
             picked = self._avoid_unpayable_ward_targets(decision, game_state, picked)
             picked = self._avoid_hit_reward(decision, game_state, picked)
@@ -9369,12 +9473,18 @@ class ActionPlanner(_ActionLegalityMixin):
         return recorded[2]
 
     def _prefer_lethal_shrink_target(
-        self, decision: Any, game_state: dict[str, Any], chosen: list[str]
+        self,
+        decision: Any,
+        game_state: dict[str, Any],
+        chosen: list[str],
+        *,
+        fallback: bool = False,
     ) -> list[str]:
         """Point -N/-N removal at a creature it kills, or keep the spell (fallback picks).
 
         Model picks keep their -N/-N target: shrinking a blocker or attacker
-        that survives can still win a combat the model reasoned about.
+        that survives can still win a combat the model reasoned about, or a
+        follow-up burn spell in hand can finish the weakened target.
         """
         from arenamcp.board_assessment import removal_reach
 
@@ -9384,6 +9494,27 @@ class ActionPlanner(_ActionLegalityMixin):
         if not reach or reach[0] != "shrink" or not reach[1] or len(targets) != 1:
             return chosen
         amount = int(reach[1])
+        kicked_match = re.search(
+            r"if this spell was kicked[^.]*gets?\s+[-−–](?:\d+|x)/[-−–](\d+)",
+            oracle,
+            re.IGNORECASE,
+        )
+        if kicked_match:
+            try:
+                source_name = str(getattr(decision, "source_label", "") or "").strip().casefold()
+                for record in reversed(self._memory().this_turn(game_state)):
+                    if record.request_type != "CastingTimeOptions":
+                        continue
+                    rec_source = str(getattr(record, "source", "") or "").strip().casefold()
+                    if source_name and rec_source and rec_source != source_name:
+                        continue
+                    if not any("kick" in str(lbl).casefold() for lbl in record.option_labels.values()):
+                        continue
+                    if any("kick" in str(lbl).casefold() for lbl in record.chosen_labels):
+                        amount = max(amount, int(kicked_match.group(1)))
+                    break
+            except Exception:
+                pass
         cards = {card.get("instance_id"): card for card in game_state.get("battlefield", []) or []}
         local_seat, controllers = self._battlefield_controllers(game_state)
 
@@ -9407,6 +9538,10 @@ class ActionPlanner(_ActionLegalityMixin):
         except ValueError:
             return chosen
         if killable(picked) is not False:
+            return chosen
+        if not fallback and self._planned_follow_up_kills(
+            decision, game_state, cards.get(picked), amount, is_shrink=True
+        ):
             return chosen
         alternatives = []
         for option in decision.options:

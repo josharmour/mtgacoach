@@ -112,6 +112,7 @@ class PendingDecision:
     selection_context: str | None = None
     option_context: str | None = None
     allow_cancel: str = ""
+    is_payment_selection: bool = False
 
     def option_ids(self) -> set[str]:
         return {o.option_id for o in self.options}
@@ -1497,6 +1498,7 @@ def _build_select_n(
         selection_context=selection_context or None,
         option_context=option_context or None,
         allow_cancel=allow_cancel,
+        is_payment_selection=bool(poll.get("payment_selection")),
     )
 
 
@@ -3810,6 +3812,26 @@ def select_n_note(decision: Any, state: dict[str, Any]) -> str:
             f"OPTIONAL SELECTION: This selection allows {decision.min_select} to {decision.max_select} "
             "items; option_ids: [] is legal when choosing none is best."
         )
+    elif getattr(decision, "request_type", "") == "SelectN" and getattr(decision, "min_select", 0) >= 1:
+        min_sel = int(decision.min_select)
+        max_sel = int(decision.max_select)
+        if min_sel == max_sel:
+            count_desc = f"exactly {min_sel} item{'s' if min_sel != 1 else ''}"
+        else:
+            count_desc = f"between {min_sel} and {max_sel} items"
+        is_payment = bool(getattr(decision, "is_payment_selection", False)) or (
+            str(getattr(decision, "source_label", "") or "").lower().startswith("pay non-mana cost")
+        )
+        if is_payment:
+            lines.append(
+                "MANDATORY PAYMENT SELECTION: The spell/ability and any kicker or additional cost "
+                f"are already committed. You MUST choose {count_desc} from OPTIONS to pay this cost; "
+                "do NOT re-decide whether to cast or kick it, and do NOT return option_ids: []."
+            )
+        else:
+            lines.append(
+                f"MANDATORY SELECTION: You MUST choose {count_desc} from OPTIONS; option_ids: [] is illegal."
+            )
     return "\n".join(lines)
 
 

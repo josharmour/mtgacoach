@@ -906,17 +906,33 @@ def _castable_burns(decision: Any, state: dict) -> list[Burn]:
 
 
 def _stack_burn_combo(
-    card: dict, state: dict, *, victim_id: int | None = None, damage: int | None = None
+    card: dict,
+    state: dict,
+    *,
+    victim_id: int | None = None,
+    damage: int | None = None,
+    allow_shrink: bool = False,
 ) -> BurnCombo | None:
     """A kill the burn on the stack (``card``) makes with burn still castable from hand.
 
     ``damage``: what the stack spell deals in the mode chosen for it (its
     largest amount otherwise); ``victim_id``: only a kill of that creature.
+    When ``allow_shrink`` is True and ``card`` is a transient ``-N/-N`` shrink
+    effect with known ``damage``, synthesize its shrink reach so follow-up burn
+    that kills the reduced creature is recognized.
     """
     required = burn_reach(str(card.get("oracle_text") or ""), card, state, check_kicker=False)
     if required is None:
-        return None
-    if damage is not None:
+        if not allow_shrink or damage is None or damage <= 0:
+            return None
+        required = Burn(
+            card=card,
+            name=str(card.get("name") or ""),
+            variants=((_cmc(card.get("mana_cost")), damage),),
+            creatures=True,
+            walkers=False,
+        )
+    elif damage is not None:
         required = replace(required, variants=((required.variants[0][0], damage),))
     active, local = (state.get("turn") or {}).get("active_player"), _local_seat(state)
     sorcery_ok = turn_window(state) in (_TURN_STEPS.index("main1"), _TURN_STEPS.index("main2")) and (
@@ -942,6 +958,7 @@ def stack_burn_combo_on(
     source_id: int = 0,
     source_name: str = "",
     damage: int | None = None,
+    allow_shrink: bool = False,
 ) -> BurnCombo | None:
     """The kill of ``victim_id`` our burn on the stack makes with burn still castable from hand.
 
@@ -962,7 +979,7 @@ def stack_burn_combo_on(
             card = next((c for c in stack if str(c.get("name") or "").strip().lower() == wanted), None)
         if card is None:
             return None
-        return _stack_burn_combo(card, state, victim_id=victim_id, damage=damage)
+        return _stack_burn_combo(card, state, victim_id=victim_id, damage=damage, allow_shrink=allow_shrink)
     except Exception:  # a hint, never a reason to fail the decision
         return None
 

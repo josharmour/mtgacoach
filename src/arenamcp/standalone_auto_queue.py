@@ -53,7 +53,7 @@ class _AutoQueueMixin(AutoQuestMixin):
         return max(0, val)
 
     def _auto_queue_mode(self) -> str:
-        """Auto-queue mode: 'same' (repeat current deck) or 'winning' (queue strongest deck)."""
+        """Auto-queue mode: 'same' (repeat current deck), 'winning', or 'draft' (events)."""
         raw = None
         if hasattr(self, "settings"):
             raw = self.settings.get("auto_queue_mode")
@@ -68,7 +68,10 @@ class _AutoQueueMixin(AutoQuestMixin):
                         raw = disk_val
             except Exception:
                 pass
-        return "winning" if str(raw or "").strip().lower() == "winning" else "same"
+        val = str(raw or "").strip().lower()
+        if val in ("winning", "draft"):
+            return val
+        return "same"
 
     def _resolve_winning_queue_target(self) -> dict[str, object] | None:
         """Evaluate queueable constructed/Brawl decks and return the top winning target."""
@@ -425,6 +428,11 @@ class _AutoQueueMixin(AutoQuestMixin):
         self._auto_queue_faulted = False
         self._winning_queue_last_sig = None
         self._suspend_auto_queue()
+        if not enabled:
+            approvals = getattr(self, "_event_entry_approvals", None)
+            if approvals is not None:
+                approvals.clear()
+            self._pending_entry_token = ""
         # An idle Grind arm belongs to that explicit session, never ordinary
         # auto-queue or a later Grind session.
         navigator = getattr(self, "_auto_queue_navigator", None)
@@ -432,11 +440,18 @@ class _AutoQueueMixin(AutoQuestMixin):
             self._auto_queue_navigator = None
         self.ui.status("AUTO_QUEUE", "ON" if enabled else "OFF")
         if enabled:
-            detail = (
-                "Autoplay must be on; evaluating winning decks when Arena is idle."
-                if self._auto_queue_mode() == "winning"
-                else "Autoplay must be on; replaying the first Recent Match when Arena is idle."
-            )
+            mode = self._auto_queue_mode()
+            if mode == "winning":
+                detail = "Autoplay must be on; evaluating winning decks when Arena is idle."
+            elif mode == "draft":
+                cfg = getattr(self, "_event_queue_config", None)
+                detail = (
+                    f"Event mode active: {cfg.display_name or cfg.event_name}."
+                    if cfg is not None and getattr(cfg, "event_name", "")
+                    else "Event mode active: pick an available event in Coach."
+                )
+            else:
+                detail = "Autoplay must be on; replaying the first Recent Match when Arena is idle."
         else:
             detail = ""
         self.ui.status("AUTO_QUEUE_DETAIL", detail)
@@ -654,6 +669,11 @@ class _AutoQueueMixin(AutoQuestMixin):
             self.ui.status("AUTO_QUEUE_DETAIL", blocked)
             return False
         if getattr(self, "_auto_queue_faulted", False):
+            return False
+        if self._auto_queue_mode() == "draft" and not getattr(self, "_auto_quest", None):
+            # Draft / Event mode is driven by DraftEventDriver + EventQueueConfig;
+            # never arm Recent Match / Winning Decks or trip constructed loss streaks.
+            self._suspend_auto_queue()
             return False
         draft_driver = getattr(self, "_draft_event_driver", None)
         if (

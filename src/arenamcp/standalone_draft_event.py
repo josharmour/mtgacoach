@@ -9,12 +9,349 @@ from __future__ import annotations
 
 import logging
 import time
+import uuid
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
 
 class _DraftEventMixin:
+    def _event_approval_store(self) -> Any:
+        from arenamcp.event_queue import EntryApprovalStore
+
+        store = getattr(self, "_event_entry_approvals", None)
+        if store is None:
+            store = self._event_entry_approvals = EntryApprovalStore()
+        return store
+
+    def _current_event_queue_config(self) -> Any:
+        mode_fn = getattr(self, "_auto_queue_mode", None)
+        if callable(mode_fn) and mode_fn() != "draft":
+            return None
+        return getattr(self, "_event_queue_config", None)
+
+    def _consume_event_entry_approval(self, event_name: str, currency: str, quantity: int) -> bool:
+        token = str(getattr(self, "_pending_entry_token", "") or "")
+        if not token:
+            return False
+        ok = self._event_approval_store().consume(token, event_name, currency, quantity)
+        if ok:
+            self._pending_entry_token = ""
+        return ok
+
+    def _emit_ui_event(self, method_name: str, payload: dict[str, Any]) -> None:
+        ui = getattr(self, "ui", None)
+        fn = getattr(ui, method_name, None) if ui is not None else None
+        if callable(fn):
+            try:
+                fn(payload)
+            except Exception as exc:
+                logger.debug("UI event %s failed: %s", method_name, exc)
+
+    def set_auto_queue_mode(self, mode: str) -> str:
+        norm = str(mode or "").strip().lower()
+        if norm not in {"same", "winning", "draft"}:
+            raise ValueError(f"Unsupported auto_queue_mode: {mode!r}")
+        if hasattr(self, "settings"):
+            self.settings.set("auto_queue_mode", norm)
+        if norm != "draft":
+            self._event_approval_store().clear()
+            self._pending_entry_token = ""
+            self._event_queue_config = None
+        cfg = self._current_event_queue_config()
+        self._emit_ui_event(
+            "emit_event_queue_state",
+            {
+                "mode": norm,
+                "enabled": bool(getattr(self, "_auto_queue_enabled", False)),
+                "config": cfg.to_dict() if cfg is not None else None,
+            },
+        )
+        return norm
+
+    def list_available_events(self) -> dict[str, Any]:
+        from arenamcp.gre_bridge import get_bridge
+
+        bridge = getattr(getattr(self, "_autopilot", None), "_gre_bridge", None) or get_bridge()
+        if bridge is None or not getattr(bridge, "connected", False):
+            payload: dict[str, Any] = {
+                "ok": False,
+                "error": "Arena bridge is not connected; open MTG Arena on the Home screen.",
+                "wallet": {},
+                "events": [],
+            }
+            self._emit_ui_event("emit_available_events", payload)
+            return payload
+        payload = bridge.draft_command("list_available_events", timeout=12.0)
+        if payload.get("ok"):
+            events = payload.get("events") or []
+            self._enrich_event_titles(events)
+            self._last_available_events = {
+                str(ev.get("event_name") or ""): ev for ev in events if ev.get("event_name")
+            }
+        self._emit_ui_event("emit_available_events", payload)
+        return payload
+
+    def build_event_deck(self, request: dict[str, Any]) -> dict[str, Any]:
+        """Clone & adapt a near-qualifying deck for an event using owned cards only."""
+        from arenamcp import server
+        from arenamcp.event_deck_builder import build_event_deck as _build_event_deck
+        from arenamcp.gre_bridge import get_bridge
+
+        bridge = getattr(getattr(self, "_autopilot", None), "_gre_bridge", None) or get_bridge()
+        event_name = str(request.get("event_name") or "").strip()
+        event_format = str(request.get("event_format") or "").strip()
+        source_deck_id = str(request.get("source_deck_id") or "").strip()
+        display_name = str(request.get("display_name") or "").strip()
+        if not event_format or not source_deck_id:
+            result = {
+                "ok": False,
+                "event_name": event_name,
+                "event_format": event_format,
+                "error": "event_format and source_deck_id are required",
+            }
+            self._emit_ui_event("emit_event_deck_built", result)
+            return result
+
+        log_path = getattr(self, "log_path", None)
+        try:
+            mtgadb = server._get_mtgadb()
+        except Exception:
+            mtgadb = None
+
+        result = _build_event_deck(
+            bridge=bridge,
+            event_name=event_name,
+            event_format=event_format,
+            source_deck_id=source_deck_id,
+            mtgadb=mtgadb,
+            log_path=log_path,
+            display_name=display_name,
+        )
+        ui = getattr(self, "ui", None)
+        status_fn = getattr(ui, "status", None) if ui is not None else None
+        if callable(status_fn):
+            if result.get("ok"):
+                status_fn("AUTO_QUEUE_DETAIL", str(result.get("summary") or "Deck built."))
+            elif result.get("error"):
+                status_fn("AUTO_QUEUE_DETAIL", str(result["error"]))
+        self._emit_ui_event("emit_event_deck_built", result)
+        return result
+
+    def _enrich_event_titles(self, events: list[dict[str, Any]]) -> None:
+        try:
+            import sqlite3
+
+            from arenamcp.mtgadb import find_mtga_database
+
+            card_db = find_mtga_database()
+            if card_db is None:
+                return
+            files = sorted(
+                card_db.parent.glob("Raw_ClientLocalization*"),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )
+            if not files:
+                return
+            with sqlite3.connect(f"{files[0].as_uri()}?mode=ro", uri=True) as conn:
+                for ev in events:
+                    loc_key = str(ev.get("title_loc_key") or "").strip()
+                    if loc_key and (not ev.get("display_name") or "_" in ev["display_name"]):
+                        row = conn.execute(
+                            "SELECT enUS FROM Loc WHERE Key = ? LIMIT 1", (loc_key,)
+                        ).fetchone()
+                        if row and row[0]:
+                            ev["display_name"] = str(row[0]).strip()
+        except Exception:
+            pass
+
+    def configure_event_queue(self, raw: dict[str, Any]) -> dict[str, Any]:
+        from arenamcp.draft_event import DraftRun
+        from arenamcp.event_queue import EventQueueConfig, event_eligibility
+
+        cfg = EventQueueConfig.from_dict(raw)
+        if not cfg.event_name:
+            raise ValueError("event_name is required")
+        live_ev = (getattr(self, "_last_available_events", None) or {}).get(cfg.event_name)
+        if isinstance(live_ev, dict):
+            decks_fn = getattr(self, "_event_mode_decks_list", None)
+            decks = decks_fn() if callable(decks_fn) else None
+            eligible, reason = event_eligibility(live_ev, decks)
+            if eligible and not live_ev.get("in_progress") and not cfg.is_free:
+                fees = list(live_ev.get("entry_fees") or [])
+                req_curr = cfg.entry_currency.removeprefix("CurrencyType_")
+                if req_curr == "Gems":
+                    req_curr = "Gem"
+                matched = any(
+                    (
+                        str(f.get("currency_type") or "").removeprefix("CurrencyType_") == req_curr
+                        or (
+                            str(f.get("currency_type") or "").removeprefix("CurrencyType_") == "Gems"
+                            and req_curr == "Gem"
+                        )
+                    )
+                    and int(f.get("quantity") or 0) == cfg.entry_quantity
+                    and f.get("affordable")
+                    for f in fees
+                )
+                if not matched:
+                    eligible = False
+                    reason = f"Insufficient funds for {cfg.entry_currency} {cfg.entry_quantity}"
+            if not eligible:
+                msg = f"Cannot start {cfg.display_name or cfg.event_name}: {reason}"
+                self.ui.status("AUTO_QUEUE_DETAIL", msg)
+                raise ValueError(msg)
+        store = self._event_approval_store()
+        store.clear()
+        self._pending_entry_token = ""
+        if not cfg.is_free and raw.get("confirm_paid") is True:
+            self._pending_entry_token = store.mint(cfg.event_name, cfg.entry_currency, cfg.entry_quantity)
+
+        prev = getattr(self, "_event_queue_config", None)
+        self._event_queue_config = cfg
+        self._last_event_blocker = ""
+        if hasattr(self, "settings"):
+            self.settings.set("auto_queue_mode", "draft")
+        if hasattr(self, "set_auto_queue"):
+            self.set_auto_queue(True)
+
+        driver = getattr(self, "_draft_event_driver", None)
+        if driver is not None:
+            if prev is None or prev.event_name != cfg.event_name:
+                driver.run = DraftRun(event_name=cfg.event_name)
+            driver.run.awaiting_reentry_decision = False
+            driver.run.finished = False
+            driver.run.entry_attempts = 0
+            driver.resume()
+
+        state = {
+            "mode": "draft",
+            "enabled": bool(getattr(self, "_auto_queue_enabled", True)),
+            "config": cfg.to_dict(),
+        }
+        self._emit_ui_event("emit_event_queue_state", state)
+        ap_on = bool(getattr(self, "_autopilot_enabled", False))
+        ctrl_fn = getattr(self, "_autopilot_control_status", None)
+        if callable(ctrl_fn) and ctrl_fn() != "AP:ON":
+            ap_on = False
+        detail = (
+            f"Event mode active: {cfg.display_name or cfg.event_name}"
+            if ap_on
+            else f"Event mode ready ({cfg.display_name or cfg.event_name}) — turn Autoplay on to start."
+        )
+        self.ui.status("AUTO_QUEUE_DETAIL", detail)
+        return state
+
+    def _on_event_run_complete(self, summary: dict[str, Any]) -> None:
+        request_id = uuid.uuid4().hex
+        pending = self.__dict__.setdefault("_pending_reentry_requests", {})
+        pending[request_id] = dict(summary)
+        # Keep only newest 10 pending prompts.
+        while len(pending) > 10:
+            oldest = next(iter(pending))
+            pending.pop(oldest, None)
+        payload = {"request_id": request_id, **summary}
+        self._emit_ui_event("emit_event_reentry_prompt", payload)
+
+    def respond_event_reentry(
+        self,
+        request_id: str,
+        action: str,
+        currency: str = "",
+        quantity: int = 0,
+    ) -> dict[str, Any]:
+        from arenamcp.draft_event import DraftRun
+
+        pending = self.__dict__.setdefault("_pending_reentry_requests", {})
+        prompt = pending.pop(request_id, None) if request_id else None
+        cfg = getattr(self, "_event_queue_config", None)
+        driver = getattr(self, "_draft_event_driver", None)
+
+        if action in ("pause", "stop"):
+            if hasattr(self, "set_auto_queue"):
+                self.set_auto_queue(False)
+            state = {
+                "mode": self._auto_queue_mode() if hasattr(self, "_auto_queue_mode") else "draft",
+                "enabled": False,
+                "config": cfg.to_dict() if cfg is not None else None,
+            }
+            self._emit_ui_event("emit_event_queue_state", state)
+            return state
+
+        if action == "switch_event":
+            if hasattr(self, "set_auto_queue"):
+                self.set_auto_queue(False)
+            return self.list_available_events()
+
+        if cfg is None:
+            raise ValueError("No active event configuration to re-enter")
+
+        if action == "resign_and_reenter":
+            from arenamcp.gre_bridge import get_bridge
+
+            bridge = getattr(getattr(self, "_autopilot", None), "_gre_bridge", None) or get_bridge()
+            if bridge is None or not getattr(bridge, "connected", False):
+                err = f"Cannot resign {cfg.event_name}: Arena bridge is not connected."
+                self.ui.status("AUTO_QUEUE_DETAIL", err)
+                return {"ok": False, "error": err}
+            resign_resp = bridge.draft_command(
+                "resign_event",
+                event_name=cfg.event_name,
+                require_free=cfg.is_free,
+                timeout=10.0,
+            )
+            if not resign_resp.get("ok"):
+                err = str(resign_resp.get("error") or f"Failed to resign {cfg.event_name}")
+                self.ui.status("AUTO_QUEUE_DETAIL", err)
+                return {"ok": False, "error": err}
+
+        if action in ("reenter", "resign_and_reenter"):
+            if currency:
+                cfg.entry_currency = str(currency)
+                cfg.entry_quantity = max(0, int(quantity or 0))
+                cfg.is_free = (
+                    cfg.entry_currency.removeprefix("CurrencyType_") in {"Free", "None"}
+                    and cfg.entry_quantity == 0
+                )
+            elif prompt and prompt.get("entry_fees") and not cfg.is_free:
+                # Retain existing currency/quantity when omitted.
+                pass
+            store = self._event_approval_store()
+            store.clear()
+            self._pending_entry_token = ""
+            if not cfg.is_free:
+                self._pending_entry_token = store.mint(cfg.event_name, cfg.entry_currency, cfg.entry_quantity)
+            if driver is not None:
+                driver.run = DraftRun(event_name=cfg.event_name)
+                driver.resume()
+            if hasattr(self, "set_auto_queue") and not getattr(self, "_auto_queue_enabled", False):
+                self.set_auto_queue(True)
+            state = {
+                "mode": "draft",
+                "enabled": bool(getattr(self, "_auto_queue_enabled", True)),
+                "config": cfg.to_dict(),
+            }
+            self._emit_ui_event("emit_event_queue_state", state)
+            return state
+
+        raise ValueError(f"Unknown re-entry action: {action!r}")
+
+    def _event_mode_decks_list(self) -> list[dict[str, Any]]:
+        try:
+            library, _ = self.collect_decks()
+            return [
+                {
+                    "deck_id": r.deck_id,
+                    "name": r.name,
+                    "format": r.format,
+                }
+                for r in library.values()
+                if getattr(r, "deck_id", "")
+            ]
+        except Exception:
+            return []
+
     def _draft_event_backend(self) -> Any:
         return getattr(self, "_autopilot_backend", None) or getattr(
             getattr(self, "_coach", None), "_backend", None
@@ -146,6 +483,8 @@ class _DraftEventMixin:
             if detail:
                 self.ui.log(f"[DRAFT AUTOPLAY] {detail}\n")
                 self.ui.status("DRAFT_AUTOPLAY", detail)
+                if self._current_event_queue_config() is not None:
+                    self.ui.status("AUTO_QUEUE_DETAIL", detail)
 
         def sideboard_context(state: dict) -> dict:
             def details(gid: int) -> dict:
@@ -188,6 +527,10 @@ class _DraftEventMixin:
                 getattr(self, "settings", None) and self.settings.get("draft_commentary", True)
             ),
             queue_fn=lambda: bool(getattr(self, "_auto_queue_enabled", False)),
+            event_mode_fn=self._current_event_queue_config,
+            consume_entry_approval_fn=self._consume_event_entry_approval,
+            on_run_complete_fn=self._on_event_run_complete,
+            get_decks_fn=self._event_mode_decks_list,
         )
         return driver
 
@@ -281,10 +624,18 @@ class _DraftEventMixin:
             logger.debug("Draft research prefetch failed", exc_info=True)
         try:
             settings = getattr(self, "settings", None)
+            event_queue_active = (
+                bool(getattr(self, "_auto_queue_enabled", False))
+                and callable(getattr(self, "_auto_queue_mode", None))
+                and self._auto_queue_mode() == "draft"
+                and self._current_event_queue_config() is not None
+            )
+            draft_events_enabled = (
+                bool(settings.get("autopilot_draft_events", True)) if settings is not None else False
+            )
             active = (
                 bool(getattr(self, "_autopilot_enabled", False))
-                and settings is not None
-                and bool(settings.get("autopilot_draft_events", True))
+                and (draft_events_enabled or event_queue_active)
                 and getattr(self, "_mcp", None) is not None
                 and not getattr(self, "_autopilot_dry_run", False)
                 and not getattr(self, "_autopilot_afk", False)
@@ -294,7 +645,27 @@ class _DraftEventMixin:
             if not active:
                 if driver is not None:
                     driver.set_enabled(False)
+                if event_queue_active:
+                    cfg = self._current_event_queue_config()
+                    target_name = (
+                        (cfg.display_name or cfg.event_name) if cfg is not None else "the selected event"
+                    )
+                    if (
+                        not getattr(self, "_autopilot_enabled", False)
+                        or self._autopilot_control_status() != "AP:ON"
+                    ):
+                        blocker = f"Waiting for Autoplay — turn Autoplay on to start {target_name}."
+                    elif getattr(self, "_autopilot_dry_run", False) or getattr(self, "_autopilot_afk", False):
+                        blocker = "Event mode paused while Dry Run or AFK mode is on."
+                    elif not self._draft_bridge_ready():
+                        blocker = "Event mode waiting: Arena bridge is not connected."
+                    else:
+                        blocker = ""
+                    if blocker and blocker != getattr(self, "_last_event_blocker", ""):
+                        self._last_event_blocker = blocker
+                        self.ui.status("AUTO_QUEUE_DETAIL", blocker)
                 return False
+            self._last_event_blocker = ""
             driver = self._draft_event_driver_instance()
             driver.set_enabled(True)
             owned = driver.tick()

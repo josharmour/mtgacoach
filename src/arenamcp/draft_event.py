@@ -128,6 +128,13 @@ class DraftRun:
     # The table's signal: per pack, accumulated per-color openness (draft_autopick.note_openness).
     signals: dict = field(default_factory=dict)
     signals_seen: set = field(default_factory=set)  # (pack, pick) already accumulated
+    # Event auto-queue mode tracking (reset when entering/starting a new run).
+    entered_or_played: bool = False
+    awaiting_reentry_decision: bool = False
+    entry_attempts: int = 0
+    deck_select_attempts: int = 0
+    packet_attempts: int = 0
+    win_no_gate_losses_start: int | None = None
 
 
 class DraftEventDriver:
@@ -155,6 +162,10 @@ class DraftEventDriver:
         queue_fn: Callable[[], bool] = lambda: True,
         narrate_fn: Callable[[str, Callable[[], bool]], bool] | None = None,
         narrate_first_fn: Callable[[], bool] = lambda: True,
+        event_mode_fn: Callable[[], Any] | None = None,
+        consume_entry_approval_fn: Callable[[str, str, int], bool] | None = None,
+        on_run_complete_fn: Callable[[dict], None] | None = None,
+        get_decks_fn: Callable[[], list[dict]] | None = None,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
@@ -182,6 +193,10 @@ class DraftEventDriver:
         # draft_narrate_before_pick); off = confirm at once, explain as the next
         # pack loads, so Arena never moves on while the coach is still talking.
         self._narrate_first_fn = narrate_first_fn
+        self._event_mode_fn = event_mode_fn
+        self._consume_entry_approval_fn = consume_entry_approval_fn
+        self._on_run_complete_fn = on_run_complete_fn
+        self._get_decks_fn = get_decks_fn
         self._clock = clock
         self._sleep = sleep
         self._narrator = DraftNarrator()
@@ -417,6 +432,34 @@ class DraftEventDriver:
             self._wait(3.0, owns=False)
             self._status(f"Draft autoplay hit an error and will retry: {exc}")
 
+    def _event_mode_config(self) -> Any:
+        if self._event_mode_fn is None:
+            return None
+        try:
+            return self._event_mode_fn()
+        except Exception:
+            return None
+
+    def _emit_run_complete(self, event_name: str, page: dict, outcome: str) -> None:
+        if self._on_run_complete_fn is None:
+            return
+        try:
+            self._on_run_complete_fn(
+                {
+                    "event_name": event_name,
+                    "display_name": page.get("display_name") or event_name,
+                    "category": page.get("category") or "",
+                    "outcome": outcome,
+                    "wins": int(page.get("current_wins") or 0),
+                    "losses": int(page.get("current_losses") or 0),
+                    "max_prize_wins": int(page.get("max_prize_wins") or 0),
+                    "is_free": bool(page.get("is_free", False)),
+                    "entry_fees": list(page.get("entry_fees") or []),
+                }
+            )
+        except Exception as exc:
+            logger.debug("Event run-complete callback failed: %s", exc)
+
     def _step(self) -> None:
         if self._in_match_fn():
             self._sideboard_driver.left_sideboard()
@@ -432,7 +475,12 @@ class DraftEventDriver:
         if seen != self._last_screen:
             logger.info("Draft autoplay screen: %s", ", ".join(seen) or "none of draft/deck/event/home")
             self._last_screen = seen
-        if screen.get("sideboarding"):
+        config = self._event_mode_config()
+        if screen.get("rewards_panel") and (self.run.event_name or config is not None):
+            self._step_rewards_panel()
+        elif screen.get("table_draft_queue"):
+            self._step_table_draft_queue()
+        elif screen.get("sideboarding"):
             self._step_sideboard()
         elif screen.get("draft"):
             self._step_pick()
@@ -440,13 +488,41 @@ class DraftEventDriver:
             self._step_deck()
         elif screen.get("sealed_open"):
             self._step_sealed_open()
-        elif screen.get("match_end") and self.run.event_name:
+        elif screen.get("packet_select") and (self.run.event_name or config is not None):
+            self._step_packet_select()
+        elif screen.get("constructed_deck_select") and (self.run.event_name or config is not None):
+            self._step_constructed_deck_select(config)
+        elif screen.get("match_end") and (self.run.event_name or config is not None):
             self._step_leave_match()
         elif screen.get("event_page"):
-            self._step_event_page()
-        elif screen.get("home") and self.run.event_name and not self.run.finished:
-            self._step_home()
+            self._step_event_page(config)
+        elif screen.get("home"):
+            if self.run.event_name and not self.run.finished:
+                self._step_home(self.run.event_name)
+            elif (
+                config is not None
+                and config.event_name
+                and not self.run.awaiting_reentry_decision
+                and self._queue_fn()
+            ):
+                self._step_home(config.event_name)
+            else:
+                self._wait(2.0, owns=False)
         else:
+            target_display = ""
+            if (
+                config is not None
+                and config.event_name
+                and not self.run.awaiting_reentry_decision
+                and self._queue_fn()
+            ):
+                target_display = config.display_name or config.event_name
+            elif self.run.event_name and not self.run.finished:
+                target_display = self.run.event_name
+            if target_display:
+                self._status(
+                    f"Waiting for Arena's Home screen — click Home in Arena so Coach can open {target_display}."
+                )
             self._wait(2.0, owns=False)
 
     # -- draft ---------------------------------------------------------------
@@ -1371,42 +1447,308 @@ class DraftEventDriver:
             self._status("Opening the sealed pool")
         self._wait(3.0)
 
-    # -- event page and matches ----------------------------------------------
+    # -- event page, Table Ready!, Jumpstart, constructed deck select & matches
 
-    def _step_event_page(self) -> None:
+    def _step_table_draft_queue(self) -> None:
+        """Auto-click Ready on Arena's 'Table Ready!' pod confirmation screen."""
+        state = self._command("get_table_draft_state", timeout=6.0)
+        if not state.get("is_open"):
+            self._wait(1.0)
+            return
+        if state.get("needs_ready"):
+            result = self._command("ready_table_draft", timeout=6.0)
+            if result.get("ok") and not result.get("waiting"):
+                self._status("Table Ready! Clicked Ready for the draft pod.")
+                self._say("Draft table ready. Confirming seat.")
+            else:
+                self._status(f"Waiting to confirm draft pod readiness: {result.get('error') or 'pending'}")
+            self._wait(0.8)
+            return
+        if state.get("is_local_ready"):
+            self._status("Draft pod ready; waiting for the remaining drafters.")
+            self._wait(1.0)
+            return
+        self._status("Waiting in draft pod queue for Table Ready…")
+        self._wait(0.7)
+
+    def _step_rewards_panel(self) -> None:
+        result = self._command("dismiss_rewards_panel", timeout=6.0)
+        if result.get("waiting"):
+            self._status("Event rewards appearing; waiting to claim.")
+            self._wait(1.5)
+        elif result.get("ok"):
+            self._status("Claimed event rewards.")
+            self._wait(2.0)
+        else:
+            self._wait(2.0)
+
+    def _step_packet_select(self) -> None:
+        from arenamcp.event_queue import choose_jumpstart_packet
+
+        run = self.run
+        if run.packet_attempts >= 4:
+            self._pause("Jump In packet selection did not advance after 4 tries; pick packets manually")
+            return
+        state = self._command("get_packet_options", timeout=8.0)
+        if not state.get("is_open"):
+            self._wait(1.0)
+            return
+        options = state.get("options") or []
+        submitted = state.get("submitted") or []
+        if not options:
+            self._wait(1.5)
+            return
+        choice = choose_jumpstart_packet(options, submitted)
+        if choice is None:
+            self._pause("No Jump In packet options found")
+            return
+        run.packet_attempts += 1
+        res = self._command("submit_packet", packet_id=choice["packet_id"], timeout=8.0)
+        if res.get("ok"):
+            self._status(f"Jump In: selected packet {choice.get('name') or choice['packet_id']}")
+            self._wait(2.0)
+        else:
+            self._status(f"Jump In packet selection retry: {res.get('error')}")
+            self._wait(1.5)
+
+    def _step_constructed_deck_select(self, config: Any) -> None:
+        from arenamcp.event_queue import choose_constructed_event_deck
+
+        run = self.run
+        if run.deck_select_attempts >= 2:
+            self._pause(
+                "Constructed event deck selection did not accept after 2 tries; select a deck manually"
+            )
+            return
+        info = self._command("get_constructed_deck_select", timeout=8.0)
+        if not info.get("is_open"):
+            self._wait(1.0)
+            return
+        event_name = str(info.get("event_name") or run.event_name or (config.event_name if config else ""))
+        decks = info.get("decks") or (self._get_decks_fn() if self._get_decks_fn else [])
+        preferred = config.deck_id if config is not None else ""
+        chosen = choose_constructed_event_deck(
+            decks, str(info.get("deck_select_format") or ""), preferred_deck_id=preferred
+        )
+        if chosen is None or not chosen.get("deck_id"):
+            self._pause(f"No legal deck found for {event_name}; select a deck manually")
+            return
+        run.deck_select_attempts += 1
+        res = self._command(
+            "select_event_deck", event_name=event_name, deck_id=chosen["deck_id"], timeout=10.0
+        )
+        if res.get("ok"):
+            self._status(f"Selected deck {chosen.get('name') or chosen['deck_id']} for {event_name}")
+            self._wait(3.0)
+        else:
+            self._status(f"Event deck selection failed: {res.get('error')}")
+            self._wait(2.0)
+
+    def _step_event_page(self, config: Any = None) -> None:
         page = self._command("get_event_page")
         if not page.get("is_open"):
             self._wait(1.0)
             return
         module, event_name = page.get("module", ""), page.get("event_name", "")
         run = self.run
-        if not run.event_name:
-            # Adopt only a limited event already past entry: the player entered it.
-            limited = any(marker in event_name.lower() for marker in LIMITED_MARKERS)
-            if not limited or module in UNPAID_MODULES or module in {"Complete", "None", ""}:
+        if config is None:
+            if not run.event_name:
+                # Adopt only a limited event already past entry: the player entered it.
+                limited = any(marker in event_name.lower() for marker in LIMITED_MARKERS)
+                if not limited or module in UNPAID_MODULES or module in {"Complete", "None", ""}:
+                    self._wait(3.0, owns=False)
+                    return
+                self._new_run_if_needed(event_name, 0, 0)
+            if event_name != run.event_name:
                 self._wait(3.0, owns=False)
                 return
-            self._new_run_if_needed(event_name, 0, 0)
-        if event_name != run.event_name:
-            self._wait(3.0, owns=False)
-            return
+        else:
+            if not config.event_name or event_name != config.event_name:
+                if config.event_name and not self.run.awaiting_reentry_decision and self._queue_fn():
+                    target_display = config.display_name or config.event_name
+                    current_display = page.get("display_name") or event_name or "another event"
+                    self._status(
+                        f"Arena is on {current_display} — click Home in Arena (or open {target_display}) so Coach can start it."
+                    )
+                self._wait(3.0, owns=False)
+                return
+            if not run.event_name:
+                self._new_run_if_needed(event_name, 0, 0)
+            if module not in UNPAID_MODULES and module not in {"Complete", "None", ""}:
+                run.entered_or_played = True
+
         if module == "Complete":
             run.finished = True
             course = self._tracker_fn().course(event_name) if self._tracker_fn() else None
-            record = f" {course.wins}-{course.losses}" if course else ""
+            wins = int(page.get("current_wins") or getattr(course, "wins", 0) or 0)
+            losses = int(page.get("current_losses") or getattr(course, "losses", 0) or 0)
+            record = f" {wins}-{losses}" if (course or "current_wins" in page) else ""
             self._status(f"{event_name} complete{record}")
-            self._say(f"Draft event complete{record}.")
-            self._wait(10.0, owns=False)
+            self._say(f"Event complete{record}.")
+            if config is not None and not run.awaiting_reentry_decision:
+                run.awaiting_reentry_decision = True
+                max_prize = int(page.get("max_prize_wins") or 0)
+                outcome = "won_main_prize" if (max_prize > 0 and wins >= max_prize) else "completed"
+                self._emit_run_complete(event_name, page, outcome)
+            self._wait(10.0 if config is None else 5.0, owns=False)
             return
+
         if module in UNPAID_MODULES:
-            # Not a failure: after the prize is claimed the event returns to
-            # its entry stage. Pausing here outlived the player's next entry
-            # (2026-10-06 15:23: P1p1 of the re-entered draft went unpicked).
-            # Wait for the player to enter; that entry starts a fresh run.
-            self.run = DraftRun()
-            self._status(f"{event_name}: waiting for you to enter; autoplay never pays")
+            if config is None:
+                # Not a failure: after the prize is claimed the event returns to
+                # its entry stage. Wait for the player to enter; that entry starts a fresh run.
+                self.run = DraftRun()
+                self._status(f"{event_name}: waiting for you to enter; autoplay never pays")
+                self._wait(5.0, owns=False)
+                return
+            if run.entered_or_played and not run.awaiting_reentry_decision:
+                wins = int(page.get("current_wins") or 0)
+                max_prize = int(page.get("max_prize_wins") or 0)
+                outcome = "won_main_prize" if (max_prize > 0 and wins >= max_prize) else "completed"
+                if config.reenter_free and config.is_free and page.get("is_free"):
+                    self._status(f"{event_name} run finished ({wins}W); auto-reentering free event")
+                    self.run = DraftRun(event_name=event_name)
+                    run = self.run
+                else:
+                    run.finished = True
+                    run.awaiting_reentry_decision = True
+                    self._status(f"{event_name} finished; awaiting re-entry choice")
+                    self._say(f"{page.get('display_name') or event_name} finished.")
+                    self._emit_run_complete(event_name, page, outcome)
+                    self._wait(5.0, owns=False)
+                    return
+            if run.awaiting_reentry_decision or not self._queue_fn():
+                self._wait(4.0, owns=False)
+                return
+            if run.entry_attempts >= 2:
+                self._pause(f"{event_name} entry did not advance after 2 tries; check Arena")
+                return
+            if (
+                config.is_free
+                and page.get("is_free")
+                and config.entry_currency.removeprefix("CurrencyType_") in {"Free", "None"}
+                and config.entry_quantity == 0
+            ):
+                run.entry_attempts += 1
+                res = self._command(
+                    "enter_event",
+                    event_name=event_name,
+                    currency_type=config.entry_currency,
+                    expected_quantity=0,
+                    event_choice=config.choice,
+                    require_free=True,
+                    timeout=10.0,
+                )
+                if res.get("ok"):
+                    run.entered_or_played = True
+                    self._status(f"Entered free event {event_name}")
+                    self._wait(3.0)
+                else:
+                    self._status(f"Free event entry failed: {res.get('error')}")
+                    self._wait(3.0)
+                return
+            approved = bool(
+                self._consume_entry_approval_fn
+                and self._consume_entry_approval_fn(event_name, config.entry_currency, config.entry_quantity)
+            )
+            if approved:
+                run.entry_attempts += 1
+                res = self._command(
+                    "enter_event",
+                    event_name=event_name,
+                    currency_type=config.entry_currency,
+                    expected_quantity=config.entry_quantity,
+                    event_choice=config.choice,
+                    require_free=False,
+                    timeout=10.0,
+                )
+                if res.get("ok"):
+                    run.entered_or_played = True
+                    self._status(f"Entered {event_name} ({config.entry_currency} {config.entry_quantity})")
+                    self._wait(3.0)
+                else:
+                    self._pause(f"Paid entry failed for {event_name}: {res.get('error')}")
+                return
+            run.awaiting_reentry_decision = True
+            self._status(f"{event_name}: paid entry requires confirmation in Coach")
+            self._emit_run_complete(event_name, page, "approval_required")
             self._wait(5.0, owns=False)
             return
+
+        if config is not None and module == "WinNoGate":
+            wins = int(page.get("current_wins") or 0)
+            losses = int(page.get("current_losses") or 0)
+            max_prize = int(page.get("max_prize_wins") or 0)
+            if page.get("has_unclaimed_rewards"):
+                self._status(f"{event_name}: waiting for reward claim")
+                self._wait(2.5)
+                return
+            if config.stop_at_main_prize and max_prize > 0 and wins >= max_prize:
+                if not run.awaiting_reentry_decision:
+                    run.finished = True
+                    run.awaiting_reentry_decision = True
+                    self._status(f"{event_name}: main prize reached ({wins} wins)")
+                    self._say(f"Main prize won in {page.get('display_name') or event_name} with {wins} wins.")
+                    self._emit_run_complete(event_name, page, "won_main_prize")
+                self._wait(5.0, owns=False)
+                return
+            if run.win_no_gate_losses_start is None:
+                run.win_no_gate_losses_start = losses
+            if (
+                config.win_no_gate_loss_limit > 0
+                and (losses - run.win_no_gate_losses_start) >= config.win_no_gate_loss_limit
+            ):
+                if not run.awaiting_reentry_decision:
+                    run.finished = True
+                    run.awaiting_reentry_decision = True
+                    self._status(
+                        f"{event_name}: paused after {config.win_no_gate_loss_limit} losses in free event"
+                    )
+                    self._emit_run_complete(event_name, page, "loss_limit")
+                self._wait(5.0, owns=False)
+                return
+
+        if config is not None and module == "Choice":
+            if config.choice:
+                res = self._command(
+                    "submit_event_choice", event_name=event_name, choice=config.choice, timeout=8.0
+                )
+                self._status(
+                    f"Submitted event choice for {event_name}"
+                    if res.get("ok")
+                    else f"Event choice failed: {res.get('error')}"
+                )
+                self._wait(3.0)
+            elif config.deck_id:
+                res = self._command(
+                    "select_event_deck", event_name=event_name, deck_id=config.deck_id, timeout=10.0
+                )
+                self._status(
+                    f"Selected event deck for {event_name}"
+                    if res.get("ok")
+                    else f"Event deck selection failed: {res.get('error')}"
+                )
+                self._wait(3.0)
+            else:
+                self._pause(f"{event_name} requires choosing an option or precon deck in Arena")
+            return
+
+        if (
+            config is not None
+            and module == "DeckSelect"
+            and page.get("format_type") == "Constructed"
+            and config.deck_id
+        ):
+            if run.deck_select_attempts < 2:
+                run.deck_select_attempts += 1
+                res = self._command(
+                    "select_event_deck", event_name=event_name, deck_id=config.deck_id, timeout=10.0
+                )
+                if res.get("ok"):
+                    self._status(f"Submitted deck for {event_name}")
+                    self._wait(3.0)
+                    return
+
         if module in MATCH_MODULES and not self._queue_fn():
             # 2026-10-06: with Auto-queue off, autoplay still queued every
             # PremierDraft match. Picks, the deck and prizes stay automatic.
@@ -1437,10 +1779,11 @@ class DraftEventDriver:
             self._status("Match over; back to the event page")
         self._wait(4.0)
 
-    def _step_home(self) -> None:
-        result = self._command("go_to_event", event_name=self.run.event_name, timeout=8.0)
+    def _step_home(self, target_event: str = "") -> None:
+        event_name = target_event or self.run.event_name
+        result = self._command("go_to_event", event_name=event_name, timeout=8.0)
         if not result.get("ok"):
-            self._status(f"Could not open {self.run.event_name}: {result.get('error')}")
+            self._status(f"Could not open {event_name}: {result.get('error')}")
         self._wait(4.0)
 
 

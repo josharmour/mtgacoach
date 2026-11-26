@@ -599,7 +599,7 @@ def test_compact_coach_same_vs_winning_auto_queue_toggles(monkeypatch):
     panel.append_log = lambda msg, role="status": logged.append(msg)
     monkeypatch.setattr("arenamcp.desktop.compact_coach.theme.repolish", lambda w: None)
 
-    # 1. Click Queue mode (switches to Winning decks AND turns Auto-queue ON cleanly)
+    # 1. Click Queue mode (Same deck -> Winning decks, turns Auto-queue ON cleanly)
     panel._toggle_auto_queue_winning()
     assert panel._auto_queue_enabled is True
     assert panel._settings.get("auto_queue_mode") == "winning"
@@ -608,7 +608,14 @@ def test_compact_coach_same_vs_winning_auto_queue_toggles(monkeypatch):
     assert panel.after_match_btn.text == "Queue: Winning"
     assert any("Auto-queue (Winning decks) ON" in m for m in logged)
 
-    # 2. Click Queue mode again -> switches to Same deck WITHOUT turning Auto-queue off
+    # 2. Click Queue mode again (Winning decks -> Draft / Event)
+    panel._toggle_auto_queue_winning()
+    assert panel._auto_queue_enabled is True
+    assert panel._settings.get("auto_queue_mode") == "draft"
+    assert panel.auto_queue_winning_btn.text == "Queue mode: Draft / Event"
+    assert panel.after_match_btn.text == "Queue: Event"
+
+    # 3. Click Queue mode again (Draft / Event -> Same deck WITHOUT turning Auto-queue off)
     panel._toggle_auto_queue_winning()
     assert panel._auto_queue_enabled is True
     assert panel._settings.get("auto_queue_mode") == "same"
@@ -617,7 +624,7 @@ def test_compact_coach_same_vs_winning_auto_queue_toggles(monkeypatch):
     assert panel.after_match_btn.text == "Queue: On"
     assert any("Tip: Deck Alpha" in m for m in logged)
 
-    # 3. Click master Auto-queue toggle -> turns Auto-queue OFF
+    # 4. Click master Auto-queue toggle -> turns Auto-queue OFF
     panel._toggle_auto_queue()
     assert panel._auto_queue_enabled is False
     assert panel.auto_queue_btn.text == "Auto-queue: Off"

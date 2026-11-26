@@ -284,3 +284,106 @@ def test_hypothetical_damage_math_uses_only_recorded_life_and_printed_player_dam
     assert "hypothetical_arithmetic" not in facts["card:2"]
     assert "hypothetical_arithmetic" not in facts["card:3"]
     assert "hypothetical_arithmetic" not in facts["card:4"]
+
+
+def test_compact_context_preserves_causal_play_for_source_less_zero_toughness_outcomes():
+    from arenamcp.commentary.headless import LIVE_AUTHOR
+
+    facts = {
+        "state:turn": {"turn_number": 6, "active_player": 1},
+        "state:local_seat": 1,
+        "state:player:1": {"seat": 1, "life": 18},
+        "state:player:2": {"seat": 2, "life": 20},
+        "state:board": {"objects": [{"name": "Spacer", "rules": "x" * 280} for _ in range(40)]},
+        "event:death:own": {
+            "kind": "outcome",
+            "seat": 1,
+            "data": {"category": "ZeroToughness", "to_zone": "graveyard", "source_id": 0, "grp_id": 1001},
+        },
+        "event:death:opp": {
+            "kind": "outcome",
+            "seat": 2,
+            "data": {"category": "ZeroToughness", "to_zone": "graveyard", "source_id": 0, "grp_id": 1002},
+        },
+        "event:enter:bloodletter": {
+            "kind": "permanent_entered",
+            "seat": 1,
+            "data": {"grp_id": 1003, "name": "D'Ghor Bloodletter"},
+        },
+        "card:1001": {"name": "Cybernetic Specialist", "rules": "Flying"},
+        "card:1002": {"name": "Savvy Profiteer", "rules": "Tap: Add {C}."},
+        "card:1003": {
+            "name": "D'Ghor Bloodletter",
+            "rules": "When this creature enters, choose one - All other creatures get -1/-1 until end of turn.",
+        },
+    }
+    context = {
+        "facts": facts,
+        "new_events": ["event:death:own", "event:death:opp", "event:enter:bloodletter"],
+        "allowed_roles": ["play_by_play", "color_analyst"],
+        "booth": {},
+        "style": "Technical analysis",
+        "heard": [],
+        "earlier_points": [],
+        "in_flight": [],
+    }
+    selected = compact_context(SYSTEM, context)
+    assert request_size(SYSTEM, selected) < 6000
+    assert selected["new_events"][:2] == ["event:death:own", "event:death:opp"]
+    assert "event:enter:bloodletter" in selected["facts"]
+    assert "card:1003" in selected["facts"]
+    # Never fabricate a source attribution onto the observed SBA outcome.
+    assert selected["facts"]["event:death:own"]["data"]["source_id"] == 0
+    assert selected["facts"]["event:death:opp"]["data"]["source_id"] == 0
+
+    # When the causal play arrived in an earlier beat, pull it from play_sequence too.
+    seq_context = copy.deepcopy(context)
+    seq_context["new_events"] = ["event:death:own", "event:death:opp"]
+    seq_context["play_sequence"] = ["event:enter:bloodletter"]
+    selected_seq = compact_context(SYSTEM, seq_context)
+    assert selected_seq["new_events"] == ["event:death:own", "event:death:opp"]
+    assert "event:enter:bloodletter" in selected_seq["facts"]
+    assert "card:1003" in selected_seq["facts"]
+
+    assert "zero toughness" in LIVE_AUTHOR.lower()
+    assert "never returns at end of turn" in LIVE_AUTHOR.lower()
+
+
+def test_compact_context_control_does_not_promote_causal_event_when_outcome_already_attributed():
+    facts = {
+        "state:turn": {"turn_number": 6, "active_player": 1},
+        "state:local_seat": 1,
+        "state:player:1": {"seat": 1, "life": 20},
+        "state:player:2": {"seat": 2, "life": 20},
+        "state:board": {"objects": [{"name": "Spacer", "rules": "x" * 350} for _ in range(45)]},
+        "event:death:own": {
+            "kind": "outcome",
+            "seat": 1,
+            "data": {"category": "Destroy", "to_zone": "graveyard", "source_id": 99, "grp_id": 1001},
+        },
+        "event:death:opp": {
+            "kind": "outcome",
+            "seat": 2,
+            "data": {"category": "Destroy", "to_zone": "graveyard", "source_id": 99, "grp_id": 1002},
+        },
+        "event:old:cast": {
+            "kind": "cast",
+            "seat": 1,
+            "data": {"grp_id": 1099, "name": "Unrelated Spell"},
+        },
+        "card:1099": {"name": "Unrelated Spell", "rules": "Y" * 3000},
+    }
+    context = {
+        "facts": facts,
+        "new_events": ["event:death:own", "event:death:opp"],
+        "play_sequence": ["event:old:cast"],
+        "allowed_roles": ["play_by_play", "color_analyst"],
+        "booth": {},
+        "style": "Technical analysis",
+        "heard": [],
+        "earlier_points": [],
+        "in_flight": [],
+    }
+    selected = compact_context(SYSTEM, context)
+    assert selected["new_events"] == ["event:death:own", "event:death:opp"]
+    assert "card:1099" not in selected["facts"]

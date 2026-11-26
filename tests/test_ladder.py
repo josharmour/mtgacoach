@@ -1,6 +1,14 @@
 import json
 
-from arenamcp.ladder import RankLog, rank_text, ranked_ladder
+from arenamcp.ladder import (
+    RankLog,
+    event_display_name,
+    event_rule_summary,
+    pip_progress,
+    rank_short,
+    rank_text,
+    ranked_ladder,
+)
 
 
 def test_rank_log_follows_split_updates_and_rotation(tmp_path):
@@ -44,7 +52,14 @@ def test_mythic_leaderboard_takes_precedence_over_percentile():
 
 
 def test_ranked_event_formats():
-    for event in ("PremierDraft_YFRA", "QuickDraft FRA 20261027", "PickTwoDraft_MSH", "Limited Ladder"):
+    for event in (
+        "PremierDraft_YFRA",
+        "QuickDraft FRA 20261027",
+        "PickTwoDraft_MSH",
+        "ContenderDraft_TRK_20261123",
+        "ContenderDraft TRK 20261123",
+        "Limited Ladder",
+    ):
         assert ranked_ladder(event) == "Limited"
     for event in ("Brawl Ladder", "Ladder", "Traditional Standard Ranked"):
         assert ranked_ladder(event) == "Constructed"
@@ -57,6 +72,92 @@ def test_ranked_event_formats():
         "",
     ):
         assert ranked_ladder(event) is None
+
+
+def test_pip_progress_rank_short_and_event_helpers():
+    snap = {
+        "constructedClass": "Mythic",
+        "constructedPercentile": 88.18,
+        "limitedClass": "Bronze",
+        "limitedLevel": 2,
+        "limitedStep": 1,
+    }
+    assert rank_short(snap, "Constructed") == "Mythic 88.2%"
+    assert pip_progress(snap, "Constructed") is None
+    assert rank_short(snap, "Limited") == "Bronze 2"
+    assert pip_progress(snap, "Limited") == (1, 4)
+    assert pip_progress({"limitedClass": "Silver", "limitedLevel": 1, "limitedStep": 3}, "Limited") == (3, 5)
+    assert pip_progress({"limitedClass": "Gold", "limitedLevel": 3, "limitedStep": 4}, "Limited") == (4, 6)
+    assert event_display_name("ContenderDraft_TRK_20261123") == "Contender Draft · TRK"
+    assert event_rule_summary("ContenderDraft_TRK_20261123", "CreateMatch") == "7W prize · 3L out"
+    assert event_rule_summary("TradDraft_TRK_20261123", "CreateMatch") == "3 matches"
+    assert event_rule_summary("ContenderDraft_TRK_20261123", "PlayerDraft") == "Drafting"
+
+
+def test_rank_log_tracks_active_event_and_dynamic_ranked_deltas(tmp_path):
+    path = tmp_path / "Player.log"
+    reader = RankLog()
+    lines = [
+        "<== RankGetCombinedRankInfo(1)",
+        json.dumps(
+            {
+                "constructedSeasonOrdinal": 95,
+                "constructedClass": "Mythic",
+                "limitedSeasonOrdinal": 95,
+                "limitedLevel": 3,
+                "limitedMatchesWon": 0,
+                "limitedMatchesLost": 0,
+            }
+        ),
+        "<== EventGetCoursesV2(2)",
+        json.dumps(
+            {
+                "Courses": [
+                    {
+                        "InternalEventName": "DualColorPrecons",
+                        "CurrentModule": "CreateMatch",
+                        "CurrentWins": 4,
+                        "CurrentLosses": 17,
+                    },
+                    {
+                        "InternalEventName": "ContenderDraft_TRK_20261123",
+                        "CurrentModule": "CreateMatch",
+                        "CurrentWins": 2,
+                        "CurrentLosses": 1,
+                    },
+                ]
+            }
+        ),
+        '{"matchGameRoomStateChangedEvent":{"gameRoomInfo":{"gameRoomConfig":{"eventId":"CustomMysteryDraft_20261126"}}}}',
+        "<== RankGetCombinedRankInfo(3)",
+        json.dumps(
+            {
+                "constructedSeasonOrdinal": 95,
+                "constructedClass": "Mythic",
+                "limitedSeasonOrdinal": 95,
+                "limitedLevel": 3,
+                "limitedMatchesWon": 1,
+                "limitedMatchesLost": 0,
+            }
+        ),
+    ]
+    path.write_text("\n".join(lines) + "\n")
+    reader.read(path)
+    # Unknown event was learned as Limited via limitedMatchesWon increment.
+    assert (
+        ranked_ladder("CustomMysteryDraft_20261126", extra_ranked=reader.observed_ranked_events) == "Limited"
+    )
+    ev = reader.active_event()
+    assert ev is not None
+    assert ev["event_name"] == "ContenderDraft_TRK_20261123"
+    assert ev["display_name"] == "Contender Draft · TRK"
+    assert (ev["wins"], ev["losses"]) == (2, 1)
+
+    # Entering a normal ladder match clears the active event banner.
+    with path.open("a") as log:
+        log.write('{"eventId":"Brawl_Ladder"}\n')
+    reader.read(path)
+    assert reader._active_event_name == ""
 
 
 def test_account_follows_login_auth_switch_and_logout(tmp_path):

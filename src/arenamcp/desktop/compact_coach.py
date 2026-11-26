@@ -661,11 +661,16 @@ class CompactCoachPanel(QWidget):
         self.auto_queue_winning_btn.setObjectName("autoQueueWinningButton")
         self.auto_queue_winning_btn.setProperty("state", "off")
         self.auto_queue_winning_btn.setToolTip(
-            "Switch Auto-queue between repeating the same deck and automatically queueing your "
-            "highest-win-rate deck from recent match history."
+            "Cycle Auto-queue mode between Same deck, Winning decks, and Draft / Event."
         )
         self.auto_queue_winning_btn.clicked.connect(self._toggle_auto_queue_winning)
         self.after_match_popover.add_button(self.auto_queue_winning_btn)
+        self.choose_event_btn = QPushButton("Choose event…")
+        self.choose_event_btn.setObjectName("chooseEventButton")
+        self.choose_event_btn.setToolTip("Inspect available MTG Arena events and choose what to play")
+        self.choose_event_btn.clicked.connect(self._open_event_mode_picker)
+        self.after_match_popover.add_button(self.choose_event_btn)
+        self.choose_event_btn.setVisible(self._current_auto_queue_mode() == "draft")
         self.loss_limit_btn = QPushButton()
         self.loss_limit_btn.setObjectName("lossLimitButton")
         self.loss_limit_btn.setToolTip(
@@ -1029,7 +1034,13 @@ class CompactCoachPanel(QWidget):
             )
         elif kind.startswith("history:"):
             ladder = kind.split(":", 1)[1]
-            if ladder == "Unranked":
+            if ladder == "Event":
+                ev = getattr(self.rank_strip, "active_event", None) or {}
+                ev_label = ev.get("display_name") or "Active Event"
+                title = f"Recent {ev_label} · newest first"
+                rows = getattr(self.rank_strip, "recent_event", [])
+                empty = f"No matches recorded for {ev_label} yet."
+            elif ladder == "Unranked":
                 title = "Recent Unranked · newest first"
                 rows = self.rank_strip.recent_unranked
                 empty = "No recent unranked matches recorded."
@@ -1291,8 +1302,10 @@ class CompactCoachPanel(QWidget):
         self.append_log(msg, role="status")
 
     def _current_auto_queue_mode(self) -> str:
-        raw = self._settings.get("auto_queue_mode")
-        return "winning" if str(raw or "").strip().lower() == "winning" else "same"
+        raw = str(self._settings.get("auto_queue_mode") or "").strip().lower()
+        if raw in ("winning", "draft"):
+            return raw
+        return "same"
 
     def _rearm_if_safeguard_tripped(self) -> None:
         # An explicit re-arm after the safety stop works even with the
@@ -1334,36 +1347,117 @@ class CompactCoachPanel(QWidget):
         self._auto_queue_enabled = not self._auto_queue_enabled
         if self._auto_queue_enabled:
             self._rearm_if_safeguard_tripped()
-            self._log_queue_plan_on_start(mode)
+            if mode != "draft":
+                self._log_queue_plan_on_start(mode)
         self._settings.set("auto_queue_enabled", self._auto_queue_enabled)
         if self._auto_queue_enabled:
-            self._auto_queue_detail = (
-                "Evaluating winning decks — waiting for Autoplay and match status."
-                if mode == "winning"
-                else "Waiting for Autoplay and match status."
-            )
+            if mode == "winning":
+                self._auto_queue_detail = "Evaluating winning decks — waiting for Autoplay and match status."
+            elif mode == "draft":
+                self._auto_queue_detail = "Event mode — waiting for Autoplay and selected event."
+            else:
+                self._auto_queue_detail = "Waiting for Autoplay and match status."
         else:
             self._auto_queue_detail = ""
         self._render_auto_queue_status()
         self._session.set_auto_queue(self._auto_queue_enabled)
 
+    _AUTO_QUEUE_MODE_CYCLE = ("same", "winning", "draft")
+
     def _toggle_auto_queue_winning(self) -> None:
-        """Switch Queue mode between Same deck and Winning decks without turning Auto-queue off."""
-        new_mode = "same" if self._current_auto_queue_mode() == "winning" else "winning"
+        """Cycle Queue mode: Same deck -> Winning decks -> Draft / Event -> Same deck."""
+        current = self._current_auto_queue_mode()
+        try:
+            idx = self._AUTO_QUEUE_MODE_CYCLE.index(current)
+            new_mode = self._AUTO_QUEUE_MODE_CYCLE[(idx + 1) % len(self._AUTO_QUEUE_MODE_CYCLE)]
+        except ValueError:
+            new_mode = "winning"
         self._settings.set("auto_queue_mode", new_mode)
-        if not self._auto_queue_enabled and new_mode == "winning":
-            self._auto_queue_enabled = True
-            self._settings.set("auto_queue_enabled", True)
-            self._rearm_if_safeguard_tripped()
-        if self._auto_queue_enabled:
+        if hasattr(self._session, "set_auto_queue_mode"):
+            self._session.set_auto_queue_mode(new_mode)
+        if new_mode == "winning":
+            if not self._auto_queue_enabled:
+                self._auto_queue_enabled = True
+                self._settings.set("auto_queue_enabled", True)
+                self._rearm_if_safeguard_tripped()
             self._log_queue_plan_on_start(new_mode)
-            self._auto_queue_detail = (
-                "Evaluating winning decks — waiting for Autoplay and match status."
-                if new_mode == "winning"
-                else "Waiting for Autoplay and match status."
-            )
+            self._auto_queue_detail = "Evaluating winning decks — waiting for Autoplay and match status."
             self._session.set_auto_queue(True)
+        elif new_mode == "draft":
+            self._auto_queue_detail = "Draft / Event mode — select an event to enter."
+            self._open_event_mode_picker()
+        else:
+            if self._auto_queue_enabled:
+                self._log_queue_plan_on_start(new_mode)
+                self._auto_queue_detail = "Waiting for Autoplay and match status."
+                self._session.set_auto_queue(True)
         self._render_auto_queue_status()
+
+    def _open_event_mode_picker(self) -> None:
+        if not hasattr(self._session, "request_available_events"):
+            return
+        from .event_mode_dialog import EventModeDialog
+
+        if getattr(self, "_event_mode_dialog", None) is None:
+            dlg = EventModeDialog(self if isinstance(self, QWidget) else None)
+            dlg.eventConfigured.connect(self._session.configure_event_queue)
+            dlg.refreshRequested.connect(self._session.request_available_events)
+            build_req = getattr(self._session, "build_event_deck", None)
+            if callable(build_req):
+                dlg.buildDeckRequested.connect(build_req)
+            self._event_mode_dialog = dlg
+        self._event_mode_dialog.show()
+        self._event_mode_dialog.raise_()
+        self._session.request_available_events()
+        req_decks = getattr(self._session, "request_deck_list", None)
+        if callable(req_decks):
+            req_decks()
+
+    def _on_available_events(self, payload: dict[str, Any]) -> None:
+        dlg = getattr(self, "_event_mode_dialog", None)
+        if dlg is not None:
+            dlg.update_events(payload)
+
+    def _on_event_deck_built(self, payload: dict[str, Any]) -> None:
+        dlg = getattr(self, "_event_mode_dialog", None)
+        if dlg is not None:
+            dlg.on_deck_built(payload)
+        if payload.get("ok"):
+            req_decks = getattr(self._session, "request_deck_list", None)
+            if callable(req_decks):
+                req_decks()
+
+    def _on_event_queue_state(self, state: dict[str, Any]) -> None:
+        if "enabled" in state:
+            self._auto_queue_enabled = bool(state["enabled"])
+            self._settings.set("auto_queue_enabled", self._auto_queue_enabled)
+        mode = str(state.get("mode") or "")
+        if mode in self._AUTO_QUEUE_MODE_CYCLE:
+            self._settings.set("auto_queue_mode", mode)
+        cfg = state.get("config") or {}
+        if cfg and self._auto_queue_enabled:
+            name = str(cfg.get("display_name") or cfg.get("event_name") or "Event")
+            self._auto_queue_detail = f"Event mode: {name}"
+        elif not self._auto_queue_enabled:
+            self._auto_queue_detail = ""
+        self._render_auto_queue_status()
+
+    def _on_event_reentry_prompt(self, payload: dict[str, Any]) -> None:
+        from .event_mode_dialog import EventReentryDialog
+
+        dlg = EventReentryDialog(payload, self if isinstance(self, QWidget) else None)
+
+        def _respond(request_id: str, action: str, currency: str, quantity: int) -> None:
+            if action == "switch_event":
+                self._open_event_mode_picker()
+            resp = getattr(self._session, "respond_event_reentry", None)
+            if callable(resp):
+                resp(request_id, action, currency, quantity)
+
+        dlg.responded.connect(_respond)
+        dlg.show()
+        dlg.raise_()
+        self._event_reentry_dialog = dlg
 
     def _clear_loss_safeguard(self) -> None:
         """Reset the consecutive-loss safeguard and immediately resume Auto-queue."""
@@ -1387,14 +1481,19 @@ class CompactCoachPanel(QWidget):
         grind = getattr(self, "_grind_enabled", False)
         mode = self._current_auto_queue_mode()
         winning_on = enabled and mode == "winning"
+        draft_on = enabled and mode == "draft"
         self.auto_queue_btn.setText(f"Auto-queue: {'On' if enabled else 'Off'}")
         self.auto_queue_btn.setProperty("state", "on" if enabled else "off")
         theme.repolish(self.auto_queue_btn)
         if hasattr(self, "auto_queue_winning_btn"):
-            mode_label = "Winning decks" if mode == "winning" else "Same deck"
+            mode_label = (
+                "Winning decks" if mode == "winning" else "Draft / Event" if mode == "draft" else "Same deck"
+            )
             self.auto_queue_winning_btn.setText(f"Queue mode: {mode_label}")
-            self.auto_queue_winning_btn.setProperty("state", "on" if winning_on else "off")
+            self.auto_queue_winning_btn.setProperty("state", "on" if (winning_on or draft_on) else "off")
             theme.repolish(self.auto_queue_winning_btn)
+        if hasattr(self, "choose_event_btn"):
+            self.choose_event_btn.setVisible(mode == "draft")
         raw_detail = self._auto_queue_detail.strip()
         detail = raw_detail
         if detail and not detail.lower().startswith("auto-queue"):
@@ -1406,6 +1505,8 @@ class CompactCoachPanel(QWidget):
                 btn_text = "Grind: On"
             elif winning_on:
                 btn_text = "Queue: Winning"
+            elif draft_on:
+                btn_text = "Queue: Event"
             elif enabled:
                 btn_text = "Queue: On"
             else:
@@ -1506,6 +1607,27 @@ class CompactCoachPanel(QWidget):
         volume_signal = getattr(self._session, "volumeChanged", None)
         if volume_signal is not None:
             volume_signal.connect(self._sync_volume_slider)
+        events_signal = getattr(self._session, "availableEventsChanged", None)
+        if events_signal is not None:
+            events_signal.connect(self._on_available_events)
+        deck_built_signal = getattr(self._session, "eventDeckBuilt", None)
+        if deck_built_signal is not None:
+            deck_built_signal.connect(self._on_event_deck_built)
+        eq_state_signal = getattr(self._session, "eventQueueStateChanged", None)
+        if eq_state_signal is not None:
+            eq_state_signal.connect(self._on_event_queue_state)
+        reentry_signal = getattr(self._session, "eventReentryPromptRequested", None)
+        if reentry_signal is not None:
+            reentry_signal.connect(self._on_event_reentry_prompt)
+        deck_list_signal = getattr(self._session, "deckListChanged", None)
+        if deck_list_signal is not None:
+            deck_list_signal.connect(
+                lambda decks, _err="": (
+                    self._event_mode_dialog.set_decks(decks)
+                    if getattr(self, "_event_mode_dialog", None) is not None
+                    else None
+                )
+            )
 
     def _on_volume_slider_changed(self, value: int) -> None:
         pct = max(0, min(100, int(value)))
@@ -1999,7 +2121,17 @@ class CompactCoachPanel(QWidget):
             self._auto_queue_detail = val
             self._render_auto_queue_status()
             notice = val.strip()
-            if notice != prev_detail and notice.lower().startswith(("auto-queue stopped", "paused:")):
+            if notice != prev_detail and notice.lower().startswith(
+                (
+                    "auto-queue stopped",
+                    "paused:",
+                    "waiting for arena's home",
+                    "arena is on ",
+                    "waiting for autoplay",
+                    "cannot start ",
+                    "draft autoplay paused",
+                )
+            ):
                 self.append_log(notice, role="status")
                 if not (self._last_state.get("match_id") and self._last_state.get("turn")):
                     self._now = (datetime.datetime.now().strftime("%H:%M"), notice)

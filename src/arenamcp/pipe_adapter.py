@@ -562,6 +562,29 @@ class PipeAdapter:
                 )
             elif action == "set_auto_queue":
                 coach.set_auto_queue(cmd.get("enabled") is True)
+            elif action == "set_auto_queue_mode":
+                coach.set_auto_queue_mode(str(cmd.get("mode") or "same"))
+            elif action == "list_available_events":
+                threading.Thread(target=coach.list_available_events, daemon=True).start()
+            elif action == "build_event_deck":
+                threading.Thread(target=coach.build_event_deck, args=(dict(cmd),), daemon=True).start()
+            elif action == "configure_event_queue":
+                try:
+                    coach.configure_event_queue(dict(cmd.get("config") or cmd))
+                except ValueError as exc:
+                    logger.warning("Rejected event queue configuration: %s", exc)
+                    self.status("AUTO_QUEUE_DETAIL", str(exc))
+            elif action == "respond_event_reentry":
+                threading.Thread(
+                    target=coach.respond_event_reentry,
+                    args=(
+                        str(cmd.get("request_id") or ""),
+                        str(cmd.get("action") or "pause"),
+                        str(cmd.get("currency") or ""),
+                        int(cmd.get("quantity") or 0),
+                    ),
+                    daemon=True,
+                ).start()
             elif action == "clear_loss_safeguard":
                 coach.clear_loss_safeguard(enable_auto_queue=cmd.get("enable_auto_queue", True) is not False)
             elif action == "set_autopilot":
@@ -1221,6 +1244,18 @@ class PipeAdapter:
 
     def emit_deck_op(self, payload: dict[str, Any]) -> None:
         self._emit({"type": "deck_op", **payload})
+
+    def emit_available_events(self, payload: dict[str, Any]) -> None:
+        self._emit({"type": "available_events", **payload})
+
+    def emit_event_deck_built(self, payload: dict[str, Any]) -> None:
+        self._emit({"type": "event_deck_built", **payload})
+
+    def emit_event_queue_state(self, payload: dict[str, Any]) -> None:
+        self._emit({"type": "event_queue_state", **payload})
+
+    def emit_event_reentry_prompt(self, payload: dict[str, Any]) -> None:
+        self._emit({"type": "event_reentry_prompt", **payload})
 
     def _handle_deck_bridge(self, method: str, *args: Any) -> None:
         """Run one deck-library bridge call (collection/edit/craft) on the coach."""

@@ -5717,6 +5717,8 @@ class AutopilotEngine(
                 "Non-mana payment choices are incomplete — select payment manually", game_state
             )
             return True
+        if poll.get("payment_selection"):
+            game_state = {**game_state, "_payment_selection_approved": True}
         # Feed the tracker the current decision (or None) so any in-flight
         # submission settles as ADVANCED/REJECTED before we act.
         from arenamcp.request_tracker import request_window
