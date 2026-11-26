@@ -38,6 +38,17 @@ _EXCLUDED_BLADE_BEHAVIORS = frozenset(
     {"Queue", "Hidden", "ColorChallenge", "Tutorial", "DirectChallenge", "BotMatch", "None"}
 )
 _UNPAID_MODULES = frozenset({"Join", "Pay", "PayEntry"})
+_POST_DECK_SUBMIT_MODULES = frozenset(
+    {
+        "CreateMatch",
+        "TransitionToMatches",
+        "WinLossGate",
+        "WinNoGate",
+        "ClaimPrize",
+        "Complete",
+        "MatchResults",
+    }
+)
 _FREE_CURRENCIES = frozenset({"Free", "None"})
 
 
@@ -869,6 +880,8 @@ def get_constructed_deck_select(adapter: Any, timeout: float | None) -> dict[str
     decks_ref = ops.get(ctrl, "_decks", depth=1, optional=True)
     ev_ctx = ops.get(ctrl, "_event", optional=True)
     pe = ops.get(ev_ctx, "PlayerEvent", optional=True)
+    course = ops.get(pe, "CourseData", optional=True)
+    mod = ops.get(course, "CurrentModule", optional=True)
     info = ops.get(pe, "EventInfo", optional=True)
     ev_name = ops.get(info, "InternalEventName", optional=True)
     is_precon = ops.get(info, "IsPreconEvent", optional=True)
@@ -886,10 +899,22 @@ def get_constructed_deck_select(adapter: Any, timeout: float | None) -> dict[str
         "is_open": True,
         "controller": found,
         "event_name": str(values[ev_name["ref"]] or ""),
+        "module": enum_name(values[mod["ref"]]),
         "is_precon": bool(values[is_precon["ref"]]),
         "deck_select_format": str(values[deck_fmt["ref"]] or ""),
         "decks": deck_list,
     }
+
+
+def close_constructed_deck_select(adapter: Any, timeout: float | None) -> dict[str, Any]:
+    """Close ConstructedDeckSelectController via OnBack to return to the event page."""
+    found = adapter._find(CONSTRUCTED_DECK_SELECT_CONTROLLER, timeout)
+    if not found:
+        return {"ok": True, "is_open": False}
+    ops = _Ops()
+    ops.call(H(found), "OnBack")
+    adapter._run(ops, timeout)
+    return {"ok": True, "submitted_type": "CloseDeckSelect"}
 
 
 def select_event_deck(adapter: Any, command: dict[str, Any], timeout: float | None) -> dict[str, Any]:
@@ -908,6 +933,8 @@ def select_event_deck(adapter: Any, command: dict[str, Any], timeout: float | No
     pe_h, wrapper_h = _resolve_event_context_handle(adapter, event_name, timeout)
     ops = _Ops()
     pe = H(pe_h)
+    course = ops.get(pe, "CourseData", optional=True)
+    mod = ops.get(course, "CurrentModule", optional=True)
     info = ops.get(pe, "EventInfo")
     is_precon = ops.get(info, "IsPreconEvent", optional=True)
     skip_val = ops.get(info, "SkipDeckValidation", optional=True)
@@ -915,6 +942,24 @@ def select_event_deck(adapter: Any, command: dict[str, Any], timeout: float | No
     deck_fmt = ops.get(ux, "DeckSelectFormat", optional=True)
     ds_ctrl = ops.add("find", **{"class": CONSTRUCTED_DECK_SELECT_CONTROLLER}, depth=0, optional=True)
     values = adapter._run(ops, timeout)
+
+    mod_name = enum_name(values[mod["ref"]])
+    if mod_name in _POST_DECK_SUBMIT_MODULES:
+        ds_h = handle(values[ds_ctrl["ref"]])
+        if ds_h:
+            try:
+                ops_back = _Ops()
+                ops_back.call(H(ds_h), "OnBack")
+                adapter._run(ops_back, timeout)
+            except Exception:
+                pass
+        return {
+            "ok": True,
+            "already_submitted": True,
+            "module": mod_name,
+            "event_name": event_name,
+            "deck_id": deck_id,
+        }
 
     fmt_name = str(values[deck_fmt["ref"]] or "")
     precon = bool(values[is_precon["ref"]])
@@ -1058,7 +1103,7 @@ def resign_event(adapter: Any, command: dict[str, Any], timeout: float | None) -
     if str(values[name["ref"]] or "") != event_name:
         raise AdapterError("Event name mismatch during resign")
     mod_name = enum_name(values[mod["ref"]])
-    if mod_name not in {"WinNoGate", "TransitionToMatches", "WinLossGate"}:
+    if mod_name not in {"CreateMatch", "WinNoGate", "TransitionToMatches", "WinLossGate"}:
         raise AdapterError(f"Cannot resign event in module {mod_name!r}")
     fees = _normalize_entry_fees(values[fees_ref["ref"]], wallet)
     if require_free and not any(f["is_free"] for f in fees):

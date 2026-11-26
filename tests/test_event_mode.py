@@ -874,6 +874,7 @@ def test_pipe_adapter_and_dialogs_round_trip(qtbot=None):
 
     # Verify BEPINEX_REFLECT_COMMANDS includes all new commands.
     for cmd_name in (
+        "close_constructed_deck_select",
         "list_available_events",
         "get_table_draft_state",
         "ready_table_draft",
@@ -1305,3 +1306,334 @@ def test_color_challenge_excluded_from_events_and_go_to_event_loop_pauses():
     driver.resume()
     driver._step()
     assert driver.run.go_to_event_attempts == 0
+
+
+def test_constructed_deck_select_guards_resubmit_and_closes_stale_ui():
+    world = _events_world()
+    c_alch = _event_context(
+        world,
+        1100,
+        name="Alchemy_Event_2026",
+        public_name="Alchemy Event",
+        format_type="Constructed",
+        module="CreateMatch",
+        is_precon=True,
+        deck_fmt="",
+        fees=[_fee(world, 1120, "Gem", 375)],
+    )
+    ev_mgr_h = world.objects[30]["EventManager"].handle
+    list_h = world.objects[ev_mgr_h]["EventContexts"].handle
+    world.objects[list_h]["$items"].append(Obj(c_alch))
+    world.results[(ev_mgr_h, "GetEventContext")] = lambda _args: Obj(c_alch)
+
+    d_sum = world.add(
+        1150,
+        "ClientDeckSummary",
+        DeckId=Obj(world.add(1151, "Guid", **_guid_fields(DECK_GUID_1))),
+        Name="Wondrous Wizardry",
+        Format="Alchemy",
+    )
+    d_obj = world.add(1152, "Client_Deck", Summary=Obj(d_sum))
+    decks_list = world.add(1153, "List", **{"$items": [Obj(d_obj)]})
+    ds_ctrl = world.add(
+        1160,
+        "ConstructedDeckSelectController",
+        _event=Obj(c_alch),
+        _decks=Obj(decks_list),
+    )
+    world.finds["ConstructedDeckSelectController"] = ds_ctrl
+
+    adapter = MacBridgeAdapter(world.send)
+    info = adapter.handle({"action": "get_constructed_deck_select"})
+    assert info["ok"] is True
+    assert info["module"] == "CreateMatch"
+
+    # Already past DeckSelect -> must NOT call SubmitEventDeck, MUST call OnBack.
+    world.calls.clear()
+    res = adapter.handle(
+        {"action": "select_event_deck", "event_name": "Alchemy_Event_2026", "deck_id": DECK_GUID_1}
+    )
+    assert res["ok"] is True
+    assert res.get("already_submitted") is True
+    assert not any(method == "SubmitEventDeck" for _h, method, _a in world.calls)
+    assert (ds_ctrl, "OnBack", []) in world.calls
+
+    # Direct close_constructed_deck_select invokes OnBack; returns is_open=False when closed.
+    world.calls.clear()
+    closed = adapter.handle({"action": "close_constructed_deck_select"})
+    assert closed == {"ok": True, "submitted_type": "CloseDeckSelect"}
+    assert (ds_ctrl, "OnBack", []) in world.calls
+    world.finds.pop("ConstructedDeckSelectController")
+    assert adapter.handle({"action": "close_constructed_deck_select"}) == {"ok": True, "is_open": False}
+
+    # Opposite control: when CurrentModule is still DeckSelect, SubmitEventDeck IS called.
+    world.finds["ConstructedDeckSelectController"] = ds_ctrl
+    world.objects[1109]["CurrentModule"] = {"e": "DeckSelect", "v": 1}
+    world.calls.clear()
+    res_submit = adapter.handle(
+        {"action": "select_event_deck", "event_name": "Alchemy_Event_2026", "deck_id": DECK_GUID_1}
+    )
+    assert res_submit["ok"] is True
+    assert not res_submit.get("already_submitted")
+    assert any(method == "SubmitEventDeck" for _h, method, _a in world.calls)
+
+    # CreateMatch is accepted by event_play (pressing MainButtonComponent PlayButton_OnClick).
+    world.finds["EventPage.EventPageContentController"] = world.add(
+        1170, "EventPageContentController", _currentEventContext=Obj(c_alch)
+    )
+    play_cb = world.add(1171, "UnityAction")
+    world.finds["EventPage.Components.MainButtonComponent"] = world.add(
+        1172, "MainButtonComponent", PlayButton_OnClick=Obj(play_cb)
+    )
+    world.objects[1109]["CurrentModule"] = {"e": "CreateMatch", "v": 1}
+    world.calls.clear()
+    play_res = adapter.handle({"action": "event_play", "event_name": "Alchemy_Event_2026"})
+    assert play_res["ok"] is True and play_res["module"] == "CreateMatch"
+    assert (play_cb, "Invoke", []) in world.calls
+
+    # resign_event accepts CreateMatch on a free event and refuses Join (opposite control).
+    world.results[(ev_mgr_h, "GetEventContext")] = lambda _args: Obj(411)  # Midweek_Magic_TST
+    world.objects[409]["CurrentModule"] = {"e": "CreateMatch", "v": 1}
+    world.calls.clear()
+    resign_ok = adapter.handle({"action": "resign_event", "event_name": "Midweek_Magic_TST"})
+    assert resign_ok["ok"] is True and resign_ok["submitted_type"] == "EventResign"
+    assert (410, "ResignFromEvent", []) in world.calls
+
+    world.objects[409]["CurrentModule"] = {"e": "Join", "v": 1}
+    resign_bad = adapter.handle({"action": "resign_event", "event_name": "Midweek_Magic_TST"})
+    assert resign_bad["ok"] is False and "Cannot resign" in resign_bad["error"]
+
+
+def test_driver_alchemy_event_narrates_and_never_resubmits_locked_deck():
+    # Reported incident: Alchemy_Event_2026 buy-in -> DeckSelect -> server advances to CreateMatch
+    # while Arena UI lingers on DeckSelect -> poll 5 closes DeckSelect instead of re-submitting -> Queue!
+    bridge, commands = _scripted_bridge(
+        [
+            {"ok": True},  # Poll 0a: non-Home screen
+            {"ok": True},  # Poll 0b: still non-Home (speech must dedupe)
+            {"ok": True, "home": True},  # Poll 1: Home -> go_to_event
+            {"ok": True, "event_page": True},  # Poll 2: EventPage PayEntry -> enter_event
+            {"ok": True, "event_page": True},  # Poll 3: EventPage DeckSelect -> event_play
+            {"ok": True, "constructed_deck_select": True},  # Poll 4: submit deck
+            {"ok": True, "constructed_deck_select": True},  # Poll 5: stale UI, module=CreateMatch
+            {"ok": True, "event_page": True},  # Poll 6: back on EventPage CreateMatch -> event_play
+        ],
+        get_event_page=[
+            {
+                "is_open": True,
+                "event_name": "Alchemy_Event_2026",
+                "display_name": "Alchemy Event",
+                "module": "PayEntry",
+                "is_free": False,
+                "entry_fees": [{"currency_type": "Gem", "quantity": 375, "affordable": True}],
+            },
+            {
+                "is_open": True,
+                "event_name": "Alchemy_Event_2026",
+                "display_name": "Alchemy Event",
+                "module": "DeckSelect",
+                "is_free": False,
+            },
+            {
+                "is_open": True,
+                "event_name": "Alchemy_Event_2026",
+                "display_name": "Alchemy Event",
+                "module": "CreateMatch",
+                "is_free": False,
+            },
+        ],
+        get_constructed_deck_select=[
+            {
+                "is_open": True,
+                "event_name": "Alchemy_Event_2026",
+                "module": "DeckSelect",
+                "deck_select_format": "Alchemy",
+                "decks": [{"deck_id": DECK_GUID_1, "name": "Wondrous Wizardry", "format": "Alchemy"}],
+            },
+            {
+                "is_open": True,
+                "event_name": "Alchemy_Event_2026",
+                "module": "CreateMatch",
+                "deck_select_format": "Alchemy",
+                "decks": [{"deck_id": DECK_GUID_1, "name": "Wondrous Wizardry", "format": "Alchemy"}],
+            },
+        ],
+        go_to_event={"ok": True},
+        enter_event={"ok": True},
+        event_play={"ok": True},
+        select_event_deck={"ok": True},
+        close_constructed_deck_select={"ok": True},
+    )
+    approvals = EntryApprovalStore()
+    tok = approvals.mint("Alchemy_Event_2026", "Gem", 375)
+    cfg = EventQueueConfig(
+        event_name="Alchemy_Event_2026",
+        display_name="Alchemy Event",
+        category="constructed_event",
+        is_free=False,
+        entry_currency="Gem",
+        entry_quantity=375,
+        deck_id=DECK_GUID_1,
+    )
+    spoken: list[str] = []
+    driver = DraftEventDriver(
+        bridge_fn=lambda: bridge,
+        tracker_fn=lambda: None,
+        primer_service=SimpleNamespace(get=lambda *_: None, quick=lambda *_: None, ensure=lambda *_: None),
+        speak_fn=spoken.append,
+        event_mode_fn=lambda: cfg,
+        consume_entry_approval_fn=lambda ev, cur, qty: approvals.consume(tok, ev, cur, qty),
+        sleep=lambda _s: None,
+    )
+    driver.set_enabled(True)
+    for _ in range(8):
+        driver._step()
+
+    actions = [c[0] for c in commands]
+    assert actions.count("select_event_deck") == 1
+    assert "close_constructed_deck_select" in actions
+    assert driver.paused_reason == ""
+    assert driver.run.queued_at > 0
+
+    # Speech/Subtitles narrated every transition, and repeated Home wait was spoken once.
+    home_waits = [line for line in spoken if "Click Home in Arena" in line]
+    assert len(home_waits) == 1
+    assert any("Opening Alchemy Event." in line for line in spoken)
+    assert any("Entered Alchemy Event for 375 Gems." in line for line in spoken)
+    assert any("Opening deck selection for Alchemy Event." in line for line in spoken)
+    assert any("Selected Wondrous Wizardry for Alchemy Event." in line for line in spoken)
+    assert any("Deck is locked in for Alchemy Event." in line for line in spoken)
+    assert any("Queueing for Alchemy Event." in line for line in spoken)
+
+    # Opposite control: if module remains DeckSelect after 2 submits, driver pauses and speaks it.
+    stuck_bridge, stuck_cmds = _scripted_bridge(
+        [
+            {"ok": True, "constructed_deck_select": True},
+            {"ok": True, "constructed_deck_select": True},
+            {"ok": True, "constructed_deck_select": True},
+        ],
+        get_constructed_deck_select={
+            "is_open": True,
+            "event_name": "Alchemy_Event_2026",
+            "module": "DeckSelect",
+            "deck_select_format": "Alchemy",
+            "decks": [{"deck_id": DECK_GUID_1, "name": "Wondrous Wizardry", "format": "Alchemy"}],
+        },
+        select_event_deck={"ok": True},
+    )
+    stuck_spoken: list[str] = []
+    stuck_driver = DraftEventDriver(
+        bridge_fn=lambda: stuck_bridge,
+        tracker_fn=lambda: None,
+        primer_service=SimpleNamespace(get=lambda *_: None, quick=lambda *_: None, ensure=lambda *_: None),
+        speak_fn=stuck_spoken.append,
+        event_mode_fn=lambda: cfg,
+        sleep=lambda _s: None,
+    )
+    stuck_driver.set_enabled(True)
+    for _ in range(3):
+        stuck_driver._step()
+    assert [c[0] for c in stuck_cmds].count("select_event_deck") == 2
+    assert "did not accept after 2 tries" in stuck_driver.paused_reason
+    assert any("Event autoplay paused:" in line for line in stuck_spoken)
+
+
+def test_driver_settles_slow_entry_and_speaks_complete_only_once():
+    # 1. Slow JoinAndPay transition: poll right after enter_event still sees PayEntry while < 8s.
+    #    Driver must wait cleanly without falsely marking finished or re-calling enter_event.
+    bridge, commands = _scripted_bridge(
+        [
+            {"ok": True, "event_page": True},  # Poll 1: PayEntry -> enter_event
+            {"ok": True, "event_page": True},  # Poll 2: still PayEntry -> must settle/wait, NOT finish
+            {"ok": True, "event_page": True},  # Poll 3: DeckSelect -> event_play
+            {"ok": True, "event_page": True},  # Poll 4: Complete (1st time)
+            {"ok": True, "event_page": True},  # Poll 5: Complete (2nd time -> must NOT re-speak)
+        ],
+        get_event_page=[
+            {
+                "is_open": True,
+                "event_name": "Alchemy_Event_2026",
+                "display_name": "Alchemy Event",
+                "module": "PayEntry",
+                "is_free": False,
+                "entry_fees": [{"currency_type": "Gem", "quantity": 375, "affordable": True}],
+            },
+            {
+                "is_open": True,
+                "event_name": "Alchemy_Event_2026",
+                "display_name": "Alchemy Event",
+                "module": "PayEntry",
+                "is_free": False,
+                "entry_fees": [{"currency_type": "Gem", "quantity": 375, "affordable": True}],
+            },
+            {
+                "is_open": True,
+                "event_name": "Alchemy_Event_2026",
+                "display_name": "Alchemy Event",
+                "module": "DeckSelect",
+                "is_free": False,
+            },
+            {
+                "is_open": True,
+                "event_name": "Alchemy_Event_2026",
+                "display_name": "Alchemy Event",
+                "module": "Complete",
+                "current_wins": 5,
+                "current_losses": 2,
+                "max_prize_wins": 7,
+            },
+            {
+                "is_open": True,
+                "event_name": "Alchemy_Event_2026",
+                "display_name": "Alchemy Event",
+                "module": "Complete",
+                "current_wins": 5,
+                "current_losses": 2,
+                "max_prize_wins": 7,
+            },
+        ],
+        enter_event={"ok": True},
+        event_play={"ok": True},
+    )
+    approvals = EntryApprovalStore()
+    tok = approvals.mint("Alchemy_Event_2026", "Gem", 375)
+    cfg = EventQueueConfig(
+        event_name="Alchemy_Event_2026",
+        display_name="Alchemy Event",
+        category="constructed_event",
+        is_free=False,
+        entry_currency="Gem",
+        entry_quantity=375,
+        deck_id=DECK_GUID_1,
+    )
+    spoken: list[str] = []
+    completed: list[dict] = []
+    driver = DraftEventDriver(
+        bridge_fn=lambda: bridge,
+        tracker_fn=lambda: None,
+        primer_service=SimpleNamespace(get=lambda *_: None, quick=lambda *_: None, ensure=lambda *_: None),
+        speak_fn=spoken.append,
+        event_mode_fn=lambda: cfg,
+        consume_entry_approval_fn=lambda ev, cur, qty: approvals.consume(tok, ev, cur, qty),
+        on_run_complete_fn=completed.append,
+        sleep=lambda _s: None,
+    )
+    driver.set_enabled(True)
+    driver._step()  # Poll 1: enter_event
+    assert [c[0] for c in commands].count("enter_event") == 1
+    assert driver.run.entered_or_played is False
+    driver._step()  # Poll 2: still PayEntry within settle window
+    assert [c[0] for c in commands].count("enter_event") == 1
+    assert driver.run.finished is False
+    assert completed == []
+    assert not any("requires entry confirmation" in s for s in spoken)
+
+    driver._step()  # Poll 3: DeckSelect -> sets entered_or_played & opens DeckSelect
+    assert driver.run.entered_or_played is True
+    assert [c[0] for c in commands].count("event_play") == 1
+
+    driver._step()  # Poll 4: Complete
+    driver._step()  # Poll 5: Complete again
+    complete_lines = [s for s in spoken if s.startswith("Event complete")]
+    assert complete_lines == ["Event complete 5-2."]
+    assert len(completed) == 1

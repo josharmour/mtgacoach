@@ -103,7 +103,7 @@ PASSTHROUGH = {"ping", "reflect_batch"}
 # plugin's reply ({"scenes": ...}) lacks the pack fields the draft driver reads.
 BEPINEX_RUNTIME = "bepinex"
 BEPINEX_REFLECT_COMMANDS = frozenset(
-    {"confirm_draft_pick", "create_deck", "dismiss_rewards_panel", "dismiss_survey", "enter_event",
+    {"close_constructed_deck_select", "confirm_draft_pick", "create_deck", "dismiss_rewards_panel", "dismiss_survey", "enter_event",
      "event_play", "finish_sealed_open", "get_collection", "get_constructed_deck_select",
      "get_deck_editor", "get_decks", "dev_challenge_preflight", "dev_challenge_record_offer",
      "dev_challenge_verify_offer", "get_draft_state", "get_event_page", "get_limited_pool",
@@ -1019,6 +1019,7 @@ class MacBridgeAdapter:
         return {"ok": True, "submitted_type": "LimitedDeckDone"}
 
     _EVENT_PLAY_MODULES = {
+        "CreateMatch",
         "Draft",
         "HumanDraft",
         "DeckSelect",
@@ -1606,6 +1607,11 @@ class MacBridgeAdapter:
         from arenamcp.event_bridge import get_constructed_deck_select
 
         return get_constructed_deck_select(self, timeout)
+
+    def _cmd_close_constructed_deck_select(self, command: dict, timeout: float | None) -> dict:
+        from arenamcp.event_bridge import close_constructed_deck_select
+
+        return close_constructed_deck_select(self, timeout)
 
     def _cmd_select_event_deck(self, command: dict, timeout: float | None) -> dict:
         from arenamcp.event_bridge import select_event_deck

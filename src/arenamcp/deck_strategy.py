@@ -26,10 +26,14 @@ STUDY_PLAYBOOK_VERSION = 3
 PLAYBOOK_VERSION = 4
 
 _PROSE_GRP_ID_RE = re.compile(
-    r"\s*\((?:(?:grp_id|id)\s*:?\s*|#)?\d{5,7}(?:\s*,\s*(?:(?:grp_id|id)\s*:?\s*|#)?\d{5,7})*\)",
+    r"\s*(?:\((?:(?:grp_id|id)\s*:?\s*|#)?\d{5,7}(?:\s*,\s*(?:(?:grp_id|id)\s*:?\s*|#)?\d{5,7})*\)"
+    r"|\[(?:(?:grp_id|id)\s*:?\s*|#)?\d{5,7}(?:\s*,\s*(?:(?:grp_id|id)\s*:?\s*|#)?\d{5,7})*\])",
     re.IGNORECASE,
 )
-_NO_DESIGNATED_COMMANDER_RE = re.compile(r",?\s*\bno designated commander\b", re.IGNORECASE)
+_NO_DESIGNATED_COMMANDER_RE = re.compile(
+    r",?\s*\bno designated commander\b|,\s*\bno commander(?=\s*\))",
+    re.IGNORECASE,
+)
 
 
 def clean_deck_prose(text: object) -> str:

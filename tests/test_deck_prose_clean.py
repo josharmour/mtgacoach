@@ -108,3 +108,24 @@ def test_report_html_and_playbook_report_clean_all_prose_fields():
     for gid in ("106625", "106628", "106648", "106654", "106660", "106732", "106733"):
         assert gid not in dumped
     assert "no designated commander" not in dumped.lower()
+
+
+def test_clean_deck_prose_strips_square_bracket_ids_and_parenthetical_no_commander():
+    raw = (
+        "Izzet spells-to-bodies aggro-midrange (Standard-style 60, no commander). "
+        "Fill the graveyard with cheap instants/sorceries to discount and empower "
+        "Tolarian Terror [82124], Ghitu Lavarunner [94051] and Enigma Drake [94085]; "
+        "ride cast/draw payoffs (Archmage [93743], Balmor [93950], Mischievous Mystic [93760]) "
+        "into a turn ~6-7 top-end close via Ovika [94091] goblin floods or Niv-Mizzet [93836] + burn drawing the deck out."
+    )
+    cleaned = clean_deck_prose(raw)
+    for gid in ("82124", "94051", "93743", "93950", "93760", "94091", "93836"):
+        assert gid not in cleaned
+    assert "(Standard-style 60)" in cleaned
+    assert "no commander" not in cleaned.lower()
+    assert "Tolarian Terror, Ghitu Lavarunner and Enigma Drake" in cleaned
+    assert "(Archmage, Balmor, Mischievous Mystic)" in cleaned
+
+    # Opposite control: prose about having no commander in play and short brackets stay intact.
+    control = "If there is no commander in play (when you have no commander), create a [1/1] Servo token [OK] (2026)."
+    assert clean_deck_prose(control) == control
