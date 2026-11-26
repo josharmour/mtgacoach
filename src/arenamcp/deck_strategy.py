@@ -25,6 +25,27 @@ LEGACY_PLAYBOOK_VERSION = 2
 STUDY_PLAYBOOK_VERSION = 3
 PLAYBOOK_VERSION = 4
 
+_PROSE_GRP_ID_RE = re.compile(
+    r"\s*\((?:(?:grp_id|id)\s*:?\s*|#)?\d{5,7}(?:\s*,\s*(?:(?:grp_id|id)\s*:?\s*|#)?\d{5,7})*\)",
+    re.IGNORECASE,
+)
+_NO_DESIGNATED_COMMANDER_RE = re.compile(r",?\s*\bno designated commander\b", re.IGNORECASE)
+
+
+def clean_deck_prose(text: object) -> str:
+    """Strip internal Arena card IDs like (106625) and 'no designated commander' boilerplate."""
+    raw = str(text or "")
+    if not raw:
+        return ""
+    cleaned = _PROSE_GRP_ID_RE.sub("", raw)
+    cleaned = _NO_DESIGNATED_COMMANDER_RE.sub("", cleaned)
+    cleaned = re.sub(r"\(\s*\)", "", cleaned)
+    cleaned = re.sub(r"\(\s*,\s*", "(", cleaned)
+    cleaned = re.sub(r"\s*,\s*\)", ")", cleaned)
+    cleaned = re.sub(r"\s+([,.;:)])", r"\1", cleaned)
+    return re.sub(r" {2,}", " ", cleaned).strip()
+
+
 DECK_ANALYSIS_PROMPT = (
     """Analyze every card in the supplied Magic deck using its supplied Oracle text, costs, types and faces. Build a reusable playbook for both coaching and autoplay, not a generic archetype summary. Explicitly analyze each designated commander; a legendary card is not necessarily the commander. If there is no commander, analyze the deck's engines normally.
 
@@ -60,7 +81,7 @@ Return ONLY JSON with this shape. Use 3-6 meaningful mechanisms (fewer for a sim
 }
 Identify the deck's game-changing exceptions to normal heuristics in decision_rules. Link each exception to supported mechanism IDs; do not invent an exception for every card. Allowed decisions: combat, sacrifice, discard, development, mana, targeting, tutor, commander_zone, mulligan, all. Include resource/recovery tradeoffs where this deck supports them. The rule must state WHEN it is better and WHEN NOT; 'tokens are disposable' and 'protect the commander' are only baselines, never universal conclusions.
 
-Before returning, check that every designated commander has a policy AND a supported mechanism, every game-changing card has been considered, every cited rule exists, and no line attributes a cast trigger to a non-cast event. Do not assume named cards work as remembered when the provided rules say otherwise."""
+Before returning, check that every designated commander has a policy AND a supported mechanism, every game-changing card has been considered, every cited rule exists, and no line attributes a cast trigger to a non-cast event. Never include numeric Arena card IDs like (106625) in human-readable prose fields (archetype, primary_plan, backup_plan, spoken_summary); keep numeric IDs only in JSON keys and cards arrays. Do not assume named cards work as remembered when the provided rules say otherwise."""
 )
 
 
@@ -306,6 +327,10 @@ class DeckPlaybook:
 
         for key in ("archetype", "primary_plan", "backup_plan", "spoken_summary"):
             require_text(data.get(key))
+            if key in data and isinstance(data[key], str):
+                cleaned = clean_deck_prose(data[key])
+                if cleaned:
+                    data[key] = cleaned
         walkers = walkers_in(catalog.values())
         if walkers and not additional_activation(catalog.values()):
             for key in ("spoken_summary", "primary_plan", "backup_plan"):

@@ -707,7 +707,9 @@ class CompactCoachPanel(QWidget):
 
         self.more_btn = QPushButton("Speech && voices")
         self.more_btn.setObjectName("moreButton")
-        self.more_btn.setToolTip("Speech on/off, voice engine, advice or announcers, and voice preview")
+        self.more_btn.setToolTip(
+            "Voice engine, advice or announcers, volume (0% = silent subtitles), and voice preview"
+        )
         self.more_btn.clicked.connect(self._show_voice_style)
         controls.addWidget(self.more_btn)
         shell.addWidget(self.primary_controls)
@@ -975,7 +977,7 @@ class CompactCoachPanel(QWidget):
         self.volume_slider = QSlider(Qt.Horizontal)
         self.volume_slider.setObjectName("voiceVolumeSlider")
         self.volume_slider.setAccessibleName("Coach voice volume")
-        self.volume_slider.setToolTip("Coach voice volume")
+        self.volume_slider.setToolTip("Coach voice volume — set to 0% for silent Subtitles")
         self.volume_slider.setRange(0, 100)
         self.volume_slider.setSingleStep(5)
         self.volume_slider.setPageStep(10)

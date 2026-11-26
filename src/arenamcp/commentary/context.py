@@ -380,7 +380,9 @@ def deck_overview(coach, snapshot):
         and book.identity == key[1]
     ):
         return None
-    summary = book.data.get("spoken_summary")
+    from arenamcp.deck_strategy import clean_deck_prose
+
+    summary = clean_deck_prose(book.data.get("spoken_summary"))
     from .overview_quality import speakable_overview
 
     if not speakable_overview(summary):

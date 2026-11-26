@@ -40,6 +40,7 @@ class TtsManager(QObject):
         self._chatterbox_lock = threading.Lock()
         self._remote_cancel: threading.Event | None = None
         self._remote_generation: int | None = None
+        self._silent_generation: int | None = None
         self._speech_valid = lambda: True
         from .pcm_stream import PcmStreamPlayer
 
@@ -276,9 +277,31 @@ class TtsManager(QObject):
             self._remote_cancel.set()
         self._pending_request = None
         self._remote_generation = None
+        self._silent_generation = None
         self._last_text = "" if private else text
         self._last_speed = float(speed)
         self._last_text_generation = self._generation
+
+        is_preview = (speech_id or "").startswith("preview:")
+        if req_volume <= 0.0 and not is_preview:
+            # Volume 0% skips TTS audio synthesis while completing the speech lifecycle
+            # so Subtitles and the announcer turn-taking loop keep running silently.
+            self._selected_provider = selected
+            self._resolve_tracked("superseded")
+            self._generation += 1
+            self._record_gen_volume(self._generation, req_volume)
+            self._last_text = ""
+            self._last_text_generation = -1
+            self._remote_generation = None
+            self._silent_generation = self._generation
+            self._stop_playback()
+            self._stop_say()
+            if speech_id:
+                gen = self._generation
+                self._tracked = (gen, speech_id)
+                self.speechStatus.emit(speech_id, "started")
+                QTimer.singleShot(0, lambda g=gen: self._complete(g, "finished"))
+            return
 
         if selected == qwen_public.PROVIDER:
             self._selected_provider = selected
@@ -460,6 +483,8 @@ class TtsManager(QObject):
         # re-speak a cancelled utterance after the user pressed stop (M4).
         self._last_text = ""
         self._last_speed = 1.0
+        self._remote_generation = None
+        self._silent_generation = None
         self._last_text_generation = -1
         self._stop_playback()
         self._stop_say()
@@ -541,6 +566,8 @@ class TtsManager(QObject):
         self._pending_request = None
         self._last_text = ""
         self._last_speed = 1.0
+        self._remote_generation = None
+        self._silent_generation = None
         self._last_text_generation = -1
         self._stop_playback()
         self._stop_say()
@@ -1072,7 +1099,7 @@ class TtsManager(QObject):
                 ):
                     self.status_line.emit("Kokoro unavailable — using macOS voice.")
                     self._speak_via_say(self._last_text, self._last_speed)
-                if self._say_process is None:
+                if self._say_process is None and self._silent_generation != self._generation:
                     self._complete(self._generation, "failed")
                 return
             if (
@@ -1084,7 +1111,11 @@ class TtsManager(QObject):
                 # Transient render failure: keep Kokoro for next time, but
                 # don't lose this utterance.
                 self._speak_via_say(self._last_text, self._last_speed)
-            if generation in (0, self._generation) and self._say_process is None:
+            if (
+                generation in (0, self._generation)
+                and self._say_process is None
+                and self._silent_generation != self._generation
+            ):
                 self._complete(self._generation, "failed")
             self._dispatch_pending()
             return
@@ -1106,7 +1137,7 @@ class TtsManager(QObject):
         if process is not None:
             process.deleteLater()
 
-        if self._remote_generation == self._generation:
+        if self._remote_generation == self._generation or self._silent_generation == self._generation:
             if exit_code != 0:
                 self._worker_failed = True
             return

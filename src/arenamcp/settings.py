@@ -199,6 +199,23 @@ def _migrate_settings(data: dict) -> set[str]:
     return removed
 
 
+def _migrate_mute_to_volume(data: dict) -> bool:
+    """Convert legacy ``muted=True`` preferences to ``voice_volume=0.0``.
+
+    Subtitles now stay active whenever speech is enabled, with Volume 0% as the
+    one silent mode so mute never starves the Subtitles view.
+    """
+    changed = False
+    if data.get("muted") is True:
+        data["muted"] = False
+        data["voice_volume"] = 0.0
+        changed = True
+    if data.get("commentary_muted") is True:
+        data["commentary_muted"] = False
+        changed = True
+    return changed
+
+
 class Settings:
     """Persistent settings manager.
 
@@ -231,13 +248,21 @@ class Settings:
             with open(SETTINGS_FILE) as f:
                 loaded = json.load(f)
             self._removed = _migrate_settings(loaded)
+            mute_migrated = _migrate_mute_to_volume(loaded)
             # Merge with defaults (new settings get defaults)
             for key, value in loaded.items():
                 self._data[key] = value
 
-            if self._removed:
+            if self._removed or mute_migrated:
+                if mute_migrated:
+                    self._dirty.update(
+                        k for k in ("muted", "voice_volume", "commentary_muted") if k in loaded
+                    )
                 self.save()
-                logger.info("Migrated settings: removed %s", ", ".join(sorted(self._removed)))
+                if self._removed:
+                    logger.info("Migrated settings: removed %s", ", ".join(sorted(self._removed)))
+                if mute_migrated:
+                    logger.info("Migrated muted preference to voice_volume=0.0 for silent Subtitles")
 
             logger.debug(f"Loaded settings from {SETTINGS_FILE}")
         except Exception as e:

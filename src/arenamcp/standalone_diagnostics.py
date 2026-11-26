@@ -45,7 +45,6 @@ class _DiagnosticsMixin:
         reason: str = "User Request",
         *,
         announce: bool = True,
-        copy_clipboard: bool = True,
         progress_cb=None,
         extra_context: dict[str, Any] | None = None,
     ) -> Optional["Path"]:
@@ -84,7 +83,7 @@ class _DiagnosticsMixin:
             file_url = f"file:///{str(bug_file).replace(chr(92), '/')}"
             clickable = f"\x1b]8;;{file_url}\x1b\\{bug_file}\x1b]8;;\x1b\\"
 
-            clipboard_success = copy_to_clipboard(file_url) if copy_clipboard else False
+            clipboard_success = copy_to_clipboard(file_url) if announce else False
 
             if announce:
                 if clipboard_success:
@@ -120,7 +119,6 @@ class _DiagnosticsMixin:
             bug_path = self.save_bug_report(
                 reason,
                 announce=False,
-                copy_clipboard=False,
                 extra_context=extra,
             )
             if not bug_path:

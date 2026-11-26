@@ -7,7 +7,6 @@ from dataclasses import replace
 
 from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtWidgets import (
-    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -56,8 +55,6 @@ class CommentarySettingsDialog(QDialog):
         layout = QVBoxLayout(self)
         form = QFormLayout()
         layout.addLayout(form)
-        self.enabled = QCheckBox("Speech on")
-        self.enabled.setChecked(not bool(settings.get("muted", False)))
         self.provider = combo(
             [("kokoro", "Kokoro"), ("chatterbox", "Chatterbox")],
             "chatterbox"
@@ -83,7 +80,13 @@ class CommentarySettingsDialog(QDialog):
         self.local_available = False
         self.speed_label = QLabel("Speed")
         self.volume_label = QLabel("Volume")
-        initial_vol = clamp_voice_volume(settings.get("voice_volume", 1.0))
+        raw_settings = getattr(settings, "_data", settings)
+        has_volume = isinstance(raw_settings, dict) and "voice_volume" in raw_settings
+        initial_vol = (
+            0.0
+            if (settings.get("muted") is True and not has_volume)
+            else clamp_voice_volume(settings.get("voice_volume", 1.0))
+        )
         initial_pct = max(0, min(100, int(round(initial_vol * 100))))
         self.volume_row = QWidget()
         vol_layout = QHBoxLayout(self.volume_row)
@@ -92,6 +95,7 @@ class CommentarySettingsDialog(QDialog):
         self.volume = QSlider(Qt.Horizontal)
         self.volume.setObjectName("dialogVoiceVolumeSlider")
         self.volume.setAccessibleName("Voice volume")
+        self.volume.setToolTip("Voice volume — set to 0% for silent Subtitles without audio")
         self.volume.setRange(0, 100)
         self.volume.setSingleStep(5)
         self.volume.setPageStep(10)
@@ -101,7 +105,7 @@ class CommentarySettingsDialog(QDialog):
         self.volume_value.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         vol_layout.addWidget(self.volume, 1)
         vol_layout.addWidget(self.volume_value)
-        self.volume.valueChanged.connect(lambda v: self.volume_value.setText(f"{v}%"))
+        self.volume.valueChanged.connect(self._on_dialog_volume_changed)
         self.voice = QComboBox()
         self.analyst = QComboBox()
         self.analyst_label = QLabel("Color analyst")
@@ -123,7 +127,6 @@ class CommentarySettingsDialog(QDialog):
         self.override = str(settings.get("chatterbox_voice_override") or "")
         self.kokoro_voice = str(settings.get("voice") or "am_adam")
         for label, control in (
-            ("", self.enabled),
             ("Voice engine", self.provider),
             ("Hear", self.mode),
             (self.style_label, self.style),
@@ -149,7 +152,6 @@ class CommentarySettingsDialog(QDialog):
         self.provider.currentIndexChanged.connect(self._update_controls)
         self.voice.currentIndexChanged.connect(self._voice_changed)
         self.analyst.currentIndexChanged.connect(self._analyst_changed)
-        self.enabled.toggled.connect(self._update_status)
         self.mode.currentIndexChanged.connect(self._update_controls)
         self.public_voice.currentIndexChanged.connect(self._update_controls)
         self.catalog_signals.local_ready.connect(self._local_ready)
@@ -319,11 +321,21 @@ class CommentarySettingsDialog(QDialog):
             return "Announcers need ArenaOnAir installed on this computer. Coach advice is available now."
         return ""
 
+    def _on_dialog_volume_changed(self, value: int) -> None:
+        self.volume_value.setText(f"{value}%")
+        self._update_status()
+
     def _update_status(self):
         problem = self._problem()
         self.preview.setEnabled(not self._problem(provider_only=True))
+        silent_note = (
+            "Volume is 0% — audio is muted while Subtitles keep updating silently."
+            if self.volume.value() == 0
+            else ""
+        )
         self.status.setText(
             problem
+            or silent_note
             or self.catalog_error
             or (
                 "Ryan calls the play and Serena offers analysis. Their delivery follows the moment; Preview auditions both."
@@ -333,7 +345,7 @@ class CommentarySettingsDialog(QDialog):
             or (
                 "Loading Chatterbox voices…"
                 if self.catalog_pending
-                else "Preview auditions the selected voice or both announcers without saving. Announcers use play-by-play then analyst; advice stays silent. Server default + partner keeps the server lead and adds a distinct available voice."
+                else "Set Volume to 0% to read Subtitles silently without audio. Preview auditions the selected voice or both announcers without saving."
             )
         )
 
@@ -384,7 +396,7 @@ class CommentarySettingsDialog(QDialog):
             python=values["commentary_python"],
             aoa_source=values["commentary_aoa_source"],
         )
-        values.update(autoplay_speech=config.mode, muted=not self.enabled.isChecked())
+        values.update(autoplay_speech=config.mode, muted=False)
         values.update(
             {
                 "commentary_" + key: value
@@ -395,7 +407,7 @@ class CommentarySettingsDialog(QDialog):
         for key, value in values.items():
             self.settings.set(key, value)
         self.session.configure_commentary(config.to_wire())
-        self.session.set_speech_enabled(self.enabled.isChecked())
+        self.session.set_speech_enabled(True)
         self.session.set_voice(values["voice"])
         self.session.set_speech_speed(values["speech_speed"])
         self.session.set_speech_volume(values["voice_volume"], persist=False)

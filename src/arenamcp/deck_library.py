@@ -300,6 +300,7 @@ def _names(playbook: Any, gids: list) -> list[str]:
 
 def playbook_report(playbook: Any) -> dict[str, Any]:
     """The playbook as readable sections for the Decks window ("how it pops off")."""
+    from arenamcp.deck_strategy import clean_deck_prose
     from arenamcp.deck_study import coverage
 
     data = playbook.data
@@ -308,17 +309,17 @@ def playbook_report(playbook: Any) -> dict[str, Any]:
             **coverage(data, playbook.catalog),
             "withheld": getattr(playbook, "study_withheld", False),
         },
-        "archetype": data.get("archetype", ""),
-        "summary": data.get("spoken_summary", ""),
-        "primary_plan": data.get("primary_plan", ""),
-        "backup_plan": data.get("backup_plan", ""),
+        "archetype": clean_deck_prose(data.get("archetype", "")),
+        "summary": clean_deck_prose(data.get("spoken_summary", "")),
+        "primary_plan": clean_deck_prose(data.get("primary_plan", "")),
+        "backup_plan": clean_deck_prose(data.get("backup_plan", "")),
         "mechanisms": [
             {
                 "id": m.get("id", ""),
-                "effect": m.get("effect", ""),
+                "effect": clean_deck_prose(m.get("effect", "")),
                 "cards": _names(playbook, m.get("cards") or []),
-                "requires": list(m.get("requires") or []),
-                "avoid": list(m.get("avoid") or []),
+                "requires": [clean_deck_prose(r) for r in (m.get("requires") or [])],
+                "avoid": [clean_deck_prose(a) for a in (m.get("avoid") or [])],
             }
             for m in data.get("mechanisms") or []
         ],
@@ -326,26 +327,26 @@ def playbook_report(playbook: Any) -> dict[str, Any]:
             {
                 "id": r.get("id", ""),
                 "decisions": list(r.get("decisions") or []),
-                "baseline": r.get("baseline", ""),
-                "when": r.get("when", ""),
-                "prefer": r.get("prefer", ""),
-                "unless": r.get("unless", ""),
+                "baseline": clean_deck_prose(r.get("baseline", "")),
+                "when": clean_deck_prose(r.get("when", "")),
+                "prefer": clean_deck_prose(r.get("prefer", "")),
+                "unless": clean_deck_prose(r.get("unless", "")),
             }
             for r in data.get("decision_rules") or []
         ],
         "key_cards": [
-            {"name": _names(playbook, [gid])[0], "role": str(role)}
+            {"name": _names(playbook, [gid])[0], "role": clean_deck_prose(role)}
             for gid, role in (data.get("card_roles") or {}).items()
         ],
-        "phases": dict(data.get("phases") or {}),
+        "phases": {k: clean_deck_prose(v) for k, v in (data.get("phases") or {}).items()},
         "commanders": [
             {
                 "name": _names(playbook, [c.get("card")])[0],
-                "deployment": c.get("deployment", ""),
-                "ongoing_value": c.get("ongoing_value", ""),
-                "replay_value": c.get("replay_value", ""),
-                "preserve_or_reuse": c.get("preserve_or_reuse", ""),
-                "constraints": c.get("constraints", ""),
+                "deployment": clean_deck_prose(c.get("deployment", "")),
+                "ongoing_value": clean_deck_prose(c.get("ongoing_value", "")),
+                "replay_value": clean_deck_prose(c.get("replay_value", "")),
+                "preserve_or_reuse": clean_deck_prose(c.get("preserve_or_reuse", "")),
+                "constraints": clean_deck_prose(c.get("constraints", "")),
             }
             for c in data.get("commanders") or []
         ],

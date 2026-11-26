@@ -170,8 +170,9 @@ class _DeckAnalysisMixin:
                         logger.info("Deck playbook restored for the same deck; not announced again")
                     else:
                         from arenamcp.commentary.overview_quality import speakable_overview
+                        from arenamcp.deck_strategy import clean_deck_prose
 
-                        brief = playbook.data.get("spoken_summary")
+                        brief = clean_deck_prose(playbook.data.get("spoken_summary"))
                         if not speakable_overview(brief):
                             return  # Valid strategy, but no complete and safe spoken overview.
                         self._announced_deck_identity = identity

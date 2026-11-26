@@ -2113,5 +2113,34 @@ def test_oops_mixin_auto_bug_report_saves_locally_without_clipboard_or_announce(
     args, kwargs = calls[0]
     assert "Oops: self_cancel" in args[0]
     assert kwargs["announce"] is False
-    assert kwargs["copy_clipboard"] is False
+    assert "copy_clipboard" not in kwargs
     assert kwargs["extra_context"]["source"] == "oops_auto_bug"
+
+
+def test_save_bug_report_clipboard_gated_by_announce(tmp_path, monkeypatch):
+    from arenamcp import standalone_diagnostics
+    from arenamcp.standalone_diagnostics import _DiagnosticsMixin
+
+    copied: list[str] = []
+    logged: list[str] = []
+    monkeypatch.setattr(standalone_diagnostics, "LOG_DIR", tmp_path)
+    monkeypatch.setattr(standalone_diagnostics, "copy_to_clipboard", lambda url: copied.append(url) or True)
+
+    class DummyDiagnostics(_DiagnosticsMixin):
+        def __init__(self) -> None:
+            self.ui = SimpleNamespace(log=logged.append, error=logged.append)
+
+        def _collect_debug_info(self, *, progress_cb=None, extra_context=None):
+            return {"game_state": None, "extra": extra_context}
+
+    diag = DummyDiagnostics()
+    silent_path = diag.save_bug_report("Background auto-bug", announce=False)
+    assert silent_path is not None and silent_path.exists()
+    assert copied == []
+    assert logged == []
+
+    # Opposite control: manual save (announce=True) copies the link and logs it.
+    manual_path = diag.save_bug_report("Manual F7", announce=True)
+    assert manual_path is not None and manual_path.exists()
+    assert len(copied) == 1 and str(manual_path).replace("\\", "/") in copied[0]
+    assert any("[BUG] Saved:" in line for line in logged)

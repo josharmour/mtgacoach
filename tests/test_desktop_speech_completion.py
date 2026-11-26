@@ -233,3 +233,132 @@ def test_draft_commentary_toggle_reaches_the_engine(qapp, monkeypatch):
     adapter._coach = SimpleNamespace(settings=SimpleNamespace(set=lambda k, v: stored.__setitem__(k, v)))
     adapter._dispatch({"cmd": "set_draft_commentary", "enabled": False})
     assert stored == {"draft_commentary": False}
+
+
+def test_zero_volume_skips_synthesis_and_completes_for_silent_subtitles(qapp, manager, monkeypatch):
+    from arenamcp.commentary.contracts import SpeechCategory, Utterance
+    from arenamcp.desktop.commentary_controller import CommentaryController
+
+    monkeypatch.setattr(audio.AudioPlayback, "stop", classmethod(lambda cls: None))
+
+    # 1. TtsManager at 0% volume skips synthesis/dispatch while completing the lifecycle.
+    manager.set_volume(0.0)
+    manager.request_speech(
+        text="Attack with Emberheart Challenger.",
+        voice_id="af_heart",
+        voice_name="Heart",
+        speed=1.0,
+        speech_id="silent-1",
+    )
+    assert manager._dispatch_pending.call_count == 0
+    assert manager.statuses == [("silent-1", "started")]
+    qapp.processEvents()
+    assert manager.statuses == [("silent-1", "started"), ("silent-1", "finished")]
+
+    # Regression check: unrelated Kokoro worker error or crash on macOS during 0% volume
+    # must NEVER speak aloud via `say` or falsely fail the silent generation.
+    from PySide6.QtCore import QProcess
+
+    say_calls: list[tuple[str, float]] = []
+    monkeypatch.setattr("arenamcp.desktop.tts_manager.sys.platform", "darwin")
+    monkeypatch.setattr(manager, "_speak_via_say", lambda t, s: say_calls.append((t, s)))
+    manager.statuses.clear()
+    manager.request_speech(
+        text="Silent card line.",
+        voice_id="af_heart",
+        voice_name="Heart",
+        speed=1.0,
+        speech_id="silent-err-guard",
+    )
+    manager._handle_stdout_line(json.dumps({"type": "error", "generation": 0, "message": "init failed"}))
+    manager._on_finished(1, QProcess.CrashExit)
+    assert say_calls == []
+    assert manager.statuses == [("silent-err-guard", "started")]
+    qapp.processEvents()
+    assert manager.statuses == [("silent-err-guard", "started"), ("silent-err-guard", "finished")]
+    manager._worker_failed = False
+
+    # Opposite control: audible 100% volume dispatches synthesis normally.
+    manager.set_volume(1.0)
+    manager.request_speech(
+        text="Pass priority.",
+        voice_id="af_heart",
+        voice_name="Heart",
+        speed=1.0,
+        speech_id="audible-1",
+    )
+    assert manager._dispatch_pending.call_count == 1
+
+    # 2. CommentaryController at 0% volume emits public Coach & announcer Subtitles,
+    # while private utterances never appear in Subtitles (stream safety).
+    monkeypatch.setattr("arenamcp.desktop.commentary_controller.get_settings", lambda: {})
+    sent: list[dict] = []
+    spoken: list[str] = []
+    subtitles: list[tuple[str, str]] = []
+    controller = CommentaryController(manager, sent.append, spoken.append)
+    controller.timer.stop()
+    controller.subtitleLine.connect(lambda text, speaker: subtitles.append((text, speaker)))
+    controller.observation = SimpleNamespace(public_state={}, events=[])
+    epoch = controller.arbiter.epoch
+
+    manager.set_volume(0.0)
+    monkeypatch.setattr(controller, "_valid", lambda item: True)
+
+    coach_item = Utterance(
+        utterance_id="coach-1",
+        text="Hold Shock for combat.",
+        category=SpeechCategory.ADVICE,
+        epoch=epoch,
+        expires_at=9e9,
+        voice="af_heart",
+    )
+    pbp_item = Utterance(
+        utterance_id="pbp-1",
+        text="Challenger enters the red zone!",
+        category=SpeechCategory.COMMENTARY,
+        epoch=epoch,
+        expires_at=9e9,
+        role="play_by_play",
+        voice="af_heart",
+    )
+    analyst_item = Utterance(
+        utterance_id="analyst-1",
+        text="That forces a chump block here.",
+        category=SpeechCategory.COMMENTARY,
+        epoch=epoch,
+        expires_at=9e9,
+        role="color_analyst",
+        voice="af_bella",
+    )
+    private_outs = Utterance(
+        utterance_id="private-outs:1",
+        text="You still have two Lightning Strikes in deck.",
+        category=SpeechCategory.COMMENTARY,
+        epoch=epoch,
+        expires_at=9e9,
+        role="play_by_play",
+        voice="af_heart",
+    )
+    private_duo = Utterance(
+        utterance_id="priv-duo-1",
+        text="You are holding Negate.",
+        category=SpeechCategory.COMMENTARY,
+        epoch=epoch,
+        expires_at=9e9,
+        role="color_analyst",
+        voice="af_bella",
+    )
+    controller.private_commentary_ids.add(private_duo.utterance_id)
+
+    for item in (coach_item, pbp_item, analyst_item, private_outs, private_duo):
+        controller._start(item)
+        qapp.processEvents()
+
+    assert subtitles == [
+        ("Hold Shock for combat.", "Coach"),
+        ("Challenger enters the red zone!", "Play-by-play"),
+        ("That forces a chump block here.", "Analyst"),
+    ]
+    assert ("priv-duo-1", "started") in manager.statuses or any(
+        sid == "private-outs:1" for sid, _ in manager.statuses
+    )

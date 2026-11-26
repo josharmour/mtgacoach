@@ -409,11 +409,11 @@ class CommentaryController(QObject):
         if not private and item.utterance_id not in self._subtitled_uids:
             self._subtitled_uids.add(item.utterance_id)
             speaker = (
-                "Play-by-play"
-                if item.role == "play_by_play"
+                "Coach"
+                if item.category != SpeechCategory.COMMENTARY
                 else "Analyst"
                 if item.role == "color_analyst"
-                else "Coach"
+                else "Play-by-play"
             )
             self.subtitleLine.emit(item.text, speaker)
         overrides = (

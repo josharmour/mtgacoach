@@ -868,9 +868,6 @@ class DraftEventDriver:
         try:
             if not self._commentary_fn():
                 return brief
-            if len(pack) <= required:
-                noun = "cards" if len(names) > 1 else "card"
-                return f"{verb} {' and '.join(names)}, the last {noun} in the pack."
             mana = self._mana_costs(pack + self._drafted_pool(), primer)
             canon = {g: self._canonical(g, primer) for g in pack}
             ranking = rank_pack(

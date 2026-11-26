@@ -178,7 +178,6 @@ class _OopsMixin:
         bug_path = saver(
             f"Auto-bug (Oops: {kind}): {detail}",
             announce=False,
-            copy_clipboard=False,
             extra_context={
                 "source": "oops_auto_bug",
                 "oops_kind": kind,

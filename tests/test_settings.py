@@ -100,3 +100,22 @@ def test_concurrent_saves_do_not_collide_on_temp_file():
     reloaded = json.loads(settings_module.SETTINGS_FILE.read_text())
     assert reloaded["alpha_0"] in range(25)
     assert reloaded["beta_0"] in range(25)
+
+
+def test_legacy_muted_preference_migrates_to_zero_volume():
+    path = settings_module.SETTINGS_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"muted": True, "commentary_muted": True, "voice_volume": 0.9}))
+
+    migrated = Settings()
+    assert migrated.get("muted") is False
+    assert migrated.get("commentary_muted") is False
+    assert migrated.get("voice_volume") == 0.0
+    on_disk = json.loads(path.read_text())
+    assert (on_disk["muted"], on_disk["voice_volume"]) == (False, 0.0)
+
+    # Opposite control: unmuted user keeps their saved volume untouched.
+    path.write_text(json.dumps({"muted": False, "voice_volume": 0.7}))
+    unmuted = Settings()
+    assert unmuted.get("muted") is False
+    assert unmuted.get("voice_volume") == 0.7

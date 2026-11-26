@@ -28,6 +28,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from arenamcp.deck_strategy import clean_deck_prose
+
 from . import theme
 from .deck_editor import DeckEditorDialog, NewDeckDialog
 
@@ -66,8 +68,9 @@ _NO_COMMANDER_RE = re.compile(
 
 
 def _clean_archetype(text: str) -> str:
-    """Strip '(no designated commander)' boilerplate from 60-card deck archetypes."""
+    """Strip '(no designated commander)' and Arena grp_id boilerplate from deck archetypes."""
     cleaned = _NO_COMMANDER_RE.sub("", str(text or "")).strip()
+    cleaned = clean_deck_prose(cleaned)
     return cleaned or str(text or "").strip()
 
 
@@ -121,29 +124,31 @@ def report_html(report: dict[str, Any], name: str = "") -> str:
             theme.block(theme.span(_clean_archetype(report["archetype"]), "accent", weight=600), gap=8)
         )
     if report.get("summary"):
-        parts.append(_section("IN SHORT", theme.span(report["summary"])))
+        parts.append(_section("IN SHORT", theme.span(clean_deck_prose(report["summary"]))))
     if report.get("primary_plan"):
-        parts.append(_section("HOW IT POPS OFF", theme.span(report["primary_plan"])))
+        parts.append(_section("HOW IT POPS OFF", theme.span(clean_deck_prose(report["primary_plan"]))))
     if report.get("backup_plan"):
-        parts.append(_section("WHEN THAT IS DISRUPTED", theme.span(report["backup_plan"])))
+        parts.append(_section("WHEN THAT IS DISRUPTED", theme.span(clean_deck_prose(report["backup_plan"]))))
     mechanisms = report.get("mechanisms") or []
     if mechanisms:
         items = []
         for m in mechanisms:
             cards = ", ".join(m.get("cards") or [])
-            line = theme.span(m.get("effect", ""))
+            line = theme.span(clean_deck_prose(m.get("effect", "")))
             if cards:
                 line += "<br>" + theme.span("Cards: " + cards, "muted", size="caption")
             if m.get("requires"):
-                line += "<br>" + theme.span("Needs: " + "; ".join(m["requires"]), "muted", size="caption")
+                reqs = [clean_deck_prose(r) for r in m["requires"]]
+                line += "<br>" + theme.span("Needs: " + "; ".join(reqs), "muted", size="caption")
             if m.get("avoid"):
-                line += "<br>" + theme.span("Avoid: " + "; ".join(m["avoid"]), "warn", size="caption")
+                avoids = [clean_deck_prose(a) for a in m["avoid"]]
+                line += "<br>" + theme.span("Avoid: " + "; ".join(avoids), "warn", size="caption")
             items.append(f"<li>{line}</li>")
         parts.append(_section("ENGINES AND COMBOS", "<ul>" + "".join(items) + "</ul>"))
     key_cards = report.get("key_cards") or []
     if key_cards:
         rows = "".join(
-            f"<li>{theme.span(c.get('name', ''), None, weight=600)}: {theme.span(c.get('role', ''))}</li>"
+            f"<li>{theme.span(c.get('name', ''), None, weight=600)}: {theme.span(clean_deck_prose(c.get('role', '')))}</li>"
             for c in key_cards
         )
         parts.append(_section("KEY CARDS", "<ul>" + rows + "</ul>"))
@@ -167,7 +172,7 @@ def report_html(report: dict[str, Any], name: str = "") -> str:
     phases = report.get("phases") or {}
     if phases:
         rows = "".join(
-            f"<li>{theme.span(label, None, weight=600)}: {theme.span(phases.get(key, ''))}</li>"
+            f"<li>{theme.span(label, None, weight=600)}: {theme.span(clean_deck_prose(phases.get(key, '')))}</li>"
             for key, label in (("early", "Early"), ("mid", "Mid"), ("late", "Late"), ("recovery", "Recovery"))
             if phases.get(key)
         )
@@ -175,9 +180,9 @@ def report_html(report: dict[str, Any], name: str = "") -> str:
     commanders = report.get("commanders") or []
     if commanders:
         rows = "".join(
-            f"<li>{theme.span(c.get('name', ''), None, weight=600)}: {theme.span(c.get('deployment', ''))}"
+            f"<li>{theme.span(c.get('name', ''), None, weight=600)}: {theme.span(clean_deck_prose(c.get('deployment', '')))}"
             + (
-                f"<br>{theme.span('Keep or recast: ' + c.get('preserve_or_reuse', ''), 'muted', size='caption')}"
+                f"<br>{theme.span('Keep or recast: ' + clean_deck_prose(c.get('preserve_or_reuse', '')), 'muted', size='caption')}"
                 if c.get("preserve_or_reuse")
                 else ""
             )
@@ -189,14 +194,14 @@ def report_html(report: dict[str, Any], name: str = "") -> str:
     if rules:
         rows = "".join(
             f"<li>{theme.span(', '.join(r.get('decisions') or []) + ': ', 'muted', size='caption')}"
-            f"{theme.span(r.get('prefer', ''))}"
+            f"{theme.span(clean_deck_prose(r.get('prefer', '')))}"
             + (
-                f"<br>{theme.span('When: ' + r.get('when', ''), 'muted', size='caption')}"
+                f"<br>{theme.span('When: ' + clean_deck_prose(r.get('when', '')), 'muted', size='caption')}"
                 if r.get("when")
                 else ""
             )
             + (
-                f"<br>{theme.span('Unless: ' + r.get('unless', ''), 'muted', size='caption')}"
+                f"<br>{theme.span('Unless: ' + clean_deck_prose(r.get('unless', '')), 'muted', size='caption')}"
                 if r.get("unless")
                 else ""
             )
