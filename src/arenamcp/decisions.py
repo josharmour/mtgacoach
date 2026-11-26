@@ -2921,6 +2921,7 @@ def decision_to_dict(decision: PendingDecision) -> dict[str, Any]:
         **({"selection_context": decision.selection_context} if decision.selection_context else {}),
         **({"option_context": decision.option_context} if decision.option_context else {}),
         **({"allow_cancel": decision.allow_cancel} if decision.allow_cancel else {}),
+        **({"is_payment_selection": True} if decision.is_payment_selection else {}),
     }
 
 
@@ -2958,6 +2959,7 @@ def decision_from_dict(data: dict[str, Any]) -> PendingDecision:
         selection_context=data.get("selection_context"),
         option_context=data.get("option_context"),
         allow_cancel=str(data.get("allow_cancel") or ""),
+        is_payment_selection=bool(data.get("is_payment_selection")),
     )
 
 

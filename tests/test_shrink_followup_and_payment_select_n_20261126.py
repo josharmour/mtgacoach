@@ -373,8 +373,9 @@ def test_select_n_controls_optional_unapproved_cancel_blind_and_forced():
     )
     assert planner._single_option_answer(blind, payment_selection_approved=True) is None
 
-    # Control E: Non-cancellable forced 1-of-1 identified SelectN auto-submits directly.
-    forced = PendingDecision(
+    # Control E: Non-cancellable 1-of-1 identified payment SelectN auto-submits;
+    # non-payment 1-of-1 SelectN stays on the model path (preserving trigger/mixed-menu prompts).
+    forced_payment = PendingDecision(
         request_id=(1, 5),
         request_type="SelectN",
         options=(
@@ -383,5 +384,19 @@ def test_select_n_controls_optional_unapproved_cancel_blind_and_forced():
         min_select=1,
         max_select=1,
         can_cancel=False,
+        is_payment_selection=True,
     )
-    assert planner._single_option_answer(forced) == ["sel:218"]
+    assert planner._single_option_answer(forced_payment) == ["sel:218"]
+
+    forced_non_payment = PendingDecision(
+        request_id=(1, 6),
+        request_type="SelectN",
+        options=(
+            DecisionOption(option_id="sel:218", label="D'Ghor Bloodletter", meta={"identity_known": True}),
+        ),
+        min_select=1,
+        max_select=1,
+        can_cancel=False,
+        is_payment_selection=False,
+    )
+    assert planner._single_option_answer(forced_non_payment) is None

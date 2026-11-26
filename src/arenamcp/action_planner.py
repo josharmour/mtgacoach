@@ -4643,8 +4643,8 @@ class ActionPlanner(_ActionLegalityMixin):
           modes) — with one candidate the interesting question is still
           cast-or-decline / find-or-fail, and the harmful-target gates are
           model-pick features;
-        - SelectN unless it is a non-cancellable 1-of-1 mandatory choice OR a
-          payment-selection cost already cleared by the optional-cost gate;
+        - SelectN unless it is a 1-of-1 payment-selection cost (non-cancellable
+          or already cleared by the optional-cost gate);
         - a filtered or unbound lone ``pass`` (or decline) — the model's pass reasoning feeds the
           decision memory and the reversal check, and several guards key on
           it;
@@ -4660,7 +4660,9 @@ class ActionPlanner(_ActionLegalityMixin):
             is_payment = bool(getattr(decision, "is_payment_selection", False)) or (
                 str(getattr(decision, "source_label", "") or "").lower().startswith("pay non-mana cost")
             )
-            cancel_allowed = (not decision.can_cancel) or (payment_selection_approved and is_payment)
+            if not is_payment:
+                return None
+            cancel_allowed = (not decision.can_cancel) or payment_selection_approved
             if (
                 not cancel_allowed
                 or decision.min_select != 1
