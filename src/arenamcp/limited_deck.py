@@ -55,9 +55,23 @@ def _nonbasics(pool: list[dict]) -> list[dict]:
     return [card for card in pool if "basic land" not in card.get("type_line", "").lower()]
 
 
+_BASIC_SUBTYPE_COLORS = {
+    "plains": "W",
+    "island": "U",
+    "swamp": "B",
+    "mountain": "R",
+    "forest": "G",
+}
+
+
 def _produces(card: dict) -> set[str]:
     """Colors a land or fixing card can make (Arena writes mana as {oG}, Scryfall as {G})."""
     colors = {color for color in (card.get("produced_mana") or []) if color in "WUBRG"}
+    type_line = str(card.get("type_line") or "").lower()
+    if "land" in type_line:
+        for word in re.findall(r"[a-z]+", type_line):
+            if word in _BASIC_SUBTYPE_COLORS:
+                colors.add(_BASIC_SUBTYPE_COLORS[word])
     text = html.unescape(re.sub(r"<[^>]*>", "", card.get("oracle_text", ""))).lower()
     for clause in re.findall(r"\badd\b[^.\n]*", text):
         colors.update(symbol.upper() for symbol in re.findall(r"\{o?([wubrg])\}", clause))
@@ -1158,7 +1172,9 @@ def _plan_text(colors: tuple[str, ...], quality: dict, splash: tuple[str, ...] =
     parts = [f"{head}: avg GIH {quality['avg_gih']}%" if quality.get("avg_gih") else head]
     parts.append(f"{quality['creatures']} creatures, {quality['removal']} removal")
     if quality.get("bombs"):
-        parts.append("bombs " + ", ".join(quality["bombs"][:3]))
+        counts = Counter(quality["bombs"])
+        formatted = [f"{n}x {name}" if n > 1 else name for name, n in list(counts.items())[:3]]
+        parts.append("bombs " + ", ".join(formatted))
     return "; ".join(parts) + "."
 
 

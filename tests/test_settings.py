@@ -73,3 +73,30 @@ def test_other_process_voice_save_does_not_restore_old_speech_mode():
     assert reloaded.get("autoplay_speech") == "commentary"
     assert reloaded.get("speech_speed") == 1.5
     assert reloaded.get("voice") == "am_onyx"
+
+
+def test_concurrent_saves_do_not_collide_on_temp_file():
+    import threading
+
+    s1 = Settings()
+    s2 = Settings()
+    errors: list[Exception] = []
+
+    def writer(mgr: Settings, prefix: str) -> None:
+        try:
+            for i in range(25):
+                mgr.set(f"{prefix}_{i % 3}", i)
+        except Exception as exc:  # pragma: no cover
+            errors.append(exc)
+
+    t1 = threading.Thread(target=writer, args=(s1, "alpha"))
+    t2 = threading.Thread(target=writer, args=(s2, "beta"))
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
+
+    assert not errors
+    reloaded = json.loads(settings_module.SETTINGS_FILE.read_text())
+    assert reloaded["alpha_0"] in range(25)
+    assert reloaded["beta_0"] in range(25)

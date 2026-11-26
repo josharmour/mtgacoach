@@ -1042,7 +1042,8 @@ class GameState(_GameStateAnnotationsMixin):
                         removed_abilities=[
                             str(item) for item in obj_data.get("removed_abilities", []) if item is not None
                         ],
-                        damaged_this_turn=bool(obj_data.get("damaged_this_turn", False)),
+                        damaged_this_turn=bool(obj_data.get("damaged_this_turn", False))
+                        or (_coerce_int(obj_data.get("damage", 0), 0) > 0),
                         damage=_coerce_int(obj_data.get("damage", 0), 0),
                         crewed_this_turn=bool(obj_data.get("crewed_this_turn", False)),
                         saddled_this_turn=bool(obj_data.get("saddled_this_turn", False)),
@@ -2825,6 +2826,19 @@ class GameState(_GameStateAnnotationsMixin):
             if existing_obj is not None and existing_obj.zone_id == zone_id
             else {},
             damage=damage,
+            damaged_this_turn=(
+                False
+                if ("damage" in obj_data and damage == 0)
+                or (full_info and damage == 0 and getattr(self.turn_info, "step", "") == "Step_Cleanup")
+                else (
+                    (
+                        existing_obj.damaged_this_turn
+                        if existing_obj is not None and existing_obj.zone_id == zone_id
+                        else False
+                    )
+                    or damage > 0
+                )
+            ),
             face_down=face_down,
             face_down_reason=face_down_reason,
             token_source_grp_id=token_source_grp_id,
@@ -3557,6 +3571,8 @@ class GameState(_GameStateAnnotationsMixin):
                 obj.is_attacking = False
                 obj.is_blocking = False
                 obj.is_blocked = None
+                obj.damage = 0
+                obj.damaged_this_turn = False
 
         turn_changed = new_turn != prev_turn
         new_priority = turn_data.get("priorityPlayer", prev_priority)

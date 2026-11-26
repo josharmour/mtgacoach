@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 import time
 from collections import Counter
@@ -96,6 +97,52 @@ STRENGTH_OVERRIDE_MARGIN = {"sealed": 0.01, "draft": 0.015}
 # the build (2026-10-13). Kept for DRAFT_RUN_MAX_AGE_S.
 DRAFT_RUN_DIR = Path.home() / ".arenamcp" / "draft_runs"
 DRAFT_RUN_MAX_AGE_S = 12 * 3600
+
+
+_COMPARISON_MARKERS = ("Rules check:", "Rating trade-off:", "Alternative:")
+
+
+def _strip_comparison_tail(reason: str) -> str:
+    """Return only the picked-card portion of ``reason`` before appended comparisons."""
+    text = (reason or "").strip()
+    starts = [text.index(marker) for marker in _COMPARISON_MARKERS if marker in text]
+    return text[: min(starts)].strip() if starts else text
+
+
+def spoken_draft_line(line: str) -> str:
+    """Format a draft commentary line for speech by stripping robotic audit boilerplate."""
+    text = (line or "").strip()
+    if not text:
+        return ""
+    text = re.sub(r"\s*\((?:Coach's )?judgment,\s*not proven advantage\.?\)\.?", "", text)
+    text = re.sub(r"\s*\(synergy unverified\)", "", text)
+    text = re.sub(
+        r"Rating trade-off:.*?;\s*(?P<alt>[^;]+?)\s+is\s+[a-z ]+?\s+in the supplied 17Lands bands\.\s*"
+        r"No comparison with this higher-rated alternative was supplied;\s*this choice is unverified\.?",
+        lambda m: f"Note: {m.group('alt').strip()} is rated higher here.",
+        text,
+    )
+    text = re.sub(
+        r"Rating trade-off:.*?;\s*(?P<alt>[^;]+?)\s+is\s+[a-z ]+?\s+in the supplied 17Lands bands\.\s*"
+        r"Coach's rationale:\s*",
+        lambda m: f"Over {m.group('alt').strip()}: ",
+        text,
+    )
+    text = re.sub(
+        r"Alternative:\s*.+?(?<!\bDr)(?<!\bMr)(?<!\bMs)(?<!\bSt)(?<!\bJr)(?<!\bSr)(?<!\b[A-Z])\.\s*"
+        r"No comparison was supplied[^.]*(?:\.\s*Comparison candidate:[^.]+)?\.?",
+        "",
+        text,
+    )
+    text = re.sub(
+        r"Alternative:\s*(?P<alt>.+?)(?<!\bDr)(?<!\bMr)(?<!\bMs)(?<!\bSt)(?<!\bJr)(?<!\bSr)(?<!\b[A-Z])\.\s*",
+        lambda m: f"Over {m.group('alt').strip()}: ",
+        text,
+    )
+    text = " ".join(text.split()).strip()
+    if text and text[-1] not in ".!?":
+        text += "."
+    return text
 
 
 @dataclass
@@ -523,9 +570,12 @@ class DraftEventDriver:
             elif self.run.event_name and not self.run.finished:
                 target_display = self.run.event_name
             if target_display:
-                self._status(
-                    f"Waiting for Arena's Home screen — click Home in Arena so Coach can open {target_display}."
-                )
+                if self.run.queued_at and (time.monotonic() - self.run.queued_at) < QUEUE_WAIT_S:
+                    self._status(f"Queued for {target_display} — waiting for a match…")
+                else:
+                    self._status(
+                        f"Waiting for Arena's Home screen — click Home in Arena so Coach can open {target_display}."
+                    )
             self._wait(2.0, owns=False)
 
     # -- draft ---------------------------------------------------------------
@@ -598,7 +648,9 @@ class DraftEventDriver:
         reasons = {to_actual[pick.grp_id]: "; ".join(pick.reasons[:3]) for pick in ranked}
         source, from_model = "ranking", set()
         seconds = state.get("pick_seconds_remaining")
-        if self._pick_advisor_fn and self._pack_fn and (not seconds or seconds >= PICK_LLM_MIN_SECONDS):
+        if len(pack) <= required:
+            reasons = {g: "Last card in pack." for g in chosen}
+        elif self._pick_advisor_fn and self._pack_fn and (not seconds or seconds >= PICK_LLM_MIN_SECONDS):
             refined = self._refine_pick(pack, primer, pool, ranked, required)
             if refined:
                 chosen, reasons, source, from_model = refined
@@ -637,9 +689,10 @@ class DraftEventDriver:
         if self._speak_fn is not None and run.announced_pick_key != key:
             names = [self._card_name(g) for g in chosen]
             line = self._pick_commentary(chosen=chosen, names=names, verb="Picking", **context)
+            spoken = spoken_draft_line(line)
             run.announced_pick_key = key
-            self._status(f"P{key[0]}p{key[1]}: {line}")
-            self._say(line)
+            self._status(f"P{key[0]}p{key[1]}: {spoken}")
+            self._say(spoken)
             delay = PICK_ANNOUNCE_DELAY_S
             if seconds:
                 left = float(seconds) - (self._clock() - read_at)
@@ -705,15 +758,16 @@ class DraftEventDriver:
         self.owns_ui = True
         names = [self._card_name(g) for g in decision["chosen"]]
         line = self._pick_commentary(chosen=decision["chosen"], names=names, verb="Choosing", **context)
+        spoken = spoken_draft_line(line)
         shown = self._draft_command_quiet("preview_draft_pick", cards=decision["cards"], timeout=8.0)
         if shown.get("ok"):
             run.preview = decision
         else:
             logger.info("Draft pick not selected before narrating: %s", shown.get("error"))
-        self._status(f"P{key[0]}p{key[1]}: {line}")
+        self._status(f"P{key[0]}p{key[1]}: {spoken}")
         narration_ends = deadline - PICK_CONFIRM_BEAT_S
         try:
-            self._narrate_fn(line, lambda: cancelled() or self._clock() >= narration_ends)
+            self._narrate_fn(spoken, lambda: cancelled() or self._clock() >= narration_ends)
         except Exception as exc:
             logger.warning("Draft pick narration failed: %s", exc)
         if cancelled():
@@ -814,6 +868,9 @@ class DraftEventDriver:
         try:
             if not self._commentary_fn():
                 return brief
+            if len(pack) <= required:
+                noun = "cards" if len(names) > 1 else "card"
+                return f"{verb} {' and '.join(names)}, the last {noun} in the pack."
             mana = self._mana_costs(pack + self._drafted_pool(), primer)
             canon = {g: self._canonical(g, primer) for g in pack}
             ranking = rank_pack(
@@ -846,7 +903,7 @@ class DraftEventDriver:
                 pick_number=pick_number,
                 # Picks left in this pack, Pick-Two included (it takes two per pass).
                 pack_size=pick_number + -(-len(pack) // max(1, required)) - 1,
-                model_reasons=[model_reasons.get(g, "") for g, _name in spoken],
+                model_reasons=[_strip_comparison_tail(model_reasons.get(g, "")) for g, _name in spoken],
                 mana_costs=mana,
                 verb=verb,
                 model_plan="" if opening else self.run.plan,

@@ -29,6 +29,7 @@ class _OopsMixin:
             still_stuck=self._oops_still_stuck,
             draft_active=lambda: bool(getattr(self, "draft_mode", False)),
             card_text=self._oops_card_text,
+            bug_report_fn=self._oops_auto_bug_report,
         )
 
     # -- public controls (pipe command, autoplay switch) ----------------------------
@@ -168,6 +169,33 @@ class _OopsMixin:
             except Exception:
                 cache[grp_id] = ""
         return cache[grp_id]
+
+    def _oops_auto_bug_report(self, kind: str, detail: str, meta: dict[str, Any]) -> None:
+        """Save a strictly local bug report snapshot whenever Coach triggers an Oops incident."""
+        saver = getattr(self, "save_bug_report", None)
+        if not callable(saver):
+            return
+        bug_path = saver(
+            f"Auto-bug (Oops: {kind}): {detail}",
+            announce=False,
+            copy_clipboard=False,
+            extra_context={
+                "source": "oops_auto_bug",
+                "oops_kind": kind,
+                "oops_detail": detail,
+                **(meta or {}),
+            },
+        )
+        if not bug_path:
+            return
+        logger.info("[OOPS] auto-bug saved locally: %s (not uploaded)", bug_path)
+        ui = getattr(self, "ui", None)
+        log_fn = getattr(ui, "log", None)
+        if callable(log_fn):
+            try:
+                log_fn(f"[OOPS auto-bug] Saved locally: {bug_path} (not uploaded)")
+            except Exception:
+                pass
 
     @staticmethod
     def _oops_emote_via_bridge(state: dict) -> dict:

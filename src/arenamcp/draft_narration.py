@@ -207,6 +207,7 @@ class DraftNarrator:
             return f"{verb} {' and '.join(names)}."
         labels = names if len(names) == len(chosen) else [pick.name for pick in chosen]
         quality = self._quality_ranks(ranking, primer)
+        top_word = "spell" if self._higher_land_in_pack(ranking, primer, quality) else "card"
         reasons = [
             self._why(
                 pick,
@@ -218,6 +219,7 @@ class DraftNarrator:
                 quality,
                 several=len(chosen) > 1,
                 own_names=labels,
+                top_word=top_word,
             )
             for index, pick in enumerate(chosen)
         ]
@@ -225,9 +227,14 @@ class DraftNarrator:
             return f"{verb} {labels[0]}: {reasons[0].text}."
         shorts = [_short(label) for label in labels]
         both = f"{verb} {shorts[0]} and {shorts[1]}"
+        top_pair_phrase = (
+            "the two top-rated spells in this pack on 17Lands data"
+            if top_word == "spell"
+            else "the two best cards in this pack on 17Lands data"
+        )
         if len(chosen) == 2 and all(r.kind == "quality" for r in reasons):
             if sorted(quality.get(p.grp_id, 99) for p in chosen) in ([1, 1], [1, 2]):
-                text = "the two best cards in this pack on 17Lands data"
+                text = top_pair_phrase
                 if self._settled(lane) and all(
                     self._fit(p, lane, primer, mana) in ("in", "colorless") for p in chosen
                 ):
@@ -236,7 +243,7 @@ class DraftNarrator:
         if len(chosen) == 2 and reasons[0].plural and reasons[0].plural == reasons[1].plural:
             text = reasons[0].plural
             if sorted(quality.get(p.grp_id, 99) for p in chosen) in ([1, 1], [1, 2]):
-                text += ", and the two best cards in this pack on 17Lands data"
+                text += f", and {top_pair_phrase}"
             return f"{both}: {text}."
         parts = [f"{short} — {reason.text}" for short, reason in zip(shorts, reasons, strict=True)]
         return f"{verb} " + "; ".join(parts[:-1]) + f"; and {parts[-1]}."
@@ -268,7 +275,39 @@ class DraftNarrator:
                 rated.append((pick.grp_id, card.gih_wr))
         return {grp_id: 1 + sum(other > gih + 1e-9 for _g, other in rated) for grp_id, gih in rated}
 
-    def _why(self, pick, index, lane, primer, mana, model_reason, quality, *, several, own_names) -> _Reason:
+    @staticmethod
+    def _higher_land_in_pack(ranking, primer, quality: dict[int, int]) -> bool:
+        """True when a rated land in the pack has a higher GIH win rate than the top spell."""
+        if primer is None or not quality:
+            return False
+        top_spell_ids = [gid for gid, r in quality.items() if r == 1]
+        if not top_spell_ids:
+            return False
+        top_card = primer.card(top_spell_ids[0])
+        if top_card is None or top_card.gih_wr is None:
+            return False
+        return any(
+            (card := primer.card(pick.grp_id)) is not None
+            and card.gih_wr is not None
+            and "Land" in (card.types or "")
+            and card.gih_wr > top_card.gih_wr + 1e-9
+            for pick in ranking
+        )
+
+    def _why(
+        self,
+        pick,
+        index,
+        lane,
+        primer,
+        mana,
+        model_reason,
+        quality,
+        *,
+        several,
+        own_names,
+        top_word: str = "card",
+    ) -> _Reason:
         card = primer.card(pick.grp_id) if primer is not None else None
         notes = " | ".join(pick.reasons)
         settled = self._settled(lane)
@@ -294,14 +333,15 @@ class DraftNarrator:
                 return _Reason(f"a {_colors(produced)} dual that keeps our options open", "land")
             return _Reason("a utility land", "land")
 
-        top = ", and the top-rated card here" if rank == 1 else ""
+        top_phrase = "top-rated spell" if top_word == "spell" else "best card"
+        top = f", and the top-rated {top_word} here" if rank == 1 else ""
         if fit == "splash":
             # The plan names this color as our splash: it is ours, not outside our colors.
             splash = _colors(lane.splash)
             if card is not None and is_removal(card):
                 return _Reason(f"removal for our {splash} splash{top}", "splash")
             if rank == 1:
-                return _Reason(f"the best card here on 17Lands data, in our {splash} splash", "splash")
+                return _Reason(f"the {top_phrase} here on 17Lands data, in our {splash} splash", "splash")
             return _Reason(f"a card for our {splash} splash", "splash")
         hate = next((r for r in pick.reasons if r.startswith("hate-pick: ")), "")
         if hate and (getattr(pick, "components", None) or {}).get("hate", 0.0) > 0:
@@ -311,7 +351,7 @@ class DraftNarrator:
             # Never claim deck fit for a card outside our colors.
             if rank == 1:
                 return _Reason(
-                    f"the best card here on 17Lands data, though it's outside our {colors} colors", "off"
+                    f"the {top_phrase} here on 17Lands data, though it's outside our {colors} colors", "off"
                 )
             return _Reason(f"the strongest option left, though it's outside our {colors} colors", "off")
 
@@ -343,12 +383,12 @@ class DraftNarrator:
                 f"{_colors(open_note.group(1))} looks open, so cards like this should keep coming", "open"
             )
         if rank == 1:
-            text = "the best card in this pack on 17Lands data"
+            text = f"the {top_phrase} in this pack on 17Lands data"
             if settled and fit == "in":
                 text += f", in our {colors} colors"
             return _Reason(text, "quality")
         if rank == 2 and several and index > 0:
-            return _Reason("the second-best card in this pack on 17Lands data", "quality")
+            return _Reason(f"the second-best {top_word} in this pack on 17Lands data", "quality")
         if settled and fit == "in":
             return _Reason(
                 f"a solid card for our {colors} deck", "lane", f"both solid cards for our {colors} deck"
@@ -394,6 +434,15 @@ class DraftNarrator:
         """One verified clause of the model's reason, preferring one about our deck."""
         reason = (reason or "").strip()
         if not reason or "(synergy unverified)" in reason:
+            return ""
+        # Strip appended comparison/audit sections so alternative-card rationale
+        # is never extracted and attributed to the picked card.
+        starts = [
+            reason.index(m) for m in ("Rules check:", "Rating trade-off:", "Alternative:") if m in reason
+        ]
+        if starts:
+            reason = reason[: min(starts)].strip()
+        if not reason:
             return ""
         clauses = [
             part.strip().rstrip(".;:, ")

@@ -883,6 +883,7 @@ class _GameStateAnnotationsMixin:
                     # Reset turn-specific flags on all game objects
                     for obj in self.game_objects.values():
                         obj.damaged_this_turn = False
+                        obj.damage = 0
                         obj.crewed_this_turn = False
                         obj.saddled_this_turn = False
                         obj.targeting.clear()

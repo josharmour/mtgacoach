@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 class CommentaryController(QObject):
     statusChanged = Signal(dict)
     catalogReady = Signal(str, object)
+    subtitleLine = Signal(str, str)  # text, speaker label
 
     def __init__(self, tts, send, spoken, parent=None):
         super().__init__(parent)
@@ -51,6 +52,7 @@ class CommentaryController(QObject):
         self.engine_ids = set()
         self.commentary_ids = set()
         self.private_commentary_ids = set()
+        self._subtitled_uids: set[str] = set()
         self.arbiter = SpeechArbiter(
             start=self._start, stop=lambda: tts.stop_speech(), status=self._status, valid=self._valid
         )
@@ -242,6 +244,9 @@ class CommentaryController(QObject):
             return
         self.spoken(text)
         self.arbiter.set_muted(muted)
+        if self.arbiter.muted and uid not in self._subtitled_uids:
+            self._subtitled_uids.add(uid)
+            self.subtitleLine.emit(text, "Coach")
         settings = get_settings()
         provider = str(settings.get("tts_provider") or "kokoro")
         try:
@@ -401,6 +406,16 @@ class CommentaryController(QObject):
         )
         if item.category == SpeechCategory.COMMENTARY and not private:
             self.spoken(item.text)
+        if not private and item.utterance_id not in self._subtitled_uids:
+            self._subtitled_uids.add(item.utterance_id)
+            speaker = (
+                "Play-by-play"
+                if item.role == "play_by_play"
+                else "Analyst"
+                if item.role == "color_analyst"
+                else "Coach"
+            )
+            self.subtitleLine.emit(item.text, speaker)
         overrides = (
             {"settings_override": self.preview_settings[item.utterance_id]}
             if item.utterance_id in self.preview_settings
@@ -486,6 +501,7 @@ class CommentaryController(QObject):
             self.engine_ids.discard(uid)
             self.commentary_ids.discard(uid)
             self.private_commentary_ids.discard(uid)
+            self._subtitled_uids.discard(uid)
 
     def stop(self, reason="user_stop"):
         had_active = self.arbiter.active is not None

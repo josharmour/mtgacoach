@@ -105,6 +105,7 @@ class CoachSession(QObject):
     backendHealthChanged = Signal(dict)
     autopilotBugStatusChanged = Signal(dict)
     spokenLine = Signal(str)
+    subtitleLine = Signal(str, str)  # text, speaker label
     volumeChanged = Signal(float)
     logEmitted = Signal(str, str)  # message, role
     adviceReceived = Signal(str, str)  # text, label
@@ -149,6 +150,7 @@ class CoachSession(QObject):
         self._speech = CommentaryController(
             self._tts, lambda payload: self._process.send_payload(payload), self.spokenLine.emit, self
         )
+        self._speech.subtitleLine.connect(self.subtitleLine.emit)
         self._speech.statusChanged.connect(self.commentaryStatusChanged)
         self._tts.status_line.connect(
             lambda message: self.commentaryStatusChanged.emit({"state": "voice", "message": message})

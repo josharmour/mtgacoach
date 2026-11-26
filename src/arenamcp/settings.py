@@ -263,10 +263,14 @@ class Settings:
     def save(self) -> None:
         """Save settings to disk (atomically — a crash mid-write must never
         truncate the file that holds the license key)."""
+        import contextlib
         import os
+        import tempfile
 
+        tmp_path: str | None = None
         try:
-            SETTINGS_DIR.mkdir(parents=True, exist_ok=True)
+            target_dir = SETTINGS_FILE.parent
+            target_dir.mkdir(parents=True, exist_ok=True)
             # Audit #19: other components (repair engine, runtime helpers)
             # write keys like mtga_install_dir directly to disk; rewriting
             # from this instance's startup snapshot deleted their fixes on
@@ -279,15 +283,26 @@ class Settings:
                         self._data[key] = value
             except Exception:
                 pass
-            tmp = SETTINGS_FILE.with_suffix(".json.tmp")
-            with open(tmp, "w") as f:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=target_dir,
+                prefix="settings.",
+                suffix=".tmp",
+                delete=False,
+            ) as f:
+                tmp_path = f.name
                 json.dump(self._data, f, indent=2)
                 f.flush()
                 os.fsync(f.fileno())
-            tmp.replace(SETTINGS_FILE)
+            os.replace(tmp_path, SETTINGS_FILE)
+            tmp_path = None
             self._dirty.clear()
             logger.debug(f"Saved settings to {SETTINGS_FILE}")
         except Exception as e:
+            if tmp_path is not None:
+                with contextlib.suppress(OSError):
+                    os.unlink(tmp_path)
             logger.warning(f"Failed to save settings: {e}")
 
     def get(self, key: str, default: Any = None) -> Any:

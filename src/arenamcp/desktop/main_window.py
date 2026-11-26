@@ -317,6 +317,9 @@ class MainWindow(QMainWindow):
 
         # View Menu
         view_menu = menu_bar.addMenu("View")
+        subtitles_act = view_menu.addAction("Show Subtitles")
+        subtitles_act.setToolTip("Open the scrollable live captions of everything Coach says aloud")
+        subtitles_act.triggered.connect(self._show_subtitles_view)
         debug_logging_act = view_menu.addAction("Show Debug Logging")
         debug_logging_act.setCheckable(True)
         debug_logging_act.setChecked(bool(self._settings.get("desktop_debug_logging", False)))
@@ -518,6 +521,10 @@ class MainWindow(QMainWindow):
 
     def _show_coach_view(self) -> None:
         self._stack.setCurrentIndex(0)
+
+    def _show_subtitles_view(self) -> None:
+        self._show_coach_view()
+        self.coach_panel._show_detail("subtitles")
 
     def _show_repair_view(self) -> None:
         self._stack.setCurrentIndex(1)

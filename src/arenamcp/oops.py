@@ -489,6 +489,7 @@ class OopsController:
         still_stuck: Callable[[dict], bool] = lambda state: False,
         draft_active: Callable[[], bool] = lambda: False,
         card_text: Callable[[int], str] = lambda grp_id: "",
+        bug_report_fn: Callable[[str, str, dict[str, Any]], Any] | None = None,
         clock: Callable[[], float] = time.monotonic,
         wall_clock: Callable[[], float] = time.time,
         start_thread: Callable[..., None] = _default_start,
@@ -502,12 +503,14 @@ class OopsController:
         self._still_stuck = still_stuck
         self._draft_active = draft_active
         self._card_text = card_text
+        self._bug_report_fn = bug_report_fn
         self._clock = clock
         self._wall_clock = wall_clock
         self._start_thread = start_thread
         self._lock = threading.Lock()
         self._pending: list[_Incident] = []
         self._handled: OrderedDict = OrderedDict()  # (game_key, repr((kind, key))) -> outcome
+        self._bug_reported: OrderedDict = OrderedDict()  # (game_key, repr((kind, key))) -> True
         self._sent: OrderedDict = OrderedDict()  # game_key -> Oops emotes that may have gone out
         self._last_sent_at: float | None = None
         self._last_sent_wall: float | None = None
@@ -783,18 +786,25 @@ class OopsController:
             return
         game_key = incident.game_key
         previous: tuple[float | None, float | None] = (None, None)
+        should_file_bug = False
         with self._lock:
             handled_key = _handled_id(game_key, incident.kind, incident.key)
             if handled_key in self._handled:
                 why = "already handled this incident"
-            elif game_key in self._wheel_missing:
-                why = f"no Oops on this deck's emote wheel ({self._wheel_missing[game_key]})"
-            elif self._sent.get(game_key, 0) >= MAX_PER_GAME:
-                why = f"already sent {MAX_PER_GAME} this game"
-            elif self._in_flight:
-                why = "another Oops is being sent"
-            elif self._last_sent_at is not None and now - self._last_sent_at < MIN_GAP_S:
-                why = f"only {now - self._last_sent_at:.0f}s since the last Oops (minimum {MIN_GAP_S:.0f}s)"
+            else:
+                if self._bug_report_fn is not None and handled_key not in self._bug_reported:
+                    _remember(self._bug_reported, handled_key, True)
+                    should_file_bug = True
+                if game_key in self._wheel_missing:
+                    why = f"no Oops on this deck's emote wheel ({self._wheel_missing[game_key]})"
+                elif self._sent.get(game_key, 0) >= MAX_PER_GAME:
+                    why = f"already sent {MAX_PER_GAME} this game"
+                elif self._in_flight:
+                    why = "another Oops is being sent"
+                elif self._last_sent_at is not None and now - self._last_sent_at < MIN_GAP_S:
+                    why = (
+                        f"only {now - self._last_sent_at:.0f}s since the last Oops (minimum {MIN_GAP_S:.0f}s)"
+                    )
             if why:
                 _remember(self._handled, handled_key, "suppressed")
             else:
@@ -803,6 +813,8 @@ class OopsController:
                 previous = (self._last_sent_at, self._last_sent_wall)
                 self._last_sent_at, self._last_sent_wall = now, self._wall_clock()
                 self._in_flight = True
+        if should_file_bug:
+            self._spawn_bug_report(incident, why or "sending")
         if why:
             self._log_decision("suppressed", incident, why)
             return
@@ -815,6 +827,28 @@ class OopsController:
                 self._sent[game_key] = max(0, self._sent.get(game_key, 1) - 1)
                 self._last_sent_at, self._last_sent_wall = previous
             self._log_decision("failed", incident, f"could not start the send ({error})")
+
+    def _spawn_bug_report(self, incident: _Incident, emote_status: str) -> None:
+        fn = self._bug_report_fn
+        if fn is None:
+            return
+        meta = {
+            "match_id": incident.match_id,
+            "turn": incident.turn,
+            "game_key": repr(incident.game_key),
+            "emote_status": emote_status,
+        }
+
+        def run() -> None:
+            try:
+                fn(incident.kind, incident.detail, meta)
+            except Exception as error:
+                logger.warning("[OOPS] auto-bug capture failed: %s", error, exc_info=True)
+
+        try:
+            self._start_thread(run)
+        except Exception as error:
+            logger.warning("[OOPS] could not start auto-bug capture: %s", error)
 
     def _send(self, incident: _Incident, state: dict, previous: tuple[float | None, float | None]) -> None:
         try:

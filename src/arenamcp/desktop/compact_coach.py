@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QSlider,
     QStackedWidget,
+    QTextBrowser,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -415,6 +416,10 @@ class CompactCoachPanel(QWidget):
         self._debug_logging = bool(self._settings.get("desktop_debug_logging", False))
         # Chronological (oldest first): (HH:MM, text, role).
         self._activity_history: list[tuple[str, str, str]] = []
+        # Chronological (oldest first): (HH:MM:SS, speaker, text).
+        self._subtitle_history: list[tuple[str, str, str]] = []
+        self._subtitles_follow_latest = True
+        self._subtitles_updating = False
         self._last_state: dict[str, Any] = {}
         self._last_mcts: Any = None
         self._last_plan: Any = None
@@ -860,11 +865,19 @@ class CompactCoachPanel(QWidget):
         discover = QHBoxLayout()
         discover.setSpacing(4)
         self.detail_buttons = {}
-        for key, title in (("board", "Hand & board"), ("activity", "Activity"), ("settings", "Settings")):
+        for key, title, tip in (
+            ("subtitles", "Subtitles", "Live scrollable captions of what Coach and the announcers say aloud"),
+            ("board", "Board", "Current cards in your hand and on both sides of the battlefield"),
+            ("activity", "Activity", "Newest-first paged log of Coach status, advice, and errors"),
+            ("settings", "Settings", "Quick sidebar display preferences (use Speech & voices for audio)"),
+        ):
             button = QPushButton(title.replace("&", "&&"))
+            button.setToolTip(tip)
+            button.setMinimumWidth(0)
+            button.setProperty("compactRecovery", True)
             button.clicked.connect(lambda checked=False, name=key: self._show_detail(name))
             self.detail_buttons[key] = button
-            discover.addWidget(button)
+            discover.addWidget(button, 1)
         overview_layout.addLayout(discover)
         self.workspace.addWidget(self.overview)
         self.detail_pager = DetailPager()
@@ -876,6 +889,35 @@ class CompactCoachPanel(QWidget):
         # long content is disclosed through the pager's Next/Previous pages.
         self.detail_pager.browser.setMinimumSize(1, 1)
         self.workspace.addWidget(self.detail_pager)
+        self.subtitles_page = QWidget()
+        subtitles_layout = QVBoxLayout(self.subtitles_page)
+        subtitles_layout.setContentsMargins(0, 0, 0, 0)
+        subtitles_layout.setSpacing(4)
+        sub_head = QHBoxLayout()
+        self.subtitles_title = SummaryLabel("Subtitles · live speech", role="body")
+        self.subtitles_live_btn = QPushButton("Live ↓")
+        self.subtitles_live_btn.setToolTip("Jump to the latest spoken line and keep auto-following")
+        self.subtitles_live_btn.hide()
+        self.subtitles_live_btn.clicked.connect(self._follow_subtitles_latest)
+        self.subtitles_back_btn = QPushButton("Back")
+        self.subtitles_back_btn.clicked.connect(self._close_detail)
+        sub_head.addWidget(self.subtitles_title, 1)
+        sub_head.addWidget(self.subtitles_live_btn)
+        sub_head.addWidget(self.subtitles_back_btn)
+        subtitles_layout.addLayout(sub_head)
+        self.subtitles_view = QTextBrowser()
+        self.subtitles_view.setObjectName("subtitlesView")
+        self.subtitles_view.setProperty("bare", True)
+        self.subtitles_view.setReadOnly(True)
+        self.subtitles_view.setOpenLinks(False)
+        self.subtitles_view.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.subtitles_view.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.subtitles_view.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+        self.subtitles_view.setMinimumSize(1, 1)
+        self.subtitles_view.verticalScrollBar().valueChanged.connect(self._on_subtitles_scrolled)
+        self.subtitles_view.verticalScrollBar().rangeChanged.connect(self._on_subtitles_range_changed)
+        subtitles_layout.addWidget(self.subtitles_view, 1)
+        self.workspace.addWidget(self.subtitles_page)
         self.settings_page = QWidget()
         settings_layout = QVBoxLayout(self.settings_page)
         settings_layout.setContentsMargins(0, 0, 0, 0)
@@ -965,6 +1007,7 @@ class CompactCoachPanel(QWidget):
             button.ensurePolished()
         shell.addWidget(self.primary_controls)
         self._refresh_companion()
+        self._render_subtitles()
         self._fit_overview()
 
     def resizeEvent(self, event) -> None:  # noqa: N802
@@ -988,7 +1031,14 @@ class CompactCoachPanel(QWidget):
     def _show_detail(self, kind: str) -> None:
         reset = kind != self._detail_kind
         self._detail_kind = kind
-        self.workspace.setCurrentWidget(self.settings_page if kind == "settings" else self.detail_pager)
+        if kind == "settings":
+            self.workspace.setCurrentWidget(self.settings_page)
+        elif kind == "subtitles":
+            self.workspace.setCurrentWidget(self.subtitles_page)
+            if self._subtitles_follow_latest:
+                self._scroll_subtitles_to_latest()
+        else:
+            self.workspace.setCurrentWidget(self.detail_pager)
         self._refresh_detail(reset=reset)
 
     def _close_detail(self) -> None:
@@ -1013,7 +1063,7 @@ class CompactCoachPanel(QWidget):
                 QDesktopServices.openUrl(QUrl(link))
 
     def _refresh_detail(self, *, reset=False) -> None:
-        if not hasattr(self, "_detail_kind") or not self._detail_kind or self._detail_kind == "settings":
+        if not hasattr(self, "_detail_kind") or self._detail_kind in ("", "settings", "subtitles"):
             return
         kind = self._detail_kind
         if kind == "paths":
@@ -1575,6 +1625,9 @@ class CompactCoachPanel(QWidget):
         self._session.statusChanged.connect(self._on_status_changed)
         self._session.commentaryStatusChanged.connect(self._on_commentary_status)
         self._session.spokenLine.connect(self._on_spoken_line)
+        subtitle_signal = getattr(self._session, "subtitleLine", None)
+        if subtitle_signal is not None:
+            subtitle_signal.connect(self._on_subtitle_line)
         self._session.adviceReceived.connect(self._on_advice_received)
         self._session.logEmitted.connect(self._on_log_emitted)
         self._session.errorOccurred.connect(self._on_error_occurred)
@@ -2295,6 +2348,7 @@ class CompactCoachPanel(QWidget):
         if self._execution_trace(text):
             self._on_log_emitted(text, "debug")
             return
+        self._append_subtitle(text, "Coach")
         display_text = text
         if self._latest_advice:
             detailed, label = self._latest_advice
@@ -2307,6 +2361,89 @@ class CompactCoachPanel(QWidget):
             if role in {"advice", "spoken"} and _same_feed_line(previous, text):
                 return
         self.append_log(text, role="spoken")
+
+    def _on_subtitle_line(self, text: str, speaker: str = "Coach") -> None:
+        if self._execution_trace(text):
+            return
+        self._append_subtitle(text, speaker or "Coach")
+
+    @staticmethod
+    def _subtitle_line_html(stamp: str, speaker: str, text: str) -> str:
+        speaker_tone = "accent" if speaker in ("Play-by-play", "Analyst") else "good"
+        return block(
+            span(stamp, "muted", size="caption")
+            + "&nbsp;&nbsp;"
+            + span(speaker, speaker_tone, size="caption", weight=700)
+            + "<br>"
+            + span(text, "text", size="body", weight=400),
+            gap=6,
+        )
+
+    def _append_subtitle(self, text: str, speaker: str = "Coach") -> None:
+        clean = (text or "").strip()
+        if not clean or not hasattr(self, "subtitles_view"):
+            return
+        if self._subtitle_history and _same_feed_line(self._subtitle_history[-1][2], clean):
+            prev_stamp, prev_speaker, _ = self._subtitle_history[-1]
+            if prev_speaker == "Coach" and speaker != "Coach":
+                self._subtitle_history[-1] = (prev_stamp, speaker, clean)
+                self._render_subtitles()
+            return
+        stamp = datetime.datetime.now().strftime("%H:%M:%S")
+        self._subtitle_history.append((stamp, speaker, clean))
+        if len(self._subtitle_history) > MAX_FEED_LINES:
+            del self._subtitle_history[: len(self._subtitle_history) - MAX_FEED_LINES]
+        self._render_subtitles()
+
+    def _render_subtitles(self) -> None:
+        if not hasattr(self, "subtitles_view"):
+            return
+        sb = self.subtitles_view.verticalScrollBar()
+        old_pos = sb.value()
+        was_at_bottom = self._subtitles_follow_latest
+        self._subtitles_updating = True
+        self.subtitles_view.document().setDefaultStyleSheet(theme.rich_text_css())
+        if self._subtitle_history:
+            body = "".join(self._subtitle_line_html(*entry) for entry in self._subtitle_history)
+        else:
+            body = block(
+                span("Spoken coaching and commentary will appear here. Scroll back anytime.", "muted"),
+                size="caption",
+            )
+        self.subtitles_view.setHtml(body)
+        if was_at_bottom:
+            sb.setValue(sb.maximum())
+        else:
+            sb.setValue(min(old_pos, sb.maximum()))
+        self._subtitles_updating = False
+        if was_at_bottom:
+            self._scroll_subtitles_to_latest()
+            QTimer.singleShot(0, self._scroll_subtitles_to_latest)
+
+    def _on_subtitles_scrolled(self, value: int) -> None:
+        if self._subtitles_updating:
+            return
+        sb = self.subtitles_view.verticalScrollBar()
+        self._subtitles_follow_latest = value >= sb.maximum() - 10
+        self.subtitles_live_btn.setVisible(not self._subtitles_follow_latest)
+
+    def _on_subtitles_range_changed(self, _minimum: int, _maximum: int) -> None:
+        if not self._subtitles_updating:
+            self._scroll_subtitles_to_latest()
+
+    def _scroll_subtitles_to_latest(self) -> None:
+        if not self._subtitles_follow_latest or not hasattr(self, "subtitles_view"):
+            return
+        self._subtitles_updating = True
+        sb = self.subtitles_view.verticalScrollBar()
+        sb.setValue(sb.maximum())
+        self._subtitles_updating = False
+        self.subtitles_live_btn.hide()
+
+    def _follow_subtitles_latest(self) -> None:
+        self._subtitles_follow_latest = True
+        self._scroll_subtitles_to_latest()
+        QTimer.singleShot(0, self._scroll_subtitles_to_latest)
 
     def _render_now(self) -> None:
         facts = self._game_plan.get("facts") or {}
@@ -2608,6 +2745,7 @@ class CompactCoachPanel(QWidget):
         self.strategy_view.refresh()
         self._render_now()
         self._render_feed()
+        self._render_subtitles()
 
     # -- HTML Game State Formatter --------------------------------------------
 

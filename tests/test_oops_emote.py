@@ -2051,3 +2051,67 @@ def test_a_combat_fact_read_just_after_the_turn_rolled_over_is_judged():
         evidence={"attacks": [fblthp_attack()]},
     )
     assert later.sent == []
+
+
+def test_oops_auto_bug_fires_locally_for_every_confirmed_oops_and_skips_suppressed():
+    filed: list[tuple[str, str, dict]] = []
+    h = Harness()
+    h.controller = OopsController(
+        emote_fn=h.emote,
+        settings_get=lambda key, default=None: h.settings.get(key, default),
+        autopilot_on=lambda: h.autopilot,
+        bridge_ready=lambda: h.bridge,
+        game_over=lambda: h.over,
+        concede_active=lambda game_key=None: h.conceding,
+        still_stuck=lambda state: h.stuck,
+        draft_active=lambda: h.draft,
+        card_text=lambda grp: TEXTS.get(grp, ""),
+        bug_report_fn=lambda kind, detail, meta: filed.append((kind, detail, meta)),
+        clock=lambda: h.now,
+        wall_clock=lambda: 1_790_000_000.0 + h.now,
+        start_thread=lambda target, *args: target(*args),
+    )
+    h.observe()
+    # First two Oops incidents send emotes AND file auto-bugs.
+    h.report(key="k1", text="first cancel")
+    h.now += MIN_GAP_S + 1
+    h.report(key="k2", text="second cancel")
+    # Third Oops in the same game has its emote suppressed by MAX_PER_GAME, yet STILL files a bug!
+    h.now += MIN_GAP_S + 1
+    h.report(key="k3", text="third cancel")
+    assert len(h.sent) == MAX_PER_GAME
+    assert [d[1] for d in filed] == ["first cancel", "second cancel", "third cancel"]
+    assert filed[-1][2]["emote_status"].startswith("already sent")
+
+    # Control: duplicate key does not re-file.
+    h.now += MIN_GAP_S + 1
+    h.report(key="k3", text="third cancel")
+    assert len(filed) == 3
+
+    # Control: stuck_manual resolved within dwell never files a bug.
+    h.report(kind=STUCK_MANUAL, key="m1", text="SelectTargets: no safe automatic choice — pick manually")
+    h.stuck = False
+    h.now += MANUAL_DWELL_S + 1
+    h.observe()
+    assert len(filed) == 3
+
+
+def test_oops_mixin_auto_bug_report_saves_locally_without_clipboard_or_announce():
+    calls: list[tuple[tuple, dict]] = []
+
+    class DummyHost(_OopsMixin):
+        def __init__(self) -> None:
+            self.ui = SimpleNamespace(log=lambda msg: None)
+
+        def save_bug_report(self, *args, **kwargs):
+            calls.append((args, kwargs))
+            return "/tmp/bug_oops.json"
+
+    host = DummyHost()
+    host._oops_auto_bug_report(SELF_CANCEL, "Iroh cancelled", {"match_id": "m1", "turn": 10})
+    assert len(calls) == 1
+    args, kwargs = calls[0]
+    assert "Oops: self_cancel" in args[0]
+    assert kwargs["announce"] is False
+    assert kwargs["copy_clipboard"] is False
+    assert kwargs["extra_context"]["source"] == "oops_auto_bug"

@@ -73,11 +73,17 @@ _JACE_PAYOFF = re.compile(r"\bbehold a jace\b|\byou control a jace\b|\bjace plan
 # FRA Rakdos: pingers enable "an opponent was dealt noncombat damage" payoffs.
 _PING = re.compile(r"\bdeals? (?:\d+|x) damage to (?:each|target) (?:opponent|player)\b")
 _PING_PAYOFF = re.compile(r"\bopponents? (?:is|was|has been|have been) dealt noncombat damage\b")
+_NONCREATURE_CAST_PAYOFF = re.compile(
+    r"\b(?:as long as|if) you(?:'ve| have) cast a noncreature spell this turn\b"
+)
 # Sacrifice outlets enable death triggers.
-_SAC_OUTLET = re.compile(r"\bsacrifice (?:a|another|one) (?:other )?(?:creature|nontoken creature)\b")
+_SAC_OUTLET = re.compile(
+    r"\bsacrifice (?:a|an|another|one) (?:other )?"
+    r"(?:(?:(?:artifact|permanent) or )?(?:nontoken )?creature|(?:nontoken )?creature or (?:artifact|permanent))\b"
+)
 _DIES_PAYOFF = re.compile(
-    r"^whenever (?:another |a |one or more )?(?:other )?(?:nontoken )?creatures?(?: or planeswalkers?)?"
-    r" you control (?:dies|die)\b"
+    r"^(?:whenever (?:another |a |one or more )?(?:other )?(?:nontoken )?creatures?(?: or planeswalkers?)?"
+    r" you control (?:dies|die)|when (?:this creature|it) dies)\b"
 )
 # Mana that "can't be spent to cast spells from your hand" (FRA Heartwood Crafter)
 # still casts spells from anywhere else and pays activated abilities: a card cast
@@ -163,6 +169,8 @@ def _rules_profile(type_line: str, oracle_text: str) -> dict:
             payoffs.add("noncreature_spell")
         if re.match(r"instant and sorcery spells you cast cost\b", line):
             payoffs.add("instant_sorcery")
+        if _NONCREATURE_CAST_PAYOFF.search(line):
+            payoffs.add("noncreature_spell")
         scried = _SCRIED_THIS_TURN.search(line)
         if scried:
             # "This turn" conditions (Surveillance Phantasm attacking, Proctor

@@ -151,8 +151,45 @@ card remains. Keep each explanation under 40 words.
 """
 
 
+_TRAILING_WORDS = frozenset(
+    {
+        "a",
+        "an",
+        "and",
+        "but",
+        "for",
+        "in",
+        "it",
+        "of",
+        "or",
+        "still",
+        "that",
+        "the",
+        "this",
+        "to",
+        "while",
+        "with",
+    }
+)
+
+
 def _text(value: Any, words: int = 40) -> str:
-    return " ".join(value.split()[:words]) if isinstance(value, str) else ""
+    if not isinstance(value, str):
+        return ""
+    tokens = value.split()
+    if len(tokens) <= words:
+        return " ".join(tokens)
+    clipped = " ".join(tokens[:words])
+    ends = [m.end() for m in re.finditer(r"[.!?](?=\s|$)", clipped)]
+    if ends and ends[-1] >= max(1, len(clipped) // 2):
+        return clipped[: ends[-1]]
+    breaks = [m.start() for m in re.finditer(r"[;,—–](?=\s|$)", clipped)]
+    if breaks and breaks[-1] >= int(len(clipped) * 0.6):
+        return clipped[: breaks[-1]].rstrip() + "…"
+    kept = list(tokens[:words])
+    while len(kept) > 1 and kept[-1].rstrip(",;:").lower() in _TRAILING_WORDS:
+        kept.pop()
+    return " ".join(kept).rstrip(" ,;:-") + "…"
 
 
 def _plan_lane(plan: str, stated: Any, archetypes: list[dict] | None) -> dict[str, str]:
@@ -221,18 +258,40 @@ def best_support(pool: list[dict[str, Any]], width: int) -> tuple[str, int]:
     return (lane, support) if support else ("", 0)
 
 
-_FIXING_RE = re.compile(r"add (?:[^.]*?)(?:one mana of any color|any color|\{(?:[WUBRG])\})", re.IGNORECASE)
+_FIXING_RE = re.compile(r"\badd\b[^.\n]*", re.IGNORECASE)
+_BASIC_SUBTYPE_COLORS = {
+    "plains": "W",
+    "island": "U",
+    "swamp": "B",
+    "mountain": "R",
+    "forest": "G",
+}
 
 
 def splash_supported(pool: list[dict[str, Any]], color: str) -> bool:
     """Whether the pool holds a source for ``color`` outside basics: a land or artifact that adds it or any color."""
     if not color:
         return False
+    target = color.upper()
     for raw in pool:
+        type_line = str(raw.get("type_line") or "").lower()
+        if "basic land" in type_line:
+            continue
+        if target in {str(c).upper() for c in (raw.get("produced_mana") or [])}:
+            return True
+        if "land" in type_line:
+            words = set(re.findall(r"[a-z]+", type_line))
+            if any(_BASIC_SUBTYPE_COLORS.get(w) == target for w in words):
+                return True
         text = html.unescape(re.sub(r"<[^>]+>", "", str(raw.get("oracle_text") or "")))
         for match in _FIXING_RE.finditer(text):
             clause = match.group(0).lower()
-            if "any color" in clause or f"{{{color.lower()}}}" in clause:
+            if (
+                "any color" in clause
+                or "chosen color" in clause
+                or f"{{{color.lower()}}}" in clause
+                or f"{{o{color.lower()}}}" in clause
+            ):
                 return True
     return False
 

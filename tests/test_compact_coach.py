@@ -811,3 +811,54 @@ def test_play_on_cycles_the_device_and_restarts_the_coach(panel):
     assert panel._settings.data["game_device"] == "desktop"
     assert panel.device_btn.text().startswith("Play on: This ")
     assert restarts == [True, True]
+
+
+def test_subtitles_view_is_scrollable_chronological_and_tracks_speakers(panel, qapp):
+    panel.resize(340, 650)
+    panel._show_detail("subtitles")
+    qapp.processEvents()
+
+    assert panel.workspace.currentWidget() is panel.subtitles_page
+    assert not panel.subtitles_view.horizontalScrollBar().isVisible()
+
+    # Emit distinct subtitle entries plus speaker attribution from announcer duo.
+    for i in range(40):
+        speaker = "Play-by-play" if i % 2 == 0 else "Analyst"
+        panel.session.subtitleLine.emit(f"Line {i}: Explaining the tactical play in detail.", speaker)
+    # Matching fallback spokenLine must not duplicate the last subtitle line.
+    panel.session.spokenLine.emit("Line 39: Explaining the tactical play in detail.")
+    qapp.processEvents()
+
+    text = panel.subtitles_view.toPlainText()
+    assert len(panel._subtitle_history) == 40
+    assert text.find("Line 0:") < text.find("Line 39:")
+    assert "Play-by-play" in text and "Analyst" in text
+    assert panel._subtitles_follow_latest is True
+    assert panel.subtitles_live_btn.isHidden()
+
+    # Scrolling up pauses auto-follow, shows "Live ↓", and stays scrolled up on new lines.
+    sb = panel.subtitles_view.verticalScrollBar()
+    assert sb.maximum() > 0
+    sb.setValue(0)
+    qapp.processEvents()
+    assert panel._subtitles_follow_latest is False
+    assert not panel.subtitles_live_btn.isHidden()
+
+    panel.session.subtitleLine.emit("Line 40: Fresh follow-up line.", "Coach")
+    qapp.processEvents()
+    assert sb.value() < sb.maximum() - 10
+
+    # Clicking "Live ↓" snaps to the latest subtitle and resumes auto-follow.
+    panel.subtitles_live_btn.click()
+    qapp.processEvents()
+    assert panel._subtitles_follow_latest is True
+    assert panel.subtitles_live_btn.isHidden()
+    assert sb.value() >= sb.maximum() - 10
+
+    # Opposite control: Activity remains newest-first and non-scrollable via DetailPager.
+    panel.append_log("Older notice", role="status")
+    panel.append_log("Newer notice", role="status")
+    panel._show_detail("activity")
+    qapp.processEvents()
+    act = panel.detail_pager.browser.toPlainText()
+    assert act.find("Newer notice") < act.find("Older notice")
