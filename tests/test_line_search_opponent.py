@@ -42,11 +42,20 @@ def _without_planeswalkers(source: dict) -> dict:
     return board
 
 
+def _without_attack_drains(source: dict) -> dict:
+    """The board as the search saw it before attack-trigger damage/drain modelling (2026-10-08 baselines)."""
+    board = deepcopy(source)
+    for card in board["battlefield"]:
+        if card.get("name") == "Screeching Soulbreaker":
+            card["oracle_text"] = "Flying"
+    return board
+
+
 def test_their_garruk_is_attacked_and_the_crackback_rules_still_hold(unlimited_search_deadline):
     # The logged board has their Garruk, Veiled Butcher (loyalty 7). Since the search models
     # planeswalkers (ledger #42), its best line sends our wide board at Garruk; their attack
     # policies are still valued after our crackback: never all-out every turn.
-    source = fx.BUG_182945_T13_UPKEEP
+    source = _without_attack_drains(fx.BUG_182945_T13_UPKEEP)
     result = _assess(source).line_search
     assert result is not None and not result.truncated and result.best.outcome == "alive"
     assert any(step.at_walkers for step in result.best.steps), result.best.summary()
@@ -56,10 +65,32 @@ def test_their_garruk_is_attacked_and_the_crackback_rules_still_hold(unlimited_s
     assert not all(step.policy == "all" for step in result.best.steps)
 
 
+def test_screeching_soulbreaker_attack_drains_are_lethal_on_the_logged_board(unlimited_search_deadline):
+    # With Screeching Soulbreaker's 1-drain attack trigger modelled, two fliers + triggers
+    # drain 4 before blocks on T13 (10 -> 6 -> 3 -> 0), making the 10-life board a 3-turn clock;
+    # at 16 starting life the line stays alive and still sends attackers at Garruk.
+    assessment = _assess(fx.BUG_182945_T13_UPKEEP)
+    assert assessment.their_clock == 3
+    result = assessment.line_search
+    assert result is not None and not result.truncated
+    assert result.best.outcome == "dead" and result.best.now_life == 6
+
+    cushioned = deepcopy(fx.BUG_182945_T13_UPKEEP)
+    for player in cushioned["players"]:
+        if player.get("is_local"):
+            player["life_total"] = 16
+    cushioned_result = _assess(cushioned).line_search
+    assert cushioned_result is not None and not cushioned_result.truncated
+    assert cushioned_result.best.outcome == "alive"
+    assert {walker for step in cushioned_result.best.steps for _a, walker in step.at_walkers} == {
+        "Garruk, Veiled Butcher"
+    }
+
+
 def test_their_attack_policy_is_valued_after_our_crackback_on_the_logged_board(unlimited_search_deadline):
-    # The hand-computed line below dates from before planeswalkers were modelled: it is the
-    # board without their Garruk (test_their_garruk_is_attacked_... has the board with it).
-    source = _without_planeswalkers(fx.BUG_182945_T13_UPKEEP)
+    # The hand-computed line below dates from before planeswalkers and attack-trigger drains
+    # were modelled: strip both to preserve the original 2026-10-08 combat-only baseline.
+    source = _without_attack_drains(_without_planeswalkers(fx.BUG_182945_T13_UPKEEP))
     model = build_board_model(deepcopy(source))
     assert (model.our_life, model.opp_life, model.our_turn) == (10, 24, False)
     assert sorted(b["name"] for b in model.theirs) == [
@@ -106,7 +137,7 @@ def test_their_attack_policy_is_valued_after_our_crackback_on_the_logged_board(u
 
 def test_the_report_board_itself_keeps_their_life_near_26():
     # 18:29:45: Apex Witchstalker resolved (26 life, a 6/4 menace blocker): at most a few through.
-    result = _assess(fx.BUG_182945).line_search
+    result = _assess(_without_attack_drains(fx.BUG_182945)).line_search
     assert result.best.outcome == "alive"
     # The best line holds everything back (their fliers then stay home too: life 8, 8, 8, 8);
     # whichever line attacks gets at most a few through.

@@ -38,7 +38,8 @@ def test_zero_gain_path_skips_engine_list(monkeypatch):
     calls = _record(monkeypatch)
     result = _search(ss.SLOW_202111)
     assert calls == []  # no lifelink gain on this board: gain_drain is never consulted
-    assert (result.nodes, result.combats) == (185, 310)
+    # With Arabella's attack-trigger drain modeled on SLOW_202111, the search explores (190, 336).
+    assert (result.nodes, result.combats) == (190, 336)
 
 
 def test_positive_lifelink_still_consulted(monkeypatch):

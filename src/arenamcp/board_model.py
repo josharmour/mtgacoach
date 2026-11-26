@@ -673,9 +673,9 @@ def build_board_model(state: dict) -> BoardModel | None:
 
     any_ours_attacking = any(b["_attacking"] for b in ours)
     any_theirs_attacking = any(b["_attacking"] for b in theirs)
-    # What their attack adds beyond the printed board (ledger #191, #193, #194): Treasure-fed and
-    # mana pumps, attack-trigger team grants, an extra combat. Their bodies only: the attack
-    # projections play it for annotated attackers (``attack_potential.attack_round``).
+    # What an attack adds beyond the printed board (ledger #191, #193, #194): Treasure-fed and
+    # mana pumps, attack-trigger team grants, created tokens, attack damage, and extra combats.
+    # Annotated symmetrically for both sides (like ``annotate_engines``) for ``_clock_facts``.
     try:
         from arenamcp.attack_potential import annotate as annotate_attack
 
@@ -686,6 +686,14 @@ def build_board_model(state: dict) -> BoardModel | None:
             untapped_only=not our_turn,
             declared=any_theirs_attacking,
             hand_size=state.get("opponent_hand_count", (state.get("zones") or {}).get("opponent_hand_count")),
+        )
+        annotate_attack(
+            ours,
+            battlefield,
+            local,
+            untapped_only=our_turn,
+            declared=any_ours_attacking,
+            hand_size=len(state["hand"]) if isinstance(state.get("hand"), list) else None,
         )
     except Exception:  # a reading aid: the board facts never fail on it
         import logging

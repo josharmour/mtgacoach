@@ -5336,9 +5336,11 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         if playbook_core:
             effective_system_prompt += "\n\n" + playbook_core
 
-        # Inject static deck strategy when no structured playbook is active
+        dynamic_context = ""
+
+        # Inject dynamic deck strategy when no structured playbook is active
         if self._deck_strategy and self._deck_playbook is None:
-            effective_system_prompt += (
+            dynamic_context += (
                 f"\n\nDECK STRATEGY:\n{self._deck_strategy}"
                 "\n\nALWAYS consider this strategy when advising. Prioritize plays that:"
                 "\n- Set up or execute the combos/synergies listed above"
@@ -5347,7 +5349,6 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                 "\nBriefly explain WHY a play matters for the deck's plan "
                 "(e.g. 'Cast X — triggers Kodama for a free land, setting up combo next turn')."
             )
-        dynamic_context = ""
 
         # Persistent GAME PLAN: refresh in the background, then frame the
         # advice as the next STEP in that plan. Fully guarded — a plan failure

@@ -29,7 +29,8 @@ Three effects the incoming-damage math never counted, read from rules text:
 what they can add (``_atk_pump``, ``_atk_grants``, ``_atk_extra``);
 ``attack_round`` plays one attack with those effects and its extra combats
 (``board_assessment._attack_round_life`` and the line search's attack call it
-for annotated bodies only: our own creatures are never annotated). For the
+for annotated bodies; both sides are annotated symmetrically in
+``board_model``). For the
 attack being declared now, grants are already in the snapshot's power and
 toughness (the trigger resolved) and are not added again; an extra combat
 follows only while the evidence says this is the first combat (the untap

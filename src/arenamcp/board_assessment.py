@@ -2061,6 +2061,7 @@ def _clock_facts(model: Any) -> SimpleNamespace:
         first_blockers=list(model.untapped_theirs) if our_attack_pending else None,
         drain=their_drain,
         engines=our_clock_engines(model),
+        first_declared=model.any_ours_attacking,
     )
     their_clock, their_lives = _simulate_attacks(
         [*theirs, *their_walker_sources],

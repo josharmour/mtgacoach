@@ -1092,7 +1092,7 @@ class CompactCoachPanel(QWidget):
             layout = self.layout()
             if layout is None:
                 return
-            for _ in range(3):
+            for _ in range(4):
                 rows = [
                     layout.itemAt(i).widget()
                     for i in range(layout.count())
@@ -1100,7 +1100,10 @@ class CompactCoachPanel(QWidget):
                 ]
                 before = [row.geometry() for row in rows]
                 layout.activate()
-                QApplication.sendPostedEvents(self, QEvent.LayoutRequest)
+                QApplication.sendPostedEvents(None, QEvent.LayoutRequest)
+                self._fit_overview()
+                layout.activate()
+                QApplication.sendPostedEvents(None, QEvent.LayoutRequest)
                 if [row.geometry() for row in rows] == before:
                     break
         finally:

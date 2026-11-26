@@ -135,7 +135,7 @@ def test_coach_dynamic_strategy_does_not_invalidate_deck_prefix(state, monkeypat
     coach._deck_strategy = "Establish the engine."
     coach.get_advice(state, question="What is our plan?")
     system, first = backend.calls[-1]
-    assert_full_context(first)
+    assert_full_context(first, system=system)
     coach._deck_strategy = "Remove the new threat before developing."
     coach.get_advice(state, question="What is our plan?")
     next_system, second = backend.calls[-1]
