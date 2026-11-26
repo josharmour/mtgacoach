@@ -131,6 +131,7 @@ class DraftRun:
     # Event auto-queue mode tracking (reset when entering/starting a new run).
     entered_or_played: bool = False
     awaiting_reentry_decision: bool = False
+    go_to_event_attempts: int = 0
     entry_attempts: int = 0
     deck_select_attempts: int = 0
     packet_attempts: int = 0
@@ -476,6 +477,8 @@ class DraftEventDriver:
             logger.info("Draft autoplay screen: %s", ", ".join(seen) or "none of draft/deck/event/home")
             self._last_screen = seen
         config = self._event_mode_config()
+        if not screen.get("home"):
+            self.run.go_to_event_attempts = 0
         if screen.get("rewards_panel") and (self.run.event_name or config is not None):
             self._step_rewards_panel()
         elif screen.get("table_draft_queue"):
@@ -1781,6 +1784,14 @@ class DraftEventDriver:
 
     def _step_home(self, target_event: str = "") -> None:
         event_name = target_event or self.run.event_name
+        if self.run.go_to_event_attempts >= 3:
+            self._pause(
+                f"Arena did not open {event_name} from the Home screen — choose another event or open it in Arena."
+            )
+            return
+        self.run.go_to_event_attempts += 1
+        if self.run.go_to_event_attempts == 1:
+            self._status(f"Opening {event_name} from Arena Home…")
         result = self._command("go_to_event", event_name=event_name, timeout=8.0)
         if not result.get("ok"):
             self._status(f"Could not open {event_name}: {result.get('error')}")

@@ -1210,3 +1210,98 @@ def test_format_matching_and_event_eligibility_gating_and_controls():
             }
         )
     assert any(k == "AUTO_QUEUE_DETAIL" and "Cannot start" in v for k, v in rt_statuses)
+
+
+def test_color_challenge_excluded_from_events_and_go_to_event_loop_pauses():
+    # 1. Color Challenge ('white01') and ColorChallenge blade behavior excluded; normal free events kept.
+    world = _events_world()
+    ev_mgr_h = world.objects[30]["EventManager"].handle
+    list_h = world.objects[ev_mgr_h]["EventContexts"].handle
+    c_white = _event_context(
+        world,
+        970,
+        name="white01",
+        public_name="White Color Challenge",
+        format_type="Constructed",
+        module="Join",
+        behavior="EventPage",
+        is_precon=True,
+        fees=[_fee(world, 982, "Free", 0)],
+    )
+    c_beh = _event_context(
+        world,
+        990,
+        name="Custom_Color_Track",
+        public_name="Color Track",
+        format_type="Constructed",
+        module="Join",
+        behavior="ColorChallenge",
+        is_precon=True,
+        fees=[_fee(world, 1002, "Free", 0)],
+    )
+    c_mwm = _event_context(
+        world,
+        1010,
+        name="Midweek_Magic_TST",
+        public_name="Midweek Magic",
+        format_type="Constructed",
+        module="Join",
+        behavior="EventPage",
+        is_precon=True,
+        fees=[_fee(world, 1022, "Free", 0)],
+    )
+    world.objects[list_h]["$items"].extend([Obj(c_white), Obj(c_beh), Obj(c_mwm)])
+    world.finds["HomePageContentController"] = world.add(1030, "HomePageContentController")
+    res = MacBridgeAdapter(world.send).handle({"action": "list_available_events"})
+    assert res["ok"] is True
+    names = {ev["event_name"] for ev in res["events"]}
+    assert "white01" not in names
+    assert "Custom_Color_Track" not in names
+    assert "Midweek_Magic_TST" in names
+
+    # 2. _step_home pauses cleanly after 3 consecutive failed/no-op navigations on home,
+    #    and resets go_to_event_attempts once Arena leaves Home.
+    bridge, cmds = _scripted_bridge(
+        [
+            {"ok": True, "home": True},
+            {"ok": True, "home": True},
+            {"ok": True, "home": True},
+            {"ok": True, "home": True},
+            {"ok": True, "event_page": True},
+        ],
+        go_to_event={"ok": True, "event_name": "Midweek_Magic_TST"},
+        get_event_page={
+            "is_open": True,
+            "event_name": "Midweek_Magic_TST",
+            "module": "Join",
+            "is_free": True,
+            "entry_fees": [{"currency_type": "Free", "quantity": 0, "is_free": True, "affordable": True}],
+        },
+        enter_event={"ok": True},
+    )
+    statuses: list[str] = []
+    driver = DraftEventDriver(
+        bridge_fn=lambda: bridge,
+        tracker_fn=lambda: None,
+        primer_service=None,
+        status_fn=statuses.append,
+        event_mode_fn=lambda: EventQueueConfig(
+            event_name="Midweek_Magic_TST", is_free=True, entry_currency="Free", entry_quantity=0
+        ),
+        queue_fn=lambda: True,
+        sleep=lambda _s: None,
+    )
+    driver._step()
+    assert driver.run.go_to_event_attempts == 1
+    assert any("Opening Midweek_Magic_TST" in s for s in statuses)
+    driver._step()
+    driver._step()
+    assert driver.run.go_to_event_attempts == 3
+    assert driver.paused_reason == ""
+    driver._step()
+    assert "did not open Midweek_Magic_TST" in driver.paused_reason
+
+    # Control: leaving Home resets go_to_event_attempts back to 0.
+    driver.resume()
+    driver._step()
+    assert driver.run.go_to_event_attempts == 0

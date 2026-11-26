@@ -7,6 +7,7 @@ share the exact same implementation.
 
 from __future__ import annotations
 
+import re
 import uuid
 from typing import Any
 
@@ -31,7 +32,11 @@ PACKET_SELECT_CONTROLLER = "Wotc.Mtga.Wrapper.PacketSelect.PacketSelectContentCo
 CONSTRUCTED_DECK_SELECT_CONTROLLER = "ConstructedDeckSelectController"
 REWARDS_PANEL_CONTROLLER = "Core.Meta.MainNavigation.Store.ContentControllerRewards"
 
-_EXCLUDED_EVENT_PREFIXES = ("DirectGame", "NPE", "ColorChallenge")
+_EXCLUDED_EVENT_PREFIXES = ("DirectGame", "NPE", "ColorChallenge", "AIBotMatch", "BotMatch", "Tutorial")
+_COLOR_CHALLENGE_EVENT_RE = re.compile(r"^(?:white|blue|black|red|green)0[1-5](?:_|$)", re.IGNORECASE)
+_EXCLUDED_BLADE_BEHAVIORS = frozenset(
+    {"Queue", "Hidden", "ColorChallenge", "Tutorial", "DirectChallenge", "BotMatch", "None"}
+)
 _UNPAID_MODULES = frozenset({"Join", "Pay", "PayEntry"})
 _FREE_CURRENCIES = frozenset({"Free", "None"})
 
@@ -588,7 +593,11 @@ def list_available_events(adapter: Any, timeout: float | None) -> dict[str, Any]
         chunk_vals = adapter._run(ops, timeout)
         for r in refs:
             event_name = str(chunk_vals[r["name"]["ref"]] or "").strip()
-            if not event_name or any(event_name.startswith(p) for p in _EXCLUDED_EVENT_PREFIXES):
+            if (
+                not event_name
+                or any(event_name.startswith(p) for p in _EXCLUDED_EVENT_PREFIXES)
+                or _COLOR_CHALLENGE_EVENT_RE.match(event_name)
+            ):
                 continue
             ev_state = enum_name(chunk_vals[r["state"]["ref"]])
             if ev_state == "NotActive":
@@ -598,7 +607,7 @@ def list_available_events(adapter: Any, timeout: float | None) -> dict[str, Any]
             joinability = enum_name(chunk_vals[r["joinability"]["ref"]])
             in_progress = mod_name not in {"", "None", "Join", "Pay", "PayEntry", "Complete"}
             if not in_progress:
-                if behavior in {"Queue", "Hidden"}:
+                if behavior in _EXCLUDED_BLADE_BEHAVIORS:
                     continue
                 if joinability == "Closed":
                     continue

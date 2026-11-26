@@ -222,6 +222,7 @@ class _DraftEventMixin:
                 driver.run = DraftRun(event_name=cfg.event_name)
             driver.run.awaiting_reentry_decision = False
             driver.run.finished = False
+            driver.run.go_to_event_attempts = 0
             driver.run.entry_attempts = 0
             driver.resume()
 
