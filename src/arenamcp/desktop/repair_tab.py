@@ -60,6 +60,7 @@ class RepairTab(QWidget):
     provisioning_changed = Signal(bool)
     guided_setup_finished = Signal(bool, str)
     license_changed = Signal()  # a key was applied or (re)provisioned; the access badge re-checks
+    license_updated = Signal(str)  # a new key was persisted; push live to the running engine
 
     _report_ready = Signal(object)  # RepairReport, marshaled to the UI thread
     _progress = Signal(str)
@@ -133,6 +134,9 @@ class RepairTab(QWidget):
         get_key_btn = QPushButton("Already a patron? Get my key…")
         get_key_btn.clicked.connect(open_subscribe_page)
         links.addWidget(get_key_btn)
+        self._recover_trial_btn = QPushButton("Start / recover free trial…")
+        self._recover_trial_btn.clicked.connect(self._offer_trial_signup)
+        links.addWidget(self._recover_trial_btn)
         links.addStretch(1)
         lv.addLayout(links)
         lb = QHBoxLayout()
@@ -241,11 +245,10 @@ class RepairTab(QWidget):
             self.guided_setup_finished.emit(ready, report.summary())
 
         # Two-step trial flow: silent auto-provisioning is gone. When the
-        # license check demands attention and no key is configured at all,
-        # offer the email-verification trial signup instead of leaving the
-        # user stranded at a key prompt. Deferred so the modal opens after
-        # this slot (and any guided-setup signals) finish.
-        if needs_license and not self._has_license_key():
+        # license check demands attention and no valid-shaped key is configured
+        # (empty or an accidental 6-digit code), offer the email-verification
+        # trial signup/recovery instead of stranding the user at a key prompt.
+        if needs_license and not self._has_valid_shaped_license_key():
             QTimer.singleShot(0, self._offer_trial_signup)
 
     # ------------------------------------------------------------------
@@ -256,6 +259,15 @@ class RepairTab(QWidget):
         from arenamcp.settings import get_settings
 
         return bool((get_settings().get("license_key") or "").strip())
+
+    @staticmethod
+    def _has_valid_shaped_license_key() -> bool:
+        from arenamcp.settings import get_settings
+
+        key = (get_settings().get("license_key") or "").strip()
+        if not key or (key.isdigit() and len(key) == 6):
+            return False
+        return True
 
     def _offer_trial_signup(self) -> None:
         """Open the 'Start your free trial' wizard (email -> code -> key)."""
@@ -272,9 +284,12 @@ class RepairTab(QWidget):
 
     def _on_trial_started(self, key: str, expires_at: str) -> None:
         # Key + expiry were persisted by the dialog via save_trial_key();
-        # refresh the badge and re-validate against the gateway.
+        # refresh the badge, push the key to the running engine, and re-validate.
         logger.info("Trial started (expires %s)", expires_at or "?")
+        self._summary.setText("Your 7-day free trial is active — no extra key entry needed.")
         self.license_changed.emit()
+        if (key or "").strip():
+            self.license_updated.emit(key.strip())
         self.run_checks()
 
     def _apply_license(self) -> None:
@@ -285,6 +300,9 @@ class RepairTab(QWidget):
         self._license_edit.clear()
         self._summary.setText(f"{result.label}: {result.detail}")
         self.license_changed.emit()
+        if key.isdigit() and len(key) == 6:
+            return
+        self.license_updated.emit(key)
         # Re-run so the checklist and provisioning signal reflect reality.
         self.run_checks()
 

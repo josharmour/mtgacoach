@@ -21,6 +21,7 @@ from arenamcp.gamestate_transforms import (
     _ensure_int_list,
     _ensure_list,
 )
+from arenamcp.mana import LAND_PLAY_ACTION_TYPES
 
 if TYPE_CHECKING:
     from arenamcp.gamestate import GameState
@@ -1331,7 +1332,7 @@ def _handle_actions_available(game_state: "GameState", msg: dict) -> bool:
         action_types = {a.get("actionType", "") for a in raw_actions}
         if action_types == {"ActionType_Pass"}:
             decision_label = "Priority (Pass Only)"
-        elif "ActionType_Cast" in action_types or "ActionType_Play" in action_types:
+        elif "ActionType_Cast" in action_types or bool(action_types & LAND_PLAY_ACTION_TYPES):
             decision_label = "Priority"
         elif "ActionType_AttackWithGroup" in action_types or "ActionType_Attack" in action_types:
             decision_label = "Declare Attackers"

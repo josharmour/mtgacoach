@@ -2395,8 +2395,11 @@ def next_turn_engines(state: dict, crackers: list[dict], alive: list[dict]) -> t
     Their creatures that grow on their life gain or draws (``line_search_moves.TheirEngines``:
     Unflinching Hortimancer and Ajani's Pridemate on Ajani Resolute's life gain) are bigger when
     they attack, and their drain engines (Biotech Specialist) deal us their damage whatever we
-    block; ``alive``: their creatures still there after our attack. Ledger #128 (match
-    3e545401 T17: the crackback guard counted 10 through, the real attack was 12 into 12)."""
+    block; ``alive``: their creatures still there after our attack. Also includes attack-created
+    tokens (Mobilize N, tapped-and-attacking tokens) and attack-trigger damage/drain.
+    Ledger #128 (match 3e545401 T17: the crackback guard counted 10 through, the real attack
+    was 12 into 12)."""
+    from arenamcp.attack_potential import projected_attack
     from arenamcp.board_model import engines_of, their_draws
     from arenamcp.combat_strategy import _controller as controller
 
@@ -2405,30 +2408,39 @@ def next_turn_engines(state: dict, crackers: list[dict], alive: list[dict]) -> t
     local = next((p.get("seat_id") for p in players if p.get("is_local")), None)
     opponent = next((p.get("seat_id") for p in players if not p.get("is_local")), None)
     engines = engines_of(battlefield, local, opponent, draws=their_draws(state))
-    if engines is None:
-        return crackers, 0
-    gains = engines.gain_events()
-    grown = []
-    for card in crackers:
-        n = engines.growth(card, gains=gains) if controller(card) == opponent else 0
-        power, toughness = _pt(card)
-        grown.append({**card, "power": power + n, "toughness": toughness + n} if n > 0 else card)
-    drain = engines.static_drain + sum(
-        engines.body_drain(c, gains=gains) for c in alive if controller(c) == opponent
-    )
-    # Their token engine at our end step with the mana they have up (#172): those tokens attack.
-    budget, made = engines.mana_now, 0
-    for card in alive:
-        if controller(card) != opponent or made >= 8:
-            continue
-        count, power, toughness = engines.body_tokens(card, mana=budget, activated=True)
-        for index in range(min(count, 8 - made)):
-            grown.append({
-                "instance_id": 650_000_000 + made + index, "name": f"{card.get('name') or 'their'} token",
-                "power": power, "toughness": toughness, "controller_seat_id": opponent, "oracle_text": "",
-                "type_line": "Token Creature",
-            })  # fmt: skip
-        made += min(count, 8 - made)
+    grown = list(crackers)
+    drain = 0
+    if engines is not None:
+        gains = engines.gain_events()
+        grown = []
+        for card in crackers:
+            n = engines.growth(card, gains=gains) if controller(card) == opponent else 0
+            power, toughness = _pt(card)
+            grown.append({**card, "power": power + n, "toughness": toughness + n} if n > 0 else card)
+        drain = engines.static_drain + sum(
+            engines.body_drain(c, gains=gains) for c in alive if controller(c) == opponent
+        )
+        # Their token engine at our end step with the mana they have up (#172): those tokens attack.
+        budget, made = engines.mana_now, 0
+        for card in alive:
+            if controller(card) != opponent or made >= 8:
+                continue
+            count, power, toughness = engines.body_tokens(card, mana=budget, activated=True)
+            for index in range(min(count, 8 - made)):
+                grown.append({
+                    "instance_id": 650_000_000 + made + index, "name": f"{card.get('name') or 'their'} token",
+                    "power": power, "toughness": toughness, "controller_seat_id": opponent, "oracle_text": "",
+                    "type_line": "Token Creature",
+                })  # fmt: skip
+            made += min(count, 8 - made)
+    if opponent is not None and grown:
+        alive_opp = [c for c in alive if controller(c) == opponent]
+        grown, trig_dmg, _trig_gain = projected_attack(
+            grown,
+            side_creatures=alive_opp,
+            declared=False,
+        )
+        drain += trig_dmg
     return grown, drain
 
 
@@ -2617,11 +2629,16 @@ def evaluate_attack(
             if not (c.get("instance_id") and c.get("instance_id") in killed)
         ]
         crackers, drain = next_turn_engines(state, crackers, survivors)
-    crack_block = guarded_block_plan(crackers, defenders, your_life + life_gained, defender=loss_state(state))
-    # Our blockers' deaths in their crackback drain us too (Vein Ripper, ledger #184).
-    crackback = (
-        max(0, crack_block.net_life_lost) if crack_block else sum(_pt(a)[0] for a in crackers)
-    ) + drain
+    post_drain_life = your_life + life_gained - drain
+    if drain > 0 and post_drain_life <= 0:
+        crack_block = None
+        crackback = drain
+    else:
+        crack_block = guarded_block_plan(crackers, defenders, post_drain_life, defender=loss_state(state))
+        # Our blockers' deaths in their crackback drain us too (Vein Ripper, ledger #184).
+        crackback = (
+            max(0, crack_block.net_life_lost) if crack_block else sum(_pt(a)[0] for a in crackers)
+        ) + drain
 
     plan = AttackPlan(
         attacker_ids=[int(a.get("instance_id") or 0) for a in attacking],

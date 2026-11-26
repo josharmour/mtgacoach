@@ -69,6 +69,7 @@ _CAST_ACTION_TYPES = frozenset(
         "ActionType_CastLeft",
         "ActionType_CastRight",
         "ActionType_CastAdventure",
+        "ActionType_CastMdfc",
         "ActionType_CastMDFC",
         "ActionType_CastPrototype",
         "ActionType_CastLeftRoom",
@@ -81,6 +82,7 @@ _CAST_ACTION_TYPES = frozenset(
 _PLAY_ACTION_TYPES = frozenset(
     {
         "ActionType_Play",
+        "ActionType_PlayMdfc",
         "ActionType_PlayMDFC",
     }
 )

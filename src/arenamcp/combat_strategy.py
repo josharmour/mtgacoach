@@ -2450,11 +2450,23 @@ def _their_next_attack(state: dict, theirs: list[dict], local_seat) -> tuple[lis
     #193, #194); an attacker with an extra-combat trigger (Aurelia) makes it
     two combats (#191).
     """
-    from arenamcp.attack_potential import apply_grants, extra_combat_of, grants_of, pumped_attackers
+    from arenamcp.attack_potential import (
+        apply_grants,
+        attack_tokens_of,
+        extra_combat_of,
+        grants_of,
+        make_attack_tokens,
+        pumped_attackers,
+    )
     from arenamcp.board_model import _int, engines_of
 
     able = [card for card in theirs if can_attack_next_turn(card)]
     able = pumped_attackers(able, state, next_turn=True)
+    opp_cards = [
+        card
+        for card in state.get("battlefield") or []
+        if isinstance(card, dict) and _controller(card) not in (None, local_seat)
+    ]
     opp_seats = {_controller(c) for c in theirs if _controller(c) not in (None, local_seat)}
     if opp_seats and local_seat is not None:
         engines = engines_of(state.get("battlefield") or [], local_seat, next(iter(opp_seats)))
@@ -2471,12 +2483,11 @@ def _their_next_attack(state: dict, theirs: list[dict], local_seat) -> tuple[lis
                     else c
                     for c in able
                 ]
-    grants = [
-        grant
-        for card in state.get("battlefield") or []
-        if isinstance(card, dict) and _controller(card) not in (None, local_seat)
-        for grant in grants_of(card)
-    ]
+    team_toks = tuple(tok for card in opp_cards for tok in attack_tokens_of(card) if not tok.self_attack)
+    created_toks = make_attack_tokens(able, team_tokens=team_toks)
+    if created_toks:
+        able = [*able, *created_toks]
+    grants = [grant for card in opp_cards for grant in grants_of(card)]
     if grants:
         able = apply_grants(able, grants)[0]
     combats = 2 if any(extra_combat_of(card) for card in able) else 1

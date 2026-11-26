@@ -144,7 +144,12 @@ def _match5_t15_state(*, aerid_tapped: bool = False) -> dict:
         "_bridge_connected": True,
         "_bridge_request_type": "DeclareAttackers",
         "_bridge_request_class": "DeclareAttackersRequest",
-        "turn": {"turn_number": 15, "active_player": 2, "phase": "Phase_Combat", "step": "Step_DeclareAttack"},
+        "turn": {
+            "turn_number": 15,
+            "active_player": 2,
+            "phase": "Phase_Combat",
+            "step": "Step_DeclareAttack",
+        },
         "players": [
             {"seat_id": 1, "is_local": False, "life_total": 18, "commander_ids": [676]},
             {"seat_id": 2, "is_local": True, "life_total": 18, "commander_ids": [502]},
@@ -255,7 +260,12 @@ def _match5_t15_state(*, aerid_tapped: bool = False) -> dict:
         "stack": [],
         "decision_context": {
             "type": "declare_attackers",
-            "legal_attackers": ["Forest", "The Notary Hobbits #1", "The Notary Hobbits #2", "Titan of Industry"],
+            "legal_attackers": [
+                "Forest",
+                "The Notary Hobbits #1",
+                "The Notary Hobbits #2",
+                "Titan of Industry",
+            ],
             "legal_attacker_ids": [442, 502, 510, 533],
             "raw_attackers": [
                 {
@@ -294,7 +304,14 @@ def test_planeswalker_attack_target_shown_and_not_counted_as_face_damage():
     face_opps = [c for c in face_state["battlefield"] if c["controller_seat_id"] == 1]
     face_joined = "\n".join(
         coach._format_block_combat(
-            face_yours, face_opps, local, 14, "Phase_Combat", set(), face_state["decision_context"], face_state
+            face_yours,
+            face_opps,
+            local,
+            14,
+            "Phase_Combat",
+            set(),
+            face_state["decision_context"],
+            face_state,
         )
     )
     assert "No blocks → take 6 dmg → 12 life remaining" in face_joined
@@ -522,16 +539,24 @@ def test_protection_plus_pump_stays_reactive_pump_and_protection_spell_value_is_
     assert card_role(snakeskin) == "pump"
     assert card_role(blossoming) == "pump"
     assert unmodelled_effect(snakeskin) == "a combat trick"
-    assert _spell_value(_Spell(snakeskin, snakeskin["name"], "pump", 1, (), False), survival=False, theirs=[]) == 0.0
     assert (
-        _spell_value(_Spell(blossoming, blossoming["name"], "pump", 1, (), False), survival=False, theirs=[]) == 0.0
-    )
-    assert (
-        _spell_value(_Spell(safekeeping, safekeeping["name"], "other", 1, (), False), survival=False, theirs=[])
+        _spell_value(_Spell(snakeskin, snakeskin["name"], "pump", 1, (), False), survival=False, theirs=[])
         == 0.0
     )
     assert (
-        _spell_value(_Spell(lorans_escape, lorans_escape["name"], "other", 1, (), False), survival=False, theirs=[])
+        _spell_value(_Spell(blossoming, blossoming["name"], "pump", 1, (), False), survival=False, theirs=[])
+        == 0.0
+    )
+    assert (
+        _spell_value(
+            _Spell(safekeeping, safekeeping["name"], "other", 1, (), False), survival=False, theirs=[]
+        )
+        == 0.0
+    )
+    assert (
+        _spell_value(
+            _Spell(lorans_escape, lorans_escape["name"], "other", 1, (), False), survival=False, theirs=[]
+        )
         == 0.0
     )
 
@@ -632,7 +657,9 @@ def test_format_block_combat_fallback_respects_flying_and_ignores_player_hit_bon
         if c["instance_id"] == 486:
             c["power"] = 3
             c["toughness"] = 3
-            c["oracle_text"] = "Whenever Studious First-Year deals combat damage to a player, that player loses 3 life."
+            c["oracle_text"] = (
+                "Whenever Studious First-Year deals combat damage to a player, that player loses 3 life."
+            )
     d_yours = [c for c in drain_state["battlefield"] if c["controller_seat_id"] == 2]
     d_opps = [c for c in drain_state["battlefield"] if c["controller_seat_id"] == 1]
     d_joined = "\n".join(
@@ -672,7 +699,9 @@ def test_walker_saving_blocks_respects_max_blockers_and_unknown_blocker_stats():
 
     # 2. Unknown-stat blocker (power=None, toughness=None) is never drafted as a chump.
     unk_state = _match5_t14_state(target_id=664)
-    unk_state["battlefield"] = [c for c in unk_state["battlefield"] if c["instance_id"] not in (442, 502, 510)]
+    unk_state["battlefield"] = [
+        c for c in unk_state["battlefield"] if c["instance_id"] not in (442, 502, 510)
+    ]
     unk_blocker = {
         "instance_id": 777,
         "name": "Mystery Body",
@@ -793,7 +822,12 @@ def _ghostly_prison_t10_state(*, forest_vigilance: bool = True, include_dorks: b
     return {
         "local_seat_id": 1,
         "opponent_seat_id": 2,
-        "turn": {"turn_number": 10, "active_player": 1, "phase": "Phase_Combat", "step": "Step_DeclareAttack"},
+        "turn": {
+            "turn_number": 10,
+            "active_player": 1,
+            "phase": "Phase_Combat",
+            "step": "Step_DeclareAttack",
+        },
         "players": [
             {"seat_id": 1, "is_local": True, "life_total": 25},
             {"seat_id": 2, "is_local": False, "life_total": 25},
@@ -816,7 +850,10 @@ def test_ghostly_prison_nissa_vigilant_forest_halfling_and_spawn_budget_and_cont
     state = _ghostly_prison_t10_state(forest_vigilance=True, include_dorks=True)
     forest_card = state["battlefield"][0]
     assert is_creature_now(forest_card) is True
-    assert is_creature_now({"card_types": ["Enchantment"], "type_line": "Legendary Enchantment Creature — God"}) is False
+    assert (
+        is_creature_now({"card_types": ["Enchantment"], "type_line": "Legendary Enchantment Creature — God"})
+        is False
+    )
 
     budget = AttackBudget(state)
     source_map = {iid: amt for iid, amt, _ in budget.sources}
@@ -839,9 +876,7 @@ def test_ghostly_prison_nissa_vigilant_forest_halfling_and_spawn_budget_and_cont
     # Control 2: Eldrazi Spawn (no-tap sacrifice) pays even while summoning-sick/tapped,
     # but never self-pays when Spawn itself is declared as an attacker.
     spawn_only = _ghostly_prison_t10_state(forest_vigilance=False, include_dorks=True)
-    spawn_only["battlefield"] = [
-        c for c in spawn_only["battlefield"] if c["instance_id"] in (465, 661, 792)
-    ]
+    spawn_only["battlefield"] = [c for c in spawn_only["battlefield"] if c["instance_id"] in (465, 661, 792)]
     spawn_only["battlefield"][0]["is_tapped"] = True  # tapped, summoning-sick Eldrazi Spawn
     sb = AttackBudget(spawn_only)
     assert {iid: amt for iid, amt, _ in sb.sources} == {661: 1, 465: 1}
@@ -936,9 +971,7 @@ def test_ghostly_prison_stale_held_attackers_withdraws_and_redeclares_affordable
                 self._pending = {
                     **self._pending,
                     "msg_id": 11,
-                    "attackers": [
-                        {**a, "selectedDamageRecipient": None} for a in self._pending["attackers"]
-                    ],
+                    "attackers": [{**a, "selectedDamageRecipient": None} for a in self._pending["attackers"]],
                 }
                 return {"ok": True, "submitted_type": "DeclareAttackersWithdraw", "needs_finalize": True}
             if kwargs.get("finalize_only"):

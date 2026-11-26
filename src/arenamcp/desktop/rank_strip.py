@@ -20,8 +20,10 @@ class RankStrip(QWidget):
         super().__init__(parent)
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(2)
         self.account_label = QLabel("Arena account · Not detected yet")
         self.account_label.setObjectName("arenaAccountLabel")
+        self.account_label.setProperty("role", "small")
         self.account_label.setTextFormat(Qt.PlainText)
         self.account_label.setAlignment(Qt.AlignCenter)
         root.addWidget(self.account_label)
@@ -30,14 +32,21 @@ class RankStrip(QWidget):
         self._reader = RankLog()
         self.buttons = {}
         self.recent = {ladder: [] for ladder in LADDERS}
+        self.recent_unranked: list = []
         self._history_stamp = None
         for ladder in LADDERS:
             button = SummaryButton(f"{ladder}\nUnavailable")
-            button.setFixedHeight(4 * button.fontMetrics().lineSpacing() + 16)
+            button.setFixedHeight(4 * button.fontMetrics().lineSpacing() + 12)
             button.setCursor(Qt.PointingHandCursor)
             button.clicked.connect(lambda checked=False, name=ladder: self.history_requested.emit(name))
             layout.addWidget(button, 1)
             self.buttons[ladder] = button
+        self.unranked_button = SummaryButton("Unranked · No recent matches")
+        self.unranked_button.setProperty("variant", "flat")
+        self.unranked_button.setFixedHeight(self.unranked_button.fontMetrics().lineSpacing() + 6)
+        self.unranked_button.setCursor(Qt.PointingHandCursor)
+        self.unranked_button.clicked.connect(lambda checked=False: self.history_requested.emit("Unranked"))
+        root.addWidget(self.unranked_button)
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
         self._timer.timeout.connect(self.refresh)
@@ -83,6 +92,29 @@ class RankStrip(QWidget):
             button.setToolTip(
                 f"Show up to {RANK_HISTORY_LIMIT} recent ranked {ladder} matches, newest first."
             )
+        unranked_marks = [
+            {"win": "W", "loss": "L", "draw": "D"}.get(r.result, "?") for r in self.recent_unranked
+        ]
+        unranked_metrics = self.unranked_button.fontMetrics()
+        unranked_avail = max(1, self.unranked_button.width() - 28)
+        if unranked_marks:
+            spaced = " ".join(unranked_marks)
+            compact = "".join(unranked_marks)
+            candidates = (
+                f"Unranked · Newest → oldest · {spaced}",
+                f"Unranked · {spaced}",
+                f"Unranked · {compact}",
+            )
+            unranked_text = next(
+                (c for c in candidates if unranked_metrics.horizontalAdvance(c) <= unranked_avail),
+                candidates[-1],
+            )
+        else:
+            unranked_text = "Unranked · No recent matches"
+        self.unranked_button.setText(unranked_text)
+        self.unranked_button.setToolTip(
+            f"Show up to {RANK_HISTORY_LIMIT} recent unranked matches (Brawl Historic, Play, etc.), newest first."
+        )
 
     def refresh(self):
         path = (
@@ -107,5 +139,8 @@ class RankStrip(QWidget):
                     name: [r for r in records if ranked_ladder(r.format_name) == name][:RANK_HISTORY_LIMIT]
                     for name in LADDERS
                 }
+                self.recent_unranked = [r for r in records if ranked_ladder(r.format_name) is None][
+                    :RANK_HISTORY_LIMIT
+                ]
             self._render()
         self._timer.start(10 if more else 3000)

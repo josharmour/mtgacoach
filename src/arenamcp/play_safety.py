@@ -586,7 +586,7 @@ def pending_x_source(state: dict) -> dict:
 # Unconditional tap abilities with explicit fixed symbols are counted below.
 _INEXACT_MANA = re.compile(
     r"\badd (?:\{[^}]+\}){2,}"
-    r"|\badd (?:two|three|four|five|x\b|that much|an amount|mana equal)"
+    r"|\badd (?:two|three|four|five|six|seven|eight|nine|ten|x\b|that much|an amount|mana equal)"
     r"|\badd [^.]*\bfor each\b"
     r"|\badditional\b[^.]*\bmana\b"
     r"|\bcosts? (?:\{[^}]+\}|x|\d+|one|two|three) less\b"
@@ -594,6 +594,21 @@ _INEXACT_MANA = re.compile(
     r"|\{[0-9]+\},\s*\{t\}:\s*add\b"
 )
 _ENTERS_WITH_X = re.compile(r"\benters (?:the battlefield )?with x\b[^.]*\+1/\+1 counters?")
+_ACTIVATE_ONLY_MANA_LINE = re.compile(
+    r"\{t\}[^:\n]*:\s*add\b[^\n]*\bspend (?:this|that) mana only to activate abilities\b[^\n]*",
+    re.IGNORECASE,
+)
+
+
+def _strip_activate_only_mana_lines(text: str) -> str:
+    """Drop tap-for-mana lines usable only for activated abilities (not spell casting)."""
+    kept = []
+    for line in str(text or "").splitlines():
+        low = line.lower()
+        if _ACTIVATE_ONLY_MANA_LINE.search(low) and not re.search(r"\bcast\b", low):
+            continue
+        kept.append(line)
+    return "\n".join(kept)
 
 
 def _enrich_card_for_facts(card: dict, state: dict | None = None) -> dict[str, Any] | None:
@@ -823,10 +838,23 @@ def exact_mana_total(state: dict) -> int | None:
         if rec is not None and not _record_has_unknown_effect(rec):
             delta = _mana_delta_from_record(card, state, rec)
             if delta is None:
-                return None
+                plain = _plain_text(card)
+                stripped = _strip_activate_only_mana_lines(plain)
+                if (
+                    stripped != plain
+                    and not _INEXACT_MANA.search(stripped)
+                    and not re.search(r"costs? .*less|additional|twice|three times", stripped)
+                    and RulesEngine._mana_restriction(
+                        _normalize_mana_symbols(str(card.get("oracle_text") or ""))
+                    )
+                    == "only"
+                ):
+                    delta = 0
+                else:
+                    return None
             fixed_extra += delta
             continue
-        text = _plain_text(card)
+        text = _strip_activate_only_mana_lines(_plain_text(card))
         # A Channel ability's self-discount does not reduce the cost of a
         # spell being cast. In particular, battlefield Boseiju must not make
         # an otherwise exact X budget unknown because its discard ability

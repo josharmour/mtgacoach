@@ -1590,16 +1590,30 @@ class PipeAdapter:
             self.error(f"Online switch failed: {e}")
 
     def _handle_set_key(self, text: str) -> None:
-        """Set license key."""
-        parts = text.split(maxsplit=1)
-        if len(parts) < 2 or not parts[1].strip():
+        """Set license key and update live online backends immediately."""
+        raw = (text or "").strip()
+        if raw.startswith("/"):
+            parts = raw.split(maxsplit=1)
+            key = parts[1].strip() if len(parts) >= 2 else ""
+        else:
+            key = raw
+        if not key:
             self.log("Usage: /key YOUR_LICENSE_KEY")
             return
 
-        key = parts[1].strip()
         from arenamcp.settings import get_settings
 
         get_settings().set("license_key", key)
+        coach = self._coach
+        if coach is not None:
+            seen: set[int] = set()
+            for backend in (
+                getattr(getattr(coach, "_coach", None), "_backend", None),
+                getattr(coach, "_autopilot_backend", None),
+            ):
+                if backend is not None and id(backend) not in seen and hasattr(backend, "set_api_key"):
+                    seen.add(id(backend))
+                    backend.set_api_key(key)
         self.log(f"License key set: {key[:8]}...")
 
     def _handle_analyze_match(self) -> None:

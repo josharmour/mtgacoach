@@ -691,11 +691,416 @@ def extra_combat_of(card: dict) -> ExtraCombat | None:
     return ExtraCombat(card.get("instance_id"), str(card.get("name") or "a creature"), any(lines))
 
 
+def modelled_attack_damage(card: dict, line: str) -> bool:
+    """Whether an attack-trigger line is an attack damage/drain modelled by ``attack_trigger_drain``."""
+    name = str((card.get("_card") or card).get("name") or "")
+    return bool(_attack_damage_lines(name, line.strip()))
+
+
 def modelled_attack_trigger(card: dict, line: str) -> bool:
-    """Whether an attack-trigger line is played by the attack projections (a grant or an extra combat)."""
+    """Whether an attack-trigger line is played by the attack projections (grant, extra combat,
+    attack-created tokens, or attack damage/drain)."""
     name = str((card.get("_card") or card).get("name") or "")
     line = line.strip()
-    return bool(_grant_lines(name, line) or _extra_lines(name, line))
+    return bool(
+        _grant_lines(name, line)
+        or _extra_lines(name, line)
+        or _attack_token_lines(name, line, (line,))
+        or _attack_damage_lines(name, line)
+    )
+
+
+# --- attack-created tokens (Mobilize N, tapped-and-attacking tokens) ------------------------
+
+_MOBILIZE = re.compile(r"\bmobilize\s+(?P<n>\d+)\b")
+_GRANTED_MOBILIZE = re.compile(r"\b(?:has|have|gains?|equipped|enchanted|until end of turn)\b")
+_ATTACK_TOKEN = re.compile(
+    r"^whenever (?:(?P<any>you attack)|(?P<who>[^.]+?) attacks(?: for the first time each turn)?),\s*"
+    r"create (?P<n>a|an|one|two|three|four|five|six|seven|eight|\d+) "
+    r"(?P<p>\d+)/(?P<t>\d+) (?P<desc>[^.]*?) creature tokens?"
+    r"(?: with (?P<kws>(?:(?!that are|that's|that is|tapped and attacking)[^.])*?))?"
+    r"(?:\s+(?:that are|that's|that is))?\s+tapped and attacking\b(?P<rest>.*)$"
+)
+_EPHEMERAL_CLAUSE = re.compile(r"\b(?:sacrifice|exile)\b[^.]*\b(?:end step|end of combat)\b")
+_TOKEN_BODY_ID_START = 651_000_000
+_MAX_ATTACK_TOKENS = 8
+
+
+@dataclass(frozen=True)
+class AttackTokens:
+    """Attack trigger that creates creature token(s) tapped and attacking."""
+
+    source_id: Any
+    source: str
+    self_attack: bool
+    count: int
+    power: int
+    toughness: int
+    keywords: tuple[str, ...] = ()
+    ephemeral: bool = False
+    subtypes: tuple[str, ...] = ()
+
+
+@lru_cache(maxsize=4096)
+def _attack_token_lines(
+    name: str, oracle: str, keywords: tuple[str, ...] = ()
+) -> tuple[tuple[bool, int, int, int, tuple[str, ...], bool, tuple[str, ...]], ...]:
+    selves = _self_names(name)
+    out: list[tuple[bool, int, int, int, tuple[str, ...], bool, tuple[str, ...]]] = []
+    seen_mobilize = False
+    for line in _lines(oracle):
+        mob = _MOBILIZE.search(line)
+        if mob is not None and not _GRANTED_MOBILIZE.search(line):
+            n = min(max(0, int(mob.group("n"))), _MAX_ATTACK_TOKENS)
+            if n:
+                out.append((True, n, 1, 1, (), True, ("warrior",)))
+                seen_mobilize = True
+            continue
+        match = _ATTACK_TOKEN.match(line)
+        if match is None:
+            continue
+        who = (match.group("who") or "").strip()
+        self_attack = not bool(match.group("any"))
+        if self_attack and who not in selves:
+            continue
+        word = match.group("n")
+        count = min(max(0, int(word) if word.isdigit() else _NUMBER_WORDS.get(word, 1)), _MAX_ATTACK_TOKENS)
+        if not count:
+            continue
+        kws_text = match.group("kws") or ""
+        tok_kws = tuple(k for k in _GRANTABLE if k in kws_text)
+        ephemeral = bool(_EPHEMERAL_CLAUSE.search(match.group("rest") or ""))
+        desc_words = tuple(_KIND_WORDS.findall(match.group("desc") or ""))
+        out.append(
+            (self_attack, count, int(match.group("p")), int(match.group("t")), tok_kws, ephemeral, desc_words)
+        )
+    if not seen_mobilize:
+        for kw in keywords:
+            mob = _MOBILIZE.search(str(kw).lower())
+            if mob is not None:
+                n = min(max(0, int(mob.group("n"))), _MAX_ATTACK_TOKENS)
+                if n:
+                    out.append((True, n, 1, 1, (), True, ("warrior",)))
+                    break
+    return tuple(out)
+
+
+def attack_tokens_of(card: dict) -> list[AttackTokens]:
+    """The attack-created token triggers (``Mobilize N`` or ``create ... tapped and attacking``) on ``card``."""
+    card = card.get("_card") or card
+    kws = tuple(str(k).lower() for k in (card.get("keywords") or ()))
+    found: list[AttackTokens] = []
+    for self_attack, count, p, t, tok_kws, ephemeral, subtypes in _attack_token_lines(
+        str(card.get("name") or ""), card.get("oracle_text") or "", kws
+    ):
+        found.append(
+            AttackTokens(
+                source_id=card.get("instance_id"),
+                source=str(card.get("name") or "a permanent"),
+                self_attack=self_attack,
+                count=count,
+                power=p,
+                toughness=t,
+                keywords=tok_kws,
+                ephemeral=ephemeral,
+                subtypes=subtypes,
+            )
+        )
+    return found
+
+
+def make_attack_tokens(
+    attackers: list[dict],
+    *,
+    team_tokens: tuple[AttackTokens, ...] = (),
+    base_id: int = _TOKEN_BODY_ID_START,
+) -> list[dict]:
+    """Synthetic tapped-and-attacking token bodies created when ``attackers`` attack."""
+    if not attackers:
+        return []
+    specs: list[tuple[AttackTokens, Any]] = []
+    seen_team: set[tuple[Any, int, int, int]] = set()
+    seat_default = _controller(attackers[0].get("_card") or attackers[0])
+    for body in attackers:
+        raw_seat = _controller(body.get("_card") or body)
+        seat = raw_seat if raw_seat is not None else seat_default
+        toks = body.get("_atk_tokens")
+        if toks is None:
+            toks = tuple(attack_tokens_of(body))
+        for tok in toks:
+            if not tok.self_attack:
+                key = (tok.source_id, tok.count, tok.power, tok.toughness)
+                if key in seen_team:
+                    continue
+                seen_team.add(key)
+            specs.append((tok, seat))
+        for tok in body.get("_atk_team_tokens") or ():
+            if tok.self_attack:
+                continue
+            key = (tok.source_id, tok.count, tok.power, tok.toughness)
+            if key not in seen_team:
+                seen_team.add(key)
+                specs.append((tok, seat))
+    for tok in team_tokens:
+        if tok.self_attack:
+            continue
+        key = (tok.source_id, tok.count, tok.power, tok.toughness)
+        if key not in seen_team:
+            seen_team.add(key)
+            specs.append((tok, seat_default))
+    created: list[dict] = []
+    next_id = base_id
+    for tok, seat in specs:
+        for _ in range(tok.count):
+            if len(created) >= _MAX_ATTACK_TOKENS:
+                return created
+            created.append(
+                {
+                    "instance_id": next_id,
+                    "name": f"{tok.source} token",
+                    "power": tok.power,
+                    "toughness": tok.toughness,
+                    "keywords": list(tok.keywords),
+                    "subtypes": list(tok.subtypes),
+                    "type_line": "Token Creature",
+                    "is_token": True,
+                    "oracle_text": "",
+                    "controller_seat_id": seat,
+                    "_tapped": True,
+                    "is_tapped": True,
+                    "_attacking": True,
+                    "is_attacking": True,
+                    "_sick": False,
+                    "_can_attack": True,
+                    "_can_block": False,
+                    "_unblockable": False,
+                    "_ward": 0,
+                    "_created_attack_token": True,
+                    "_ephemeral_attack_token": tok.ephemeral,
+                }
+            )
+            next_id += 1
+    return created
+
+
+# --- attack-trigger direct damage / life loss / gain ---------------------------------------
+
+_POWER_LE_DAMAGE = re.compile(
+    r"^whenever (?P<who>[^.]+?) attacks(?:\s+for the first time each turn)?,\s*"
+    r"(?:it|[^,.]+?) deals x damage to (?:each opponent|defending player|target opponent)"
+    r"(?P<gain> and you gain x life)?,\s*"
+    r"where x is the number of (?P<other>other )?creatures you control with power (?P<maxp>\d+) or less\.?$"
+)
+_COUNT_DAMAGE = re.compile(
+    r"^whenever (?P<who>[^.]+?) attacks(?:\s+for the first time each turn)?,\s*"
+    r"(?:(?:it|[^,.]+?) deals x damage to (?:each opponent|defending player|target opponent)"
+    r"|(?:each opponent|defending player) loses x life)"
+    r"(?P<gain> and you gain x life)?,\s*"
+    r"where x is the number of (?P<other>other )?(?P<att>attacking )?creatures(?: you control)?\.?$"
+)
+_FIXED_SELF_DAMAGE = re.compile(
+    r"^whenever (?P<who>[^.]+?) attacks(?:\s+for the first time each turn)?,\s*"
+    r"(?:(?:it|[^,.]+?) deals (?P<n>\d+) damage to (?:each opponent|defending player|target opponent)"
+    r"|(?:each opponent|defending player) loses (?P<n2>\d+) life)"
+    r"(?: and you gain (?P<g>\d+) life)?\.?$"
+)
+_PER_ATTACKER_DAMAGE = re.compile(
+    r"^whenever a creature you control attacks,\s*"
+    r"(?:[^,.]+? deals (?P<n>\d+) damage to "
+    r"(?:each opponent|defending player|target opponent|the player or planeswalker it's attacking)"
+    r"|(?:each opponent|defending player) loses (?P<n2>\d+) life)"
+    r"(?: and you gain (?P<g>\d+) life)?\.?$"
+)
+
+
+@dataclass(frozen=True)
+class AttackDamage:
+    """Attack trigger that directly deals damage / causes life loss (and optional life gain)."""
+
+    source_id: Any
+    source: str
+    self_attack: bool
+    kind: str  # "fixed" | "per_attacker" | "count_creatures" | "count_attackers" | "count_power_le"
+    amount: int
+    life_gain: int = 0
+    gains_x: bool = False
+    other_only: bool = False
+
+
+@lru_cache(maxsize=4096)
+def _attack_damage_lines(name: str, oracle: str) -> tuple[tuple[bool, str, int, int, bool, bool], ...]:
+    selves = _self_names(name)
+    out: list[tuple[bool, str, int, int, bool, bool]] = []
+    seen_lines: set[str] = set()
+    for line in _lines(oracle):
+        if line in seen_lines:
+            continue
+        seen_lines.add(line)
+        if (m := _PER_ATTACKER_DAMAGE.match(line)) is not None:
+            amt = int(m.group("n") or m.group("n2"))
+            gain = int(m.group("g") or 0)
+            out.append((False, "per_attacker", amt, gain, False, False))
+            continue
+        if (m := _POWER_LE_DAMAGE.match(line)) is not None and m.group("who").strip() in selves:
+            out.append(
+                (
+                    True,
+                    "count_power_le",
+                    int(m.group("maxp")),
+                    0,
+                    bool(m.group("gain")),
+                    bool(m.group("other")),
+                )
+            )
+            continue
+        if (m := _COUNT_DAMAGE.match(line)) is not None and m.group("who").strip() in selves:
+            kind = "count_attackers" if m.group("att") else "count_creatures"
+            out.append((True, kind, 1, 0, bool(m.group("gain")), bool(m.group("other"))))
+            continue
+        if (m := _FIXED_SELF_DAMAGE.match(line)) is not None and m.group("who").strip() in selves:
+            amt = int(m.group("n") or m.group("n2"))
+            gain = int(m.group("g") or 0)
+            out.append((True, "fixed", amt, gain, False, False))
+            continue
+    return tuple(out)
+
+
+def attack_damage_of(card: dict) -> list[AttackDamage]:
+    """Direct attack-trigger damage/drain effects on ``card``."""
+    card = card.get("_card") or card
+    found: list[AttackDamage] = []
+    for self_attack, kind, amount, life_gain, gains_x, other_only in _attack_damage_lines(
+        str(card.get("name") or ""), card.get("oracle_text") or ""
+    ):
+        found.append(
+            AttackDamage(
+                source_id=card.get("instance_id"),
+                source=str(card.get("name") or "a permanent"),
+                self_attack=self_attack,
+                kind=kind,
+                amount=amount,
+                life_gain=life_gain,
+                gains_x=gains_x,
+                other_only=other_only,
+            )
+        )
+    return found
+
+
+def attack_trigger_drain(
+    attackers: list[dict],
+    *,
+    side_creatures: list[dict] | None = None,
+    team_damage: tuple[AttackDamage, ...] = (),
+    declared: bool = False,
+) -> tuple[int, int]:
+    """(damage dealt to defender, life gained by attacker) from attack triggers on ``attackers``.
+
+    When ``declared`` is True (attackers already declared), triggers have resolved and 0 is returned.
+    Synthetic ``_created_attack_token`` bodies count as controlled creatures/attackers for X-counts
+    (e.g. Arabella + Mobilize), but do NOT trigger per-declared-attacker triggers (e.g. Hellrider).
+    """
+    if declared or not attackers:
+        return 0, 0
+    declared_attackers = [a for a in attackers if not a.get("_created_attack_token")]
+    if not declared_attackers:
+        return 0, 0
+    attacker_ids = {_card_id(a) for a in declared_attackers if _card_id(a) is not None}
+
+    collected: list[AttackDamage] = []
+    seen_keys: set[tuple[Any, str, int, bool]] = set()
+
+    def add_dmg(dmg: AttackDamage) -> None:
+        key = (dmg.source_id, dmg.kind, dmg.amount, dmg.other_only)
+        if key not in seen_keys:
+            seen_keys.add(key)
+            collected.append(dmg)
+
+    for a in declared_attackers:
+        dmgs = a.get("_atk_damage")
+        if dmgs is None:
+            dmgs = tuple(attack_damage_of(a))
+        for dmg in dmgs:
+            add_dmg(dmg)
+        for dmg in a.get("_atk_team_damage") or ():
+            if not dmg.self_attack:
+                add_dmg(dmg)
+    for dmg in team_damage:
+        if not dmg.self_attack:
+            add_dmg(dmg)
+    if side_creatures:
+        for c in side_creatures:
+            dmgs = c.get("_atk_damage")
+            if dmgs is None:
+                dmgs = tuple(attack_damage_of(c))
+            for dmg in dmgs:
+                if not dmg.self_attack:
+                    add_dmg(dmg)
+
+    if not collected:
+        return 0, 0
+
+    all_creatures: list[dict] = list(attackers)
+    seen_cids = {_card_id(c) for c in attackers if _card_id(c) is not None}
+    if side_creatures:
+        for c in side_creatures:
+            cid = _card_id(c)
+            if cid is None or cid not in seen_cids:
+                all_creatures.append(c)
+                if cid is not None:
+                    seen_cids.add(cid)
+
+    total_damage = 0
+    total_gain = 0
+    for dmg in collected:
+        if dmg.self_attack and (dmg.source_id is None or dmg.source_id not in attacker_ids):
+            continue
+        deal = 0
+        gain = 0
+        if dmg.kind == "fixed":
+            deal = dmg.amount
+            gain = dmg.life_gain
+        elif dmg.kind == "per_attacker":
+            deal = dmg.amount * len(declared_attackers)
+            gain = dmg.life_gain * len(declared_attackers)
+        elif dmg.kind == "count_attackers":
+            deal = sum(1 for c in attackers if not (dmg.other_only and _card_id(c) == dmg.source_id))
+            gain = deal if dmg.gains_x else dmg.life_gain
+        elif dmg.kind == "count_creatures":
+            deal = sum(1 for c in all_creatures if not (dmg.other_only and _card_id(c) == dmg.source_id))
+            gain = deal if dmg.gains_x else dmg.life_gain
+        elif dmg.kind == "count_power_le":
+            deal = sum(
+                1
+                for c in all_creatures
+                if not (dmg.other_only and _card_id(c) == dmg.source_id)
+                and isinstance(c.get("power"), int)
+                and not isinstance(c.get("power"), bool)
+                and c["power"] <= dmg.amount
+            )
+            gain = deal if dmg.gains_x else dmg.life_gain
+        total_damage += deal
+        total_gain += gain
+    return total_damage, total_gain
+
+
+def projected_attack(
+    attackers: list[dict],
+    *,
+    side_creatures: list[dict] | None = None,
+    team_tokens: tuple[AttackTokens, ...] = (),
+    team_damage: tuple[AttackDamage, ...] = (),
+    declared: bool = False,
+) -> tuple[list[dict], int, int]:
+    """Return ``(expanded_attackers, trig_damage, trig_gain)`` including attack-created tokens and triggers."""
+    expanded = attack_bodies(attackers, declared=declared, team_tokens=team_tokens)
+    trig_damage, trig_gain = attack_trigger_drain(
+        expanded,
+        side_creatures=side_creatures,
+        team_damage=team_damage,
+        declared=declared,
+    )
+    return expanded, trig_damage, trig_gain
 
 
 def extra_combats_now(state: dict, attackers: list[dict]) -> ExtraCombat | None:
@@ -755,8 +1160,12 @@ def annotate(
         untapped_only=untapped_only, treasures=made, hand_size=hand_size,
     )  # fmt: skip
     grants: list[Grant] = []
+    team_tokens: list[AttackTokens] = []
+    team_damage: list[AttackDamage] = []
     for card in side.cards:
         grants += grants_of(card)
+        team_tokens += [t for t in attack_tokens_of(card) if not t.self_attack]
+        team_damage += [d for d in attack_damage_of(card) if not d.self_attack]
     notes: list[str] = []
     for body in bodies:
         card = body.get("_card") or body
@@ -769,6 +1178,19 @@ def annotate(
             )
         if grants and not declared:
             body["_atk_grants"] = tuple(grants)
+        toks = attack_tokens_of(card)
+        if toks:
+            body["_atk_tokens"] = tuple(toks)
+            for tok in toks:
+                notes.append(f"{tok.source} (creates {tok.count} {tok.power}/{tok.toughness} attacker(s))")
+        dmgs = attack_damage_of(card)
+        if dmgs:
+            body["_atk_damage"] = tuple(dmgs)
+            notes.append(f"{body.get('name') or 'creature'} (attack damage trigger)")
+        if team_tokens and not declared:
+            body["_atk_team_tokens"] = tuple(team_tokens)
+        if team_damage and not declared:
+            body["_atk_team_damage"] = tuple(team_damage)
         extra = extra_combat_of(card)
         if extra is not None:
             body["_atk_extra"] = extra
@@ -779,11 +1201,25 @@ def annotate(
 
 
 def annotated(attackers) -> bool:
-    return any(b.get("_atk_pump") or b.get("_atk_grants") or b.get("_atk_extra") for b in attackers)
+    return any(
+        b.get("_atk_pump")
+        or b.get("_atk_grants")
+        or b.get("_atk_extra")
+        or b.get("_atk_tokens")
+        or b.get("_atk_damage")
+        or b.get("_atk_team_tokens")
+        or b.get("_atk_team_damage")
+        for b in attackers
+    )
 
 
-def attack_bodies(attackers: list[dict], *, declared: bool = False) -> list[dict]:
-    """Annotated ``attackers`` with their pumps and met grants applied (copies, the same ids)."""
+def attack_bodies(
+    attackers: list[dict],
+    *,
+    declared: bool = False,
+    team_tokens: tuple[AttackTokens, ...] = (),
+) -> list[dict]:
+    """Annotated ``attackers`` with their pumps, created attacking tokens, and met grants applied."""
     out = []
     for body in attackers:
         pump = body.get("_atk_pump")
@@ -794,6 +1230,9 @@ def attack_bodies(attackers: list[dict], *, declared: bool = False) -> list[dict
         )
     if declared:
         return out
+    created = make_attack_tokens(out, team_tokens=team_tokens)
+    if created:
+        out = [*out, *created]
     grants: list[Grant] = []
     for body in attackers:
         for grant in body.get("_atk_grants") or ():
@@ -822,49 +1261,118 @@ Round = Callable[[list[dict], list[dict], int], tuple]
 
 
 def attack_round(
-    attackers: list[dict], blockers: list[dict], life: int, once: Round, *, declared: bool = False
+    attackers: list[dict],
+    blockers: list[dict],
+    life: int,
+    once: Round,
+    *,
+    declared: bool = False,
+    side: list[dict] | None = None,
 ) -> tuple:
     """``once`` (a ``_combat_life``-shaped round: damage, dead attackers, dead blockers, attacker
-    gain, defender gain) with the attackers' pumps and grants, plus the extra combat it gets: its
-    surviving attackers again (all of them untapped by the trigger, the source's vigilance aside)
+    gain, defender gain) with the attackers' pumps, created attacking tokens, attack-trigger
+    damage/drain, and grants, plus the extra combat it gets: its surviving attackers again (all of
+    them untapped by the trigger, the source's vigilance aside; ephemeral attack tokens excluded)
     into the blockers left alive. Damage and gains add up; the dead sets are the union."""
     from arenamcp.combat_infect import add_deltas, apply_deltas, apply_marked_damage
     from arenamcp.combat_loss import CombatDetail, LossState
 
     fighting = attack_bodies(attackers, declared=declared)
+    trig_dmg, trig_gain = attack_trigger_drain(fighting, side_creatures=side, declared=declared)
+    created_ids = {b["instance_id"] for b in fighting if b.get("_created_attack_token")}
     extra = extra_combats(attackers, declared=declared)
     if extra is not None:
         fighting = [{**b, "_track_combat_damage": True} for b in fighting]
-    result = once(fighting, blockers, life)
+
+    def _clean_dead(dead: set) -> set:
+        return set(dead) - created_ids if created_ids else set(dead)
+
+    def _with_trigger(
+        res: tuple, t_dmg: int, t_gain: int, dead_a: set, dead_b: set, extra_loss=None
+    ) -> tuple:
+        if len(res) < 7:
+            d, _, _, g, h = res[:5]
+            base = (d + t_dmg, dead_a, dead_b, g + t_gain, h)
+        else:
+            d, _, _, g, h, llg, llh = res
+            base = (d + t_dmg, dead_a, dead_b, g + t_gain, h, llg, llh)
+        if isinstance(res, CombatDetail) or extra_loss is not None:
+            return CombatDetail(
+                base,
+                extra_loss if extra_loss is not None else getattr(res, "loss", LossState()),
+                getattr(res, "terminal", False),
+                getattr(res, "counter_deltas", {}),
+                getattr(res, "damage_deltas", {}),
+            )
+        return base
+
+    # CR 508.2 / 704.5a: attack triggers resolve before blockers and combat damage.
+    if trig_dmg > 0 and trig_dmg >= life:
+        empty = once([], blockers, 1)
+        return _with_trigger(empty, trig_dmg, trig_gain, set(), set())
+
+    result = once(fighting, blockers, life - trig_dmg)
     changes = getattr(result, "counter_deltas", {})
     marked = getattr(result, "damage_deltas", {})
 
     def survivors(cards, dead):
         return apply_marked_damage(
-            apply_deltas([b for b in cards if b.get("instance_id") not in dead], changes), marked
+            apply_deltas(
+                [
+                    b
+                    for b in cards
+                    if b.get("instance_id") not in dead and not b.get("_ephemeral_attack_token")
+                ],
+                changes,
+            ),
+            marked,
         )
 
+    dead_att0 = _clean_dead(result[1])
+    dead_blk0 = set(result[2])
     if extra is None or not fighting:
+        if trig_dmg or trig_gain or created_ids:
+            return _with_trigger(result, trig_dmg, trig_gain, dead_att0, dead_blk0)
         return result
+
+    damage, _, _, gain, healed = result[:5]
+    left = life - (damage + trig_dmg) + healed
+    if left <= 0 or getattr(result, "terminal", False):
+        if trig_dmg or trig_gain or created_ids:
+            return _with_trigger(result, trig_dmg, trig_gain, dead_att0, dead_blk0)
+        return result
+
+    raw_side = side if side is not None else attackers
+    side_after = [b for b in raw_side if b.get("instance_id") not in dead_att0]
+    again = survivors(list(attackers), dead_att0)
+    if not extra.untap_all:
+        again = [b for b in again if has_combat_keyword(b, "vigilance")]
+    if not again:
+        if trig_dmg or trig_gain or created_ids:
+            return _with_trigger(result, trig_dmg, trig_gain, dead_att0, dead_blk0)
+        return result
+
+    standing = survivors(blockers, dead_blk0)
+    fighting2 = attack_bodies(again, declared=False)
+    trig_dmg2, trig_gain2 = attack_trigger_drain(fighting2, side_creatures=side_after, declared=False)
+    created_ids2 = {b["instance_id"] for b in fighting2 if b.get("_created_attack_token")}
+    if trig_dmg2 > 0 and trig_dmg2 >= left:
+        more = once([], standing, 1)
+        dead_att2 = set()
+        dead_blk2 = set()
+    else:
+        more = once(fighting2, standing, left - trig_dmg2)
+        dead_att2 = set(more[1]) - created_ids2 if created_ids2 else set(more[1])
+        dead_blk2 = set(more[2])
+
     if len(result) < 7:
-        damage, dead_att, dead_blk, gain, healed = result[:5]
-        left = life - damage + healed
-        if left <= 0 or getattr(result, "terminal", False):
-            return result
-        again = survivors(fighting, dead_att)
-        if not extra.untap_all:
-            again = [b for b in again if has_combat_keyword(b, "vigilance")]
-        if not again:
-            return result
-        standing = survivors(blockers, dead_blk)
-        more = once(again, standing, left)
-        damage2, dead_att2, dead_blk2, gain2, healed2 = more[:5]
+        damage2, _, _, gain2, healed2 = more[:5]
         return CombatDetail(
             (
-                damage + damage2,
-                set(dead_att) | set(dead_att2),
-                set(dead_blk) | set(dead_blk2),
-                gain + gain2,
+                damage + trig_dmg + damage2 + trig_dmg2,
+                dead_att0 | dead_att2,
+                dead_blk0 | dead_blk2,
+                gain + trig_gain + gain2 + trig_gain2,
                 healed + healed2,
             ),
             getattr(more, "loss", getattr(result, "loss", LossState())),
@@ -872,33 +1380,14 @@ def attack_round(
             add_deltas(changes, getattr(more, "counter_deltas", {})),
             add_deltas(marked, getattr(more, "damage_deltas", {})),
         )
-    # ``_combat_life``'s separated shape (#199(a)): the lifelink gains (indexes 5/6) compose
-    # like the net gains; the extra combat's blockers are the survivors.
-    damage, dead_att, dead_blk, gain, healed, ll_gain, ll_heal = result
-    left = life - damage + healed
-    if left <= 0 or getattr(result, "terminal", False):
-        return result
-    again = survivors(fighting, dead_att)
-    if not extra.untap_all:
-        again = [b for b in again if has_combat_keyword(b, "vigilance")]
-    if not again:
-        return result
-    standing = survivors(blockers, dead_blk)
-    (
-        damage2,
-        dead_att2,
-        dead_blk2,
-        gain2,
-        healed2,
-        ll_gain2,
-        ll_heal2,
-    ) = (more := once(again, standing, left))
+    ll_gain, ll_heal = result[5], result[6]
+    damage2, _, _, gain2, healed2, ll_gain2, ll_heal2 = more
     return CombatDetail(
         (
-            damage + damage2,
-            set(dead_att) | set(dead_att2),
-            set(dead_blk) | set(dead_blk2),
-            gain + gain2,
+            damage + trig_dmg + damage2 + trig_dmg2,
+            dead_att0 | dead_att2,
+            dead_blk0 | dead_blk2,
+            gain + trig_gain + gain2 + trig_gain2,
             healed + healed2,
             ll_gain + ll_gain2,
             ll_heal + ll_heal2,

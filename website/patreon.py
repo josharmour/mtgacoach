@@ -321,7 +321,9 @@ def send_trial_code_email(to_addr: str, code: str, *, product: str = "mtgacoach"
     msg.set_content(
         f"Your {product} verification code is:\n\n"
         f"    {code}\n\n"
-        f"Enter it in the {product} app to start your free trial.\n"
+        f"Enter this 6-digit code in the 'Start your free trial' window in the {product} app.\n"
+        "Do not paste it into the Subscriber key box — once verified, your free trial\n"
+        "activates automatically and no key entry is needed.\n"
         "The code is valid for 15 minutes.\n\n"
         "If you didn't request this, you can ignore this email.\n"
     )

@@ -246,7 +246,7 @@ def _coach_prompt(state):
     coach._ensure_game_plan_mgr = lambda: None
     coach._rules_db = SimpleNamespace(get_rules_for_situation=lambda *args, **kwargs: [])
     coach.get_advice(deepcopy(state), trigger="new_turn")
-    return backend.calls[-1]
+    return backend.full_calls[-1]
 
 
 def _plan_prompt(state):

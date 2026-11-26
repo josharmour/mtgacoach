@@ -1592,9 +1592,7 @@ class _BridgeSubmitMixin:
                 bepinex and _version_tuple(getattr(bridge, "plugin_version", None)) >= _version_tuple("0.7.2")
             )
             request_key = (pending.get("game_state_id"), pending.get("msg_id"))
-            outcome, _ = self._await_attack_selection(
-                bridge, request_key, [], verified, require_submit=True
-            )
+            outcome, _ = self._await_attack_selection(bridge, request_key, [], verified, require_submit=True)
             if outcome != "acknowledged":
                 logger.warning(
                     "Bridge declare_attackers: refreshed empty request after withdraw was not "

@@ -3242,7 +3242,9 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             for c in attacking + your_creatures
             for stat in ("power", "toughness")
         ):
-            lines.append(f"Attackers: {', '.join(self._attacker_label_map(attacking, game_state=board).values())}")
+            lines.append(
+                f"Attackers: {', '.join(self._attacker_label_map(attacking, game_state=board).values())}"
+            )
             lines.append(
                 "Combat estimates unavailable: some creature stats are UNKNOWN, not zero. "
                 "Use current rules and Arena's legal blocking choices."
@@ -5069,7 +5071,12 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             Advice string from the LLM
         """
 
-        from arenamcp.match_context import prepare_match_context, strategic_policy, with_deck_reference
+        from arenamcp.match_context import (
+            dynamic_strategic_policy,
+            prepare_match_context,
+            split_deck_reference,
+            strategic_policy,
+        )
         from arenamcp.narration import action_narration, narration_policy
 
         voice_mode = narration_mode or getattr(self, "narration_mode", "advisor")
@@ -5275,23 +5282,63 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             "pirate": "You are a ruthless pirate captain coaching a swabby! Speak like a pirate! Yarr! Keep it short!",
         }
 
-        from arenamcp.coach_prompts import situational_coach_prompt
-        from arenamcp.situational_rules import subjects_in_play
+        from arenamcp.coach_prompts import situational_coach_addendum, situational_coach_prompt
+        from arenamcp.situational_rules import deck_subjects, dynamic_subjects
 
-        # Rules whose subject is absent (the Strixhaven keyword primer, the
-        # Equipment rule, the policy's tutor and fetch-land rules) stay out.
-        subjects = subjects_in_play(game_state, extra_text=game_state.get("legal_actions") or [])
+        # Match-immutable system prefix: keep situational rules for our own deck,
+        # static deck reference head, and playbook core before any volatile state so
+        # vLLM's prefix cache matches across turns even when the opponent introduces
+        # new subjects (Equipment, SOS mechanics) or the game plan/RAG updates.
+        match_subjects = deck_subjects(game_state)
+        extra_subjects = dynamic_subjects(
+            game_state,
+            extra_text=game_state.get("legal_actions") or [],
+            match_subjects=match_subjects,
+        )
+        base_prompt = prompts.get(style_key, _quick_prompt)
         effective_system_prompt = (
-            situational_coach_prompt(prompts.get(style_key, _quick_prompt), subjects)
-            + "\n"
-            + strategic_policy(subjects)
+            situational_coach_prompt(base_prompt, match_subjects) + "\n" + strategic_policy(match_subjects)
         )
         effective_system_prompt += "\n\n" + narration_policy(voice_mode)
-        dynamic_context = ""
 
-        # Inject deck strategy if available — instruct model to reference it
+        ref_head, ref_rules = split_deck_reference(game_state.get("deck_reference") or "")
+        if ref_head:
+            effective_system_prompt += "\n\n" + ref_head
+
+        playbook_core = ""
+        playbook_tail = ""
+        if self._deck_playbook is not None:
+            playbook_full = self._deck_playbook.decision_context(game_state)
+            try:
+                from arenamcp.deck_strategy import DeckPlaybook
+
+                if type(self._deck_playbook) is DeckPlaybook:
+                    fields, core = DeckPlaybook._decision_context_lines(self._deck_playbook, game_state)
+                    if (
+                        type(fields) is list
+                        and all(type(field) is str for field in fields)
+                        and type(core) is set
+                        and all(type(index) is int and 0 <= index < len(fields) for index in core)
+                        and "\n".join(fields) == playbook_full
+                    ):
+                        playbook_core = "\n".join(
+                            field for index, field in enumerate(fields) if index in core
+                        )
+                        playbook_tail = "\n".join(
+                            field for index, field in enumerate(fields) if index not in core
+                        )
+                    else:
+                        playbook_tail = playbook_full
+                else:
+                    playbook_tail = playbook_full
+            except Exception:
+                playbook_tail = playbook_full
+        if playbook_core:
+            effective_system_prompt += "\n\n" + playbook_core
+
+        # Inject static deck strategy when no structured playbook is active
         if self._deck_strategy and self._deck_playbook is None:
-            dynamic_context += (
+            effective_system_prompt += (
                 f"\n\nDECK STRATEGY:\n{self._deck_strategy}"
                 "\n\nALWAYS consider this strategy when advising. Prioritize plays that:"
                 "\n- Set up or execute the combos/synergies listed above"
@@ -5300,6 +5347,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                 "\nBriefly explain WHY a play matters for the deck's plan "
                 "(e.g. 'Cast X — triggers Kodama for a free land, setting up combo next turn')."
             )
+        dynamic_context = ""
 
         # Persistent GAME PLAN: refresh in the background, then frame the
         # advice as the next STEP in that plan. Fully guarded — a plan failure
@@ -5367,10 +5415,17 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         except Exception as e:
             logger.warning(f"Rules RAG error (non-fatal): {e}")
 
-        # Stable system + deck prefix; changing plans/rules never invalidate the deck cache.
-        if self._deck_playbook is not None:
-            user_message += "\n\n" + self._deck_playbook.decision_context(game_state)
-        user_message = with_deck_reference(dynamic_context + "\n\n" + user_message, game_state)
+        # Stable system + deck prefix; dynamic rules/plans/board ride in user_message.
+        extra_rules_parts = [
+            situational_coach_addendum(base_prompt, extra_subjects),
+            dynamic_strategic_policy(extra_subjects),
+        ]
+        extra_rules = "\n\n".join(part for part in extra_rules_parts if part)
+        prefix_parts = [
+            part for part in (ref_rules, playbook_tail, extra_rules, dynamic_context.strip()) if part
+        ]
+        if prefix_parts:
+            user_message = "\n\n".join(prefix_parts) + "\n\n" + user_message
 
         # OPTIMIZATION: Log prompt size with token estimate
         prompt_chars = len(effective_system_prompt) + len(user_message)

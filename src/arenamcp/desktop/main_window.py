@@ -190,8 +190,14 @@ class MainWindow(QMainWindow):
         self.access_badge = AccessBadge(self)
         self.access_badge.setup_requested.connect(self._show_repair_view)
         self.repair_tab.license_changed.connect(lambda: self.access_badge.refresh(force=True))
+        self.repair_tab.license_updated.connect(self._on_license_updated)
         self._session.backendHealthChanged.connect(self._on_backend_health_for_badge)
         self.statusBar().addPermanentWidget(self.access_badge)
+
+    def _on_license_updated(self, key: str) -> None:
+        cleaned = (key or "").strip()
+        if cleaned and not self._closed:
+            self._session.send_command("set_license_key", cleaned)
 
     def _on_backend_health_for_badge(self, snapshot: dict) -> None:
         if not isinstance(snapshot, dict):
@@ -253,12 +259,13 @@ class MainWindow(QMainWindow):
             stop_autoplay_act = tools_menu.addAction("Stop Autoplay\tF11")
             stop_autoplay_act.triggered.connect(lambda: self._session.send_command("force_stop"))
         tools_menu.addSeparator()
-        strategy_act = tools_menu.addAction("Separate Strategy Planning (Experimental)")
+        strategy_act = tools_menu.addAction("Separate Strategy Planning (Deprecated)")
         strategy_act.setCheckable(True)
         strategy_act.setChecked(bool(self._settings.get("separate_strategy_planning", False)))
         strategy_act.setToolTip(
-            "Low-effort actions use the latest completed high-effort background plan. "
-            "Takes effect after Reload Coaching Engine; turn off to compare the existing mode."
+            "Deprecated: enabling this disables Pivotal Thinking (E4) and forces flat low effort "
+            "on combat and other critical turns. Leave off for normal play; takes effect after "
+            "Reload Coaching Engine."
         )
         strategy_act.toggled.connect(
             lambda enabled: self._settings.set("separate_strategy_planning", bool(enabled))

@@ -250,3 +250,91 @@ def review_protection_claim(decision, state, data, chosen, ask, parse, message, 
         check["failed"] = type(error).__name__
         trace["uncorrected_reasoning"] = original
         return _unresolved_protection(decision, state, data, chosen, corrected)
+
+
+_ANTI_HEXPROOF_RE = re.compile(r"can't have hexproof|lose(?:s)? hexproof", re.I)
+_HEXPROOF_OR_SHROUD_RE = re.compile(r"\b(?:hexproof|shroud)\b", re.I)
+_HEXPROOF_PASS_FALSE_CLAIM_RE = re.compile(
+    r"\b(?:hexproof|shroud|rescue|protection)\b[^.!\n]{0,80}"
+    r"\b(?:can't|cannot|won't|doesn't)\b[^.!\n]{0,50}"
+    r"\b(?:retroactively|protect|save|stop|fizzle)\b"
+    r"|\b(?:already on the stack|already resolving|already targeted)\b[^.!\n]{0,90}"
+    r"\b(?:hexproof|shroud|can't|cannot|retroactively)\b",
+    re.I,
+)
+
+
+def review_hexproof_pass_claim(decision, state, data, chosen, ask, parse, message, trace):
+    """Reconsider a pass that falsely claims stack hexproof cannot stop a targeted spell."""
+    if decision.request_type != "ActionsAvailable" or chosen != ["pass"]:
+        return data, chosen
+    local = _iid(state.get("local_seat_id"))
+    if local is None:
+        return data, chosen
+    stack = [c for c in state.get("stack") or [] if isinstance(c, dict)]
+    if not any(c.get("controller_seat_id") not in (None, local) for c in stack):
+        return data, chosen
+    opp_bf = [
+        c
+        for c in state.get("battlefield") or []
+        if isinstance(c, dict) and c.get("controller_seat_id") not in (None, local)
+    ]
+    if any(_ANTI_HEXPROOF_RE.search(str(c.get("oracle_text") or "")) for c in opp_bf):
+        return data, chosen
+    hand_by_id = {
+        c.get("instance_id"): c
+        for c in state.get("hand") or []
+        if isinstance(c, dict) and _iid(c.get("instance_id"))
+    }
+    hexproof_names: list[str] = []
+    for option in decision.options:
+        if option.payable is False:
+            continue
+        meta = option.meta or {}
+        if meta.get("actionType") != "ActionType_Cast":
+            continue
+        card = hand_by_id.get(_iid(meta.get("instanceId")))
+        if not card:
+            continue
+        tline = str(card.get("type_line") or "").lower()
+        oracle = str(card.get("oracle_text") or "")
+        is_flash = "instant" in tline or bool(re.search(r"\bflash\b", oracle, re.I))
+        if is_flash and _HEXPROOF_OR_SHROUD_RE.search(oracle):
+            hexproof_names.append(str(card.get("name") or option.label))
+    if not hexproof_names:
+        return data, chosen
+    reasoning = str(data.get("reasoning") or "").replace("’", "'")
+    low = reasoning.lower()
+    if not _HEXPROOF_PASS_FALSE_CLAIM_RE.search(low):
+        return data, chosen
+    if re.search(r"\bcounter(?:s|ing|spell)?\b", low) and not re.search(
+        r"\b(?:retroactively|already resolving)\b", low
+    ):
+        return data, chosen
+    names = ", ".join(dict.fromkeys(hexproof_names))
+    check = {"original_ids": list(chosen), "original_reasoning": reasoning, "offered": names}
+    trace["stack_hexproof_check"] = check
+    try:
+        revised, picked = parse(
+            ask(
+                message
+                + "\n\nSTACK HEXPROOF CHECK: Casting a flash/instant hexproof spell ("
+                + names
+                + ") in response to an opposing targeted spell or ability STILL ON THE STACK resolves FIRST (LIFO). "
+                "When the opposing spell tries to resolve, it re-checks target legality (CR 608.2b): if its only "
+                "target now has hexproof, it fizzles and has no effect. Reconsider whether to cast "
+                + names
+                + " now to save your permanent. Use the same JSON schema.",
+                effort="low",
+                budget=12.0,
+            )
+        )
+        if not decision.selection_is_valid(picked):
+            raise ValueError("invalid revised selection")
+        if any(o.option_id in picked and o.payable is False for o in decision.options):
+            raise ValueError("unpayable revised selection")
+        check.update(revised_ids=list(picked), revised_reasoning=revised.get("reasoning", ""))
+        return revised, picked
+    except Exception as error:
+        check["failed"] = type(error).__name__
+        return data, chosen

@@ -149,7 +149,7 @@ from arenamcp.decision_memory import (
     lethal_reach,
 )
 from arenamcp.decisions import SELECT_N_DECLINE, expand_target_selection
-from arenamcp.mana import SPELL_CAST_TYPES
+from arenamcp.mana import LAND_PLAY_ACTION_TYPES, SPELL_CAST_TYPES
 from arenamcp.mana_potential import mana_reach_note
 from arenamcp.match_context import (
     SHARED_TACTICAL_RULES_PARTS,
@@ -210,6 +210,168 @@ def _ability_rules_text(ability_grp_id: int) -> str:
         return str(get_card_database().get_ability_text(int(ability_grp_id)) or "")
     except Exception:
         return ""
+
+
+_DISPOSABLE_NONCREATURE_TOKENS = frozenset(
+    {"treasure", "food", "clue", "map", "blood", "powerstone", "gold", "junk", "lander"}
+)
+_THREATENING_TOKEN_KEYWORDS = (
+    "flying",
+    "deathtouch",
+    "lifelink",
+    "double strike",
+    "first strike",
+    "menace",
+    "infect",
+    "toxic",
+    "annihilator",
+    "trample",
+    "hexproof",
+    "indestructible",
+)
+_VALUE_TOKEN_TEXT_RE = re.compile(
+    r"\b(?:draw|add \{|add one mana|create|whenever|search your library)\b",
+    re.IGNORECASE,
+)
+
+
+def _disposable_token_only_removal(
+    card: dict,
+    game_state: dict,
+    opp_bf: list[dict],
+    local_seat: int | None,
+) -> tuple[bool, list[str]]:
+    """True when non-aura sorcery/permanent removal only hits small disposable tokens."""
+    from arenamcp.combat_keywords import has_combat_keyword, is_creature_now
+    from arenamcp.mana import mana_cost_to_cmc
+    from arenamcp.rules_engine import RulesEngine
+
+    if not card or local_seat is None or not opp_bf or not _own_main_phase_with_empty_stack(game_state):
+        return False, []
+    type_line = str(card.get("type_line") or "").lower()
+    if any(t in type_line for t in ("aura", "creature", "planeswalker", "battle", "saga", "class")):
+        return False, []
+    clean = re.sub(r"\([^)]*\)", " ", str(card.get("oracle_text") or "")).lower()
+    if not re.search(r"\b(?:exile|destroy) target\b", clean):
+        return False, []
+    if "instant" not in type_line and "sorcery" not in type_line:
+        if not re.search(r"\bwhen\b[^.\n:]*?\benters\b[^.\n:]*?\b(?:exile|destroy) target\b", clean):
+            return False, []
+    if any(
+        phrase in clean
+        for phrase in (
+            "choose ",
+            "you may",
+            "up to",
+            "any target",
+            "target player",
+            "return it",
+            "return that",
+        )
+    ):
+        return False, []
+    req = RulesEngine._infer_target_requirements(clean)
+    if req["player_target"] or req["must_control"] == "you":
+        return False, []
+    if req["zones"] - {"battlefield"} or not (req["types"] or req["permanent_target"]):
+        return False, []
+    if any(not p.get("type_line") for p in opp_bf):
+        return False, []
+    matches = RulesEngine._match_battlefield_targets(opp_bf, local_seat, None, req)
+    max_mv = req.get("mana_value_le")
+    if max_mv is None:
+        mv_match = re.search(r"mana value (\d+) or less", clean)
+        if mv_match:
+            max_mv = int(mv_match.group(1))
+    min_mv = req.get("mana_value_ge")
+    filtered = []
+    for p in matches:
+        is_tok = bool(p.get("is_token")) or "token" in str(p.get("object_kind") or "").lower()
+        if p.get("cmc") is not None:
+            mv: int | None = int(p["cmc"])
+        elif p.get("mana_cost"):
+            mv = mana_cost_to_cmc(str(p["mana_cost"]))
+        elif is_tok:
+            mv = 0
+        else:
+            mv = None
+        if max_mv is not None and mv is not None and mv > max_mv:
+            continue
+        if min_mv is not None and mv is not None and mv < min_mv:
+            continue
+        filtered.append(p)
+    if not filtered:
+        return False, []
+
+    our_life = next(
+        (
+            _as_int(pl.get("life_total"))
+            for pl in game_state.get("players") or []
+            if isinstance(pl, dict) and pl.get("is_local") and pl.get("life_total") is not None
+        ),
+        None,
+    )
+    opp_power = 0
+    for p in opp_bf:
+        if is_creature_now(p):
+            pwr = p.get("power")
+            if type(pwr) is not int:
+                return False, []
+            opp_power += max(0, pwr)
+    if our_life is None or our_life <= opp_power + 4:
+        return False, []
+
+    turn_num = _as_int((game_state.get("turn") or {}).get("turn_number"))
+    for mine in game_state.get("battlefield") or []:
+        if not isinstance(mine, dict):
+            continue
+        mctrl = mine.get("controller_seat_id")
+        if mctrl is None:
+            mctrl = mine.get("owner_seat_id")
+        if mctrl != local_seat:
+            continue
+        if is_creature_now(mine):
+            sick = bool(
+                mine.get("summoning_sickness")
+                or (turn_num is not None and mine.get("turn_entered_battlefield") == turn_num)
+            ) and not has_combat_keyword(mine, "haste")
+            pwr = mine.get("power")
+            if not mine.get("is_tapped") and not sick and (type(pwr) is not int or pwr >= 1):
+                return False, []
+        m_oracle = str(mine.get("oracle_text") or "").lower()
+        if any(k in m_oracle for k in ("eerie", "constellation", "whenever an enchantment")):
+            return False, []
+
+    opp_commanders = {
+        cid
+        for pl in game_state.get("players") or []
+        if isinstance(pl, dict) and not pl.get("is_local")
+        for cid in (pl.get("commander_ids") or ())
+    }
+    token_names: list[str] = []
+    for p in filtered:
+        is_tok = bool(p.get("is_token")) or "token" in str(p.get("object_kind") or "").lower()
+        if not is_tok or p.get("instance_id") in opp_commanders:
+            return False, []
+        p_oracle = re.sub(r"\([^)]*\)", " ", str(p.get("oracle_text") or "")).lower()
+        if is_creature_now(p):
+            pwr = p.get("power")
+            tgh = p.get("toughness")
+            if type(pwr) is not int or type(tgh) is not int or pwr > 2 or tgh > 2:
+                return False, []
+            kws = " ".join(str(k).lower() for k in (p.get("keywords") or []))
+            if any(kw in kws or kw in p_oracle for kw in _THREATENING_TOKEN_KEYWORDS):
+                return False, []
+            if _VALUE_TOKEN_TEXT_RE.search(p_oracle):
+                return False, []
+        else:
+            p_label = f"{p.get('name') or ''} {p.get('type_line') or ''}".lower()
+            if not any(tok in p_label for tok in _DISPOSABLE_NONCREATURE_TOKENS):
+                return False, []
+            if "whenever" in p_oracle:
+                return False, []
+        token_names.append(str(p.get("name") or "token"))
+    return True, token_names
 
 
 from arenamcp.action_legality import _ActionLegalityMixin
@@ -1342,14 +1504,20 @@ class ActionPlanner(_ActionLegalityMixin):
         separate_active = self._separate_strategy_active()
         if separate_active:
             effort = None
-        from arenamcp.selective_thinking import PivotalCallBudget, close_combat_reason, pivotal_enabled
+        from arenamcp.selective_thinking import (
+            PivotalCallBudget,
+            close_combat_reason,
+            pivotal_enabled,
+            unmodelled_attack_trigger_reason,
+        )
 
         if pivotal_enabled(self.pivotal_thinking) and not separate_active:
             from arenamcp.board_assessment import assess
 
             assessment = assess(game_state)
             close = close_combat_reason(getattr(assessment, "line_search", None))
-            reasons = tuple(reason for reason in (effort_why, close) if reason)
+            unmodelled_atk = unmodelled_attack_trigger_reason(assessment)
+            reasons = tuple(reason for reason in (effort_why, close, unmodelled_atk) if reason)
             declaration_admission = PivotalCallBudget(
                 deadline=model_deadline,
                 normal_seconds=min(self._timeout, 12.0),
@@ -1817,7 +1985,11 @@ class ActionPlanner(_ActionLegalityMixin):
             return
         allowed = blocker_options(context.get("raw_blockers") or [], context.get("blocker_options"))
         survival = optimal_blocks(
-            face_attackers, blockers, life, blocker_allowed_attackers=allowed or None, defender=loss_state(state)
+            face_attackers,
+            blockers,
+            life,
+            blocker_allowed_attackers=allowed or None,
+            defender=loss_state(state),
         )
         if survival is None or not survival.assignments:
             return
@@ -2006,7 +2178,9 @@ class ActionPlanner(_ActionLegalityMixin):
             )
         summary = "; ".join(parts)
         logger.warning("Walker-saving block guard: adding %s", summary)
-        action.reasoning = (action.reasoning + " " if action.reasoning else "") + f"Save planeswalker: {summary}."
+        action.reasoning = (
+            action.reasoning + " " if action.reasoning else ""
+        ) + f"Save planeswalker: {summary}."
         plan.fallback_reason = "planner_walker_block"
         plan.overall_strategy = f"Save planeswalker: {summary}."
         plan.voice_advice = plan.spoken_actions()
@@ -6063,6 +6237,7 @@ class ActionPlanner(_ActionLegalityMixin):
             sweepers: list[tuple[Any, dict]] = []
             bluff_lands: list[tuple[Any, dict]] = []
             wasted_removal_auras: list[tuple[Any, dict]] = []
+            disposable_token_removals: list[tuple[Any, dict, list[str]]] = []
             face = 0
             _local_for_aura = _local_seat(game_state)
             _opp_bf = []
@@ -6084,7 +6259,7 @@ class ActionPlanner(_ActionLegalityMixin):
             _opp_has_creature = any(is_creature_now(p) for p in _opp_bf)
             for option in decision.options:
                 meta = option.meta or {}
-                if meta.get("actionType") == "ActionType_Play":
+                if meta.get("actionType") in LAND_PLAY_ACTION_TYPES:
                     if superfluous_bluff_land(option, game_state):
                         card = find_source(game_state, meta) or {}
                         bluff_lands.append((option, card))
@@ -6112,6 +6287,12 @@ class ActionPlanner(_ActionLegalityMixin):
                             not _need_nonland and not _opp_has_creature
                         ):
                             wasted_removal_auras.append((option, card))
+                if not any(o is option for o, _c in wasted_removal_auras):
+                    _tok_only, _tok_names = _disposable_token_only_removal(
+                        card, game_state, _opp_bf, _local_for_aura
+                    )
+                    if _tok_only:
+                        disposable_token_removals.append((option, card, _tok_names))
                 face += each_opponent_damage(card, game_state) if card else 0
                 burn = burn_reach(oracle, card, game_state) if card else None
                 if burn is None:
@@ -6126,7 +6307,14 @@ class ActionPlanner(_ActionLegalityMixin):
                     sweepers.append((option, card))
             wait = own_stack_line_waits(game_state) if game_state.get("stack") else None
             stacked = own_stack_holds(decision, game_state, wait) if wait is not None else []
-            if not (instants or sweepers or stacked or bluff_lands or wasted_removal_auras):
+            if not (
+                instants
+                or sweepers
+                or stacked
+                or bluff_lands
+                or wasted_removal_auras
+                or disposable_token_removals
+            ):
                 return decision, []
             combo = burn_combo_for(decision, game_state)
             if combo is not None:
@@ -6162,7 +6350,13 @@ class ActionPlanner(_ActionLegalityMixin):
             ):
                 if not bluff_lands:
                     return decision, []
-                instants, sweepers, stacked, wasted_removal_auras = [], [], [], []
+                instants, sweepers, stacked, wasted_removal_auras, disposable_token_removals = (
+                    [],
+                    [],
+                    [],
+                    [],
+                    [],
+                )
             if instants:
                 why = hold_overrides(decision, game_state, instants)
                 if why:
@@ -6202,11 +6396,32 @@ class ActionPlanner(_ActionLegalityMixin):
             | {o.option_id for o, _c in stacked}
             | {o.option_id for o, _c in bluff_lands}
             | {o.option_id for o, _c in wasted_removal_auras}
+            | {o.option_id for o, _c, _t in disposable_token_removals}
         )
         if not held_ids:
             return decision, []
         reasons: list[str] = []
         notes: list[str] = []
+        if disposable_token_removals:
+            names = list(
+                dict.fromkeys(str(c.get("name") or o.label) for o, c, _t in disposable_token_removals)
+            )
+            toks = list(dict.fromkeys(t for _o, _c, ts in disposable_token_removals for t in ts))
+            tok_summary = ", ".join(toks[:3])
+            logger.info(
+                "Disposable-token removal hold: holding %s (only legal opposing targets are small disposable tokens: %s)",
+                ", ".join(names),
+                tok_summary,
+            )
+            reasons.append(
+                f"Holding {', '.join(names)}: the only legal opposing targets are small disposable tokens "
+                f"({tok_summary}) and we have no attack or enchantment-trigger payoff now; save removal for a real threat."
+            )
+            notes.append(
+                f"DISPOSABLE TOKEN REMOVAL HOLD: {', '.join(names)} is held this window because the only legal "
+                f"opposing targets are small disposable tokens ({tok_summary}) and there is no attack or Eerie payoff now; "
+                "save removal for a real threat."
+            )
         if wasted_removal_auras:
             names = names_of(wasted_removal_auras)
             logger.info(
@@ -6961,7 +7176,7 @@ class ActionPlanner(_ActionLegalityMixin):
         if replacement is None or replacement.option_id in (option_id, "pass"):
             return ""
         kind = (replacement.meta or {}).get("actionType")
-        if kind != "ActionType_Play" and replacement.payable is not True:
+        if kind not in LAND_PLAY_ACTION_TYPES and replacement.payable is not True:
             return ""
         if action_key(replacement, game_state) not in best.first_actions:
             return ""
@@ -7906,6 +8121,49 @@ class ActionPlanner(_ActionLegalityMixin):
 
     # How long a chosen X answers the same spell's later target request.
     _CHOSEN_X_TTL_S = 60.0
+    _EXPLICIT_X_VALUE_RE = re.compile(r"(?<![<>=!])\bX\s*=\s*(\d+)\b", re.IGNORECASE)
+
+    @classmethod
+    def _align_numeric_x_choice(
+        cls,
+        decision: Any,
+        data: dict[str, Any],
+        chosen: list[str],
+        trace: dict[str, Any],
+    ) -> list[str]:
+        """Align a numeric X pick with the reasoning when it names one different X=<N>."""
+        if getattr(decision, "request_type", None) != "CastingTimeOptions" or len(chosen) != 1:
+            return chosen
+        picked = decision.find(chosen[0])
+        meta = (picked.meta or {}) if picked is not None else {}
+        current = meta.get("numericValue")
+        if meta.get("choiceKind") != "numeric_input" or type(current) is not int:
+            return chosen
+        reasoning = data.get("reasoning")
+        if not isinstance(reasoning, str) or not reasoning.strip():
+            return chosen
+        mentioned = {int(m) for m in cls._EXPLICIT_X_VALUE_RE.findall(reasoning)}
+        if current in mentioned or len(mentioned) != 1:
+            return chosen
+        target_x = next(iter(mentioned))
+        for option in decision.options:
+            opt_meta = option.meta or {}
+            if (
+                opt_meta.get("choiceKind") == "numeric_input"
+                and opt_meta.get("numericValue") == target_x
+                and option.payable is not False
+                and decision.selection_is_valid([option.option_id])
+            ):
+                logger.warning(
+                    "CastingTimeOptions X-value mismatch: reasoning specifies X=%d, overriding %s (X=%d) -> %s",
+                    target_x,
+                    chosen[0],
+                    current,
+                    option.option_id,
+                )
+                trace["x_value_repaired"] = {"from": current, "to": target_x}
+                return [option.option_id]
+        return chosen
 
     def _remember_chosen_x(self, decision: Any, chosen: list[str]) -> None:
         """Keep the X picked while casting so the spell's target check can read its damage."""
@@ -10319,7 +10577,7 @@ class ActionPlanner(_ActionLegalityMixin):
             action_kind = (o.meta.get("actionType") or "").removeprefix("ActionType_")
             if o.payable is not False and (action_kind in SPELL_CAST_TYPES or action_kind == "Activate"):
                 note += creature_payment_note(o.meta.get("autoTapActions"), battlefield_by_id, local_seat)
-            if o.meta.get("actionType") == "ActionType_Play":
+            if o.meta.get("actionType") in LAND_PLAY_ACTION_TYPES:
                 note += channel_land_note(find_source(game_state, o.meta) or {})
             if o.meta.get("actionType") == "ActionType_Cast":
                 source_card = find_source(game_state, o.meta) or {}
@@ -11201,9 +11459,12 @@ class ActionPlanner(_ActionLegalityMixin):
         data, chosen = review_commander_decline(
             decision, game_state, data, chosen, ask, parse, user_message, self._last_decision_trace
         )
-        from arenamcp.stack_protection import review_protection_claim
+        from arenamcp.stack_protection import review_hexproof_pass_claim, review_protection_claim
 
         data, chosen = review_protection_claim(
+            decision, game_state, data, chosen, ask, parse, user_message, self._last_decision_trace
+        )
+        data, chosen = review_hexproof_pass_claim(
             decision, game_state, data, chosen, ask, parse, user_message, self._last_decision_trace
         )
         from arenamcp.cast_payoffs import correct_cast_payoff_claim
@@ -11212,6 +11473,7 @@ class ActionPlanner(_ActionLegalityMixin):
         from arenamcp.equipment_opportunities import correct_equipment_payoff_claim
 
         data = correct_equipment_payoff_claim(decision, game_state, chosen, data, self._last_decision_trace)
+        chosen = self._align_numeric_x_choice(decision, data, chosen, self._last_decision_trace)
         reason = data.get("reasoning")
         self._last_decision_target_controllers = (
             data.get("target_controllers") if isinstance(data.get("target_controllers"), dict) else {}

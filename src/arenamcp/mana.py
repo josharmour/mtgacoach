@@ -20,6 +20,7 @@ SPELL_CAST_TYPES = frozenset(
         "CastLeft",
         "CastRight",
         "CastAdventure",
+        "CastMdfc",
         "CastMDFC",
         "CastPrototype",
         "CastLeftRoom",
@@ -27,6 +28,9 @@ SPELL_CAST_TYPES = frozenset(
         "CastOmen",
     }
 )
+
+LAND_PLAY_TYPES = frozenset({"Play", "PlayMdfc", "PlayMDFC"})
+LAND_PLAY_ACTION_TYPES = frozenset(f"ActionType_{t}" for t in LAND_PLAY_TYPES)
 
 
 def face_payment(action: dict[str, Any]) -> bool | None:

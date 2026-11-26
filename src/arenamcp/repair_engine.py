@@ -305,21 +305,38 @@ class RepairEngine:
                 status = resp.status
         except urllib.error.HTTPError as e:  # type: ignore[attr-defined]
             if e.code in (401, 403):
-                if (get_settings().get("trial_expires_at") or "").strip():
+                if key.isdigit() and len(key) == 6:
                     return CheckResult(
                         "license",
                         "License / online backend",
                         "action_needed",
-                        "Your free trial key was rejected by the gateway — the trial has expired.",
-                        "Subscribe at https://mtgacoach.com/subscribe to keep "
-                        "coaching, or enter a license key below.",
+                        "A 6-digit verification code is saved instead of a license key.",
+                        "License keys start with 'sk-'. Click 'Start / recover free trial' below "
+                        "to recover your active trial, or enter a subscriber key.",
                     )
+                trial_exp = (get_settings().get("trial_expires_at") or "").strip()
+                if trial_exp and key.startswith("sk-"):
+                    import time as _time
+
+                    from arenamcp.subscription import _to_epoch
+
+                    exp_epoch = _to_epoch(trial_exp)
+                    if exp_epoch is None or exp_epoch <= _time.time():
+                        return CheckResult(
+                            "license",
+                            "License / online backend",
+                            "action_needed",
+                            "Your free trial key was rejected by the gateway — the trial has expired.",
+                            "Subscribe at https://mtgacoach.com/subscribe to keep "
+                            "coaching, or enter a license key below.",
+                        )
                 return CheckResult(
                     "license",
                     "License / online backend",
                     "action_needed",
                     "The gateway rejected your license key (expired or wrong).",
-                    "Enter a valid license key below.",
+                    "Enter a valid 'sk-...' license key below, or click "
+                    "'Start / recover free trial' to recover an active trial.",
                 )
             status = e.code
         except Exception as e:
@@ -699,8 +716,19 @@ def set_license_key(key: str) -> CheckResult:
     """Persist a license key and validate it (the Repair tab's entry box)."""
     from arenamcp.settings import get_settings
 
+    cleaned = (key or "").strip()
+    if cleaned.isdigit() and len(cleaned) == 6:
+        return CheckResult(
+            "license",
+            "License / online backend",
+            "action_needed",
+            "That looks like a 6-digit email verification code, not a license key.",
+            "License keys start with 'sk-'. Enter the 6-digit code in the free-trial "
+            "verification prompt, or paste your subscriber key from your Patreon email.",
+        )
+
     settings = get_settings()
-    settings.set("license_key", key.strip(), save=False)
+    settings.set("license_key", cleaned, save=False)
     # A manually entered key supersedes any auto-provisioned trial — clear
     # the marker so trial-specific messaging can't misfire on a real key.
     settings.set("trial_expires_at", "", save=True)

@@ -7801,17 +7801,34 @@ class Moves:
                 policies.append((f"keep-{count}", tuple(a for a in able if a["instance_id"] not in home)))
         return policies
 
-    def pinged(self, side, attackers) -> int:
+    def pinged(self, side, attackers, *, skip_modelled: bool = False) -> int:
         """Damage ``side``'s attack-trigger pings (``attack_pings``) deal the defending player when
         ``attackers`` (of that side) attack: a 'self' ping needs its creature among them, a
-        creature-type ping one attacker of that type, 'you attack' anyone."""
+        creature-type ping one attacker of that type, 'you attack' anyone.
+
+        When ``skip_modelled`` is True (an ``attack_round`` already evaluated
+        ``attack_potential.attack_trigger_drain``), skip ping lines already modelled there."""
         if not attackers:
             return 0
+        from arenamcp.attack_potential import modelled_attack_damage
+
         total = 0
         for body in side:
-            pings = self._ping_memo.get(id(body))
-            if pings is None:
-                pings = self._ping_memo[id(body)] = attack_pings(body.get("_card") or body)
+            card = body.get("_card") or body
+            if skip_modelled:
+                text = _QUOTED.sub("", _text(card))
+                if "attack" not in text:
+                    continue
+                pings = tuple(
+                    found
+                    for line in _own_lines(text)
+                    if not modelled_attack_damage(card, line)
+                    and (found := attack_ping_line(line)) is not None
+                )
+            else:
+                pings = self._ping_memo.get(id(body))
+                if pings is None:
+                    pings = self._ping_memo[id(body)] = attack_pings(card)
             for amount, who in pings:
                 if who == "self":
                     met = any(a is body for a in attackers)
@@ -8267,6 +8284,7 @@ class Moves:
                 fighting, defenders, life,
                 resolve_round,
                 declared=name == "declared",
+                side=[b for b in theirs if b["instance_id"] not in removed],
             )  # fmt: skip
         else:
             damage, dead_att, dead_blk, gained, healed = resolve_round(fighting, defenders, life)
@@ -8280,7 +8298,13 @@ class Moves:
         # attackers heal them (match 41753907 T7: Dawnwing Marshal's 4 a turn). Their attack
         # triggers' pings hit us too (unless the attack was declared before the snapshot), and
         # so do their drain engines this turn (``their_drain``, ledger #133).
-        after = life - damage + healed - (self.pinged(theirs, attackers) if name != "declared" else 0) - drain
+        after = (
+            life
+            - damage
+            + healed
+            - (self.pinged(theirs, attackers, skip_modelled=annotated(fighting)) if name != "declared" else 0)
+            - drain
+        )
         from arenamcp.persistent_returns import gain_drain
 
         if not annotated(fighting) and not (self.engines and self.engines.no_gain):

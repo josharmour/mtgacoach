@@ -2882,6 +2882,7 @@ def _stamp_bridge_fields(
 _PRIORITY_ACTION_PREFIXES = ("play land:", "cast ", "activate", "action: ", "pass")
 _PRIORITY_RAW_ACTION_TYPES = {
     "ActionType_Play",
+    "ActionType_PlayMdfc",
     "ActionType_PlayMDFC",
     *("ActionType_" + t for t in SPELL_CAST_TYPES),
     "ActionType_Activate",

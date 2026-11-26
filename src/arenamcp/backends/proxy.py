@@ -4,6 +4,8 @@ Talks to the api.mtgacoach.com LiteLLM gateway (the app is online-only)
 through the OpenAI chat completions interface.
 """
 
+import contextlib
+import json
 import logging
 import os
 import re
@@ -1250,6 +1252,34 @@ def _circuit_gate(
     return None, token
 
 
+def _settings_file_signature() -> tuple[int, int, int] | None:
+    """Return a stat signature ``(mtime_ns, size, ino)`` for ``SETTINGS_FILE``, or None."""
+    try:
+        from arenamcp.settings import SETTINGS_FILE
+
+        st = SETTINGS_FILE.stat()
+        return (st.st_mtime_ns, st.st_size, st.st_ino)
+    except OSError:
+        return None
+
+
+def _read_disk_license_key() -> str | None:
+    """Read the persisted ``license_key`` from ``SETTINGS_FILE``, or None."""
+    try:
+        from arenamcp.settings import SETTINGS_FILE
+
+        data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return None
+        val = data.get("license_key")
+        if isinstance(val, str):
+            stripped = val.strip()
+            return stripped or None
+        return None
+    except Exception:
+        return None
+
+
 class ProxyBackend:
     """LLM backend using the OpenAI-compatible chat completions API.
 
@@ -1272,6 +1302,7 @@ class ProxyBackend:
         self._base_url = base_url
         self._api_key = api_key
         self._is_online = False
+        self._settings_sig: tuple[int, int, int] | None = None
         self._client = None
         self._client_lock = threading.Lock()
         # What the server said it actually ran (R4: gateway aliases lie),
@@ -1310,7 +1341,51 @@ class ProxyBackend:
             api_key=license_key,
         )
         instance._is_online = True
+        instance._settings_sig = _settings_file_signature()
         return instance
+
+    def set_api_key(self, api_key: str) -> bool:
+        """Update the API key and reset the cached HTTP client if it changed."""
+        new_key = (api_key or "").strip()
+        old_client = None
+        with self._client_lock:
+            if getattr(self, "_is_online", False):
+                self._settings_sig = _settings_file_signature()
+            if new_key == (self._api_key or "").strip():
+                return False
+            old_client = self._client
+            self._api_key = new_key
+            self._client = None
+        if old_client is not None:
+            close_fn = getattr(old_client, "close", None)
+            if callable(close_fn):
+                with contextlib.suppress(Exception):
+                    close_fn()
+        return True
+
+    def _sync_online_api_key_from_disk(self) -> bool:
+        """Reload an updated license key from settings.json if the file changed."""
+        if not getattr(self, "_is_online", False):
+            return False
+        sig = _settings_file_signature()
+        if sig is None or sig == self._settings_sig:
+            return False
+        self._settings_sig = sig
+        disk_key = _read_disk_license_key()
+        if not disk_key or disk_key == (self._api_key or "").strip():
+            return False
+        changed = self.set_api_key(disk_key)
+        if changed:
+            try:
+                from arenamcp.settings import get_settings
+
+                settings = get_settings()
+                if "license_key" not in settings._dirty:
+                    settings._data["license_key"] = disk_key
+            except Exception:
+                pass
+            logger.info(f"[PROXY] Reloaded updated license key from settings ({disk_key[:8]}...)")
+        return changed
 
     # Hard ceiling applied at the SDK level. Per-call request_timeout_s in
     # complete() can tighten this. Without a finite client-level timeout,
@@ -1321,6 +1396,7 @@ class ProxyBackend:
 
     def _get_client(self):
         """Create one HTTP client even when startup preparation and a request race."""
+        self._sync_online_api_key_from_disk()
         if self._client is not None:
             return self._client
         with self._client_lock:
@@ -1598,6 +1674,7 @@ class ProxyBackend:
             last_err: BackendError | None = None
             attempt = 0
             retried = False
+            auth_refreshed = False
             priority_dropped = False
             thinking_budget_dropped = False
             while True:
@@ -1657,6 +1734,14 @@ class ProxyBackend:
                         params["extra_body"].pop("thinking_token_budget", None)
                         continue
                     err = self._classify_call_error(e, call)
+                    if (
+                        not auth_refreshed
+                        and err.status_code in (401, 403)
+                        and self._sync_online_api_key_from_disk()
+                    ):
+                        auth_refreshed = True
+                        client = self._get_client()
+                        continue
                     if (
                         not is_commentary
                         and not retried

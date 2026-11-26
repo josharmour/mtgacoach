@@ -50,6 +50,25 @@ from .theme import block, span
 logger = logging.getLogger(__name__)
 
 
+def _history_row_html(record: Any) -> str:
+    """Format one recent ranked match row with local timestamp and metadata."""
+    from .performance_tab import _fmt_ts, _result_tone
+
+    raw_result = str(getattr(record, "result", "") or "")
+    result_label = raw_result.upper() or "?"
+    tone = _result_tone(raw_result.lower())
+    opp = str(getattr(record, "opponent_name", "") or "Opponent")
+    deck = str(getattr(record, "deck_name", "") or "").strip()
+    fmt = str(getattr(record, "format_name", "") or "").strip()
+    turns = getattr(record, "turns", None)
+    when = _fmt_ts(str(getattr(record, "timestamp", "") or ""))
+    meta_parts = [p for p in (deck, fmt, f"{turns}t" if turns else "", when) if p]
+    head = span(result_label, tone, weight=700) + span(f" · {opp}", weight=600)
+    if meta_parts:
+        head += "<br>" + span(" · ".join(meta_parts), "muted", size="caption")
+    return block(head, gap=6)
+
+
 def _plain_feed_text(text: str) -> str:
     """Collapse the markdown/TTS differences that make one line look like two."""
     plain = text.replace("**", "").replace("*", "").replace("#", "").replace("`", "")
@@ -1010,19 +1029,15 @@ class CompactCoachPanel(QWidget):
             )
         elif kind.startswith("history:"):
             ladder = kind.split(":", 1)[1]
-            title = f"Recent {ladder} · newest first"
-            rows = self.rank_strip.recent.get(ladder, [])
-            text = (
-                "".join(
-                    block(
-                        span(
-                            f"{record.result.upper() or '?'} · {record.format_name} · {record.opponent_name or 'Opponent'} · {record.timestamp}"
-                        )
-                    )
-                    for record in rows
-                )
-                or "No recent ranked matches recorded."
-            )
+            if ladder == "Unranked":
+                title = "Recent Unranked · newest first"
+                rows = self.rank_strip.recent_unranked
+                empty = "No recent unranked matches recorded."
+            else:
+                title = f"Recent {ladder} · newest first (ranked)"
+                rows = self.rank_strip.recent.get(ladder, [])
+                empty = "No recent ranked matches recorded."
+            text = "".join(_history_row_html(record) for record in rows) or empty
         else:
             title = "Coach status"
             text = self.concede_label.text() if not self.concede_banner.isHidden() else ""

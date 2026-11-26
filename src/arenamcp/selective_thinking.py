@@ -205,6 +205,7 @@ def pivotal_reasons(
     commander_or_engine_cast=False,
     close_combat=False,
     preferred_option_unevaluated=False,
+    unmodelled_opponent_attack_trigger=False,
 ):
     """Classify already-established facts, without inventing evaluations.
 
@@ -228,6 +229,8 @@ def pivotal_reasons(
         reasons.append("combat solver rates the choice close")
     if preferred_option_unevaluated:
         reasons.append("preferred option is unevaluated")
+    if unmodelled_opponent_attack_trigger:
+        reasons.append("opponent has unmodeled attack trigger")
     return tuple(reasons)
 
 
@@ -396,7 +399,19 @@ def pivotal_evidence(
         commander_or_engine_cast=commander_or_engine,
         close_combat=close,
         preferred_option_unevaluated=bool(set(preferred_ids) & playable & set(unmodelled)),
+        unmodelled_opponent_attack_trigger=bool(
+            decision.request_type in {"DeclareAttackers", "DeclareBlockers"}
+            and getattr(assessment, "opponent_clock_unmodelled", None)
+        ),
     )
+
+
+def unmodelled_attack_trigger_reason(assessment) -> str:
+    """When opponent has unmodeled attack triggers/keywords, return a pivotal reason string."""
+    items = getattr(assessment, "opponent_clock_unmodelled", None) or ()
+    if not items:
+        return ""
+    return f"opponent has unmodeled attack trigger(s): {', '.join(items[:3])}"
 
 
 def close_combat_reason(search):

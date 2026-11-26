@@ -56,7 +56,13 @@ from itertools import combinations
 from types import SimpleNamespace
 from typing import Any
 
-from arenamcp.attack_potential import annotated, attack_round, modelled_attack_trigger
+from arenamcp.attack_potential import (
+    annotated,
+    attack_bodies,
+    attack_round,
+    attack_trigger_drain,
+    modelled_attack_trigger,
+)
 from arenamcp.combat_hit import loses_on_combat_hit
 from arenamcp.combat_keywords import (
     grants_minimum_blocker_power,
@@ -840,9 +846,15 @@ def _attack_round(attackers: list[dict], blockers: list[dict], life: int) -> tup
 
 
 def _attack_round_life(
-    attackers: list[dict], blockers: list[dict], life: int, *, declared: bool = False, side=None
+    attackers: list[dict],
+    blockers: list[dict],
+    life: int,
+    *,
+    declared: bool = False,
+    side=None,
+    side_creatures: list[dict] | None = None,
 ) -> tuple[int, set[int], set[int], int, int, int, int]:
-    """Resolve the attack, including triggered pumps, grants and extra combats."""
+    """Resolve the attack, including triggered pumps, grants, created tokens, damage, and extra combats."""
     once = _attack_once
     if side is not None:
         sent = {b["instance_id"] for b in attackers}
@@ -852,7 +864,14 @@ def _attack_round_life(
             return _attack_once(projected_blocker_power(current, held), defending, left)
 
     if annotated(attackers):
-        return attack_round(attackers, blockers, life, once, declared=declared)
+        return attack_round(
+            attackers,
+            blockers,
+            life,
+            once,
+            declared=declared,
+            side=side_creatures if side_creatures is not None else side,
+        )
     return once(attackers, blockers, life)
 
 
@@ -922,32 +941,54 @@ def _attack_plan(attackers: list[dict], blockers: list[dict], life: int) -> list
 # ("Whenever enchanted creature attacks, put a +1/+1 counter on it ...", Ordeal of Nylea; "Whenever
 # you attack ...") and an Aura's other triggers.
 _ATTACK_TRIGGER = re.compile(r"\bwhenever\b[^.,:]*?\battacks?\b|\bwhenever you attack\b")
+_ATTACK_KEYWORD = re.compile(
+    r"\b(?:mobilize\s+(?:\d+|x)|myriad|exalted|annihilator\s+\d+|melee|enlist|boast|battalion|"
+    r"battle cry|flanking|rampage\s+\d+|bushido\s+\d+|provoke|training|mentor|dethrone|"
+    r"afflict\s+\d+|firebending\s+\d+)\b"
+)
 _TRIGGER = re.compile(r"\b(?:whenever|at the beginning of)\b")
 
 
 def clock_unmodelled(battlefield: list[dict], modelled_seat: int | None = None) -> list[str]:
     """'Ordeal of Nylea (attack trigger)' for each permanent on the battlefield with an attack
-    trigger or an Aura with a triggered ability: what the clocks leave out. An attack trigger the
-    projections play for their side (``modelled_seat``: a team grant, an extra combat,
+    trigger, unmodelled attack keyword, or an Aura with a triggered ability: what the clocks
+    leave out. An attack trigger the projections play for their side (``modelled_seat``: a team
+    grant, extra combat, created attacking tokens, or attack damage/drain via
     ``attack_potential``) is not left out."""
     found: dict[str, str] = {}
     for card in battlefield:
         if not isinstance(card, dict) or _is_land(card):
             continue
         text = _QUOTED.sub("", _text(card))
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        kws = [str(kw).lower().strip() for kw in (card.get("keywords") or ()) if str(kw).strip()]
+        attack_items = [
+            item for item in (*lines, *kws) if _ATTACK_TRIGGER.search(item) or _ATTACK_KEYWORD.search(item)
+        ]
         if any(
-            _ATTACK_TRIGGER.search(line)
-            and not (
+            not (
                 modelled_seat is not None
                 and _controller(card) == modelled_seat
-                and modelled_attack_trigger(card, line)
+                and modelled_attack_trigger(card, item)
             )
-            for line in text.splitlines()
+            for item in attack_items
         ):
             found.setdefault(_name(card), "attack trigger")
         elif "aura" in _types(card) and _TRIGGER.search(text):
             found.setdefault(_name(card), "aura trigger")
     return [f"{name} ({why})" for name, why in found.items()]
+
+
+def opponent_attack_unmodelled(battlefield: list[dict], opponent: int | None) -> list[str]:
+    """Unmodelled attack triggers/keywords controlled by ``opponent``."""
+    if opponent is None:
+        return []
+    opp_cards = [c for c in battlefield if isinstance(c, dict) and _controller(c) == opponent]
+    return [
+        entry
+        for entry in clock_unmodelled(opp_cards, modelled_seat=opponent)
+        if entry.endswith("(attack trigger)")
+    ]
 
 
 def lifelink_drain(attackers: list[dict], blockers: list[dict], life: int) -> int:
@@ -1179,6 +1220,7 @@ def _simulate_attacks(
             life,
             declared=first_declared and index == 0 and first_attackers is not None,
             side=alive_att if power_grant else None,
+            side_creatures=alive_att,
         )
         life -= damage - healed + engine
         if index < horizon:
@@ -1369,6 +1411,7 @@ class BoardAssessment:
     their_clock_racing: int | None = None
     their_next_attack: tuple[int, int] | None = None
     clock_unmodelled: list[str] = field(default_factory=list)
+    opponent_clock_unmodelled: list[str] = field(default_factory=list)
     # What their clock counts beyond combat: drains and growth each turn of theirs
     # ("Biotech Specialist drains 2 a turn"; ``their_clock_engines``, ledger #128-#133, #143).
     clock_engines: list[str] = field(default_factory=list)
@@ -1457,6 +1500,8 @@ class BoardAssessment:
             line += " | their clock counts: " + ", ".join(self.clock_engines[:4])
         if self.clock_unmodelled:
             line += " | clock leaves out: " + ", ".join(self.clock_unmodelled[:4])
+            if self.opponent_clock_unmodelled:
+                line += " (opponent crackback/clock is a lower bound)"
         if self.decking_fact:
             line += " | " + self.decking_fact
         if self.poison_fact:
@@ -2125,6 +2170,7 @@ def _clock_facts(model: Any) -> SimpleNamespace:
         their_clock_racing=racing_clock,
         their_next=their_next,
         unmodelled=clock_unmodelled(list(model.battlefield), model.opponent),
+        opponent_unmodelled=opponent_attack_unmodelled(list(model.battlefield), model.opponent),
         engines=_engine_notes(model) if engines is not None else [],
         lethal_now=lethal_now,
         lethal_next_turn=lethal_next_turn,
@@ -2611,6 +2657,7 @@ def _assess(state: dict) -> BoardAssessment | None:
         their_clock_racing=getattr(clocks, "their_clock_racing", their_clock),
         their_next_attack=getattr(clocks, "their_next", None),
         clock_unmodelled=list(getattr(clocks, "unmodelled", ()) or ()),
+        opponent_clock_unmodelled=list(getattr(clocks, "opponent_unmodelled", ()) or ()),
         clock_engines=list(getattr(clocks, "engines", ()) or ()),
     )
     result.elapsed_ms = (time.perf_counter() - started) * 1000
@@ -2946,6 +2993,25 @@ def _threats(
             power, toughness = body.get("_token_pt") or (1, 1)
             score += body.get("_token_value") or 0
             why.append(f"token engine: ~{tokens} {power}/{toughness} tokens each turn of theirs (must-kill)")
+        atk_toks = body.get("_atk_tokens") or ()
+        if atk_toks:
+            score += 1.5 * sum(tok.count * max(1, tok.power) for tok in atk_toks)
+            tok_desc = ", ".join(f"{tok.count} {tok.power}/{tok.toughness}" for tok in atk_toks)
+            why.append(f"attack trigger: creates {tok_desc} attacking token(s)")
+        atk_dmgs = body.get("_atk_damage") or ()
+        if atk_dmgs:
+            bid = body.get("instance_id")
+            isolated = [
+                {**b, "_atk_team_damage": ()}
+                if b.get("instance_id") == bid
+                else {**b, "_atk_damage": (), "_atk_team_damage": ()}
+                for b in attack_bodies(theirs)
+            ]
+            stripped_side = [{**c, "_atk_damage": (), "_atk_team_damage": ()} for c in theirs]
+            est_dmg, _ = attack_trigger_drain(isolated, side_creatures=stripped_side)
+            if est_dmg > 0:
+                score += 1.5 * est_dmg
+                why.append(f"attack trigger: ~{est_dmg} direct damage")
         if body["_unblockable"]:
             score += body["power"] * 1.0
             why.append("can't be blocked")

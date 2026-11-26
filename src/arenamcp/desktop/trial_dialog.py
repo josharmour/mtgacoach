@@ -99,6 +99,19 @@ class TrialSignupDialog(QDialog):
         self._change_email_btn.clicked.connect(self._back_to_email)
         root.addWidget(self._change_email_btn)
 
+        # Step 3 — active confirmation (shown after verification succeeds)
+        self._done_label = QLabel(
+            "✓ Your 7-day free trial is active!\n\n"
+            "Your trial key was saved automatically — you don't need to enter "
+            "the 6-digit code anywhere else."
+        )
+        self._done_label.setWordWrap(True)
+        root.addWidget(self._done_label)
+        self._done_btn = QPushButton("Done")
+        self._done_btn.setProperty("variant", "primary")
+        self._done_btn.clicked.connect(self.accept)
+        root.addWidget(self._done_btn, alignment=Qt.AlignmentFlag.AlignRight)
+
         # Shared inline status/error line for both steps.
         self._status_label = QLabel("")
         self._status_label.setWordWrap(True)
@@ -106,10 +119,10 @@ class TrialSignupDialog(QDialog):
 
         root.addStretch(1)
 
-        escape = QPushButton("I have a license key")
-        escape.setProperty("variant", "flat")
-        escape.clicked.connect(self._use_license_key)
-        root.addWidget(escape, alignment=Qt.AlignmentFlag.AlignLeft)
+        self._escape_btn = QPushButton("I have a license key")
+        self._escape_btn.setProperty("variant", "flat")
+        self._escape_btn.clicked.connect(self._use_license_key)
+        root.addWidget(self._escape_btn, alignment=Qt.AlignmentFlag.AlignLeft)
 
         self._show_stage("email")
 
@@ -117,14 +130,21 @@ class TrialSignupDialog(QDialog):
     def _show_stage(self, stage: str) -> None:
         self._stage = stage
         in_email = stage == "email"
+        in_code = stage == "code"
+        in_done = stage == "done"
         for w in (self._email_label, self._email_edit, self._send_btn):
             w.setVisible(in_email)
         for w in (self._code_label, self._code_edit, self._verify_btn, self._change_email_btn):
-            w.setVisible(not in_email)
+            w.setVisible(in_code)
+        for w in (self._done_label, self._done_btn):
+            w.setVisible(in_done)
+        self._escape_btn.setVisible(not in_done)
         if in_email:
             self._email_edit.setFocus()
-        else:
+        elif in_code:
             self._code_edit.setFocus()
+        else:
+            self._done_btn.setFocus()
 
     def _back_to_email(self) -> None:
         self._status_label.setText("")
@@ -212,8 +232,9 @@ class TrialSignupDialog(QDialog):
                 result.get("status"),
                 result.get("expires_at"),
             )
+            self._status_label.setText("")
             self.trial_started.emit(result["key"], result.get("expires_at", ""))
-            self.accept()
+            self._show_stage("done")
             return
         if status in ("invalid_code", "email_verification_required"):
             # Inline error; let them retry (or request a fresh code via 'Use a different email…').

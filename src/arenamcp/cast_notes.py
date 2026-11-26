@@ -118,6 +118,12 @@ def loot_mode_note(label: Any, state: dict) -> str:
 
 _PUMP_RE = re.compile(r"gets \+\d+/\+\d+ until end of turn", re.IGNORECASE)
 _END_STEP_SAC_RE = re.compile(r"at the beginning of (?:the|your) end step, sacrifice", re.IGNORECASE)
+_HEXPROOF_OR_WARD_RE = re.compile(r"\b(?:hexproof|ward)\b", re.IGNORECASE)
+_ANTI_HEXPROOF_BOARD_RE = re.compile(r"can't have hexproof|lose(?:s)? hexproof", re.IGNORECASE)
+_TURN_LIMITED_HEXPROOF_RE = re.compile(
+    r"entered this turn[^.\n]*hexproof|gains?\b[^.\n]*hexproof until end of turn",
+    re.IGNORECASE,
+)
 
 
 def _main_phase_before_combat(state: dict) -> bool:
@@ -126,26 +132,60 @@ def _main_phase_before_combat(state: dict) -> bool:
     return "main" in phase and "2" not in phase and "second" not in phase and not str(turn.get("step") or "")
 
 
-def trick_timing_note(state: dict, card: dict | None) -> str:
-    """'[a combat trick cast before combat: ...]' for a pump instant in our precombat main, else ''.
+def _main_phase_2(state: dict) -> bool:
+    turn = state.get("turn") or {}
+    phase = str(turn.get("phase") or "").lower()
+    return "main" in phase and ("2" in phase or "second" in phase)
 
-    2026-10-11 10:44: Blazing Crescendo (+3/+1 until end of turn) was cast in
-    main phase 1 "so Titanbones can attack through blockers", then the attack
-    window held everything back; the trick, two mana and the information
-    were wasted.
-    """
-    if not isinstance(state, dict) or not card or _our_turn(state) is not True:
-        return ""
-    if "instant" not in str(card.get("type_line") or "").lower():
+
+def trick_timing_note(state: dict, card: dict | None) -> str:
+    """'[a combat trick cast before combat: ...]' plus anti-hexproof and Main 2 flash hexproof notes."""
+    if not isinstance(state, dict) or not card:
         return ""
     oracle = str(card.get("oracle_text") or "")
-    if not _PUMP_RE.search(oracle) or not _main_phase_before_combat(state):
-        return ""
-    return (
-        "  [a combat trick cast BEFORE combat: the opponent blocks knowing the pump, and it is wasted unless the "
-        "creature then attacks. Hold it for combat (after blockers) or for a response; cast it now only if the "
-        "attack is already decided and the pump itself wins something]"
-    )
+    tline = str(card.get("type_line") or "").lower()
+    notes: list[str] = []
+    if _HEXPROOF_OR_WARD_RE.search(oracle):
+        local = state.get("local_seat_id")
+        if local is None:
+            local = next((p.get("seat_id") for p in state.get("players") or [] if p.get("is_local")), None)
+        blocker_name = next(
+            (
+                str(p.get("name") or "an opposing permanent")
+                for p in state.get("battlefield") or []
+                if isinstance(p, dict)
+                and (local is None or p.get("controller_seat_id") != local)
+                and _ANTI_HEXPROOF_BOARD_RE.search(str(p.get("oracle_text") or ""))
+            ),
+            "",
+        )
+        if blocker_name:
+            notes.append(
+                f"  [HEXPROOF DISABLED: opponent controls {blocker_name}, so hexproof/ward from this spell "
+                "WILL NOT work — only cast it if its toughness/pump alone saves the creature or wins combat "
+                "(verify exact toughness math against -X/-X)]"
+            )
+    if _our_turn(state) is not True:
+        return "".join(notes)
+    is_flash_or_instant = "instant" in tline or bool(re.search(r"\bflash\b", oracle, re.IGNORECASE))
+    if (
+        is_flash_or_instant
+        and _main_phase_2(state)
+        and not (state.get("stack") or [])
+        and _TURN_LIMITED_HEXPROOF_RE.search(oracle)
+    ):
+        notes.append(
+            "  [flash hexproof cast in MAIN 2 with empty stack: combat has already passed, so turn-limited "
+            "hexproof expires at end of turn without dealing damage or answering removal. Hold it open for "
+            "the opponent's turn instead]"
+        )
+    if "instant" in tline and _PUMP_RE.search(oracle) and _main_phase_before_combat(state):
+        notes.append(
+            "  [a combat trick cast BEFORE combat: the opponent blocks knowing the pump, and it is wasted unless the "
+            "creature then attacks. Hold it for combat (after blockers) or for a response; cast it now only if the "
+            "attack is already decided and the pump itself wins something]"
+        )
+    return "".join(notes)
 
 
 def _printed_power(card: dict, catalog: dict | None) -> int | None:

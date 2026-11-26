@@ -140,6 +140,35 @@ def situational_coach_prompt(prompt: str, subjects) -> str:
     return "\n".join(out)
 
 
+def situational_coach_addendum(prompt: str, subjects) -> str:
+    """Return only the situational rule blocks from ``prompt`` matching ``subjects``."""
+    wanted = set(subjects)
+    if not wanted:
+        return ""
+    blocks: list[str] = []
+    primer_lines: list[str] = []
+    in_primer = False
+    for line in prompt.split("\n"):
+        if line.startswith(_SET_MECHANICS_HEADER):
+            if "set_mechanics" in wanted:
+                in_primer = True
+                primer_lines = [line]
+            continue
+        if in_primer:
+            if line.strip():
+                primer_lines.append(line)
+            else:
+                blocks.append("\n".join(primer_lines))
+                primer_lines = []
+                in_primer = False
+            continue
+        if line.startswith(_EQUIPMENT_RULE) and "equipment" in wanted:
+            blocks.append(line)
+    if primer_lines:
+        blocks.append("\n".join(primer_lines))
+    return "\n\n".join(blocks)
+
+
 CONCISE_SYSTEM_PROMPT = """You are an expert MTG coach giving real-time spoken advice.
 Give ONE action for the CURRENT phase only. You will be re-consulted as the turn progresses.
 

@@ -264,9 +264,11 @@ def test_coach_advice_sends_the_rules_for_its_board():
     class Capture:
         def __init__(self):
             self.systems = []
+            self.prompts = []
 
         def complete(self, system, user, *args, **kwargs):
             self.systems.append(system)
+            self.prompts.append(system + "\n\n" + user)
             return "Cast Grizzly Bears."
 
     backend = Capture()
@@ -274,11 +276,12 @@ def test_coach_advice_sends_the_rules_for_its_board():
     coach._ensure_game_plan_mgr = lambda: None
     coach._rules_db = SimpleNamespace(get_rules_for_situation=lambda *args, **kwargs: [])
     coach.get_advice(_state(legal_actions=["Cast Grizzly Bears [OK]", "Pass"]), trigger="new_turn")
-    assert "SECRETS OF STRIXHAVEN" not in backend.systems[-1] and TUTORS not in backend.systems[-1]
+    assert "SECRETS OF STRIXHAVEN" not in backend.prompts[-1] and TUTORS not in backend.prompts[-1]
     assert "FORGET all previous" not in backend.systems[-1]  # calls are stateless: no earlier game to forget
     heckler = _card("Hallway Heckler", "Creature — Elemental Sorcerer", "This creature enters prepared.")
     coach.get_advice(_state(hand=[BEAR, heckler], legal_actions=["Pass"]), trigger="new_turn")
-    assert "SECRETS OF STRIXHAVEN" in backend.systems[-1]
+    assert "SECRETS OF STRIXHAVEN" in backend.prompts[-1]
+    assert backend.systems[0] == backend.systems[1]
 
 
 def test_an_unreadable_snapshot_keeps_every_rule_and_the_library():

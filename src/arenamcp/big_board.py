@@ -95,7 +95,13 @@ def declaration_effort(state: dict | None, legal_actions: list[str] | None) -> t
         if attack + sneak >= opp_life:
             extra = f" + Sneak {name} {sneak}" if sneak else ""
             return "high", f"within lethal reach: attackers {attack}{extra} against their {opp_life} life"
-        crack = sum(_power(c) for c in theirs)
+        from arenamcp.attack_potential import projected_attack
+
+        try:
+            expanded, trig_dmg, _ = projected_attack(theirs, side_creatures=theirs, declared=False)
+            crack = sum(_power(c) for c in expanded) + trig_dmg
+        except Exception:
+            crack = sum(_power(c) for c in theirs)
         if our_life is not None and crack >= our_life:
             return "high", f"their creatures hit for {crack} against our {our_life} life"
     if _entries(legal_actions, "block with:") and our_life is not None:

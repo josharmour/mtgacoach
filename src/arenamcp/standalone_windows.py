@@ -123,7 +123,11 @@ class _StandaloneWindowsMixin:
             "ActionType_BlockWithGroup",
         }:
             inferred_active = opponent_seat
-        elif action_types & {"ActionType_Play", "ActionType_PlayMDFC"} and "Main" in phase and not stack:
+        elif (
+            action_types & {"ActionType_Play", "ActionType_PlayMdfc", "ActionType_PlayMDFC"}
+            and "Main" in phase
+            and not stack
+        ):
             inferred_active = local_seat
 
         if inferred_active is not None and turn.get("active_player") != inferred_active:

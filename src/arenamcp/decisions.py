@@ -28,7 +28,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any
 
 from arenamcp.card_db import is_unknown_card_name
-from arenamcp.mana import SPELL_CAST_TYPES, face_payment, has_autotap_solution
+from arenamcp.mana import LAND_PLAY_ACTION_TYPES, SPELL_CAST_TYPES, face_payment, has_autotap_solution
 from arenamcp.target_effects import target_highlight
 
 logger = logging.getLogger(__name__)
@@ -1162,8 +1162,11 @@ def _build_actions_available(
             # with its own manaCost rather than the creature's casting cost.
             label = f"Special action: {name or 'card'}"
             payable = True if has_autotap_solution(action) else None
-        elif atype == "ActionType_Play":
-            label = f"Play land: {name or 'land'}"
+        elif atype in LAND_PLAY_ACTION_TYPES:
+            if atype == "ActionType_Play":
+                label = f"Play land: {name or 'land'}"
+            else:
+                label = f"Play land: {name or 'land'} (MDFC land face — not the spell)"
         elif atype == "ActionType_Activate":
             # Arena offers an activation whenever it is legal to announce; it
             # does not promise the cost is payable. No autotap solution plus a
