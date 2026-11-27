@@ -44,6 +44,7 @@ state.init_app_state()
 
 TRIAL_EXPIRED_EMAIL_SWEEP_SECONDS = 300.0
 META_SYNC_CHECK_SECONDS = 6 * 3600.0
+DISCORD_FEED_STARTUP_DELAY_SECONDS = 5.0
 
 
 async def _expired_trial_email_loop() -> None:
@@ -77,6 +78,23 @@ async def _meta_sync_loop() -> None:
         await asyncio.sleep(META_SYNC_CHECK_SECONDS)
 
 
+async def _discord_feed_loop() -> None:
+    import asyncio
+
+    await asyncio.sleep(DISCORD_FEED_STARTUP_DELAY_SECONDS)
+    while True:
+        try:
+            summary = await discord_feed.check_and_post_updates()
+            results = summary.get("results") or {}
+            if any(v in ("seeded", "posted", "error") for v in results.values()):
+                logger.info("Discord leaderboard feed check: %s", results)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning("Discord leaderboard feed check failed: %s", e)
+        await asyncio.sleep(discord_feed.DISCORD_FEED_CHECK_SECONDS)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     import asyncio
@@ -89,12 +107,19 @@ async def lifespan(app: FastAPI):
         if os.environ.get("META_SYNC_ENABLED", "1").strip() != "0"
         else None
     )
+    discord_task = (
+        asyncio.create_task(_discord_feed_loop())
+        if os.environ.get("DISCORD_FEED_ENABLED", "1").strip() != "0"
+        else None
+    )
     try:
         yield
     finally:
         sweep_task.cancel()
         if meta_task is not None:
             meta_task.cancel()
+        if discord_task is not None:
+            discord_task.cancel()
         try:
             await sweep_task
         except asyncio.CancelledError:
@@ -104,6 +129,12 @@ async def lifespan(app: FastAPI):
                 await meta_task
             except asyncio.CancelledError:
                 pass
+        if discord_task is not None:
+            try:
+                await discord_task
+            except asyncio.CancelledError:
+                pass
+        await discord_feed.shutdown()
         if state.http_client:
             await state.http_client.aclose()
 
@@ -191,6 +222,12 @@ import meta_sync
 
 meta_sync.init_db()
 app.include_router(meta_sync.router)
+
+# Automatic Discord announcements for leaderboard Top 3 & highest win-rate deck changes.
+import discord_feed
+
+discord_feed.init_db()
+app.include_router(discord_feed.router)
 
 # Compatibility exports for tests and direct module consumers
 config = state.config

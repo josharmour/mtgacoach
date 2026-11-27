@@ -21,9 +21,23 @@ from fastapi import HTTPException, Request
 from fastapi.templating import Jinja2Templates
 from providers import ProviderRouter
 
-# Logging: console + file
+# Logging: console + file (mask Discord webhook secrets if logged)
 LOG_DIR = Path("./data/logs")
 LOG_DIR.mkdir(parents=True, exist_ok=True)
+_WEBHOOK_URL_RE = re.compile(r"https://discord(?:app)?\.com/api/webhooks/[^\s\"'<>]+")
+
+
+class _WebhookRedactFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            rendered = record.getMessage()
+        except Exception:
+            return True
+        if _WEBHOOK_URL_RE.search(rendered):
+            record.msg = _WEBHOOK_URL_RE.sub("https://discord.com/api/webhooks/[REDACTED]", rendered)
+            record.args = ()
+        return True
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -37,6 +51,9 @@ logging.basicConfig(
         ),
     ],
 )
+for _handler in logging.getLogger().handlers:
+    _handler.addFilter(_WebhookRedactFilter())
+logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 config: dict[str, Any] = {}

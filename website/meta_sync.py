@@ -1169,6 +1169,12 @@ async def _refresh_all_meta_sources_impl(
             """,
             (json.dumps(summary), time.time()),
         )
+    try:
+        import discord_feed
+
+        discord_feed.notify_leaderboard_dirty()
+    except Exception:
+        pass
     return summary
 
 
