@@ -20,7 +20,7 @@ def test_main_window_init(qapp, monkeypatch):
     win.show()
     assert win.coach_panel is not None
     assert win.repair_tab is not None
-    assert win._stack.count() == 4  # coach, Setup & Repair, Match History, Decks
+    assert win._stack.count() == 5  # coach, Setup & Repair, Match History, Decks, Leaderboard & Community
 
     # Test navigation
     win._show_repair_view()
