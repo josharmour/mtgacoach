@@ -4,8 +4,8 @@
 {% block description %}{{ player.handle }} MTG Arena rank, match record, and shared decks on mtgacoach.com.{% endblock %}
 
 {% block head %}
-    <link rel="stylesheet" href="/static/css/profile.css?v=3">
-    <script src="/static/js/profile.js?v=3" defer></script>
+    <link rel="stylesheet" href="/static/css/profile.css?v=4">
+    <script src="/static/js/profile.js?v=4" defer></script>
 {% endblock %}
 
 {% block nav %}
@@ -98,7 +98,7 @@
                 {% for d in decks %}
                 <tr>
                     <th>
-                        <a class="deck-link" href="/decks/{{ d.slug }}">{{ d.name }}</a>
+                        <a class="deck-link" href="/decks/{{ d.slug }}" data-deck-title-id="{{ d.id }}">{{ d.name }}</a>
                         <span class="muted small">({{ d.card_count }})</span>
                     </th>
                     <td data-label="Format">{{ d.format }}</td>
@@ -129,6 +129,7 @@
                             {% if signed_in %}
                                 {% if is_self %}
                                     <button type="button" class="mini-btn accent js-queue-own" data-deck-id="{{ d.id }}">Send to Coach &amp; Arena</button>
+                                    <button type="button" class="mini-btn js-rename-deck" data-deck-id="{{ d.id }}" data-deck-name="{{ d.name }}">Rename</button>
                                 {% else %}
                                     <button type="button" class="mini-btn js-add-profile" data-deck-id="{{ d.id }}">Add to Profile</button>
                                     <button type="button" class="mini-btn accent js-add-coach" data-deck-id="{{ d.id }}">Add &amp; Send to Coach</button>
@@ -193,5 +194,9 @@
             <form method="dialog"><button value="close" class="button quiet">Close</button></form>
         </div>
     </dialog>
+
+    {% if signed_in and is_self %}
+        {% include "_rename_deck_dialog.html" %}
+    {% endif %}
 </div>
 {% endblock %}

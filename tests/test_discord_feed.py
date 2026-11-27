@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import sys
 import time
 from pathlib import Path
@@ -386,3 +387,100 @@ def test_player_profile_redirects_stale_anonymous_handle(tmp_path: Path, monkeyp
     # Opted-out control remains 404 under both handles
     assert client.get("/players/Player%20%23OPTO", follow_redirects=False).status_code == 404
     assert client.get("/players/HiddenUser", follow_redirects=False).status_code == 404
+
+
+def test_deck_rename_api_match_propagation_and_permissions(tmp_path: Path, monkeypatch):
+    (tmp_path / "templates").symlink_to(WEBSITE_DIR / "templates", target_is_directory=True)
+    (tmp_path / "static").symlink_to(WEBSITE_DIR / "static", target_is_directory=True)
+    app_mod, db, _ = load_website_app(tmp_path, monkeypatch, "app_deck_rename")
+    profiles = sys.modules["profiles"]
+
+    _seed_player(
+        db,
+        profiles,
+        "owner-rename-1",
+        handle="Miles18",
+        wins=8,
+        losses=4,
+        deck_name="Standard Deck",
+        deck_wins=8,
+        deck_losses=4,
+    )
+    _seed_player(db, profiles, "other-user-2", handle="OtherUser", wins=2, losses=1, deck_name="Other Deck")
+    with db.get_db() as conn:
+        conn.execute("UPDATE synced_decks SET deck_identity = 'ident-rename-1' WHERE id = 'deck-1'")
+        conn.execute(
+            "UPDATE player_matches SET deck_identity = 'ident-rename-1' WHERE owner = 'owner-rename-1'"
+        )
+
+    tok_owner, _ = profiles.mint_login_token("owner-rename-1", "patreon")
+    tok_other, _ = profiles.mint_login_token("other-user-2", "patreon")
+
+    anon_client = TestClient(app_mod.app)
+    owner_client = TestClient(app_mod.app)
+    other_client = TestClient(app_mod.app)
+
+    assert (
+        owner_client.get(f"/profile/auth/exchange?token={tok_owner}", follow_redirects=False).status_code
+        == 303
+    )
+    assert (
+        other_client.get(f"/profile/auth/exchange?token={tok_other}", follow_redirects=False).status_code
+        == 303
+    )
+    owner_csrf = re.search(r'data-csrf="([^"]+)"', owner_client.get("/profile").text).group(1)
+    other_csrf = re.search(r'data-csrf="([^"]+)"', other_client.get("/profile").text).group(1)
+
+    # Also verify player_profile shows Rename only for owner
+    own_player_html = owner_client.get("/players/Miles18").text
+    other_player_html = other_client.get("/players/Miles18").text
+    assert 'class="mini-btn js-rename-deck"' in own_player_html
+    assert 'id="rename-deck-dialog"' in own_player_html
+    assert "js-rename-deck" not in other_player_html
+    assert 'id="rename-deck-dialog"' not in other_player_html
+
+    # Control: signed-out and non-owner views never render rename UI
+    assert 'id="detail-rename-btn"' not in anon_client.get("/decks/dslug-1").text
+    assert 'id="detail-rename-btn"' not in other_client.get("/decks/dslug-1").text
+    assert 'id="rename-deck-dialog"' not in anon_client.get("/decks/dslug-1").text
+    assert 'id="detail-rename-btn"' in owner_client.get("/decks/dslug-1").text
+
+    # Control: non-owner cannot rename someone else's deck
+    denied = other_client.patch(
+        "/v1/decks/deck-1",
+        headers={"X-CSRF-Token": other_csrf},
+        json={"name": "Hijacked Name"},
+    )
+    assert denied.status_code == 404
+
+    # Control: blank/whitespace deck name rejected with 422
+    blank = owner_client.patch(
+        "/v1/decks/deck-1",
+        headers={"X-CSRF-Token": owner_csrf},
+        json={"name": "   "},
+    )
+    assert blank.status_code == 422
+
+    # Owner renames deck cleanly; deck + matching player_matches + win/loss stats stay intact
+    renamed = owner_client.patch(
+        "/v1/decks/deck-1",
+        headers={"X-CSRF-Token": owner_csrf},
+        json={"name": "  Boros   Burn  "},
+    )
+    assert renamed.status_code == 200
+    assert renamed.json()["deck"]["name"] == "Boros Burn"
+    assert renamed.json()["deck"]["wins"] == 8
+    assert renamed.json()["deck"]["losses"] == 4
+
+    with db.get_db() as conn:
+        m_names = {
+            r[0]
+            for r in conn.execute(
+                "SELECT deck_name FROM player_matches WHERE owner = 'owner-rename-1'"
+            ).fetchall()
+        }
+        assert m_names == {"Boros Burn"}
+
+    detail_html = owner_client.get("/decks/dslug-1").text
+    assert "Boros Burn" in detail_html
+    assert 'data-deck-name="Boros Burn"' in detail_html

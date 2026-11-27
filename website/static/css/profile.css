@@ -394,3 +394,29 @@ dialog::backdrop {
 }
 .dialog-title { font-size: 1.3rem; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 10px; flex-wrap: wrap; }
+.field { display: grid; gap: 6px; }
+.error-msg {
+    display: none;
+    color: #e67e67;
+    font-family: var(--sans);
+    font-size: 0.85rem;
+    margin-top: 2px;
+}
+dialog input:is(:user-invalid, .user-invalid-fallback) {
+    border-color: #c95843;
+    background: rgba(179, 84, 63, 0.14);
+}
+dialog input:is(:user-invalid, .user-invalid-fallback) + .error-msg {
+    display: block;
+}
+.visually-hidden:where(:not(:focus-within, :active)) {
+    position: absolute !important;
+    clip-path: inset(50%) !important;
+    overflow: hidden !important;
+    width: 1px !important;
+    height: 1px !important;
+    margin: -1px !important;
+    padding: 0 !important;
+    border: 0 !important;
+    white-space: nowrap !important;
+}

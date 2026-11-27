@@ -1,0 +1,25 @@
+<dialog id="rename-deck-dialog" aria-labelledby="rename-dialog-title" closedby="any">
+    <h1 id="rename-dialog-title" class="dialog-title">Rename Deck</h1>
+    <form id="rename-deck-form" class="stack-form">
+        <div class="field">
+            <label for="rename-deck-input" class="field-label">Deck Name (1–100 characters)</label>
+            <input id="rename-deck-input"
+                   name="name"
+                   type="text"
+                   required
+                   maxlength="100"
+                   pattern=".*\S.*"
+                   autocomplete="off"
+                   autofocus
+                   aria-invalid="false"
+                   data-error="rename-deck-error">
+            <div id="rename-deck-error" class="error-msg">
+                <span role="img" aria-label="Error">⚠</span> Enter a deck name (1–100 characters).
+            </div>
+        </div>
+        <div class="dialog-actions">
+            <button type="button" id="rename-cancel-btn" class="button quiet" command="request-close" commandfor="rename-deck-dialog">Cancel</button>
+            <button type="submit" id="rename-save-btn" class="button primary">Save name</button>
+        </div>
+    </form>
+</dialog>

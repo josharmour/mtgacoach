@@ -4,8 +4,8 @@
 {% block description %}{{ deck.format | title }} deck by {{ deck.author_name or 'Coach Player' }} on mtgacoach.com.{% endblock %}
 
 {% block head %}
-    <link rel="stylesheet" href="/static/css/profile.css?v=3">
-    <script src="/static/js/profile.js?v=3" defer></script>
+    <link rel="stylesheet" href="/static/css/profile.css?v=4">
+    <script src="/static/js/profile.js?v=4" defer></script>
 {% endblock %}
 
 {% block nav %}
@@ -25,7 +25,7 @@
     <header class="profile-hero">
         <div>
             <p class="kicker">{{ deck.format | title }} {% if deck.archetype %}&middot; {{ deck.archetype }}{% endif %}</p>
-            <h1>{{ deck.name }}</h1>
+            <h1 id="detail-deck-name">{{ deck.name }}</h1>
             <p class="muted small">
                 {% if is_source %}
                     Sourced from <strong>{{ deck.author_name or "Meta" }}</strong>
@@ -46,6 +46,7 @@
             <button type="button" class="button" id="detail-copy-btn">Copy Arena Export</button>
             {% if signed_in %}
                 {% if is_owner %}
+                    <button type="button" class="button" id="detail-rename-btn" data-deck-id="{{ deck.id }}" data-deck-name="{{ deck.name }}">Rename</button>
                     <button type="button" class="button primary" id="detail-queue-btn" data-deck-id="{{ deck.id }}">Send to Coach &amp; Arena</button>
                 {% else %}
                     <button type="button" class="button" id="detail-save-profile-btn" data-deck-id="{{ deck.id }}">Add to My Profile</button>
@@ -191,5 +192,8 @@
     {% endif %}
 
     <textarea id="detail-export-source" class="sr-only" readonly>{{ deck.export_text }}</textarea>
+    {% if signed_in and is_owner %}
+        {% include "_rename_deck_dialog.html" %}
+    {% endif %}
 </div>
 {% endblock %}

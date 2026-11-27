@@ -2320,11 +2320,20 @@ async def api_update_deck(request: Request, deck_id: str):
         except ValueError as exc:
             raise HTTPException(422, str(exc))
 
+        old_name = str(existing["name"] or "").strip()
+        old_ident = str(existing["deck_identity"] or "").strip()
+        if "name" in body:
+            next_name = " ".join(str(body.get("name") or "").split())[:100]
+            if not next_name:
+                raise HTTPException(422, "Deck name cannot be empty.")
+        else:
+            next_name = old_name
+
         _upsert_deck_record(
             conn,
             auth["owner"],
             deck_id=deck_id,
-            name=str(body.get("name", existing["name"])),
+            name=next_name,
             fmt=str(body.get("format", existing["format"])),
             piles=piles,
             archetype=str(body.get("archetype", existing["archetype"])),
@@ -2333,6 +2342,24 @@ async def api_update_deck(request: Request, deck_id: str):
             is_public=bool(body.get("is_public", existing["is_public"])),
             queue_for_arena=bool(body.get("queue_for_arena", False)),
         )
+        if "name" in body and next_name != old_name:
+            if old_ident:
+                conn.execute(
+                    "UPDATE player_matches SET deck_name = ? WHERE owner = ? AND deck_identity = ?",
+                    (next_name, auth["owner"], old_ident),
+                )
+            if old_name:
+                sibling_count = int(
+                    conn.execute(
+                        "SELECT COUNT(*) FROM synced_decks WHERE owner = ? AND id != ? AND lower(trim(name)) = lower(trim(?))",
+                        (auth["owner"], deck_id, old_name),
+                    ).fetchone()[0]
+                )
+                if sibling_count == 0:
+                    conn.execute(
+                        "UPDATE player_matches SET deck_name = ? WHERE owner = ? AND deck_identity = '' AND lower(trim(deck_name)) = lower(trim(?))",
+                        (next_name, auth["owner"], old_name),
+                    )
         refresh_owner_deck_stats(conn, auth["owner"])
         row = conn.execute("SELECT * FROM synced_decks WHERE id = ?", (deck_id,)).fetchone()
         prof = conn.execute(

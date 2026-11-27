@@ -253,6 +253,12 @@
                         activateTab("builder");
                     });
 
+                    var renameBtn = el("button", "mini-btn", "Rename");
+                    renameBtn.type = "button";
+                    renameBtn.addEventListener("click", function () {
+                        openRenameDialog(d.id, d.name);
+                    });
+
                     var copyBtn = el("button", "mini-btn", "Export");
                     copyBtn.type = "button";
                     copyBtn.addEventListener("click", function () { openExportDialog(d.name, d.export_text); });
@@ -266,7 +272,7 @@
                         deleteDialog.showModal();
                     });
 
-                    actWrap.append(sendBtn, editBtn, copyBtn);
+                    actWrap.append(sendBtn, editBtn, renameBtn, copyBtn);
                     if (d.is_public) {
                         var shareLink = el("a", "mini-btn", "Share");
                         shareLink.href = "/decks/" + encodeURIComponent(d.slug);
@@ -729,7 +735,181 @@
         if (ctrl) ctrl.addEventListener("change", loadLeaderboard);
     });
 
+    // ---- Rename Deck Dialog & Accessible Validation ----------------------
+    if (!("closedBy" in HTMLDialogElement.prototype)) {
+        var outsideDialog = function (e, dialog) {
+            var r = dialog.getBoundingClientRect();
+            return e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom;
+        };
+        document.querySelectorAll('dialog[closedby="any"]').forEach(function (dlg) {
+            var pressedOutside = false;
+            dlg.addEventListener("pointerdown", function (e) { pressedOutside = outsideDialog(e, dlg); });
+            dlg.addEventListener("pointerup", function (e) {
+                if (pressedOutside && outsideDialog(e, dlg)) dlg.close("");
+            });
+        });
+    }
+
+    var renameDialog = document.getElementById("rename-deck-dialog");
+    var renameForm = document.getElementById("rename-deck-form");
+    var renameInput = document.getElementById("rename-deck-input");
+    var renameSaveBtn = document.getElementById("rename-save-btn");
+    var renameCancelBtn = document.getElementById("rename-cancel-btn");
+    var pendingRenameId = null;
+
+    var renameAnnouncer = null;
+    var renameAnnounceTimer = null;
+    function getAnnouncer() {
+        if (!renameAnnouncer) {
+            renameAnnouncer = document.createElement("div");
+            renameAnnouncer.setAttribute("aria-live", "polite");
+            renameAnnouncer.className = "visually-hidden";
+            document.body.appendChild(renameAnnouncer);
+        }
+        return renameAnnouncer;
+    }
+
+    function linkFieldError(inputEl, shown) {
+        var errId = inputEl && inputEl.dataset ? inputEl.dataset.error : "";
+        if (!errId) return;
+        var ids = (inputEl.getAttribute("aria-describedby") || "").split(/\s+/).filter(function (id) {
+            return id && id !== errId;
+        });
+        if (shown) ids.push(errId);
+        if (ids.length) inputEl.setAttribute("aria-describedby", ids.join(" "));
+        else inputEl.removeAttribute("aria-describedby");
+    }
+
+    var supportsUserInvalid = typeof CSS !== "undefined" && CSS.supports && CSS.supports("selector(:user-invalid)");
+    var renameBlurred = false;
+
+    function syncRenameValidation(announce) {
+        if (!renameInput) return true;
+        var trimmed = renameInput.value.trim();
+        renameInput.setCustomValidity(trimmed.length === 0 ? "Enter a deck name (1–100 characters)." : "");
+        var isValid = renameInput.validity.valid;
+        var showInvalid = supportsUserInvalid ? renameInput.matches(":user-invalid") : (!isValid && renameBlurred);
+        if (!supportsUserInvalid) {
+            renameInput.classList.toggle("user-invalid-fallback", showInvalid);
+        }
+        renameInput.setAttribute("aria-invalid", showInvalid ? "true" : "false");
+        linkFieldError(renameInput, showInvalid);
+        if (showInvalid && announce) {
+            var errEl = document.getElementById(renameInput.dataset.error || "");
+            if (errEl) {
+                clearTimeout(renameAnnounceTimer);
+                var region = getAnnouncer();
+                region.textContent = "";
+                renameAnnounceTimer = setTimeout(function () {
+                    region.textContent = "Deck Name: " + errEl.textContent.replace(/\s+/g, " ").trim();
+                }, 500);
+            }
+        } else if (isValid && renameAnnouncer) {
+            clearTimeout(renameAnnounceTimer);
+            renameAnnouncer.textContent = "";
+        }
+        return isValid;
+    }
+
+    if (renameCancelBtn && !("commandForElement" in HTMLButtonElement.prototype)) {
+        renameCancelBtn.addEventListener("click", function () {
+            if (renameDialog) renameDialog.close("cancel");
+        });
+    }
+
+    if (renameDialog && renameInput) {
+        renameDialog.addEventListener("close", function () {
+            renameDialog.returnValue = "";
+            pendingRenameId = null;
+            renameBlurred = false;
+            clearTimeout(renameAnnounceTimer);
+            if (renameAnnouncer) renameAnnouncer.textContent = "";
+        });
+        renameInput.addEventListener("input", function () {
+            renameInput.setCustomValidity("");
+            if (renameInput.getAttribute("aria-invalid") === "true" || renameBlurred) {
+                syncRenameValidation(false);
+            }
+        });
+        renameInput.addEventListener("blur", function () {
+            renameBlurred = true;
+            syncRenameValidation(true);
+        });
+        renameInput.addEventListener("invalid", function () {
+            renameBlurred = true;
+            syncRenameValidation(false);
+        });
+    }
+
+    function openRenameDialog(deckId, currentName) {
+        if (!renameDialog || !renameForm || !renameInput || !deckId) return;
+        pendingRenameId = deckId;
+        renameBlurred = false;
+        renameForm.reset();
+        renameInput.setCustomValidity("");
+        renameInput.classList.remove("user-invalid-fallback");
+        renameInput.setAttribute("aria-invalid", "false");
+        linkFieldError(renameInput, false);
+        renameInput.value = currentName || "";
+        renameDialog.showModal();
+        renameInput.focus();
+        renameInput.select();
+    }
+
+    if (renameForm && renameInput) {
+        renameForm.addEventListener("submit", function (e) {
+            e.preventDefault();
+            renameBlurred = true;
+            if (!syncRenameValidation(false)) {
+                renameInput.focus();
+                return;
+            }
+            var targetId = pendingRenameId;
+            if (!targetId) return;
+            var nextName = " ".concat(renameInput.value).trim().replace(/\s+/g, " ");
+            if (renameSaveBtn) renameSaveBtn.disabled = true;
+            api("/v1/decks/" + encodeURIComponent(targetId), {
+                method: "PATCH",
+                body: JSON.stringify({ name: nextName }),
+            })
+                .then(function (res) {
+                    var finalName = (res && res.deck && res.deck.name) ? res.deck.name : nextName;
+                    if (renameDialog) renameDialog.close("saved");
+                    showToast("Renamed deck to '" + finalName + "'.");
+                    if (PAGE === "profile") {
+                        loadProfile();
+                    } else if (PAGE === "deck_detail") {
+                        var h1 = document.getElementById("detail-deck-name");
+                        if (h1) h1.textContent = finalName;
+                        document.title = finalName + " — mtgacoach";
+                        var rBtn = document.getElementById("detail-rename-btn");
+                        if (rBtn) rBtn.dataset.deckName = finalName;
+                    } else {
+                        document.querySelectorAll('[data-deck-title-id="' + targetId + '"]').forEach(function (a) {
+                            a.textContent = finalName;
+                        });
+                        document.querySelectorAll('[data-deck-id="' + targetId + '"]').forEach(function (b) {
+                            if (b.dataset.deckName !== undefined) b.dataset.deckName = finalName;
+                        });
+                    }
+                })
+                .catch(function (err) {
+                    showToast(err.message, true);
+                    renameInput.focus();
+                })
+                .finally(function () {
+                    if (renameSaveBtn) renameSaveBtn.disabled = false;
+                });
+        });
+    }
+
     // ---- Deck Detail Actions ---------------------------------------------
+    var detailRenameBtn = document.getElementById("detail-rename-btn");
+    if (detailRenameBtn) {
+        detailRenameBtn.addEventListener("click", function () {
+            openRenameDialog(detailRenameBtn.dataset.deckId, detailRenameBtn.dataset.deckName || "");
+        });
+    }
     var detailCopyBtn = document.getElementById("detail-copy-btn");
     if (detailCopyBtn) {
         detailCopyBtn.addEventListener("click", function () {
@@ -777,6 +957,8 @@
             api("/v1/decks/" + encodeURIComponent(btn.dataset.deckId) + "/queue-arena", { method: "POST", body: "{}" })
                 .then(function () { showToast("Queued for Coach & Arena! Open the Coach desktop app to build/import it."); })
                 .catch(function (err) { showToast(err.message, true); });
+        } else if (btn.classList.contains("js-rename-deck")) {
+            openRenameDialog(btn.dataset.deckId, btn.dataset.deckName || "");
         }
     });
 
