@@ -33,8 +33,16 @@ class _WebhookRedactFilter(logging.Filter):
             rendered = record.getMessage()
         except Exception:
             return True
-        if _WEBHOOK_URL_RE.search(rendered):
-            record.msg = _WEBHOOK_URL_RE.sub("https://discord.com/api/webhooks/[REDACTED]", rendered)
+        scrubbed = rendered
+        if _WEBHOOK_URL_RE.search(scrubbed):
+            scrubbed = _WEBHOOK_URL_RE.sub("https://discord.com/api/webhooks/[REDACTED]", scrubbed)
+        bot_token = os.environ.get("DISCORD_BOT_TOKEN", "").strip()
+        if not bot_token and isinstance(config, dict):
+            bot_token = str((config.get("discord") or {}).get("bot_token", "") or "").strip()
+        if bot_token and bot_token in scrubbed:
+            scrubbed = scrubbed.replace(bot_token, "[REDACTED_DISCORD_BOT_TOKEN]")
+        if scrubbed != rendered:
+            record.msg = scrubbed
             record.args = ()
         return True
 
@@ -81,6 +89,57 @@ def get_discord_webhook_url() -> str:
     return str(discord_cfg.get("webhook_url", "") or "").strip()
 
 
+def get_discord_bot_token() -> str:
+    """Return the configured Discord bot token (env DISCORD_BOT_TOKEN or discord.bot_token)."""
+    env_val = os.environ.get("DISCORD_BOT_TOKEN", "").strip()
+    if env_val:
+        return env_val
+    discord_cfg = config.get("discord", {}) if isinstance(config, dict) else {}
+    return str(discord_cfg.get("bot_token", "") or "").strip()
+
+
+def get_discord_guild_id() -> str:
+    """Return the configured Discord guild ID (env DISCORD_GUILD_ID or discord.guild_id)."""
+    env_val = os.environ.get("DISCORD_GUILD_ID", "").strip()
+    if env_val:
+        return env_val
+    discord_cfg = config.get("discord", {}) if isinstance(config, dict) else {}
+    return str(discord_cfg.get("guild_id", "") or "").strip()
+
+
+def get_discord_bug_reports_channel_id() -> str:
+    """Return the configured #bug-reports Forum channel ID."""
+    env_val = os.environ.get("DISCORD_BUG_REPORTS_CHANNEL_ID", "").strip()
+    if env_val:
+        return env_val
+    discord_cfg = config.get("discord", {}) if isinstance(config, dict) else {}
+    return str(discord_cfg.get("bug_reports_channel_id", "") or "").strip()
+
+
+def get_discord_fixed_tag_id() -> str:
+    """Return the optional moderator-only Fixed tag ID on #bug-reports."""
+    env_val = os.environ.get("DISCORD_FIXED_TAG_ID", "").strip()
+    if env_val:
+        return env_val
+    discord_cfg = config.get("discord", {}) if isinstance(config, dict) else {}
+    return str(discord_cfg.get("fixed_tag_id", "") or "").strip()
+
+
+def get_discord_bug_tag_ids() -> dict[str, str]:
+    """Return a lowercased mapping of bug category -> Discord forum tag snowflake."""
+    discord_cfg = config.get("discord", {}) if isinstance(config, dict) else {}
+    raw = discord_cfg.get("bug_tags")
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, str] = {}
+    for k, v in raw.items():
+        key = str(k or "").strip().lower()
+        val = str(v or "").strip()
+        if key and val:
+            out[key] = val
+    return out
+
+
 templates.env.globals["get_discord_invite_url"] = get_discord_invite_url
 _RESPONSE_STORE_MAX = 512
 _response_store: "OrderedDict[str, dict[str, Any]]" = OrderedDict()
@@ -88,6 +147,7 @@ _response_store: "OrderedDict[str, dict[str, Any]]" = OrderedDict()
 
 def _get_db():
     import db
+
     return db
 
 
@@ -106,11 +166,7 @@ def _resolved_provider_configs() -> list[dict]:
 def _resolved_default_model() -> str:
     """Default model from SQLite override or yaml fallback."""
     _db = _get_db()
-    return (
-        _db.get_config_value("default_model")
-        or config.get("default_model", "")
-        or ""
-    )
+    return _db.get_config_value("default_model") or config.get("default_model", "") or ""
 
 
 def _reload_providers() -> None:
@@ -170,6 +226,7 @@ def _get_stored_response(response_id: str) -> Optional[dict[str, Any]]:
 
 # --- Auth helpers ---
 
+
 def _extract_license_key(request: Request) -> str:
     """Extract license key from Authorization header."""
     auth = request.headers.get("Authorization", "")
@@ -226,9 +283,15 @@ def _record_trial_event(request: Request, event: str, machine_id: str = "", app_
         logger.info(
             "trial_event event=%s machine=%s network=%s client=%s peer=%s country=%s "
             "version=%s install=%s frontend=%s",
-            event, machine_id[:12] or "-", fields["network_hash"][:12] or "-",
-            fields["client_hash"][:12] or "-", fields["peer"] or "-", fields["country"] or "-",
-            fields["app_version"] or "-", fields["install_id"][:16] or "-", fields["frontend"] or "-",
+            event,
+            machine_id[:12] or "-",
+            fields["network_hash"][:12] or "-",
+            fields["client_hash"][:12] or "-",
+            fields["peer"] or "-",
+            fields["country"] or "-",
+            fields["app_version"] or "-",
+            fields["install_id"][:16] or "-",
+            fields["frontend"] or "-",
         )
         _get_db().record_trial_event(event, **fields)
     except Exception as e:

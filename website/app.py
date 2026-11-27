@@ -135,6 +135,7 @@ async def lifespan(app: FastAPI):
             except asyncio.CancelledError:
                 pass
         await discord_feed.shutdown()
+        await bug_reports.shutdown()
         if state.http_client:
             await state.http_client.aclose()
 
@@ -185,8 +186,7 @@ async def health():
     return {
         "status": "ok",
         "providers": [
-            {"name": p.name, "available": p.available, "models": p.models}
-            for p in state.router.providers
+            {"name": p.name, "available": p.available, "models": p.models} for p in state.router.providers
         ],
     }
 
@@ -198,10 +198,12 @@ app.include_router(admin_router)
 
 # ArenaOnAir keeps its match trial separate from Coach subscriptions.
 from arenaonair import router as arenaonair_router
+
 app.include_router(arenaonair_router)
 
 # Match-bundle intake ("Share match logs to improve the coach").
 import match_bundles
+
 match_bundles.init_db()
 app.include_router(match_bundles.router)
 
@@ -229,6 +231,12 @@ import discord_feed
 discord_feed.init_db()
 app.include_router(discord_feed.router)
 
+# In-app Discord #bug-reports submission, member verification, dedupe & private diagnostics.
+import bug_reports
+
+bug_reports.init_db()
+app.include_router(bug_reports.router)
+
 # Compatibility exports for tests and direct module consumers
 config = state.config
 router = state.router
@@ -246,6 +254,7 @@ _record_client_telemetry = state._record_client_telemetry
 
 if __name__ == "__main__":
     import uvicorn
+
     host = state.config.get("server", {}).get("host", "0.0.0.0")
     port = state.config.get("server", {}).get("port", 8443)
     uvicorn.run(app, host=host, port=port)

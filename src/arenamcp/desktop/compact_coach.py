@@ -388,6 +388,7 @@ class CompactCoachPanel(QWidget):
         self._settings = settings.get_settings()
         self._session = session or CoachSession(self)
         self._bug_report_dialog_open = False
+        self._last_bug_report_path = ""
         self._dot_values: dict[str, str] = {}
         self._auto_queue_enabled = bool(self._settings.get("auto_queue_enabled", False))
         self._auto_queue_detail = "Waiting for coaching to start." if self._auto_queue_enabled else ""
@@ -2262,6 +2263,7 @@ class CompactCoachPanel(QWidget):
         from PySide6.QtWidgets import QApplication
 
         p = Path(path).resolve()
+        self._last_bug_report_path = str(p)
         file_url = p.as_uri()
 
         try:
@@ -2276,6 +2278,26 @@ class CompactCoachPanel(QWidget):
         # The full saved path and clipboard result remain in Activity.
         self.bug_report_btn.setText("Saved")
         QTimer.singleShot(3000, lambda: self.bug_report_btn.setText(_BUG_REPORT_LABEL))
+
+    def open_discord_bug_dialog(self) -> None:
+        """Open the user-reviewed Discord #bug-reports dialog with latest local report."""
+        from pathlib import Path
+
+        from arenamcp.desktop.discord_bug_dialog import DiscordBugReportDialog
+        from arenamcp.logging_config import LOG_DIR
+
+        report_path = self._last_bug_report_path
+        if not report_path:
+            bug_dir = Path(LOG_DIR) / "bug_reports"
+            if bug_dir.is_dir():
+                candidates = sorted(bug_dir.glob("bug_*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+                if candidates:
+                    report_path = str(candidates[0])
+
+        dialog = DiscordBugReportDialog(report_path=report_path or None, parent=self)
+        dialog.exec()
+        if dialog.result_thread_url:
+            self.append_log(f"Bug report posted to Discord: {dialog.result_thread_url}", role="status")
 
     def _on_bug_report_confirmation_requested(self, request: dict[str, Any]) -> None:
         """Show the exact destination and contents before any public filing."""

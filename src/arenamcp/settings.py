@@ -104,6 +104,8 @@ DEFAULTS = {
     "share_match_logs": True,
     # Sync match history, ranks, wildcards, and decks with mtgacoach.com profile.
     "cloud_sync_enabled": True,
+    # Discord username for bug-report follow-up on MTGA Coach Discord.
+    "discord_handle": "",
     "tts_server_url": "",
     "tts_mode": "auto",
     # Independent provider selection; Kokoro settings/voice remain intact.

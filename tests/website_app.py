@@ -28,6 +28,7 @@ WEBSITE_MODULES = (
     "profiles",
     "meta_sync",
     "discord_feed",
+    "bug_reports",
     "download_versions",
     "routers",
     "routers.admin",
