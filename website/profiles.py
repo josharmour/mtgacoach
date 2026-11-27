@@ -16,7 +16,7 @@ import uuid
 from collections import Counter
 from datetime import datetime, timezone
 from typing import Any, Optional
-from urllib.parse import quote, urlparse
+from urllib.parse import quote, unquote, urlparse
 
 import match_bundles
 import state
@@ -1688,7 +1688,7 @@ async def deck_detail_page(request: Request, slug: str):
 
 
 def _resolve_public_player_row(conn, handle: str) -> Optional[dict[str, Any]]:
-    target = str(handle or "").strip().lower()
+    target = unquote(str(handle or "")).strip().lower()
     if not target:
         return None
     direct = conn.execute(
@@ -1700,9 +1700,10 @@ def _resolve_public_player_row(conn, handle: str) -> Optional[dict[str, Any]]:
     ).fetchone()
     if direct is not None:
         return dict(direct)
-    for r in conn.execute(
-        "SELECT * FROM player_profiles WHERE leaderboard_opt_in = 1 AND owner NOT LIKE 'source:%' AND trim(display_name) = ''"
-    ).fetchall():
+    rows = conn.execute(
+        "SELECT * FROM player_profiles WHERE leaderboard_opt_in = 1 AND owner NOT LIKE 'source:%' ORDER BY trim(display_name) != '' ASC"
+    ).fetchall()
+    for r in rows:
         if anonymous_handle(r["owner"]).lower() == target:
             return dict(r)
     return None
@@ -1715,6 +1716,9 @@ async def player_profile_page(request: Request, handle: str):
         target = _resolve_public_player_row(conn, handle)
         if target is None:
             raise HTTPException(404, "Player profile not found")
+        canonical_name = str(target.get("display_name") or "").strip()
+        if canonical_name and unquote(str(handle or "")).strip().lower() != canonical_name.lower():
+            return RedirectResponse(url=f"/players/{quote(canonical_name, safe='')}", status_code=302)
         target_owner = target["owner"]
         summary = _build_profile_summary(conn, target_owner)
         # Keep only public decks on public player pages unless viewer is the owner

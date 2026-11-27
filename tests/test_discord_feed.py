@@ -11,7 +11,7 @@ from pathlib import Path
 
 import httpx
 from fastapi.testclient import TestClient
-from tests.website_app import load_website_app
+from tests.website_app import WEBSITE_DIR, load_website_app
 
 
 def _seed_player(
@@ -353,3 +353,36 @@ def test_leaderboard_api_and_admin_feed_auth(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("DISCORD_FEED_ENABLED", "0")
     discord_feed.notify_leaderboard_dirty()
     assert discord_feed._dirty_task is None
+
+
+def test_player_profile_redirects_stale_anonymous_handle(tmp_path: Path, monkeypatch):
+    (tmp_path / "templates").symlink_to(WEBSITE_DIR / "templates", target_is_directory=True)
+    (tmp_path / "static").symlink_to(WEBSITE_DIR / "static", target_is_directory=True)
+    app_mod, db, _ = load_website_app(tmp_path, monkeypatch, "app_player_redirect")
+    profiles = sys.modules["profiles"]
+
+    _seed_player(db, profiles, "df45999900001111", handle="", wins=5, losses=2)
+    _seed_player(db, profiles, "optout9900001111", handle="HiddenUser", opt_in=False, wins=5, losses=2)
+
+    client = TestClient(app_mod.app)
+    anon_url = "/players/Player%20%23DF45"
+
+    # Before setting a custom handle, anonymous URL renders directly
+    r1 = client.get(anon_url, follow_redirects=False)
+    assert r1.status_code == 200
+    assert "Player #DF45" in r1.text
+
+    # After setting custom handle, stale anonymous URL 302-redirects to canonical handle
+    with db.get_db() as conn:
+        conn.execute("UPDATE player_profiles SET display_name = 'Miles18' WHERE owner = 'df45999900001111'")
+    r2 = client.get(anon_url, follow_redirects=False)
+    assert r2.status_code == 302
+    assert r2.headers["location"] == "/players/Miles18"
+
+    r3 = client.get(anon_url, follow_redirects=True)
+    assert r3.status_code == 200
+    assert "Miles18" in r3.text
+
+    # Opted-out control remains 404 under both handles
+    assert client.get("/players/Player%20%23OPTO", follow_redirects=False).status_code == 404
+    assert client.get("/players/HiddenUser", follow_redirects=False).status_code == 404
