@@ -120,6 +120,12 @@
     border-block-end: 3px solid var(--accent);
 }
 
+[role="tabpanel"] {
+    padding: 0;
+    margin: 0;
+    border: 0;
+    background: transparent;
+}
 .panel-inner { padding-top: 4px; }
 .panel-card {
     background: var(--bg-2);

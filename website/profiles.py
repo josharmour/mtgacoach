@@ -41,7 +41,7 @@ MAX_CATALOG_ENTRIES = 5000
 MAX_DECKS_PER_SYNC = 300
 MAX_SYNC_BODY_BYTES = 8 * 1024 * 1024
 
-_DISPLAY_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _-]{1,31}$")
+_DISPLAY_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._-]{1,31}$")
 _DISCORD_HANDLE_RE = re.compile(r"^[A-Za-z0-9._#@-]{0,40}$")
 _DECK_LINE_RE = re.compile(r"^\s*(\d+)\s+(.+?)\s*$")
 _SET_SUFFIX_RE = re.compile(r"\s+\([A-Za-z0-9]{2,8}\)\s+[A-Za-z0-9-]+\s*$")
@@ -1523,7 +1523,7 @@ async def api_profile_settings(request: Request):
         if name and not _DISPLAY_NAME_RE.fullmatch(name):
             raise HTTPException(
                 422,
-                "Handle must be 2-32 characters (letters, numbers, spaces, _ or -).",
+                "Handle must be 2-32 characters (letters, numbers, spaces, ., _ or -).",
             )
         updates["display_name"] = name
     if "leaderboard_opt_in" in body:

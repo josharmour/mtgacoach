@@ -82,6 +82,22 @@ def test_desktop_token_login_exchange_single_use_and_csrf(site) -> None:
     no_csrf = client.patch("/v1/profile/settings", json={"display_name": "Chandra"})
     assert no_csrf.status_code == 403
 
+    # Invalid email-style handle is rejected while dotted handles (e.g. armour.tv) are accepted
+    bad_handle = client.patch(
+        "/v1/profile/settings",
+        headers={"X-CSRF-Token": csrf},
+        json={"display_name": "user@example.com"},
+    )
+    assert bad_handle.status_code == 422
+
+    dotted = client.patch(
+        "/v1/profile/settings",
+        headers={"X-CSRF-Token": csrf},
+        json={"display_name": "armour.tv"},
+    )
+    assert dotted.status_code == 200
+    assert dotted.json()["profile"]["display_name"] == "armour.tv"
+
     # Cookie mutation with valid CSRF succeeds
     ok = client.patch(
         "/v1/profile/settings",
