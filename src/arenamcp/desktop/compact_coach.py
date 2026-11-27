@@ -278,7 +278,7 @@ def _plan_status_html(status: dict[str, Any]) -> str:
 
 
 _NOW_EMPTY = "Advice shows up here when you have a decision to make."
-_BUG_REPORT_LABEL = "Debug report"
+_BUG_REPORT_LABEL = "Report bug"
 
 
 def _str_value(value: Any, default: str = "") -> str:
@@ -388,6 +388,7 @@ class CompactCoachPanel(QWidget):
         self._settings = settings.get_settings()
         self._session = session or CoachSession(self)
         self._bug_report_dialog_open = False
+        self._pending_discord_bug_dialog = False
         self._last_bug_report_path = ""
         self._dot_values: dict[str, str] = {}
         self._auto_queue_enabled = bool(self._settings.get("auto_queue_enabled", False))
@@ -769,7 +770,9 @@ class CompactCoachPanel(QWidget):
         self.bug_report_btn = QPushButton(_BUG_REPORT_LABEL)
         self.bug_report_btn.setObjectName("bugReportButton")
         self.bug_report_btn.setStyleSheet("padding: 3px 6px;")
-        self.bug_report_btn.setToolTip("Save a debug-report snapshot and copy its link (F12 or Ctrl+Shift+D)")
+        self.bug_report_btn.setToolTip(
+            "Report a bug to MTGA Coach Discord (press F12 or Ctrl+Shift+D for a local debug snapshot)"
+        )
         self.bug_report_btn.clicked.connect(self._on_bug_report_clicked)
         recovery_controls.addWidget(self.bug_report_btn)
         self.support_btn = QPushButton("Contact support")
@@ -1316,6 +1319,7 @@ class CompactCoachPanel(QWidget):
 
     def _on_bug_report_clicked(self) -> None:
         self.voice_style_popover.hide()
+        self._pending_discord_bug_dialog = True
         self._session.trigger_debug_report()
 
     def _configure_auto_quest(self) -> None:
@@ -2254,8 +2258,12 @@ class CompactCoachPanel(QWidget):
     # Feed, Now card, bug reports
     # ------------------------------------------------------------------
     def _on_bug_report_saved(self, path: str, error: str) -> None:
+        open_discord = self._pending_discord_bug_dialog
+        self._pending_discord_bug_dialog = False
         if error or not path:
             self.append_log(f"Failed to save bug report: {error or 'no path'}", role="error")
+            if open_discord:
+                self.open_discord_bug_dialog(report_path="")
             return
 
         from pathlib import Path
@@ -2279,20 +2287,26 @@ class CompactCoachPanel(QWidget):
         self.bug_report_btn.setText("Saved")
         QTimer.singleShot(3000, lambda: self.bug_report_btn.setText(_BUG_REPORT_LABEL))
 
-    def open_discord_bug_dialog(self) -> None:
+        if open_discord:
+            self.open_discord_bug_dialog(report_path=str(p))
+
+    def open_discord_bug_dialog(self, report_path: str | None = None) -> None:
         """Open the user-reviewed Discord #bug-reports dialog with latest local report."""
         from pathlib import Path
 
         from arenamcp.desktop.discord_bug_dialog import DiscordBugReportDialog
         from arenamcp.logging_config import LOG_DIR
 
-        report_path = self._last_bug_report_path
-        if not report_path:
-            bug_dir = Path(LOG_DIR) / "bug_reports"
-            if bug_dir.is_dir():
-                candidates = sorted(bug_dir.glob("bug_*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
-                if candidates:
-                    report_path = str(candidates[0])
+        if report_path is None:
+            report_path = self._last_bug_report_path
+            if not report_path:
+                bug_dir = Path(LOG_DIR) / "bug_reports"
+                if bug_dir.is_dir():
+                    candidates = sorted(
+                        bug_dir.glob("bug_*.json"), key=lambda p: p.stat().st_mtime, reverse=True
+                    )
+                    if candidates:
+                        report_path = str(candidates[0])
 
         dialog = DiscordBugReportDialog(report_path=report_path or None, parent=self)
         dialog.exec()

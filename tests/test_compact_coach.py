@@ -228,12 +228,21 @@ def test_voice_style_settings_live_in_popover(panel, qapp):
     panel._speech_dialog.close()
 
 
-def test_compact_coach_debug_report_triggers(panel, monkeypatch):
+def test_compact_coach_debug_report_triggers(panel, tmp_path, monkeypatch):
     called = []
+    opened = []
     monkeypatch.setattr(panel.session, "trigger_debug_report", lambda: called.append(True))
+    monkeypatch.setattr(panel, "open_discord_bug_dialog", lambda report_path=None: opened.append(report_path))
 
     panel.bug_report_btn.click()
     assert called == [True]
+    assert panel._pending_discord_bug_dialog is True
+
+    report_file = tmp_path / "bug_snapshot.json"
+    report_file.write_text("{}", encoding="utf-8")
+    panel.session.bugReportSaved.emit(str(report_file), "")
+    assert opened == [str(report_file.resolve())]
+    assert panel._pending_discord_bug_dialog is False
 
 
 @pytest.mark.parametrize("theme_name", ["dark", "light", "high-contrast"])
@@ -570,13 +579,17 @@ def test_debug_report_generates_file_and_copies_link(qapp, tmp_path, monkeypatch
         # Avoid capturing the user's screen, while preserving screenshot references in the report.
         screenshots = {"arena": str(tmp_path / "Arena screenshot.png")}
         monkeypatch.setattr(win._session, "capture_screenshots", lambda: screenshots)
+        opened = []
+        monkeypatch.setattr(
+            win.coach_panel, "open_discord_bug_dialog", lambda report_path=None: opened.append(report_path)
+        )
         win._session._last_game_state = {"match_id": "local-debug-match"}
         if surface == "compact":
             win.coach_panel.bug_report_btn.click()
         else:
             from PySide6.QtGui import QAction
 
-            next(a for a in win.findChildren(QAction) if a.text().startswith("Report a Bug")).trigger()
+            next(a for a in win.findChildren(QAction) if a.text().startswith("Save Debug Report")).trigger()
         reports = list((tmp_path / "debug reports" / "bug_reports").glob("bug_*.json"))
         assert len(reports) == 1
         data = json.loads(reports[0].read_text())
@@ -584,6 +597,10 @@ def test_debug_report_generates_file_and_copies_link(qapp, tmp_path, monkeypatch
         assert data["game_state"] == {"match_id": "local-debug-match"}
         assert data["screenshots"] == screenshots
         assert qapp.clipboard().text() == reports[0].resolve().as_uri()
+        if surface == "compact":
+            assert opened == [str(reports[0].resolve())]
+        else:
+            assert opened == []
     finally:
         win.close()
 

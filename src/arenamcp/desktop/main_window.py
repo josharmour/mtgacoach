@@ -322,10 +322,10 @@ class MainWindow(QMainWindow):
         aoa_act = tools_menu.addAction("Speech & voices…")
         aoa_act.triggered.connect(self._configure_commentary)
         tools_menu.addSeparator()
-        debug_act = tools_menu.addAction("Report a Bug\tF12")
+        debug_act = tools_menu.addAction("Save Debug Report\tF12")
         debug_act.triggered.connect(self._session.trigger_debug_report)
         discord_bug_act = tools_menu.addAction("Send Bug Report to Discord…")
-        discord_bug_act.triggered.connect(self.coach_panel.open_discord_bug_dialog)
+        discord_bug_act.triggered.connect(self.coach_panel._on_bug_report_clicked)
 
         # View Menu
         view_menu = menu_bar.addMenu("View")
