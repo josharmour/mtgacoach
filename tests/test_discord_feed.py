@@ -484,3 +484,127 @@ def test_deck_rename_api_match_propagation_and_permissions(tmp_path: Path, monke
     detail_html = owner_client.get("/decks/dslug-1").text
     assert "Boros Burn" in detail_html
     assert 'data-deck-name="Boros Burn"' in detail_html
+
+
+def test_canonical_deck_name_nicknames_and_community_stats(tmp_path: Path, monkeypatch):
+    (tmp_path / "templates").symlink_to(WEBSITE_DIR / "templates", target_is_directory=True)
+    (tmp_path / "static").symlink_to(WEBSITE_DIR / "static", target_is_directory=True)
+    app_mod, db, _ = load_website_app(tmp_path, monkeypatch, "app_canonical_decks")
+    profiles = sys.modules["profiles"]
+
+    alice = "alice-canon-1"
+    bob = "bob-canon-2"
+    carol = "carol-other-3"
+    with db.get_db() as conn:
+        profiles.ensure_profile(conn, alice)
+        profiles.ensure_profile(conn, bob)
+        profiles.ensure_profile(conn, carol)
+        conn.execute("UPDATE player_profiles SET display_name = 'Alice' WHERE owner = ?", (alice,))
+        conn.execute("UPDATE player_profiles SET display_name = 'Bob' WHERE owner = ?", (bob,))
+        conn.execute("UPDATE player_profiles SET display_name = 'Carol' WHERE owner = ?", (carol,))
+
+    tok_a, _ = profiles.mint_login_token(alice, "patreon")
+    tok_b, _ = profiles.mint_login_token(bob, "patreon")
+    client_a = TestClient(app_mod.app)
+    client_b = TestClient(app_mod.app)
+    assert client_a.get(f"/profile/auth/exchange?token={tok_a}", follow_redirects=False).status_code == 303
+    assert client_b.get(f"/profile/auth/exchange?token={tok_b}", follow_redirects=False).status_code == 303
+    csrf_a = re.search(r'data-csrf="([^"]+)"', client_a.get("/profile").text).group(1)
+    csrf_b = re.search(r'data-csrf="([^"]+)"', client_b.get("/profile").text).group(1)
+
+    shared_list = "4 Lightning Bolt\n20 Mountain\n"
+    different_list = "4 Llanowar Elves\n20 Forest\n"
+
+    # Alice uploads the deck first -> owns the canonical name
+    c1 = client_a.post(
+        "/v1/decks",
+        headers={"X-CSRF-Token": csrf_a},
+        json={"name": "Mono-Red Bolt", "format": "standard", "import_text": shared_list, "is_public": True},
+    )
+    assert c1.status_code == 201
+    alice_deck = c1.json()["deck"]
+    assert alice_deck["canonical_name"] == "Mono-Red Bolt"
+    assert alice_deck["is_canonical_owner"] is True
+    assert alice_deck["is_nicknamed"] is False
+
+    # Bob clones Alice's deck and sets a personal nickname
+    cl = client_b.post(
+        f"/v1/decks/{alice_deck['id']}/clone",
+        headers={"X-CSRF-Token": csrf_b},
+        json={},
+    )
+    assert cl.status_code == 201
+    bob_deck = cl.json()["deck"]
+    assert bob_deck["list_hash"] == alice_deck["list_hash"]
+    assert bob_deck["canonical_name"] == "Mono-Red Bolt"
+    assert bob_deck["is_canonical_owner"] is False
+
+    # Make Bob's copy public just to verify detail page, while keeping privacy guarantees
+    rn_b = client_b.patch(
+        f"/v1/decks/{bob_deck['id']}",
+        headers={"X-CSRF-Token": csrf_b},
+        json={"name": "Bob Speedy Bolt", "is_public": True},
+    )
+    assert rn_b.status_code == 200
+    assert rn_b.json()["deck"]["name"] == "Bob Speedy Bolt"
+    assert rn_b.json()["deck"]["canonical_name"] == "Mono-Red Bolt"
+    assert rn_b.json()["deck"]["is_canonical_owner"] is False
+    assert rn_b.json()["deck"]["is_nicknamed"] is True
+
+    # Canonical owner Alice renames canonical name -> updates canonical_name without clobbering Bob's nickname
+    rn_a = client_a.patch(
+        f"/v1/decks/{alice_deck['id']}",
+        headers={"X-CSRF-Token": csrf_a},
+        json={"name": "Classic Red Burn"},
+    )
+    assert rn_a.status_code == 200
+    assert rn_a.json()["deck"]["canonical_name"] == "Classic Red Burn"
+
+    b_after = client_b.get("/v1/decks").json()["decks"][0]
+    assert b_after["name"] == "Bob Speedy Bolt"
+    assert b_after["canonical_name"] == "Classic Red Burn"
+
+    # Both Alice & Bob play matches using that exact list; Carol plays a different list
+    with db.get_db() as conn:
+        now = time.time()
+        for i in range(6):
+            conn.execute(
+                "INSERT INTO player_matches (owner, match_id, played_at, result, format_name, format_bucket, deck_identity, deck_name, autopilot) VALUES (?, ?, ?, ?, 'Standard', 'standard', ?, 'Classic Red Burn', 1)",
+                (alice, f"ma-{i}", now - i, "win" if i < 4 else "loss", alice_deck["deck_identity"]),
+            )
+        for i in range(4):
+            conn.execute(
+                "INSERT INTO player_matches (owner, match_id, played_at, result, format_name, format_bucket, deck_identity, deck_name, autopilot) VALUES (?, ?, ?, ?, 'Standard', 'standard', ?, 'Bob Speedy Bolt', 0)",
+                (bob, f"mb-{i}", now - i, "win" if i < 3 else "loss", bob_deck["deck_identity"]),
+            )
+        # Carol uploads a different list with 10 wins -> must NOT leak into Alice/Bob's community stats
+        diff_id = profiles._upsert_deck_record(
+            conn,
+            carol,
+            name="Green Elves",
+            fmt="standard",
+            piles=profiles.parse_arena_deck_text(different_list),
+            is_public=True,
+        )
+        carol_ident = conn.execute(
+            "SELECT deck_identity FROM synced_decks WHERE id = ?", (diff_id,)
+        ).fetchone()[0]
+        for i in range(10):
+            conn.execute(
+                "INSERT INTO player_matches (owner, match_id, played_at, result, format_name, format_bucket, deck_identity, deck_name, autopilot) VALUES (?, ?, ?, 'win', 'Standard', 'standard', ?, 'Green Elves', 0)",
+                (carol, f"mc-{i}", now - i, carol_ident),
+            )
+        profiles.refresh_owner_deck_stats(conn, alice)
+        profiles.refresh_owner_deck_stats(conn, bob)
+
+    # Combined fleet-wide stats across Alice (4W-2L) + Bob (3W-1L) = 7W-3L (70.0%) across 2 pilots!
+    alice_detail = client_a.get(f"/decks/{alice_deck['slug']}").text
+    bob_detail = client_b.get(f"/decks/{bob_deck['slug']}").text
+    assert "70.0% (7W-3L)" in alice_detail
+    assert "2 pilots" in alice_detail
+    assert "70.0% (7W-3L)" in bob_detail
+    assert "Classic Red Burn" in bob_detail
+    assert "Set Nickname" in bob_detail
+    assert "Green Elves" not in alice_detail
+    assert alice not in bob_detail
+    assert bob not in alice_detail

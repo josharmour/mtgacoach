@@ -4,8 +4,8 @@
 {% block description %}{{ player.handle }} MTG Arena rank, match record, and shared decks on mtgacoach.com.{% endblock %}
 
 {% block head %}
-    <link rel="stylesheet" href="/static/css/profile.css?v=4">
-    <script src="/static/js/profile.js?v=4" defer></script>
+    <link rel="stylesheet" href="/static/css/profile.css?v=5">
+    <script src="/static/js/profile.js?v=5" defer></script>
 {% endblock %}
 
 {% block nav %}
@@ -100,6 +100,9 @@
                     <th>
                         <a class="deck-link" href="/decks/{{ d.slug }}" data-deck-title-id="{{ d.id }}">{{ d.name }}</a>
                         <span class="muted small">({{ d.card_count }})</span>
+                        {% if d.is_nicknamed and d.canonical_name %}
+                            <div class="muted small">Canonical: {{ d.canonical_name }}</div>
+                        {% endif %}
                     </th>
                     <td data-label="Format">{{ d.format }}</td>
                     <td data-label="Record">
@@ -129,7 +132,7 @@
                             {% if signed_in %}
                                 {% if is_self %}
                                     <button type="button" class="mini-btn accent js-queue-own" data-deck-id="{{ d.id }}">Send to Coach &amp; Arena</button>
-                                    <button type="button" class="mini-btn js-rename-deck" data-deck-id="{{ d.id }}" data-deck-name="{{ d.name }}">Rename</button>
+                                    <button type="button" class="mini-btn js-rename-deck" data-deck-id="{{ d.id }}" data-deck-name="{{ d.name }}" data-canonical-name="{{ d.canonical_name or d.name }}" data-is-canonical-owner="{{ '1' if d.is_canonical_owner else '0' }}">{% if d.is_canonical_owner %}Rename{% else %}Nickname{% endif %}</button>
                                 {% else %}
                                     <button type="button" class="mini-btn js-add-profile" data-deck-id="{{ d.id }}">Add to Profile</button>
                                     <button type="button" class="mini-btn accent js-add-coach" data-deck-id="{{ d.id }}">Add &amp; Send to Coach</button>

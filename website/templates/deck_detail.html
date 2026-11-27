@@ -4,8 +4,8 @@
 {% block description %}{{ deck.format | title }} deck by {{ deck.author_name or 'Coach Player' }} on mtgacoach.com.{% endblock %}
 
 {% block head %}
-    <link rel="stylesheet" href="/static/css/profile.css?v=4">
-    <script src="/static/js/profile.js?v=4" defer></script>
+    <link rel="stylesheet" href="/static/css/profile.css?v=5">
+    <script src="/static/js/profile.js?v=5" defer></script>
 {% endblock %}
 
 {% block nav %}
@@ -26,6 +26,24 @@
         <div>
             <p class="kicker">{{ deck.format | title }} {% if deck.archetype %}&middot; {{ deck.archetype }}{% endif %}</p>
             <h1 id="detail-deck-name">{{ deck.name }}</h1>
+            {% if not is_source and canonical and canonical.canonical_name %}
+            <p class="muted small" id="detail-canonical-meta">
+                {% if deck.is_nicknamed %}
+                    Canonical name: <strong id="detail-canonical-name">{{ canonical.canonical_name }}</strong>
+                    {% if canonical.creator_profile_url %}
+                        by <a class="deck-link" href="{{ canonical.creator_profile_url }}">{{ canonical.creator_handle }}</a>
+                    {% elif canonical.creator_handle %}
+                        by {{ canonical.creator_handle }}
+                    {% endif %}
+                    &middot; <span class="badge">Nickname</span>
+                {% elif canonical.is_canonical_owner %}
+                    <span class="badge patron">Canonical Owner</span>
+                    <span id="detail-canonical-name" class="sr-only">{{ canonical.canonical_name }}</span>
+                {% else %}
+                    Canonical name: <strong id="detail-canonical-name">{{ canonical.canonical_name }}</strong>
+                {% endif %}
+            </p>
+            {% endif %}
             <p class="muted small">
                 {% if is_source %}
                     Sourced from <strong>{{ deck.author_name or "Meta" }}</strong>
@@ -35,7 +53,9 @@
                     Shared by <strong>{{ deck.author_name }}</strong>
                 {% endif %}
                 {% if deck.author_is_patron %}<span class="badge patron">Patron</span>{% endif %}
-                {% if performance.all_time.games > 0 %}
+                {% if performance.community and performance.community.all_time.games > 0 %}
+                    &middot; All pilots: <strong>{{ (performance.community.all_time.win_rate * 100) | round(1) }}%</strong> ({{ performance.community.all_time.wins }}W-{{ performance.community.all_time.losses }}L across {{ performance.community.pilots }} {{ 'pilot' if performance.community.pilots == 1 else 'pilots' }})
+                {% elif performance.all_time.games > 0 %}
                     &middot; <strong>{{ (performance.all_time.win_rate * 100) | round(1) }}%</strong> ({{ performance.all_time.wins }}W-{{ performance.all_time.losses }}L)
                 {% elif deck.games > 0 %}
                     &middot; <strong>{{ (deck.win_rate * 100) | round(1) }}%</strong> ({{ deck.wins }}W-{{ deck.losses }}L)
@@ -46,7 +66,7 @@
             <button type="button" class="button" id="detail-copy-btn">Copy Arena Export</button>
             {% if signed_in %}
                 {% if is_owner %}
-                    <button type="button" class="button" id="detail-rename-btn" data-deck-id="{{ deck.id }}" data-deck-name="{{ deck.name }}">Rename</button>
+                    <button type="button" class="button" id="detail-rename-btn" data-deck-id="{{ deck.id }}" data-deck-name="{{ deck.name }}" data-canonical-name="{{ canonical.canonical_name if canonical else deck.name }}" data-is-canonical-owner="{{ '1' if (canonical and canonical.is_canonical_owner) else '0' }}">{% if canonical and canonical.is_canonical_owner %}Rename{% else %}Set Nickname{% endif %}</button>
                     <button type="button" class="button primary" id="detail-queue-btn" data-deck-id="{{ deck.id }}">Send to Coach &amp; Arena</button>
                 {% else %}
                     <button type="button" class="button" id="detail-save-profile-btn" data-deck-id="{{ deck.id }}">Add to My Profile</button>
@@ -60,7 +80,60 @@
 
     <div id="toast-region" class="toast-region" aria-live="polite"></div>
 
+    {% if performance.community and performance.community.all_time.games > 0 %}
+    <h2 class="section-sub">All Pilots Using This Deck ({{ performance.community.pilots }} {{ 'pilot' if performance.community.pilots == 1 else 'pilots' }} &middot; {{ performance.community.copies }} {{ 'copy' if performance.community.copies == 1 else 'copies' }})</h2>
+    <div class="stat-grid">
+        <div class="stat-card">
+            <span class="stat-label">Fleet All-Time</span>
+            <strong class="stat-value">
+                {{ (performance.community.all_time.win_rate * 100) | round(1) }}% ({{ performance.community.all_time.wins }}W-{{ performance.community.all_time.losses }}L)
+            </strong>
+        </div>
+        <div class="stat-card">
+            <span class="stat-label">Fleet Last 30 Days</span>
+            <strong class="stat-value">
+                {% if performance.community.last_30d.games %}
+                    {{ (performance.community.last_30d.win_rate * 100) | round(1) }}% ({{ performance.community.last_30d.wins }}W-{{ performance.community.last_30d.losses }}L)
+                {% else %}
+                    &mdash;
+                {% endif %}
+            </strong>
+        </div>
+        <div class="stat-card">
+            <span class="stat-label">Fleet AP vs Manual</span>
+            <strong class="stat-value">
+                {% if performance.community.autopilot.games %}
+                    AP {{ (performance.community.autopilot.win_rate * 100) | round(0) | int }}% ({{ performance.community.autopilot.wins }}-{{ performance.community.autopilot.losses }})
+                {% elif performance.community.manual.games %}
+                    Manual {{ (performance.community.manual.win_rate * 100) | round(0) | int }}% ({{ performance.community.manual.wins }}-{{ performance.community.manual.losses }})
+                {% else %}
+                    &mdash;
+                {% endif %}
+            </strong>
+        </div>
+        <div class="stat-card">
+            <span class="stat-label">Fleet Avg Turns</span>
+            <strong class="stat-value">
+                {% if performance.community.avg_turns %}{{ performance.community.avg_turns }}t{% else %}&mdash;{% endif %}
+            </strong>
+        </div>
+    </div>
+    {% if performance.community.matchups %}
+    <div class="cost-banner">
+        <strong>Fleet Matchups by Opponent Colors:</strong>
+        <span class="matchup-pills">
+            {% for m in performance.community.matchups %}
+            <span class="badge">{{ m.colors }} {{ (m.win_rate * 100) | round(0) | int }}% ({{ m.wins }}-{{ m.losses }})</span>
+            {% endfor %}
+        </span>
+    </div>
+    {% endif %}
+    {% endif %}
+
     {% if performance.all_time.games > 0 %}
+    {% if not is_source and performance.community and performance.community.all_time.games > performance.all_time.games %}
+    <h2 class="section-sub">This Pilot's Record ({{ deck.author_name }})</h2>
+    {% endif %}
     <div class="stat-grid">
         <div class="stat-card">
             <span class="stat-label">{% if is_source %}Fleet Record{% else %}Overall Record{% endif %}</span>

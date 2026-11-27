@@ -216,12 +216,25 @@
                     dLink.href = "/decks/" + encodeURIComponent(d.slug);
                     th.appendChild(dLink);
                     th.appendChild(el("span", "muted small", " (" + d.card_count + ")"));
+                    if (d.is_nicknamed && d.canonical_name) {
+                        th.appendChild(el("div", "muted small", "Canonical: " + d.canonical_name));
+                    }
                     tr.appendChild(th);
 
                     var tdFmt = el("td", "", d.format);
                     tdFmt.dataset.label = "Format";
                     var recText = d.games ? (fmtPct(d.win_rate) + " (" + d.wins + "W-" + d.losses + "L)") : "—";
-                    var tdRec = el("td", "", recText);
+                    var tdRec = el("td");
+                    tdRec.appendChild(el("span", "", recText));
+                    if (d.community_games && d.community_games > d.games) {
+                        tdRec.appendChild(
+                            el(
+                                "div",
+                                "muted small",
+                                "All pilots: " + fmtPct(d.community_win_rate) + " (" + d.community_games + "g, " + (d.community_pilots || 1) + "p)"
+                            )
+                        );
+                    }
                     tdRec.dataset.label = "Record";
                     var tdCost = el("td", "", fmtCraftBadge(d.craftability));
                     tdCost.dataset.label = "Wildcards";
@@ -253,10 +266,11 @@
                         activateTab("builder");
                     });
 
-                    var renameBtn = el("button", "mini-btn", "Rename");
+                    var renameLabel = d.is_canonical_owner ? "Rename" : "Nickname";
+                    var renameBtn = el("button", "mini-btn", renameLabel);
                     renameBtn.type = "button";
                     renameBtn.addEventListener("click", function () {
-                        openRenameDialog(d.id, d.name);
+                        openRenameDialog(d.id, d.name, Boolean(d.is_canonical_owner), d.canonical_name || d.name);
                     });
 
                     var copyBtn = el("button", "mini-btn", "Export");
@@ -752,6 +766,8 @@
 
     var renameDialog = document.getElementById("rename-deck-dialog");
     var renameForm = document.getElementById("rename-deck-form");
+    var renameTitle = document.getElementById("rename-dialog-title");
+    var renameHint = document.getElementById("rename-dialog-hint");
     var renameInput = document.getElementById("rename-deck-input");
     var renameSaveBtn = document.getElementById("rename-save-btn");
     var renameCancelBtn = document.getElementById("rename-cancel-btn");
@@ -841,7 +857,7 @@
         });
     }
 
-    function openRenameDialog(deckId, currentName) {
+    function openRenameDialog(deckId, currentName, isCanonicalOwner, canonicalName) {
         if (!renameDialog || !renameForm || !renameInput || !deckId) return;
         pendingRenameId = deckId;
         renameBlurred = false;
@@ -851,6 +867,14 @@
         renameInput.setAttribute("aria-invalid", "false");
         linkFieldError(renameInput, false);
         renameInput.value = currentName || "";
+        if (renameTitle) {
+            renameTitle.textContent = isCanonicalOwner === false ? "Set Personal Nickname" : "Rename Canonical Deck";
+        }
+        if (renameHint) {
+            renameHint.textContent = isCanonicalOwner === false
+                ? "Updates only your personal nickname. Canonical name stays \"" + (canonicalName || currentName || "") + "\"."
+                : "You own the canonical name for this deck list. Renaming updates it as the deck's canonical name.";
+        }
         renameDialog.showModal();
         renameInput.focus();
         renameInput.select();
@@ -883,7 +907,16 @@
                         if (h1) h1.textContent = finalName;
                         document.title = finalName + " — mtgacoach";
                         var rBtn = document.getElementById("detail-rename-btn");
-                        if (rBtn) rBtn.dataset.deckName = finalName;
+                        if (rBtn) {
+                            rBtn.dataset.deckName = finalName;
+                            if (res && res.deck && res.deck.canonical_name) {
+                                rBtn.dataset.canonicalName = res.deck.canonical_name;
+                            }
+                        }
+                        var canonEl = document.getElementById("detail-canonical-name");
+                        if (canonEl && res && res.deck && res.deck.canonical_name) {
+                            canonEl.textContent = res.deck.canonical_name;
+                        }
                     } else {
                         document.querySelectorAll('[data-deck-title-id="' + targetId + '"]').forEach(function (a) {
                             a.textContent = finalName;
@@ -907,7 +940,12 @@
     var detailRenameBtn = document.getElementById("detail-rename-btn");
     if (detailRenameBtn) {
         detailRenameBtn.addEventListener("click", function () {
-            openRenameDialog(detailRenameBtn.dataset.deckId, detailRenameBtn.dataset.deckName || "");
+            openRenameDialog(
+                detailRenameBtn.dataset.deckId,
+                detailRenameBtn.dataset.deckName || "",
+                detailRenameBtn.dataset.isCanonicalOwner === "1",
+                detailRenameBtn.dataset.canonicalName || detailRenameBtn.dataset.deckName || ""
+            );
         });
     }
     var detailCopyBtn = document.getElementById("detail-copy-btn");
@@ -958,7 +996,12 @@
                 .then(function () { showToast("Queued for Coach & Arena! Open the Coach desktop app to build/import it."); })
                 .catch(function (err) { showToast(err.message, true); });
         } else if (btn.classList.contains("js-rename-deck")) {
-            openRenameDialog(btn.dataset.deckId, btn.dataset.deckName || "");
+            openRenameDialog(
+                btn.dataset.deckId,
+                btn.dataset.deckName || "",
+                btn.dataset.isCanonicalOwner === "1",
+                btn.dataset.canonicalName || btn.dataset.deckName || ""
+            );
         }
     });
 

@@ -31,7 +31,9 @@ router = APIRouter()
 RARITIES = ("common", "uncommon", "rare", "mythic")
 BASIC_LANDS = frozenset({"Plains", "Island", "Swamp", "Mountain", "Forest"})
 FORMAT_BUCKETS = ("standard", "brawl", "historic", "alchemy", "limited", "other")
-ALLOWED_DECK_FORMATS = frozenset({"standard", "brawl", "historic", "alchemy", "explorer", "timeless", "limited"})
+ALLOWED_DECK_FORMATS = frozenset(
+    {"standard", "brawl", "historic", "alchemy", "explorer", "timeless", "limited"}
+)
 MIN_WINRATE_GAMES = 20
 MIN_DECK_WINRATE_GAMES = 10
 LOGIN_TOKEN_TTL_S = 300
@@ -144,6 +146,7 @@ def init_db() -> None:
                 slug TEXT UNIQUE NOT NULL,
                 arena_deck_id TEXT NOT NULL DEFAULT '',
                 deck_identity TEXT NOT NULL DEFAULT '',
+                list_hash TEXT NOT NULL DEFAULT '',
                 name TEXT NOT NULL,
                 format TEXT NOT NULL DEFAULT 'standard',
                 archetype TEXT NOT NULL DEFAULT '',
@@ -172,6 +175,14 @@ def init_db() -> None:
                 ON synced_decks(is_public, format, wins DESC);
             CREATE INDEX IF NOT EXISTS idx_synced_decks_pending
                 ON synced_decks(owner, sync_to_arena_status);
+
+            CREATE TABLE IF NOT EXISTS canonical_decks (
+                list_hash TEXT PRIMARY KEY,
+                canonical_name TEXT NOT NULL,
+                creator_owner TEXT NOT NULL,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            );
 
             CREATE TABLE IF NOT EXISTS card_catalog_cache (
                 name_key TEXT PRIMARY KEY,
@@ -212,6 +223,44 @@ def init_db() -> None:
                 ON web_sessions(expires_at);
             """
         )
+        cols = {str(r["name"]) for r in conn.execute("PRAGMA table_info(synced_decks)").fetchall()}
+        if "list_hash" not in cols:
+            conn.execute("ALTER TABLE synced_decks ADD COLUMN list_hash TEXT NOT NULL DEFAULT ''")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_synced_decks_list_hash ON synced_decks(list_hash)")
+        for r in conn.execute(
+            "SELECT id, main_json, sideboard_json, commander_json, companion_json FROM synced_decks WHERE list_hash = ''"
+        ).fetchall():
+            try:
+                piles = {
+                    "main": json.loads(r["main_json"] or "[]"),
+                    "sideboard": json.loads(r["sideboard_json"] or "[]"),
+                    "commander": json.loads(r["commander_json"] or "[]"),
+                    "companion": json.loads(r["companion_json"] or "[]"),
+                }
+            except (json.JSONDecodeError, TypeError):
+                continue
+            lh = _deck_identity_from_piles(piles)
+            if lh:
+                conn.execute("UPDATE synced_decks SET list_hash = ? WHERE id = ?", (lh, r["id"]))
+        for r in conn.execute(
+            """
+            SELECT owner, list_hash, name, created_at, updated_at
+            FROM synced_decks
+            WHERE list_hash != ''
+              AND owner NOT LIKE 'source:%'
+              AND NOT EXISTS (
+                  SELECT 1 FROM canonical_decks c WHERE c.list_hash = synced_decks.list_hash
+              )
+            ORDER BY created_at ASC, id ASC
+            """
+        ).fetchall():
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO canonical_decks (list_hash, canonical_name, creator_owner, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (r["list_hash"], r["name"], r["owner"], r["created_at"], r["updated_at"]),
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -450,12 +499,7 @@ def _enrich_piles_from_catalog(
     conn, piles: dict[str, list[dict[str, Any]]]
 ) -> dict[str, list[dict[str, Any]]]:
     """Attach known rarities and grp_ids from card_catalog_cache."""
-    keys = {
-        _name_key(card["name"])
-        for cards in piles.values()
-        for card in cards
-        if card.get("name")
-    }
+    keys = {_name_key(card["name"]) for cards in piles.values() for card in cards if card.get("name")}
     catalog: dict[str, dict[str, Any]] = {}
     if keys:
         placeholders = ",".join("?" for _ in keys)
@@ -624,13 +668,17 @@ def _safe_next_url(value: Any, default: str = "/profile") -> str:
 def _public_origin(request: Request) -> str:
     configured = (
         os.environ.get("PUBLIC_BASE_URL", "").strip()
-        or str((state.config.get("server", {}) if isinstance(state.config, dict) else {}).get("public_url") or "").strip()
+        or str(
+            (state.config.get("server", {}) if isinstance(state.config, dict) else {}).get("public_url") or ""
+        ).strip()
     )
     if configured:
         return configured.rstrip("/")
     parsed = urlparse(str(request.base_url))
     host = (parsed.hostname or "").lower()
-    allowed = host in {"localhost", "127.0.0.1", "testserver", "mtgacoach.com"} or host.endswith(".mtgacoach.com")
+    allowed = host in {"localhost", "127.0.0.1", "testserver", "mtgacoach.com"} or host.endswith(
+        ".mtgacoach.com"
+    )
     if not allowed:
         return "https://mtgacoach.com"
     scheme = "https" if _is_https_request(request) else (parsed.scheme or "http")
@@ -917,6 +965,184 @@ def refresh_owner_deck_stats(conn, owner: str) -> None:
         )
 
 
+def _deck_row_list_hash(row: Any) -> str:
+    """Return the normalized card-list hash for a synced_decks row."""
+    try:
+        stored = str(row["list_hash"] or "").strip()
+    except (KeyError, IndexError, TypeError):
+        stored = ""
+    if stored:
+        return stored
+    try:
+        piles = {
+            "main": json.loads(row["main_json"] or "[]"),
+            "sideboard": json.loads(row["sideboard_json"] or "[]"),
+            "commander": json.loads(row["commander_json"] or "[]"),
+            "companion": json.loads(row["companion_json"] or "[]"),
+        }
+    except (json.JSONDecodeError, TypeError):
+        return ""
+    return _deck_identity_from_piles(piles)
+
+
+def _ensure_canonical_deck(conn, list_hash: str, name: str, owner: str, now: float) -> None:
+    """Claim canonical deck ownership for a card list if no non-source player owns it yet."""
+    if not list_hash or not owner or owner.startswith("source:"):
+        return
+    clean = " ".join(str(name or "").split())[:100] or "Unnamed Deck"
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO canonical_decks (list_hash, canonical_name, creator_owner, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (list_hash, clean, owner, now, now),
+    )
+
+
+def _collect_community_matches(conn, list_hash: str) -> tuple[list[Any], int]:
+    """Return deduplicated matches across every player copy sharing list_hash."""
+    if not list_hash:
+        return [], 0
+    deck_rows = conn.execute(
+        """
+        SELECT owner, deck_identity, name
+        FROM synced_decks
+        WHERE list_hash = ? AND owner NOT LIKE 'source:%'
+        """,
+        (list_hash,),
+    ).fetchall()
+    if not deck_rows:
+        return [], 0
+    copies_count = len({str(dr["owner"] or "") for dr in deck_rows if str(dr["owner"] or "")})
+    by_owner: dict[str, tuple[set[str], set[str]]] = {}
+    for dr in deck_rows:
+        d_owner = str(dr["owner"] or "")
+        if not d_owner:
+            continue
+        idents, names = by_owner.setdefault(d_owner, (set(), set()))
+        d_ident = str(dr["deck_identity"] or "").strip()
+        d_name = str(dr["name"] or "").strip().lower()
+        if d_ident:
+            idents.add(d_ident)
+        if d_name:
+            names.add(d_name)
+
+    matched_by_id: dict[int, Any] = {}
+    for d_owner, (idents, names) in by_owner.items():
+        for m in conn.execute(
+            "SELECT * FROM player_matches WHERE owner = ? ORDER BY played_at DESC",
+            (d_owner,),
+        ).fetchall():
+            m_ident = str(m["deck_identity"] or "").strip()
+            m_name = str(m["deck_name"] or "").strip().lower()
+            if (m_ident and m_ident in idents) or (not m_ident and m_name and m_name in names):
+                matched_by_id[int(m["id"])] = m
+    matches = sorted(matched_by_id.values(), key=lambda m: float(m["played_at"] or 0.0), reverse=True)
+    return matches, copies_count
+
+
+def _batch_canonical_and_community_meta(
+    conn,
+    deck_rows: list[Any],
+    *,
+    viewer_owner: Optional[str] = None,
+) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+    """Load canonical deck names and aggregated community W/L stats for a batch of deck rows."""
+    hashes = sorted({lh for r in deck_rows if (lh := _deck_row_list_hash(r))})
+    if not hashes:
+        return {}, {}
+
+    placeholders = ",".join("?" for _ in hashes)
+    canon_rows = conn.execute(
+        f"""
+        SELECT c.list_hash, c.canonical_name, c.creator_owner,
+               COALESCE(p.display_name, '') AS creator_display_name,
+               COALESCE(p.leaderboard_opt_in, 1) AS creator_opt_in
+        FROM canonical_decks c
+        LEFT JOIN player_profiles p ON p.owner = c.creator_owner
+        WHERE c.list_hash IN ({placeholders})
+        """,
+        tuple(hashes),
+    ).fetchall()
+
+    canonical_by_hash: dict[str, dict[str, Any]] = {}
+    for cr in canon_rows:
+        c_owner = str(cr["creator_owner"] or "")
+        opt_in = bool(cr["creator_opt_in"])
+        if opt_in and not c_owner.startswith("source:"):
+            c_handle = str(cr["creator_display_name"] or "").strip() or anonymous_handle(c_owner)
+            c_url = f"/players/{quote(c_handle, safe='')}"
+        else:
+            c_handle = "Community"
+            c_url = ""
+        canonical_by_hash[str(cr["list_hash"])] = {
+            "canonical_name": str(cr["canonical_name"] or ""),
+            "creator_handle": c_handle,
+            "creator_profile_url": c_url,
+            "is_canonical_owner": bool(viewer_owner and viewer_owner == c_owner),
+        }
+
+    community_by_hash: dict[str, dict[str, Any]] = {}
+    player_copy_rows = conn.execute(
+        f"""
+        SELECT list_hash, owner, deck_identity, name
+        FROM synced_decks
+        WHERE list_hash IN ({placeholders}) AND owner NOT LIKE 'source:%'
+        """,
+        tuple(hashes),
+    ).fetchall()
+    if player_copy_rows:
+        hash_copies: dict[str, set[str]] = {}
+        hash_owner_specs: dict[str, dict[str, tuple[set[str], set[str]]]] = {}
+        relevant_owners: set[str] = set()
+        for dr in player_copy_rows:
+            lh = str(dr["list_hash"] or "")
+            d_owner = str(dr["owner"] or "")
+            if not lh or not d_owner:
+                continue
+            relevant_owners.add(d_owner)
+            hash_copies.setdefault(lh, set()).add(d_owner)
+            idents, names = hash_owner_specs.setdefault(lh, {}).setdefault(d_owner, (set(), set()))
+            d_ident = str(dr["deck_identity"] or "").strip()
+            d_name = str(dr["name"] or "").strip().lower()
+            if d_ident:
+                idents.add(d_ident)
+            if d_name:
+                names.add(d_name)
+
+        matches_by_owner: dict[str, list[Any]] = {}
+        if relevant_owners:
+            o_ph = ",".join("?" for _ in relevant_owners)
+            for m in conn.execute(
+                f"SELECT id, owner, played_at, result, deck_identity, deck_name, autopilot FROM player_matches WHERE owner IN ({o_ph})",
+                tuple(relevant_owners),
+            ).fetchall():
+                matches_by_owner.setdefault(str(m["owner"]), []).append(m)
+
+        for lh, owner_specs in hash_owner_specs.items():
+            matched_by_id: dict[int, Any] = {}
+            for d_owner, (idents, names) in owner_specs.items():
+                for m in matches_by_owner.get(d_owner, ()):
+                    m_ident = str(m["deck_identity"] or "").strip()
+                    m_name = str(m["deck_name"] or "").strip().lower()
+                    if (m_ident and m_ident in idents) or (not m_ident and m_name and m_name in names):
+                        matched_by_id[int(m["id"])] = m
+            matched_list = list(matched_by_id.values())
+            summary = _summarize_match_window(matched_list)
+            pilots = len(
+                {str(m["owner"]) for m in matched_list if str(m["result"] or "").lower() in ("win", "loss")}
+            )
+            community_by_hash[lh] = {
+                "wins": summary["wins"],
+                "losses": summary["losses"],
+                "games": summary["games"],
+                "win_rate": summary["win_rate"],
+                "pilots": pilots,
+                "copies": len(hash_copies.get(lh, set())),
+            }
+    return canonical_by_hash, community_by_hash
+
+
 def _deck_row_to_dict(
     row: Any,
     *,
@@ -925,6 +1151,8 @@ def _deck_row_to_dict(
     catalog_rarities: Optional[dict[str, str]] = None,
     author_name: str = "",
     author_is_patron: bool = False,
+    canonical_info: Optional[dict[str, Any]] = None,
+    community_summary: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     main = json.loads(row["main_json"] or "[]")
     sideboard = json.loads(row["sideboard_json"] or "[]")
@@ -936,12 +1164,22 @@ def _deck_row_to_dict(
     ap_losses = int(row["autopilot_losses"] or 0)
     total = wins + losses
     ap_total = ap_wins + ap_losses
+    lh = _deck_row_list_hash(row)
+    c_name = str(canonical_info.get("canonical_name") or "").strip() if canonical_info else ""
     deck_dict: dict[str, Any] = {
         "id": row["id"],
         "slug": row["slug"],
         "arena_deck_id": row["arena_deck_id"] or "",
         "deck_identity": row["deck_identity"] or "",
+        "list_hash": lh,
         "name": row["name"],
+        "canonical_name": c_name or row["name"],
+        "canonical_owner_handle": str(canonical_info.get("creator_handle") or author_name)
+        if canonical_info
+        else author_name,
+        "canonical_owner_url": str(canonical_info.get("creator_profile_url") or "") if canonical_info else "",
+        "is_canonical_owner": bool(canonical_info.get("is_canonical_owner")) if canonical_info else False,
+        "is_nicknamed": bool(c_name and str(row["name"] or "").strip().lower() != c_name.lower()),
         "format": row["format"],
         "archetype": row["archetype"] or "",
         "colors": row["colors"] or "",
@@ -967,6 +1205,13 @@ def _deck_row_to_dict(
         "updated_at": float(row["updated_at"] or 0),
         "created_at": float(row["created_at"] or 0),
     }
+    if community_summary is not None:
+        deck_dict["community_wins"] = int(community_summary.get("wins") or 0)
+        deck_dict["community_losses"] = int(community_summary.get("losses") or 0)
+        deck_dict["community_games"] = int(community_summary.get("games") or 0)
+        deck_dict["community_win_rate"] = community_summary.get("win_rate")
+        deck_dict["community_pilots"] = int(community_summary.get("pilots") or 0)
+        deck_dict["community_copies"] = int(community_summary.get("copies") or 0)
     if author_name:
         deck_dict["author_name"] = author_name
         deck_dict["author_is_patron"] = bool(author_is_patron)
@@ -978,7 +1223,9 @@ def _deck_row_to_dict(
     return deck_dict
 
 
-def _summarize_match_window(matches: list[Any], *, days: Optional[int] = None, now: Optional[float] = None) -> dict[str, Any]:
+def _summarize_match_window(
+    matches: list[Any], *, days: Optional[int] = None, now: Optional[float] = None
+) -> dict[str, Any]:
     cutoff = ((now or time.time()) - days * 86400.0) if days is not None else 0.0
     w = 0
     l = 0
@@ -1026,59 +1273,9 @@ def _summarize_match_window(matches: list[Any], *, days: Optional[int] = None, n
     }
 
 
-def _build_deck_performance(conn, row: Any) -> dict[str, Any]:
-    """Compute historical performance and recent matches for one deck row."""
-    owner = str(row["owner"] or "")
-    is_source = owner.startswith("source:")
-    now = time.time()
-    empty = {
-        "all_time": _summarize_match_window([], now=now),
-        "last_30d": _summarize_match_window([], days=30, now=now),
-        "autopilot": {"wins": 0, "losses": 0, "games": 0, "win_rate": None},
-        "manual": {"wins": 0, "losses": 0, "games": 0, "win_rate": None},
-        "avg_turns": None,
-        "streak": "",
-        "matchups": [],
-        "recent_matches": [],
-    }
-
-    if is_source:
-        fb = canonical_format_bucket(row["format"])
-        target_fold = _fold_deck_label(row["name"] or "")
-        if not target_fold:
-            return empty
-        cand_rows = conn.execute(
-            "SELECT * FROM player_matches WHERE format_bucket = ? AND result IN ('win', 'loss') ORDER BY played_at DESC",
-            (fb,),
-        ).fetchall()
-        matches = [m for m in cand_rows if _fold_deck_label(m["deck_name"] or "") == target_fold]
-        if len(matches) < MIN_WINRATE_GAMES:
-            return empty
-    else:
-        ident = str(row["deck_identity"] or "").strip()
-        dname = str(row["name"] or "").strip()
-        if ident and dname:
-            matches = conn.execute(
-                """
-                SELECT * FROM player_matches
-                WHERE owner = ? AND ((deck_identity != '' AND deck_identity = ?) OR lower(deck_name) = lower(?))
-                ORDER BY played_at DESC
-                """,
-                (owner, ident, dname),
-            ).fetchall()
-        elif ident:
-            matches = conn.execute(
-                "SELECT * FROM player_matches WHERE owner = ? AND deck_identity = ? ORDER BY played_at DESC",
-                (owner, ident),
-            ).fetchall()
-        elif dname:
-            matches = conn.execute(
-                "SELECT * FROM player_matches WHERE owner = ? AND lower(deck_name) = lower(?) ORDER BY played_at DESC",
-                (owner, dname),
-            ).fetchall()
-        else:
-            matches = []
-
+def _build_match_performance_summary(
+    matches: list[Any], *, now: float, include_recent: bool = True
+) -> dict[str, Any]:
     all_time = _summarize_match_window(matches, now=now)
     last_30d = _summarize_match_window(matches, days=30, now=now)
     streak_ch = ""
@@ -1107,7 +1304,7 @@ def _build_deck_performance(conn, row: Any) -> dict[str, Any]:
         if t > 0:
             turns_sum += t
             turns_cnt += 1
-        if not is_source and len(recent) < 15:
+        if include_recent and len(recent) < 15:
             ts = float(m["played_at"] or 0)
             recent.append(
                 {
@@ -1116,7 +1313,9 @@ def _build_deck_performance(conn, row: Any) -> dict[str, Any]:
                     "turns": t,
                     "autopilot": None if m["autopilot"] is None else bool(m["autopilot"]),
                     "played_at": ts,
-                    "played_label": datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d") if ts > 0 else "—",
+                    "played_label": datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d")
+                    if ts > 0
+                    else "—",
                 }
             )
 
@@ -1149,6 +1348,62 @@ def _build_deck_performance(conn, row: Any) -> dict[str, Any]:
         ],
         "recent_matches": recent,
     }
+
+
+def _build_deck_performance(conn, row: Any) -> dict[str, Any]:
+    """Compute pilot performance and fleet-wide community performance for one deck row."""
+    owner = str(row["owner"] or "")
+    is_source = owner.startswith("source:")
+    now = time.time()
+    lh = _deck_row_list_hash(row)
+    c_matches, copies = _collect_community_matches(conn, lh)
+    community_perf = _build_match_performance_summary(c_matches, now=now, include_recent=False)
+    community_perf["pilots"] = len(
+        {str(m["owner"]) for m in c_matches if str(m["result"] or "").lower() in ("win", "loss")}
+    )
+    community_perf["copies"] = copies
+
+    if is_source:
+        fb = canonical_format_bucket(row["format"])
+        target_fold = _fold_deck_label(row["name"] or "")
+        matches: list[Any] = []
+        if target_fold:
+            cand_rows = conn.execute(
+                "SELECT * FROM player_matches WHERE format_bucket = ? AND result IN ('win', 'loss') ORDER BY played_at DESC",
+                (fb,),
+            ).fetchall()
+            matched = [m for m in cand_rows if _fold_deck_label(m["deck_name"] or "") == target_fold]
+            if len(matched) >= MIN_WINRATE_GAMES:
+                matches = matched
+        perf = _build_match_performance_summary(matches, now=now, include_recent=False)
+    else:
+        ident = str(row["deck_identity"] or "").strip()
+        dname = str(row["name"] or "").strip()
+        if ident and dname:
+            matches = conn.execute(
+                """
+                SELECT * FROM player_matches
+                WHERE owner = ? AND ((deck_identity != '' AND deck_identity = ?) OR (deck_identity = '' AND lower(deck_name) = lower(?)))
+                ORDER BY played_at DESC
+                """,
+                (owner, ident, dname),
+            ).fetchall()
+        elif ident:
+            matches = conn.execute(
+                "SELECT * FROM player_matches WHERE owner = ? AND deck_identity = ? ORDER BY played_at DESC",
+                (owner, ident),
+            ).fetchall()
+        elif dname:
+            matches = conn.execute(
+                "SELECT * FROM player_matches WHERE owner = ? AND lower(deck_name) = lower(?) ORDER BY played_at DESC",
+                (owner, dname),
+            ).fetchall()
+        else:
+            matches = []
+        perf = _build_match_performance_summary(matches, now=now, include_recent=True)
+
+    perf["community"] = community_perf
+    return perf
 
 
 def _deck_slug_lookup(deck_rows: list[Any]) -> tuple[dict[str, str], dict[str, str]]:
@@ -1249,7 +1504,9 @@ def _build_profile_summary(conn, owner: str) -> dict[str, Any]:
                 {
                     "match_id": m["match_id"],
                     "played_at": ts,
-                    "played_label": datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d") if ts > 0 else "—",
+                    "played_label": datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d")
+                    if ts > 0
+                    else "—",
                     "result": res,
                     "format_name": m["format_name"] or m["format_bucket"],
                     "format_bucket": m["format_bucket"],
@@ -1280,8 +1537,16 @@ def _build_profile_summary(conn, owner: str) -> dict[str, Any]:
         if isinstance(c, dict)
     }
     catalog_rarities = _catalog_rarities_for_cards(conn, all_card_names)
+    canon_by_hash, comm_by_hash = _batch_canonical_and_community_meta(conn, deck_rows, viewer_owner=owner)
     decks = [
-        _deck_row_to_dict(r, collection=collection, wildcards=wildcards, catalog_rarities=catalog_rarities)
+        _deck_row_to_dict(
+            r,
+            collection=collection,
+            wildcards=wildcards,
+            catalog_rarities=catalog_rarities,
+            canonical_info=canon_by_hash.get(_deck_row_list_hash(r)),
+            community_summary=comm_by_hash.get(_deck_row_list_hash(r)),
+        )
         for r in deck_rows
     ]
 
@@ -1400,6 +1665,7 @@ def _upsert_deck_record(
     side_json = json.dumps(enriched.get("sideboard") or [])
     cmd_json = json.dumps(enriched.get("commander") or [])
     comp_json = json.dumps(enriched.get("companion") or [])
+    list_hash = _deck_identity_from_piles(enriched)
 
     if existing is not None:
         sync_status = "pending" if queue_for_arena else existing["sync_to_arena_status"]
@@ -1410,7 +1676,7 @@ def _upsert_deck_record(
         conn.execute(
             """
             UPDATE synced_decks
-            SET name = ?, format = ?, deck_identity = ?, archetype = ?, colors = ?, description = ?,
+            SET name = ?, format = ?, deck_identity = ?, list_hash = ?, archetype = ?, colors = ?, description = ?,
                 main_json = ?, sideboard_json = ?, commander_json = ?, companion_json = ?,
                 is_public = ?, sync_to_arena_status = ?, sync_requested_at = ?, updated_at = ?
             WHERE id = ? AND owner = ?
@@ -1419,6 +1685,7 @@ def _upsert_deck_record(
                 clean_name,
                 clean_fmt,
                 ident,
+                list_hash,
                 resolved_arch,
                 clean_colors or existing["colors"],
                 resolved_desc,
@@ -1434,6 +1701,7 @@ def _upsert_deck_record(
                 owner,
             ),
         )
+        _ensure_canonical_deck(conn, list_hash, clean_name, owner, now)
         return str(existing["id"])
 
     new_id = uuid.uuid4().hex
@@ -1444,10 +1712,10 @@ def _upsert_deck_record(
     conn.execute(
         """
         INSERT INTO synced_decks (
-            id, owner, slug, arena_deck_id, deck_identity, name, format, archetype, colors, description,
+            id, owner, slug, arena_deck_id, deck_identity, list_hash, name, format, archetype, colors, description,
             main_json, sideboard_json, commander_json, companion_json, is_public, source, parent_deck_id,
             sync_to_arena_status, sync_requested_at, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             new_id,
@@ -1455,6 +1723,7 @@ def _upsert_deck_record(
             slug,
             arena_deck_id,
             ident,
+            list_hash,
             clean_name,
             clean_fmt,
             clean_arch,
@@ -1473,6 +1742,7 @@ def _upsert_deck_record(
             now,
         ),
     )
+    _ensure_canonical_deck(conn, list_hash, clean_name, owner, now)
     return new_id
 
 
@@ -1549,9 +1819,7 @@ async def logout(request: Request):
     except Exception:
         pass
     await resolve_auth(request, required=False, check_csrf=True, allow_bearer=False, csrf_override=form_csrf)
-    cookie_val = (
-        request.cookies.get("__Host-mc-session") or request.cookies.get("mc-session") or ""
-    ).strip()
+    cookie_val = (request.cookies.get("__Host-mc-session") or request.cookies.get("mc-session") or "").strip()
     if cookie_val:
         with _get_db().get_db() as conn:
             conn.execute("DELETE FROM web_sessions WHERE session_hash = ?", (_sha256_hex(cookie_val),))
@@ -1574,7 +1842,11 @@ async def exchange_login_token(request: Request, token: str = ""):
         return _apply_security_headers(resp, is_html=True, no_store=True)
     raw_session, _csrf = create_web_session(consumed["owner"], consumed["auth_source"])
     next_hash = str(request.query_params.get("section") or "").strip()
-    target = "/profile" + (f"#{quote(next_hash)}" if next_hash in {"overview", "decks", "builder", "discover", "leaderboard"} else "")
+    target = "/profile" + (
+        f"#{quote(next_hash)}"
+        if next_hash in {"overview", "decks", "builder", "discover", "leaderboard"}
+        else ""
+    )
     resp = RedirectResponse(target, status_code=303)
     _set_session_cookie(resp, request, raw_session)
     return _apply_security_headers(resp, no_store=True)
@@ -1658,6 +1930,12 @@ async def deck_detail_page(request: Request, slug: str):
                 }
                 catalog_rarities = _catalog_rarities_for_cards(conn, names)
         author_display = row["author_name"] or anonymous_handle(row_owner)
+        canon_by_hash, comm_by_hash = _batch_canonical_and_community_meta(
+            conn, [row], viewer_owner=auth["owner"] if auth else None
+        )
+        lh = _deck_row_list_hash(row)
+        canon_info = canon_by_hash.get(lh)
+        comm_info = comm_by_hash.get(lh)
         deck = _deck_row_to_dict(
             row,
             collection=collection,
@@ -1665,10 +1943,14 @@ async def deck_detail_page(request: Request, slug: str):
             catalog_rarities=catalog_rarities,
             author_name=author_display,
             author_is_patron=bool(row["author_is_patron"]),
+            canonical_info=canon_info,
+            community_summary=comm_info,
         )
         performance = _build_deck_performance(conn, row)
         author_profile_url = (
-            "" if (is_source or not bool(row["author_opt_in"])) else f"/players/{quote(author_display, safe='')}"
+            ""
+            if (is_source or not bool(row["author_opt_in"]))
+            else f"/players/{quote(author_display, safe='')}"
         )
     resp = state.templates.TemplateResponse(
         request=request,
@@ -1676,6 +1958,13 @@ async def deck_detail_page(request: Request, slug: str):
         context={
             "deck": deck,
             "performance": performance,
+            "canonical": canon_info
+            or {
+                "canonical_name": deck["name"],
+                "creator_handle": author_display,
+                "creator_profile_url": author_profile_url,
+                "is_canonical_owner": bool(auth and auth["owner"] == row_owner),
+            },
             "is_source": is_source,
             "author_profile_url": author_profile_url,
             "discord_invite_url": get_discord_invite_url(),
@@ -1750,12 +2039,17 @@ async def player_profile_page(request: Request, handle: str):
                     if isinstance(c, dict)
                 }
                 viewer_rarities = _catalog_rarities_for_cards(conn, names)
+        canon_by_hash, comm_by_hash = _batch_canonical_and_community_meta(
+            conn, public_rows, viewer_owner=auth["owner"] if auth else None
+        )
         decks = [
             _deck_row_to_dict(
                 r,
                 collection=viewer_col,
                 wildcards=viewer_wc,
                 catalog_rarities=viewer_rarities,
+                canonical_info=canon_by_hash.get(_deck_row_list_hash(r)),
+                community_summary=comm_by_hash.get(_deck_row_list_hash(r)),
             )
             for r in public_rows
         ]
@@ -1767,7 +2061,9 @@ async def player_profile_page(request: Request, handle: str):
             recent_matches.append(
                 {
                     **rm,
-                    "deck_slug": (ident and pub_slug_ident.get(ident)) or (dname and pub_slug_name.get(dname)) or "",
+                    "deck_slug": (ident and pub_slug_ident.get(ident))
+                    or (dname and pub_slug_name.get(dname))
+                    or "",
                 }
             )
 
@@ -2045,7 +2341,9 @@ async def api_sync_push(request: Request):
                 ap = m.get("autopilot")
                 ap_val = None if ap is None else (1 if bool(ap) else 0)
                 deck_colors = "".join(
-                    c for c in str(m.get("deck_colors") or m.get("local_deck_colors") or "").upper() if c in "WUBRG"
+                    c
+                    for c in str(m.get("deck_colors") or m.get("local_deck_colors") or "").upper()
+                    if c in "WUBRG"
                 )[:5]
                 opp_colors = "".join(
                     c
@@ -2209,8 +2507,18 @@ async def api_my_decks(request: Request):
             if isinstance(c, dict)
         }
         rarities = _catalog_rarities_for_cards(conn, names)
+        canon_by_hash, comm_by_hash = _batch_canonical_and_community_meta(
+            conn, rows, viewer_owner=auth["owner"]
+        )
         decks = [
-            _deck_row_to_dict(r, collection=collection, wildcards=wildcards, catalog_rarities=rarities)
+            _deck_row_to_dict(
+                r,
+                collection=collection,
+                wildcards=wildcards,
+                catalog_rarities=rarities,
+                canonical_info=canon_by_hash.get(_deck_row_list_hash(r)),
+                community_summary=comm_by_hash.get(_deck_row_list_hash(r)),
+            )
             for r in rows
         ]
     return JSONResponse({"ok": True, "decks": decks}, headers={"Cache-Control": "no-store"})
@@ -2265,7 +2573,17 @@ async def api_create_deck(request: Request):
         ).fetchone()
         collection = json.loads(prof["collection_json"] or "{}") if prof else {}
         wildcards = json.loads(prof["wildcards_json"] or "{}") if prof else {}
-        deck = _deck_row_to_dict(row, collection=collection, wildcards=wildcards)
+        canon_by_hash, comm_by_hash = _batch_canonical_and_community_meta(
+            conn, [row], viewer_owner=auth["owner"]
+        )
+        lh = _deck_row_list_hash(row)
+        deck = _deck_row_to_dict(
+            row,
+            collection=collection,
+            wildcards=wildcards,
+            canonical_info=canon_by_hash.get(lh),
+            community_summary=comm_by_hash.get(lh),
+        )
     if deck.get("is_public"):
         _notify_discord_feed()
     return JSONResponse({"ok": True, "deck": deck}, status_code=201)
@@ -2362,13 +2680,32 @@ async def api_update_deck(request: Request, deck_id: str):
                     )
         refresh_owner_deck_stats(conn, auth["owner"])
         row = conn.execute("SELECT * FROM synced_decks WHERE id = ?", (deck_id,)).fetchone()
+        lh = _deck_row_list_hash(row)
+        if "name" in body and next_name != old_name and lh:
+            c_row = conn.execute(
+                "SELECT creator_owner FROM canonical_decks WHERE list_hash = ?", (lh,)
+            ).fetchone()
+            if c_row is not None and str(c_row["creator_owner"] or "") == auth["owner"]:
+                conn.execute(
+                    "UPDATE canonical_decks SET canonical_name = ?, updated_at = ? WHERE list_hash = ?",
+                    (next_name, time.time(), lh),
+                )
         prof = conn.execute(
             "SELECT collection_json, wildcards_json FROM player_profiles WHERE owner = ?",
             (auth["owner"],),
         ).fetchone()
         collection = json.loads(prof["collection_json"] or "{}") if prof else {}
         wildcards = json.loads(prof["wildcards_json"] or "{}") if prof else {}
-        deck = _deck_row_to_dict(row, collection=collection, wildcards=wildcards)
+        canon_by_hash, comm_by_hash = _batch_canonical_and_community_meta(
+            conn, [row], viewer_owner=auth["owner"]
+        )
+        deck = _deck_row_to_dict(
+            row,
+            collection=collection,
+            wildcards=wildcards,
+            canonical_info=canon_by_hash.get(lh),
+            community_summary=comm_by_hash.get(lh),
+        )
     if deck.get("is_public") or bool(existing["is_public"]):
         _notify_discord_feed()
     return JSONResponse({"ok": True, "deck": deck})
@@ -2378,9 +2715,7 @@ async def api_update_deck(request: Request, deck_id: str):
 async def api_delete_deck(request: Request, deck_id: str):
     auth = await resolve_auth(request, required=True, check_csrf=True)
     with _get_db().get_db() as conn:
-        cur = conn.execute(
-            "DELETE FROM synced_decks WHERE id = ? AND owner = ?", (deck_id, auth["owner"])
-        )
+        cur = conn.execute("DELETE FROM synced_decks WHERE id = ? AND owner = ?", (deck_id, auth["owner"]))
         if cur.rowcount == 0:
             raise HTTPException(404, "Deck not found")
     _notify_discord_feed()
@@ -2419,10 +2754,23 @@ async def api_clone_deck(request: Request, deck_id: str):
             "commander": json.loads(src["commander_json"] or "[]"),
             "companion": json.loads(src["companion_json"] or "[]"),
         }
+        src_lh = _deck_row_list_hash(src)
+        canon_row = (
+            conn.execute(
+                "SELECT canonical_name FROM canonical_decks WHERE list_hash = ?", (src_lh,)
+            ).fetchone()
+            if src_lh
+            else None
+        )
+        base_name = (
+            str(canon_row["canonical_name"] or "").strip()
+            if canon_row is not None
+            else str(src["name"] or "")
+        ) or str(src["name"] or "Deck")
         new_id = _upsert_deck_record(
             conn,
             auth["owner"],
-            name=f"{src['name']} (Copy)" if src["owner"] == auth["owner"] else src["name"],
+            name=f"{base_name} (Copy)" if src["owner"] == auth["owner"] else base_name,
             fmt=src["format"],
             piles=piles,
             archetype=src["archetype"],
@@ -2440,7 +2788,17 @@ async def api_clone_deck(request: Request, deck_id: str):
         ).fetchone()
         collection = json.loads(prof["collection_json"] or "{}") if prof else {}
         wildcards = json.loads(prof["wildcards_json"] or "{}") if prof else {}
-        deck = _deck_row_to_dict(row, collection=collection, wildcards=wildcards)
+        canon_by_hash, comm_by_hash = _batch_canonical_and_community_meta(
+            conn, [row], viewer_owner=auth["owner"]
+        )
+        lh = _deck_row_list_hash(row)
+        deck = _deck_row_to_dict(
+            row,
+            collection=collection,
+            wildcards=wildcards,
+            canonical_info=canon_by_hash.get(lh),
+            community_summary=comm_by_hash.get(lh),
+        )
     if deck.get("is_public"):
         _notify_discord_feed()
     return JSONResponse({"ok": True, "deck": deck}, status_code=201)
@@ -2514,11 +2872,15 @@ async def api_discover_decks(
             if isinstance(c, dict)
         }
         rarities = _catalog_rarities_for_cards(conn, names)
+        canon_by_hash, comm_by_hash = _batch_canonical_and_community_meta(
+            conn, rows, viewer_owner=auth["owner"] if auth else None
+        )
 
         items: list[dict[str, Any]] = []
         for r in rows:
             author_display = r["author_name"] or anonymous_handle(r["owner"])
             is_src = str(r["owner"] or "").startswith("source:")
+            lh = _deck_row_list_hash(r)
             deck = _deck_row_to_dict(
                 r,
                 collection=collection if auth else None,
@@ -2526,6 +2888,8 @@ async def api_discover_decks(
                 catalog_rarities=rarities,
                 author_name=author_display,
                 author_is_patron=bool(r["author_is_patron"]),
+                canonical_info=canon_by_hash.get(lh),
+                community_summary=comm_by_hash.get(lh),
             )
             deck["is_source"] = is_src
             deck["author_profile_url"] = "" if is_src else f"/players/{quote(author_display, safe='')}"
@@ -2542,7 +2906,11 @@ async def api_discover_decks(
     def _sort_val(d: dict[str, Any]) -> tuple:
         if sort_key == "wildcards":
             cinfo = d.get("craftability") or {}
-            return (0 if cinfo.get("owned") else (1 if cinfo.get("affordable") else 2), cinfo.get("extra_wildcards_needed", 999), -(d["games"]))
+            return (
+                0 if cinfo.get("owned") else (1 if cinfo.get("affordable") else 2),
+                cinfo.get("extra_wildcards_needed", 999),
+                -(d["games"]),
+            )
         if sort_key == "games":
             return (-d["games"], -(d["win_rate"] or 0.0))
         if sort_key == "newest":
@@ -2578,7 +2946,9 @@ async def api_card_search(q: str = Query(default=""), limit: int = Query(default
             k = _name_key(r["name"])
             if k not in seen:
                 seen.add(k)
-                results.append({"name": r["name"], "rarity": r["rarity"] or "", "grp_id": int(r["grp_id"] or 0)})
+                results.append(
+                    {"name": r["name"], "rarity": r["rarity"] or "", "grp_id": int(r["grp_id"] or 0)}
+                )
         if len(results) < limit:
             cf_rows = conn.execute(
                 "SELECT DISTINCT name FROM card_facts WHERE name LIKE ? ORDER BY length(name) ASC LIMIT ?",
@@ -2949,7 +3319,16 @@ def record_match_from_bundle(
                 autopilot, rank_class, rank_tier
             ) VALUES (?, ?, ?, ?, ?, ?, '', ?, '', '', 0, ?, '', 0)
             """,
-            (owner, match_id[:120], float(received_at), res, fmt, canonical_format_bucket(fmt), dname, ap_val),
+            (
+                owner,
+                match_id[:120],
+                float(received_at),
+                res,
+                fmt,
+                canonical_format_bucket(fmt),
+                dname,
+                ap_val,
+            ),
         )
         refresh_owner_deck_stats(conn, owner)
     _notify_discord_feed()
@@ -2962,7 +3341,9 @@ def _bundle_deck_identity(deck_cards: list[int], commanders: list[int]) -> str:
     return _sha256_hex("|".join(parts)) if parts else ""
 
 
-def backfill_from_match_bundles(*, extract_decks: bool = True, max_bundles_per_owner: int = 40) -> dict[str, int]:
+def backfill_from_match_bundles(
+    *, extract_decks: bool = True, max_bundles_per_owner: int = 40
+) -> dict[str, int]:
     """Idempotently backfill player_profiles, player_matches, and private synced_decks.
 
     Backfilled profiles appear on the leaderboard under anonymous handles by
@@ -3050,7 +3431,9 @@ def backfill_from_match_bundles(*, extract_decks: bool = True, max_bundles_per_o
                 ).fetchall()
                 per_owner_seen: Counter[str] = Counter()
                 existing_idents_by_owner: dict[str, set[str]] = {}
-                for dr in conn.execute("SELECT owner, deck_identity FROM synced_decks WHERE deck_identity != ''").fetchall():
+                for dr in conn.execute(
+                    "SELECT owner, deck_identity FROM synced_decks WHERE deck_identity != ''"
+                ).fetchall():
                     existing_idents_by_owner.setdefault(dr["owner"], set()).add(dr["deck_identity"])
 
                 for row in cand_rows:
@@ -3069,8 +3452,12 @@ def backfill_from_match_bundles(*, extract_decks: bool = True, max_bundles_per_o
                     fs = payload.get("final_state")
                     if not isinstance(fs, dict):
                         continue
-                    raw_deck_cards = [int(g) for g in (fs.get("deck_cards") or []) if str(g).isdigit() and int(g) > 0]
-                    raw_cmd = [int(g) for g in (fs.get("commander_grp_ids") or []) if str(g).isdigit() and int(g) > 0]
+                    raw_deck_cards = [
+                        int(g) for g in (fs.get("deck_cards") or []) if str(g).isdigit() and int(g) > 0
+                    ]
+                    raw_cmd = [
+                        int(g) for g in (fs.get("commander_grp_ids") or []) if str(g).isdigit() and int(g) > 0
+                    ]
                     if len(raw_deck_cards) < 40:
                         continue
                     ident = _bundle_deck_identity(raw_deck_cards, raw_cmd)
@@ -3092,10 +3479,15 @@ def backfill_from_match_bundles(*, extract_decks: bool = True, max_bundles_per_o
                     for gid, qty in cmd_counts.items():
                         info = prints.get(gid)
                         if info:
-                            cmd_entries.append({"name": info[0], "count": qty, "grp_id": gid, "rarity": info[1]})
+                            cmd_entries.append(
+                                {"name": info[0], "count": qty, "grp_id": gid, "rarity": info[1]}
+                            )
 
                     fmt_raw = str(fs.get("format_name") or row["format_name"] or "standard")
-                    dname = _clean_bundle_deck_name(fs.get("deck_name") or row["deck_name"]) or f"{normalize_deck_format(fmt_raw).title()} Deck"
+                    dname = (
+                        _clean_bundle_deck_name(fs.get("deck_name") or row["deck_name"])
+                        or f"{normalize_deck_format(fmt_raw).title()} Deck"
+                    )
                     opt_row = conn.execute(
                         "SELECT leaderboard_opt_in FROM player_profiles WHERE owner = ?", (owner,)
                     ).fetchone()
@@ -3105,7 +3497,12 @@ def backfill_from_match_bundles(*, extract_decks: bool = True, max_bundles_per_o
                         owner,
                         name=dname,
                         fmt=fmt_raw,
-                        piles={"main": main_entries, "sideboard": [], "commander": cmd_entries, "companion": []},
+                        piles={
+                            "main": main_entries,
+                            "sideboard": [],
+                            "commander": cmd_entries,
+                            "companion": [],
+                        },
                         deck_identity=ident,
                         is_public=None,
                         default_public=owner_opt_in,
