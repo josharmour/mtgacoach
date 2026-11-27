@@ -1,0 +1,197 @@
+{% extends "_base.html" %}
+
+{% block title %}{{ player.handle }} — mtgacoach{% endblock %}
+{% block description %}{{ player.handle }} MTG Arena rank, match record, and shared decks on mtgacoach.com.{% endblock %}
+
+{% block head %}
+    <link rel="stylesheet" href="/static/css/profile.css?v=3">
+    <script src="/static/js/profile.js?v=3" defer></script>
+{% endblock %}
+
+{% block nav %}
+    <a href="/">Home</a>
+    <a href="/leaderboard">Leaderboard</a>
+    <a href="/profile">My Profile</a>
+    {% if discord_invite_url %}<a href="{{ discord_invite_url }}" rel="noopener noreferrer">Discord</a>{% endif %}
+{% endblock %}
+
+{% block content %}
+<div id="profile-app"
+     class="wrap profile-shell"
+     data-page="player_profile"
+     data-csrf="{{ csrf_token }}"
+     data-signed-in="{{ '1' if signed_in else '0' }}">
+
+    <header class="profile-hero">
+        <div>
+            <p class="kicker">Player Profile</p>
+            <h1>
+                {{ player.handle }}
+                {% if player.is_patron %}
+                    <span class="badge patron">Patron</span>
+                {% endif %}
+            </h1>
+            <p class="muted small">
+                Constructed: <strong>{{ player.constructed_rank }}</strong>
+                &middot; Limited: <strong>{{ player.limited_rank }}</strong>
+                &middot; Public Decks: <strong>{{ decks | length }}</strong>
+            </p>
+        </div>
+        <div class="hero-cta-col">
+            {% if not signed_in %}
+                <a class="button primary" href="/login?next=/players/{{ player.handle | urlencode }}">Sign in to add decks &amp; compare wildcards</a>
+            {% else %}
+                <a class="button quiet" href="/profile">Open My Profile</a>
+            {% endif %}
+        </div>
+    </header>
+
+    <div id="toast-region" class="toast-region" aria-live="polite"></div>
+
+    <div class="stat-grid">
+        <div class="stat-card">
+            <span class="stat-label">All-Time Record</span>
+            <strong class="stat-value">
+                {% if stats.all_time.games %}
+                    {{ (stats.all_time.win_rate * 100) | round(1) }}% ({{ stats.all_time.wins }}W-{{ stats.all_time.losses }}L)
+                {% else %}
+                    &mdash;
+                {% endif %}
+            </strong>
+        </div>
+        <div class="stat-card">
+            <span class="stat-label">Last 30 Days</span>
+            <strong class="stat-value">
+                {% if stats.last_30d.games %}
+                    {{ (stats.last_30d.win_rate * 100) | round(1) }}% ({{ stats.last_30d.wins }}W-{{ stats.last_30d.losses }}L)
+                {% else %}
+                    &mdash;
+                {% endif %}
+            </strong>
+        </div>
+        <div class="stat-card">
+            <span class="stat-label">Current Streak</span>
+            <strong class="stat-value">{{ stats.streak or "—" }}</strong>
+        </div>
+        <div class="stat-card">
+            <span class="stat-label">Avg Match Length</span>
+            <strong class="stat-value">{% if stats.avg_turns %}{{ stats.avg_turns }} turns{% else %}&mdash;{% endif %}</strong>
+        </div>
+    </div>
+
+    <h2 id="player-decks-caption" class="section-sub">Decks Played</h2>
+    <div tabindex="0" role="region" aria-labelledby="player-decks-caption" class="table-wrapper">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Deck</th>
+                    <th>Format</th>
+                    <th>Record</th>
+                    <th>Your Cost</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% if not decks %}
+                <tr><td colspan="5" class="muted">No public decks shared yet.</td></tr>
+                {% else %}
+                {% for d in decks %}
+                <tr>
+                    <th>
+                        <a class="deck-link" href="/decks/{{ d.slug }}">{{ d.name }}</a>
+                        <span class="muted small">({{ d.card_count }})</span>
+                    </th>
+                    <td data-label="Format">{{ d.format }}</td>
+                    <td data-label="Record">
+                        {% if d.games %}
+                            {{ (d.win_rate * 100) | round(1) }}% ({{ d.wins }}W-{{ d.losses }}L)
+                        {% else %}
+                            &mdash;
+                        {% endif %}
+                    </td>
+                    <td data-label="Your Cost">
+                        {% if d.craftability is defined and d.craftability.has_collection %}
+                            {% if d.craftability.owned %}
+                                Owned (0 WCs)
+                            {% elif d.craftability.affordable %}
+                                Buildable ({{ d.craftability.spend.mythic }}M {{ d.craftability.spend.rare }}R)
+                            {% else %}
+                                Need {{ d.craftability.extra_wildcards_needed }} more WC
+                            {% endif %}
+                        {% elif signed_in %}
+                            Sync collection for cost
+                        {% else %}
+                            Sign in for cost
+                        {% endif %}
+                    </td>
+                    <td data-label="Actions">
+                        <div class="row-actions">
+                            {% if signed_in %}
+                                {% if is_self %}
+                                    <button type="button" class="mini-btn accent js-queue-own" data-deck-id="{{ d.id }}">Send to Coach &amp; Arena</button>
+                                {% else %}
+                                    <button type="button" class="mini-btn js-add-profile" data-deck-id="{{ d.id }}">Add to Profile</button>
+                                    <button type="button" class="mini-btn accent js-add-coach" data-deck-id="{{ d.id }}">Add &amp; Send to Coach</button>
+                                {% endif %}
+                            {% else %}
+                                <a class="mini-btn" href="/login?next=/decks/{{ d.slug }}">Sign in to Add</a>
+                            {% endif %}
+                            <button type="button" class="mini-btn js-export-deck" data-export-id="export-src-{{ d.id }}" data-deck-name="{{ d.name }}">Export</button>
+                        </div>
+                        <textarea id="export-src-{{ d.id }}" class="sr-only" readonly>{{ d.export_text }}</textarea>
+                    </td>
+                </tr>
+                {% endfor %}
+                {% endif %}
+            </tbody>
+        </table>
+    </div>
+
+    <h2 id="player-matches-caption" class="section-sub">Recent Matches</h2>
+    <div tabindex="0" role="region" aria-labelledby="player-matches-caption" class="table-wrapper">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Result</th>
+                    <th>Deck</th>
+                    <th>Format</th>
+                    <th>Mode</th>
+                    <th>Turns</th>
+                    <th>Played</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% if not recent_matches %}
+                <tr><td colspan="6" class="muted">No synced matches yet.</td></tr>
+                {% else %}
+                {% for m in recent_matches %}
+                <tr>
+                    <th class="{% if m.result == 'win' %}good-text{% endif %}">{{ m.result | upper }}</th>
+                    <td data-label="Deck">
+                        {% if m.deck_slug %}
+                            <a class="deck-link" href="/decks/{{ m.deck_slug }}">{{ m.deck_name }}</a>
+                        {% else %}
+                            {{ m.deck_name or "—" }}
+                        {% endif %}
+                    </td>
+                    <td data-label="Format">{{ m.format_name or "—" }}</td>
+                    <td data-label="Mode">{% if m.autopilot is true %}Autopilot{% elif m.autopilot is false %}Manual{% else %}&mdash;{% endif %}</td>
+                    <td data-label="Turns">{{ m.turns if m.turns else "—" }}</td>
+                    <td data-label="Played" class="muted">{{ m.played_label }}</td>
+                </tr>
+                {% endfor %}
+                {% endif %}
+            </tbody>
+        </table>
+    </div>
+
+    <dialog id="export-dialog" aria-labelledby="export-dialog-title" closedby="any">
+        <h1 id="export-dialog-title" class="dialog-title">Arena Deck Export</h1>
+        <textarea id="export-dialog-text" rows="12" readonly></textarea>
+        <div class="dialog-actions">
+            <button type="button" class="button primary" id="export-copy-btn">Copy to clipboard</button>
+            <form method="dialog"><button value="close" class="button quiet">Close</button></form>
+        </div>
+    </dialog>
+</div>
+{% endblock %}

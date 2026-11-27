@@ -348,6 +348,22 @@ textarea {
 .import-details textarea { margin-bottom: 8px; font-family: var(--mono); font-size: 0.82rem; }
 .builder-footer { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 8px; }
 .deck-piles-grid { margin-top: 20px; }
+.deck-link {
+    color: var(--ink);
+    text-decoration: underline;
+    text-decoration-color: var(--rule);
+    text-underline-offset: 3px;
+}
+.deck-link:hover {
+    color: var(--accent);
+    text-decoration-color: var(--accent);
+}
+.matchup-pills {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-left: 8px;
+}
 .alert-box {
     margin: 16px 0;
     padding: 12px 16px;

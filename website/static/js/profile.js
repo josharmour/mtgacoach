@@ -175,7 +175,14 @@
                     var tr = el("tr");
                     var th = el("th", m.result === "win" ? "good-text" : "", m.result.toUpperCase());
                     tr.appendChild(th);
-                    var tdDeck = el("td", "", m.deck_name || "—");
+                    var tdDeck = el("td");
+                    if (m.deck_slug) {
+                        var dLink = el("a", "deck-link", m.deck_name || "View deck");
+                        dLink.href = "/decks/" + encodeURIComponent(m.deck_slug);
+                        tdDeck.appendChild(dLink);
+                    } else {
+                        tdDeck.textContent = m.deck_name || "—";
+                    }
                     tdDeck.dataset.label = "Deck";
                     var tdFmt = el("td", "", m.format_name || m.format_bucket || "—");
                     tdFmt.dataset.label = "Format";
@@ -204,7 +211,11 @@
             } else {
                 decks.forEach(function (d) {
                     var tr = el("tr");
-                    var th = el("th", "", d.name + " (" + d.card_count + ")");
+                    var th = el("th");
+                    var dLink = el("a", "deck-link", d.name);
+                    dLink.href = "/decks/" + encodeURIComponent(d.slug);
+                    th.appendChild(dLink);
+                    th.appendChild(el("span", "muted small", " (" + d.card_count + ")"));
                     tr.appendChild(th);
 
                     var tdFmt = el("td", "", d.format);
@@ -494,6 +505,20 @@
         });
     }
 
+    function cloneDeckAction(deckId, deckName, queueForArena) {
+        return api("/v1/decks/" + encodeURIComponent(deckId) + "/clone", {
+            method: "POST",
+            body: JSON.stringify({ queue_for_arena: Boolean(queueForArena) }),
+        }).then(function () {
+            showToast(
+                queueForArena
+                    ? ("Added '" + deckName + "' to your profile & queued for Coach / Arena!")
+                    : ("Added '" + deckName + "' to your profile!")
+            );
+            if (PAGE === "profile") loadProfile();
+        }).catch(function (err) { showToast(err.message, true); });
+    }
+
     // ---- Discover Decks --------------------------------------------------
     function loadDiscover() {
         var body = document.getElementById("discover-body");
@@ -518,14 +543,22 @@
             decks.forEach(function (d) {
                 var tr = el("tr");
                 var th = el("th");
-                var link = el("a", "", d.name);
+                var link = el("a", "deck-link", d.name);
                 link.href = "/decks/" + encodeURIComponent(d.slug);
                 th.appendChild(link);
                 tr.appendChild(th);
 
                 var tdFmt = el("td", "", d.format);
                 tdFmt.dataset.label = "Format";
-                var tdAuth = el("td", "", (d.author_name || "Coach Player") + (d.author_is_patron ? " ★" : ""));
+                var tdAuth = el("td");
+                if (d.author_profile_url) {
+                    var aLink = el("a", "deck-link", d.author_name || "Player");
+                    aLink.href = d.author_profile_url;
+                    tdAuth.appendChild(aLink);
+                    if (d.author_is_patron) tdAuth.appendChild(document.createTextNode(" ★"));
+                } else {
+                    tdAuth.textContent = (d.author_name || "Player") + (d.author_is_patron ? " ★" : "");
+                }
                 tdAuth.dataset.label = "Player";
                 var rec = d.games ? (fmtPct(d.win_rate) + " (" + d.wins + "W-" + d.losses + "L)") : "No games yet";
                 var tdRec = el("td", "", rec);
@@ -542,18 +575,13 @@
                 wrap.appendChild(copyBtn);
 
                 if (res.authenticated) {
-                    var cloneBtn = el("button", "mini-btn accent", "Clone & Send to Arena");
+                    var saveBtn = el("button", "mini-btn", "Add to Profile");
+                    saveBtn.type = "button";
+                    saveBtn.addEventListener("click", function () { cloneDeckAction(d.id, d.name, false); });
+                    var cloneBtn = el("button", "mini-btn accent", "Send to Coach");
                     cloneBtn.type = "button";
-                    cloneBtn.addEventListener("click", function () {
-                        api("/v1/decks/" + encodeURIComponent(d.id) + "/clone", {
-                            method: "POST",
-                            body: JSON.stringify({ queue_for_arena: true }),
-                        }).then(function () {
-                            showToast("Cloned '" + d.name + "' and queued it for Coach & Arena!");
-                            if (PAGE === "profile") loadProfile();
-                        }).catch(function (err) { showToast(err.message, true); });
-                    });
-                    wrap.appendChild(cloneBtn);
+                    cloneBtn.addEventListener("click", function () { cloneDeckAction(d.id, d.name, true); });
+                    wrap.append(saveBtn, cloneBtn);
                 }
                 tdAct.appendChild(wrap);
                 tr.append(tdFmt, tdAuth, tdRec, tdCost, tdAct);
@@ -622,12 +650,20 @@
                     tr.appendChild(el("th", "", "#" + item.position));
                     var tdName = el("td");
                     tdName.dataset.label = "Deck";
-                    var a = el("a", "", item.name);
+                    var a = el("a", "deck-link", item.name);
                     a.href = "/decks/" + encodeURIComponent(item.slug);
                     tdName.appendChild(a);
                     var tdFmt = el("td", "", item.format);
                     tdFmt.dataset.label = "Format";
-                    var tdPl = el("td", "", (item.author_name || "Coach Player") + (item.author_is_patron ? " ★" : ""));
+                    var tdPl = el("td");
+                    if (item.author_profile_url) {
+                        var pLink = el("a", "deck-link", item.author_name || "Player");
+                        pLink.href = item.author_profile_url;
+                        tdPl.appendChild(pLink);
+                        if (item.author_is_patron) tdPl.appendChild(document.createTextNode(" ★"));
+                    } else {
+                        tdPl.textContent = (item.author_name || "Player") + (item.author_is_patron ? " ★" : "");
+                    }
                     tdPl.dataset.label = "Player";
                     var tdWr = el("td", "", fmtPct(item.display_win_rate) + " (" + item.display_wins + "W-" + item.display_losses + "L)");
                     tdWr.dataset.label = "Win Rate";
@@ -635,14 +671,33 @@
                     tdWc.dataset.label = "Wildcards";
                     var tdAct = el("td");
                     tdAct.dataset.label = "Actions";
+                    var dWrap = el("div", "row-actions");
                     var btn = el("button", "mini-btn", "Export");
                     btn.type = "button";
                     btn.addEventListener("click", function () { openExportDialog(item.name, item.export_text); });
-                    tdAct.appendChild(btn);
+                    dWrap.appendChild(btn);
+                    if (root.dataset.signedIn === "1" || PAGE === "profile") {
+                        var addBtn = el("button", "mini-btn", "Add to Profile");
+                        addBtn.type = "button";
+                        addBtn.addEventListener("click", function () { cloneDeckAction(item.id, item.name, false); });
+                        var coachBtn = el("button", "mini-btn accent", "Send to Coach");
+                        coachBtn.type = "button";
+                        coachBtn.addEventListener("click", function () { cloneDeckAction(item.id, item.name, true); });
+                        dWrap.append(addBtn, coachBtn);
+                    }
+                    tdAct.appendChild(dWrap);
                     tr.append(tdName, tdFmt, tdPl, tdWr, tdWc, tdAct);
                 } else {
                     tr.appendChild(el("th", "", "#" + item.position));
-                    var tdH = el("td", "", item.handle + (item.is_patron ? " ★" : ""));
+                    var tdH = el("td");
+                    if (item.profile_url) {
+                        var hLink = el("a", "deck-link", item.handle);
+                        hLink.href = item.profile_url;
+                        tdH.appendChild(hLink);
+                        if (item.is_patron) tdH.appendChild(document.createTextNode(" ★"));
+                    } else {
+                        tdH.textContent = item.handle + (item.is_patron ? " ★" : "");
+                    }
                     tdH.dataset.label = "Player";
                     var tdR = el("td", "", item.rank_label || "Unranked");
                     tdR.dataset.label = "Rank";
@@ -650,7 +705,17 @@
                     tdW.dataset.label = "Win Rate";
                     var tdG = el("td", "", item.wins + "W-" + item.losses + "L (" + item.games + ")");
                     tdG.dataset.label = "Games";
-                    var tdD = el("td", "", item.top_deck || "—");
+                    var tdD = el("td");
+                    if (item.top_deck_slug && item.top_deck) {
+                        var tLink = el("a", "deck-link", item.top_deck);
+                        tLink.href = "/decks/" + encodeURIComponent(item.top_deck_slug);
+                        tdD.appendChild(tLink);
+                        if (item.top_deck_games && item.top_deck_games >= 5 && item.top_deck_win_rate !== null) {
+                            tdD.appendChild(el("span", "muted small", " (" + fmtPct(item.top_deck_win_rate) + ")"));
+                        }
+                    } else {
+                        tdD.textContent = item.top_deck || "—";
+                    }
                     tdD.dataset.label = "Top Deck";
                     tr.append(tdH, tdR, tdW, tdG, tdD);
                 }
@@ -684,17 +749,36 @@
                 .catch(function (err) { showToast(err.message, true); });
         });
     }
+    var detailSaveBtn = document.getElementById("detail-save-profile-btn");
+    if (detailSaveBtn) {
+        detailSaveBtn.addEventListener("click", function () {
+            var h1 = document.querySelector(".profile-hero h1");
+            cloneDeckAction(detailSaveBtn.dataset.deckId, h1 ? h1.textContent.trim() : "Deck", false);
+        });
+    }
     var detailCloneBtn = document.getElementById("detail-clone-btn");
     if (detailCloneBtn) {
         detailCloneBtn.addEventListener("click", function () {
-            api("/v1/decks/" + encodeURIComponent(detailCloneBtn.dataset.deckId) + "/clone", {
-                method: "POST",
-                body: JSON.stringify({ queue_for_arena: true }),
-            })
-                .then(function () { showToast("Cloned to your library and queued for Coach & Arena!"); })
-                .catch(function (err) { showToast(err.message, true); });
+            var h1 = document.querySelector(".profile-hero h1");
+            cloneDeckAction(detailCloneBtn.dataset.deckId, h1 ? h1.textContent.trim() : "Deck", true);
         });
     }
+    root.addEventListener("click", function (e) {
+        var btn = e.target && e.target.closest ? e.target.closest("button") : null;
+        if (!btn) return;
+        if (btn.classList.contains("js-export-deck")) {
+            var srcEl = document.getElementById(btn.dataset.exportId || "");
+            openExportDialog(btn.dataset.deckName || "Deck", srcEl ? srcEl.value : "");
+        } else if (btn.classList.contains("js-add-profile")) {
+            cloneDeckAction(btn.dataset.deckId, "Deck", false);
+        } else if (btn.classList.contains("js-add-coach")) {
+            cloneDeckAction(btn.dataset.deckId, "Deck", true);
+        } else if (btn.classList.contains("js-queue-own")) {
+            api("/v1/decks/" + encodeURIComponent(btn.dataset.deckId) + "/queue-arena", { method: "POST", body: "{}" })
+                .then(function () { showToast("Queued for Coach & Arena! Open the Coach desktop app to build/import it."); })
+                .catch(function (err) { showToast(err.message, true); });
+        }
+    });
 
     // ---- Initial Load ----------------------------------------------------
     if (PAGE === "profile") {

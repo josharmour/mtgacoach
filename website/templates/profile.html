@@ -4,8 +4,8 @@
 {% block description %}Your mtgacoach.com performance stats, wildcard deck builder, community deck discovery, and leaderboard.{% endblock %}
 
 {% block head %}
-    <link rel="stylesheet" href="/static/css/profile.css?v=2">
-    <script src="/static/js/profile.js?v=2" defer></script>
+    <link rel="stylesheet" href="/static/css/profile.css?v=3">
+    <script src="/static/js/profile.js?v=3" defer></script>
 {% endblock %}
 
 {% block nav %}
@@ -22,6 +22,7 @@
 <div id="profile-app"
      class="wrap profile-shell"
      data-page="profile"
+     data-signed-in="1"
      data-csrf="{{ csrf_token }}"
      data-discord-url="{{ discord_invite_url }}">
 

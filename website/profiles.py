@@ -977,6 +977,195 @@ def _deck_row_to_dict(
     return deck_dict
 
 
+def _summarize_match_window(matches: list[Any], *, days: Optional[int] = None, now: Optional[float] = None) -> dict[str, Any]:
+    cutoff = ((now or time.time()) - days * 86400.0) if days is not None else 0.0
+    w = 0
+    l = 0
+    ap_w = 0
+    ap_l = 0
+    man_w = 0
+    man_l = 0
+    for m in matches:
+        if float(m["played_at"]) < cutoff:
+            continue
+        res = str(m["result"] or "").lower()
+        if res not in ("win", "loss"):
+            continue
+        is_win = res == "win"
+        if is_win:
+            w += 1
+        else:
+            l += 1
+        if m["autopilot"] == 1:
+            if is_win:
+                ap_w += 1
+            else:
+                ap_l += 1
+        elif m["autopilot"] == 0:
+            if is_win:
+                man_w += 1
+            else:
+                man_l += 1
+    tot = w + l
+    ap_tot = ap_w + ap_l
+    man_tot = man_w + man_l
+    return {
+        "wins": w,
+        "losses": l,
+        "games": tot,
+        "win_rate": round(w / tot, 4) if tot > 0 else None,
+        "autopilot_wins": ap_w,
+        "autopilot_losses": ap_l,
+        "autopilot_games": ap_tot,
+        "autopilot_win_rate": round(ap_w / ap_tot, 4) if ap_tot > 0 else None,
+        "manual_wins": man_w,
+        "manual_losses": man_l,
+        "manual_games": man_tot,
+        "manual_win_rate": round(man_w / man_tot, 4) if man_tot > 0 else None,
+    }
+
+
+def _build_deck_performance(conn, row: Any) -> dict[str, Any]:
+    """Compute historical performance and recent matches for one deck row."""
+    owner = str(row["owner"] or "")
+    is_source = owner.startswith("source:")
+    now = time.time()
+    empty = {
+        "all_time": _summarize_match_window([], now=now),
+        "last_30d": _summarize_match_window([], days=30, now=now),
+        "autopilot": {"wins": 0, "losses": 0, "games": 0, "win_rate": None},
+        "manual": {"wins": 0, "losses": 0, "games": 0, "win_rate": None},
+        "avg_turns": None,
+        "streak": "",
+        "matchups": [],
+        "recent_matches": [],
+    }
+
+    if is_source:
+        fb = canonical_format_bucket(row["format"])
+        target_fold = _fold_deck_label(row["name"] or "")
+        if not target_fold:
+            return empty
+        cand_rows = conn.execute(
+            "SELECT * FROM player_matches WHERE format_bucket = ? AND result IN ('win', 'loss') ORDER BY played_at DESC",
+            (fb,),
+        ).fetchall()
+        matches = [m for m in cand_rows if _fold_deck_label(m["deck_name"] or "") == target_fold]
+        if len(matches) < MIN_WINRATE_GAMES:
+            return empty
+    else:
+        ident = str(row["deck_identity"] or "").strip()
+        dname = str(row["name"] or "").strip()
+        if ident and dname:
+            matches = conn.execute(
+                """
+                SELECT * FROM player_matches
+                WHERE owner = ? AND ((deck_identity != '' AND deck_identity = ?) OR lower(deck_name) = lower(?))
+                ORDER BY played_at DESC
+                """,
+                (owner, ident, dname),
+            ).fetchall()
+        elif ident:
+            matches = conn.execute(
+                "SELECT * FROM player_matches WHERE owner = ? AND deck_identity = ? ORDER BY played_at DESC",
+                (owner, ident),
+            ).fetchall()
+        elif dname:
+            matches = conn.execute(
+                "SELECT * FROM player_matches WHERE owner = ? AND lower(deck_name) = lower(?) ORDER BY played_at DESC",
+                (owner, dname),
+            ).fetchall()
+        else:
+            matches = []
+
+    all_time = _summarize_match_window(matches, now=now)
+    last_30d = _summarize_match_window(matches, days=30, now=now)
+    streak_ch = ""
+    streak_len = 0
+    turns_sum = 0
+    turns_cnt = 0
+    by_opp: dict[str, list[int]] = {}
+    recent: list[dict[str, Any]] = []
+
+    for m in matches:
+        res = str(m["result"] or "").lower()
+        if res in ("win", "loss"):
+            ch = "W" if res == "win" else "L"
+            if not streak_ch:
+                streak_ch = ch
+                streak_len = 1
+            elif streak_ch == ch and streak_len > 0:
+                streak_len += 1
+            elif streak_len > 0:
+                streak_len = -streak_len
+            opp = "".join(sorted(set(str(m["opponent_colors"] or ""))))
+            if opp:
+                slot = by_opp.setdefault(opp, [0, 0])
+                slot[0 if res == "win" else 1] += 1
+        t = int(m["turns"] or 0)
+        if t > 0:
+            turns_sum += t
+            turns_cnt += 1
+        if not is_source and len(recent) < 15:
+            ts = float(m["played_at"] or 0)
+            recent.append(
+                {
+                    "result": res,
+                    "format_name": m["format_name"] or m["format_bucket"] or "",
+                    "turns": t,
+                    "autopilot": None if m["autopilot"] is None else bool(m["autopilot"]),
+                    "played_at": ts,
+                    "played_label": datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d") if ts > 0 else "—",
+                }
+            )
+
+    return {
+        "all_time": all_time,
+        "last_30d": last_30d,
+        "autopilot": {
+            "wins": all_time["autopilot_wins"],
+            "losses": all_time["autopilot_losses"],
+            "games": all_time["autopilot_games"],
+            "win_rate": all_time["autopilot_win_rate"],
+        },
+        "manual": {
+            "wins": all_time["manual_wins"],
+            "losses": all_time["manual_losses"],
+            "games": all_time["manual_games"],
+            "win_rate": all_time["manual_win_rate"],
+        },
+        "avg_turns": round(turns_sum / turns_cnt, 1) if turns_cnt else None,
+        "streak": f"{streak_ch}{abs(streak_len)}" if streak_ch else "",
+        "matchups": [
+            {
+                "colors": cols,
+                "wins": wl[0],
+                "losses": wl[1],
+                "games": wl[0] + wl[1],
+                "win_rate": round(wl[0] / (wl[0] + wl[1]), 4) if (wl[0] + wl[1]) else 0.0,
+            }
+            for cols, wl in sorted(by_opp.items(), key=lambda kv: -(kv[1][0] + kv[1][1]))[:8]
+        ],
+        "recent_matches": recent,
+    }
+
+
+def _deck_slug_lookup(deck_rows: list[Any]) -> tuple[dict[str, str], dict[str, str]]:
+    slug_by_ident: dict[str, str] = {}
+    slug_by_name: dict[str, str] = {}
+    for dr in deck_rows:
+        slug = str(dr["slug"] or "")
+        if not slug:
+            continue
+        ident = str(dr["deck_identity"] or "").strip()
+        dname = str(dr["name"] or "").strip().lower()
+        if ident and ident not in slug_by_ident:
+            slug_by_ident[ident] = slug
+        if dname and dname not in slug_by_name:
+            slug_by_name[dname] = slug
+    return slug_by_ident, slug_by_name
+
+
 def _build_profile_summary(conn, owner: str) -> dict[str, Any]:
     prof = dict(conn.execute("SELECT * FROM player_profiles WHERE owner = ?", (owner,)).fetchone())
     wildcards = json.loads(prof.get("wildcards_json") or "{}")
@@ -1054,14 +1243,18 @@ def _build_profile_summary(conn, owner: str) -> dict[str, Any]:
             turns_sum += t
             turns_cnt += 1
         if len(recent_matches) < 30:
+            ts = float(m["played_at"])
             recent_matches.append(
                 {
                     "match_id": m["match_id"],
-                    "played_at": float(m["played_at"]),
+                    "played_at": ts,
+                    "played_label": datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d") if ts > 0 else "—",
                     "result": res,
                     "format_name": m["format_name"] or m["format_bucket"],
                     "format_bucket": m["format_bucket"],
+                    "deck_identity": m["deck_identity"] or "",
                     "deck_name": m["deck_name"] or "",
+                    "deck_slug": "",
                     "deck_colors": m["deck_colors"] or "",
                     "opponent_colors": m["opponent_colors"] or "",
                     "turns": t,
@@ -1073,6 +1266,11 @@ def _build_profile_summary(conn, owner: str) -> dict[str, Any]:
         "SELECT * FROM synced_decks WHERE owner = ? ORDER BY updated_at DESC",
         (owner,),
     ).fetchall()
+    slug_by_ident, slug_by_name = _deck_slug_lookup(deck_rows)
+    for rm in recent_matches:
+        ident = rm.get("deck_identity") or ""
+        dname = str(rm.get("deck_name") or "").strip().lower()
+        rm["deck_slug"] = (ident and slug_by_ident.get(ident)) or (dname and slug_by_name.get(dname)) or ""
     all_card_names = {
         c.get("name", "")
         for r in deck_rows
@@ -1170,6 +1368,7 @@ def _upsert_deck_record(
     colors: str = "",
     description: str = "",
     is_public: Optional[bool] = False,
+    default_public: bool = False,
     source: str = "arena",
     parent_deck_id: Optional[str] = None,
     queue_for_arena: bool = False,
@@ -1240,6 +1439,7 @@ def _upsert_deck_record(
     slug = secrets.token_urlsafe(8).replace("-", "").replace("_", "")[:10]
     if not slug:
         slug = new_id[:10]
+    initial_public = 1 if (default_public if is_public is None else is_public) else 0
     conn.execute(
         """
         INSERT INTO synced_decks (
@@ -1263,7 +1463,7 @@ def _upsert_deck_record(
             side_json,
             cmd_json,
             comp_json,
-            1 if is_public else 0,
+            initial_public,
             source,
             parent_deck_id,
             "pending" if queue_for_arena else "",
@@ -1422,14 +1622,21 @@ async def deck_detail_page(request: Request, slug: str):
     with _get_db().get_db() as conn:
         row = conn.execute(
             """
-            SELECT d.*, COALESCE(p.display_name, '') AS author_name, COALESCE(p.is_patron, 0) AS author_is_patron
+            SELECT d.*, COALESCE(p.display_name, '') AS author_name,
+                   COALESCE(p.is_patron, 0) AS author_is_patron,
+                   COALESCE(p.leaderboard_opt_in, 1) AS author_opt_in
             FROM synced_decks d
             LEFT JOIN player_profiles p ON p.owner = d.owner
             WHERE d.slug = ?
             """,
             (slug,),
         ).fetchone()
-        if not row or (not row["is_public"] and (not auth or auth["owner"] != row["owner"])):
+        if not row:
+            raise HTTPException(404, "Deck not found")
+        row_owner = str(row["owner"] or "")
+        is_source = row_owner.startswith("source:")
+        public_ok = bool(row["is_public"]) and (is_source or bool(row["author_opt_in"]))
+        if not public_ok and (not auth or auth["owner"] != row_owner):
             raise HTTPException(404, "Deck not found")
         collection = None
         wildcards = None
@@ -1449,22 +1656,134 @@ async def deck_detail_page(request: Request, slug: str):
                     if isinstance(c, dict)
                 }
                 catalog_rarities = _catalog_rarities_for_cards(conn, names)
+        author_display = row["author_name"] or anonymous_handle(row_owner)
         deck = _deck_row_to_dict(
             row,
             collection=collection,
             wildcards=wildcards,
             catalog_rarities=catalog_rarities,
-            author_name=row["author_name"] or anonymous_handle(row["owner"]),
+            author_name=author_display,
             author_is_patron=bool(row["author_is_patron"]),
+        )
+        performance = _build_deck_performance(conn, row)
+        author_profile_url = (
+            "" if (is_source or not bool(row["author_opt_in"])) else f"/players/{quote(author_display, safe='')}"
         )
     resp = state.templates.TemplateResponse(
         request=request,
         name="deck_detail.html",
         context={
             "deck": deck,
+            "performance": performance,
+            "is_source": is_source,
+            "author_profile_url": author_profile_url,
+            "discord_invite_url": get_discord_invite_url(),
             "signed_in": auth is not None,
-            "is_owner": bool(auth and auth["owner"] == row["owner"]),
+            "is_owner": bool(auth and auth["owner"] == row_owner),
             "csrf_token": auth["csrf_token"] if auth else "",
+        },
+    )
+    return _apply_security_headers(resp, is_html=True)
+
+
+def _resolve_public_player_row(conn, handle: str) -> Optional[dict[str, Any]]:
+    target = str(handle or "").strip().lower()
+    if not target:
+        return None
+    direct = conn.execute(
+        """
+        SELECT * FROM player_profiles
+        WHERE leaderboard_opt_in = 1 AND owner NOT LIKE 'source:%' AND lower(trim(display_name)) = ?
+        """,
+        (target,),
+    ).fetchone()
+    if direct is not None:
+        return dict(direct)
+    for r in conn.execute(
+        "SELECT * FROM player_profiles WHERE leaderboard_opt_in = 1 AND owner NOT LIKE 'source:%' AND trim(display_name) = ''"
+    ).fetchall():
+        if anonymous_handle(r["owner"]).lower() == target:
+            return dict(r)
+    return None
+
+
+@router.get("/players/{handle}", response_class=HTMLResponse)
+async def player_profile_page(request: Request, handle: str):
+    auth = await resolve_auth(request, required=False, allow_bearer=False)
+    with _get_db().get_db() as conn:
+        target = _resolve_public_player_row(conn, handle)
+        if target is None:
+            raise HTTPException(404, "Player profile not found")
+        target_owner = target["owner"]
+        summary = _build_profile_summary(conn, target_owner)
+        # Keep only public decks on public player pages unless viewer is the owner
+        is_self = bool(auth and auth["owner"] == target_owner)
+        public_rows = conn.execute(
+            """
+            SELECT * FROM synced_decks
+            WHERE owner = ? AND is_public = 1
+            ORDER BY (wins + losses) DESC, updated_at DESC
+            """,
+            (target_owner,),
+        ).fetchall()
+        viewer_col = None
+        viewer_wc = None
+        viewer_rarities = None
+        if auth:
+            vprof = conn.execute(
+                "SELECT collection_json, wildcards_json FROM player_profiles WHERE owner = ?",
+                (auth["owner"],),
+            ).fetchone()
+            if vprof:
+                viewer_col = json.loads(vprof["collection_json"] or "{}")
+                viewer_wc = json.loads(vprof["wildcards_json"] or "{}")
+                names = {
+                    c.get("name", "")
+                    for r in public_rows
+                    for pile in ("main_json", "sideboard_json", "commander_json", "companion_json")
+                    for c in json.loads(r[pile] or "[]")
+                    if isinstance(c, dict)
+                }
+                viewer_rarities = _catalog_rarities_for_cards(conn, names)
+        decks = [
+            _deck_row_to_dict(
+                r,
+                collection=viewer_col,
+                wildcards=viewer_wc,
+                catalog_rarities=viewer_rarities,
+            )
+            for r in public_rows
+        ]
+        pub_slug_ident, pub_slug_name = _deck_slug_lookup(public_rows)
+        recent_matches = []
+        for rm in summary["recent_matches"][:15]:
+            ident = rm.get("deck_identity") or ""
+            dname = str(rm.get("deck_name") or "").strip().lower()
+            recent_matches.append(
+                {
+                    **rm,
+                    "deck_slug": (ident and pub_slug_ident.get(ident)) or (dname and pub_slug_name.get(dname)) or "",
+                }
+            )
+
+    player_ctx = {
+        "handle": summary["profile"]["effective_handle"],
+        "is_patron": summary["profile"]["is_patron"],
+        "constructed_rank": summary["profile"]["constructed_rank"],
+        "limited_rank": summary["profile"]["limited_rank"],
+    }
+    resp = state.templates.TemplateResponse(
+        request=request,
+        name="player_profile.html",
+        context={
+            "player": player_ctx,
+            "stats": summary["stats"],
+            "decks": decks,
+            "recent_matches": recent_matches,
+            "signed_in": auth is not None,
+            "is_self": is_self,
+            "csrf_token": auth["csrf_token"] if auth else "",
+            "discord_invite_url": get_discord_invite_url(),
         },
     )
     return _apply_security_headers(resp, is_html=True)
@@ -1568,7 +1887,8 @@ async def api_sync_push(request: Request):
     counts = {"matches": 0, "decks": 0, "catalog": 0, "collection": 0}
 
     with _get_db().get_db() as conn:
-        ensure_profile(conn, owner, auth_source=auth["auth_source"])
+        prof = ensure_profile(conn, owner, auth_source=auth["auth_source"])
+        owner_default_public = bool(prof.get("leaderboard_opt_in"))
 
         # 1. Catalog entries (name -> rarity/grp_id/colors)
         catalog_entries = body.get("catalog_entries")
@@ -1790,6 +2110,7 @@ async def api_sync_push(request: Request):
                     archetype=str(d.get("archetype") or ""),
                     colors=str(d.get("colors") or ""),
                     is_public=bool(d["is_public"]) if "is_public" in d else None,
+                    default_public=owner_default_public,
                     source="arena",
                     clear_empty_meta=False,
                 )
@@ -2027,8 +2348,20 @@ async def api_clone_deck(request: Request, deck_id: str):
     except Exception:
         pass
     with _get_db().get_db() as conn:
-        src = conn.execute("SELECT * FROM synced_decks WHERE id = ?", (deck_id,)).fetchone()
-        if src is None or (not src["is_public"] and src["owner"] != auth["owner"]):
+        src = conn.execute(
+            """
+            SELECT d.*, COALESCE(p.leaderboard_opt_in, 1) AS author_opt_in
+            FROM synced_decks d
+            LEFT JOIN player_profiles p ON p.owner = d.owner
+            WHERE d.id = ?
+            """,
+            (deck_id,),
+        ).fetchone()
+        if src is None:
+            raise HTTPException(404, "Deck not found")
+        src_owner = str(src["owner"] or "")
+        public_ok = bool(src["is_public"]) and (src_owner.startswith("source:") or bool(src["author_opt_in"]))
+        if not public_ok and src_owner != auth["owner"]:
             raise HTTPException(404, "Deck not found")
         piles = {
             "main": json.loads(src["main_json"] or "[]"),
@@ -2113,6 +2446,7 @@ async def api_discover_decks(
             FROM synced_decks d
             LEFT JOIN player_profiles p ON p.owner = d.owner
             WHERE d.is_public = 1
+              AND (d.owner LIKE 'source:%' OR COALESCE(p.leaderboard_opt_in, 1) = 1)
         """
         params: list[Any] = []
         if fmt_clean and fmt_clean != "all":
@@ -2131,14 +2465,18 @@ async def api_discover_decks(
 
         items: list[dict[str, Any]] = []
         for r in rows:
+            author_display = r["author_name"] or anonymous_handle(r["owner"])
+            is_src = str(r["owner"] or "").startswith("source:")
             deck = _deck_row_to_dict(
                 r,
                 collection=collection if auth else None,
                 wildcards=wildcards if auth else None,
                 catalog_rarities=rarities,
-                author_name=r["author_name"] or anonymous_handle(r["owner"]),
+                author_name=author_display,
                 author_is_patron=bool(r["author_is_patron"]),
             )
+            deck["is_source"] = is_src
+            deck["author_profile_url"] = "" if is_src else f"/players/{quote(author_display, safe='')}"
             if query_text:
                 hay = f"{deck['name']} {deck['archetype']} {deck['author_name']}".casefold()
                 if query_text not in hay:
@@ -2241,7 +2579,9 @@ async def api_leaderboard(
                        COALESCE(p.is_patron, 0) AS author_is_patron
                 FROM synced_decks d
                 LEFT JOIN player_profiles p ON p.owner = d.owner
-                WHERE d.is_public = 1 AND (d.wins + d.losses) > 0
+                WHERE d.is_public = 1
+                  AND (d.wins + d.losses) > 0
+                  AND (d.owner LIKE 'source:%' OR COALESCE(p.leaderboard_opt_in, 1) = 1)
             """
             params: list[Any] = []
             if fmt_clean != "all":
@@ -2267,14 +2607,18 @@ async def api_leaderboard(
             }
             rarities = _catalog_rarities_for_cards(conn, names)
             for r in rows:
+                author_display = r["author_name"] or anonymous_handle(r["owner"])
+                is_src = str(r["owner"] or "").startswith("source:")
                 d = _deck_row_to_dict(
                     r,
                     collection=collection if auth else None,
                     wildcards=wildcards if auth else None,
                     catalog_rarities=rarities,
-                    author_name=r["author_name"] or anonymous_handle(r["owner"]),
+                    author_name=author_display,
                     author_is_patron=bool(r["author_is_patron"]),
                 )
+                d["is_source"] = is_src
+                d["author_profile_url"] = "" if is_src else f"/players/{quote(author_display, safe='')}"
                 if mode_clean == "autopilot":
                     g = d["autopilot_games"]
                     w = d["autopilot_wins"]
@@ -2346,6 +2690,24 @@ async def api_leaderboard(
                 if m["deck_name"]:
                     slot["decks"][m["deck_name"]] += 1
 
+            public_decks_by_owner: dict[str, list[tuple[str, str, int, int]]] = {}
+            for dr in conn.execute(
+                """
+                SELECT owner, name, slug, wins, losses
+                FROM synced_decks
+                WHERE is_public = 1 AND owner NOT LIKE 'source:%'
+                ORDER BY (wins + losses) DESC, updated_at DESC
+                """
+            ).fetchall():
+                public_decks_by_owner.setdefault(dr["owner"], []).append(
+                    (
+                        str(dr["name"] or ""),
+                        str(dr["slug"] or ""),
+                        int(dr["wins"] or 0),
+                        int(dr["losses"] or 0),
+                    )
+                )
+
             is_limited = fmt_clean == "limited"
             ranked_rows: list[dict[str, Any]] = []
             for p in profiles:
@@ -2381,9 +2743,20 @@ async def api_leaderboard(
                     continue
 
                 top_deck = stats["decks"].most_common(1)[0][0] if stats["decks"] else ""
+                owner_decks = public_decks_by_owner.get(owner) or []
+                matched_deck = next((d for d in owner_decks if d[0].lower() == top_deck.lower()), None)
+                if matched_deck is None and not top_deck and owner_decks:
+                    matched_deck = owner_decks[0]
+                    top_deck = matched_deck[0]
+                top_slug = matched_deck[1] if matched_deck else ""
+                d_wins = matched_deck[2] if matched_deck else 0
+                d_losses = matched_deck[3] if matched_deck else 0
+                d_games = d_wins + d_losses
+                handle_display = str(p["display_name"] or "").strip() or anonymous_handle(owner)
                 ranked_rows.append(
                     {
-                        "handle": str(p["display_name"] or "").strip() or anonymous_handle(owner),
+                        "handle": handle_display,
+                        "profile_url": f"/players/{quote(handle_display, safe='')}",
                         "is_patron": bool(p["is_patron"]),
                         "is_me": bool(auth and auth["owner"] == owner),
                         "rank_label": r_label,
@@ -2393,6 +2766,9 @@ async def api_leaderboard(
                         "games": games,
                         "win_rate": wr,
                         "top_deck": top_deck,
+                        "top_deck_slug": top_slug,
+                        "top_deck_games": d_games,
+                        "top_deck_win_rate": round(d_wins / d_games, 4) if d_games > 0 else None,
                     }
                 )
 
@@ -2639,6 +3015,10 @@ def backfill_from_match_bundles(*, extract_decks: bool = True, max_bundles_per_o
 
                     fmt_raw = str(fs.get("format_name") or row["format_name"] or "standard")
                     dname = _clean_bundle_deck_name(fs.get("deck_name") or row["deck_name"]) or f"{normalize_deck_format(fmt_raw).title()} Deck"
+                    opt_row = conn.execute(
+                        "SELECT leaderboard_opt_in FROM player_profiles WHERE owner = ?", (owner,)
+                    ).fetchone()
+                    owner_opt_in = bool(opt_row["leaderboard_opt_in"]) if opt_row is not None else True
                     _upsert_deck_record(
                         conn,
                         owner,
@@ -2646,7 +3026,8 @@ def backfill_from_match_bundles(*, extract_decks: bool = True, max_bundles_per_o
                         fmt=fmt_raw,
                         piles={"main": main_entries, "sideboard": [], "commander": cmd_entries, "companion": []},
                         deck_identity=ident,
-                        is_public=False,
+                        is_public=None,
+                        default_public=owner_opt_in,
                         source="bundle_backfill",
                         clear_empty_meta=False,
                     )

@@ -478,7 +478,7 @@ def test_backfill_from_match_bundles_populates_matches_and_private_decks(site) -
     assert me["stats"]["all_time"]["wins"] == 1
     assert len(me["decks"]) == 1
     assert me["decks"][0]["name"] == "Burn Aggro"
-    assert me["decks"][0]["is_public"] is False
+    assert me["decks"][0]["is_public"] is True
     assert me["decks"][0]["wins"] == 1
 
     # Client sync enriches the existing bundle match in-place without duplicating
@@ -500,6 +500,15 @@ def test_backfill_from_match_bundles_populates_matches_and_private_decks(site) -
     me_after = client.get("/v1/profile/me", headers=_auth_header(PATRON_KEY)).json()
     assert me_after["stats"]["all_time"]["wins"] == 1
     assert me_after["recent_matches"][0]["turns"] == 5
+    assert me_after["recent_matches"][0]["deck_slug"] == me["decks"][0]["slug"]
+
+    # Opting out hides even default-public synced decks from public /decks/{slug}
+    client.patch(
+        "/v1/profile/settings",
+        headers=_auth_header(PATRON_KEY),
+        json={"leaderboard_opt_in": False},
+    )
+    assert client.get(f"/decks/{me['decks'][0]['slug']}").status_code == 404
 
 
 def test_upsert_sourced_decks_idempotent_discoverable_and_excluded_from_player_leaderboard(site) -> None:
@@ -554,3 +563,116 @@ def test_upsert_sourced_decks_idempotent_discoverable_and_excluded_from_player_l
     assert "MTGGoldfish" not in rank_handles
     assert "AetherHub" not in wr_handles
     assert "MTGGoldfish" not in wr_handles
+
+
+def test_clickable_top_decks_player_profiles_and_two_clone_actions(site) -> None:
+    client, _db, _app = site
+    now = time.time()
+
+    client.patch(
+        "/v1/profile/settings",
+        headers=_auth_header(PATRON_KEY),
+        json={"display_name": "ArmourTest", "leaderboard_opt_in": True},
+    )
+    client.post(
+        "/v1/sync/push",
+        headers=_auth_header(PATRON_KEY),
+        json={
+            "ranks": {"constructedClass": "Mythic", "constructedPercentile": 91.5},
+            "decks": [
+                {
+                    "arena_deck_id": "auras-1",
+                    "name": "Mono-White Auras",
+                    "format": "standard",
+                    "main": [{"name": "Plains", "count": 20}, {"name": "Sheltered by Ghosts", "count": 4}],
+                },
+                {
+                    "arena_deck_id": "secret-1",
+                    "name": "Secret Brew",
+                    "format": "standard",
+                    "is_public": False,
+                    "main": [{"name": "Island", "count": 60}],
+                },
+            ],
+            "matches": [
+                {
+                    "match_id": f"m-{i}",
+                    "played_at": now - i * 30,
+                    "result": "win" if i < 5 else "loss",
+                    "format_name": "Standard Ranked",
+                    "deck_name": "Mono-White Auras",
+                    "opponent_colors": "BR",
+                    "turns": 6,
+                    "autopilot": True,
+                }
+                for i in range(7)
+            ],
+        },
+    )
+
+    me_p1 = client.get("/v1/profile/me", headers=_auth_header(PATRON_KEY)).json()
+    auras = [d for d in me_p1["decks"] if d["name"] == "Mono-White Auras"][0]
+    assert auras["is_public"] is True
+    assert me_p1["recent_matches"][0]["deck_slug"] == auras["slug"]
+
+    # Leaderboard exposes profile_url + top_deck_slug
+    lb = client.get("/v1/leaderboard?tab=rank&window=30d").json()
+    entry = [e for e in lb["entries"] if e["handle"] == "ArmourTest"][0]
+    assert entry["profile_url"] == "/players/ArmourTest"
+    assert entry["top_deck"] == "Mono-White Auras"
+    assert entry["top_deck_slug"] == auras["slug"]
+    assert entry["top_deck_games"] == 7
+
+    # Public player page shows Mono-White Auras, hides Secret Brew & emails
+    pp_html = client.get("/players/ArmourTest")
+    assert pp_html.status_code == 200
+    assert f"/decks/{auras['slug']}" in pp_html.text
+    assert "Secret Brew" not in pp_html.text
+    assert "@example.com" not in pp_html.text
+
+    # Sign in as second subscriber to verify deck detail stats + both add buttons
+    mint2 = client.post("/v1/profile/login-token", headers=_auth_header(PATRON_KEY_2)).json()
+    tok2 = parse_qs(urlparse(mint2["login_url"]).query)["token"][0]
+    client.get(f"/profile/auth/exchange?token={tok2}", follow_redirects=False)
+
+    detail_html = client.get(f"/decks/{auras['slug']}")
+    assert detail_html.status_code == 200
+    assert "detail-save-profile-btn" in detail_html.text
+    assert "detail-clone-btn" in detail_html.text
+    assert "5W-2L" in detail_html.text
+    assert "BR" in detail_html.text
+    assert "AP " in detail_html.text
+
+    m_csrf = re.search(r'data-csrf="([^"]+)"', detail_html.text)
+    assert m_csrf
+    csrf2 = m_csrf.group(1)
+
+    # 1. Add to profile without queueing for Arena
+    save_res = client.post(
+        f"/v1/decks/{auras['id']}/clone",
+        headers={"X-CSRF-Token": csrf2},
+        json={"queue_for_arena": False},
+    )
+    assert save_res.status_code == 201
+    assert save_res.json()["deck"]["sync_to_arena_status"] == ""
+    assert client.get("/v1/sync/pending-decks", headers=_auth_header(PATRON_KEY_2)).json()["decks"] == []
+
+    # 2. Add & send to Coach / Arena queues for pickup
+    queue_res = client.post(
+        f"/v1/decks/{auras['id']}/clone",
+        headers={"X-CSRF-Token": csrf2},
+        json={"queue_for_arena": True},
+    )
+    assert queue_res.status_code == 201
+    assert queue_res.json()["deck"]["sync_to_arena_status"] == "pending"
+    pending2 = client.get("/v1/sync/pending-decks", headers=_auth_header(PATRON_KEY_2)).json()["decks"]
+    assert len(pending2) == 1
+
+    # Opted-out player's public profile & decks return 404 to others
+    client.patch(
+        "/v1/profile/settings",
+        headers=_auth_header(PATRON_KEY),
+        json={"leaderboard_opt_in": False},
+    )
+    assert client.get("/players/ArmourTest").status_code == 404
+    assert client.get(f"/decks/{auras['slug']}").status_code == 404

@@ -4,14 +4,15 @@
 {% block description %}{{ deck.format | title }} deck by {{ deck.author_name or 'Coach Player' }} on mtgacoach.com.{% endblock %}
 
 {% block head %}
-    <link rel="stylesheet" href="/static/css/profile.css?v=1">
-    <script src="/static/js/profile.js?v=1" defer></script>
+    <link rel="stylesheet" href="/static/css/profile.css?v=3">
+    <script src="/static/js/profile.js?v=3" defer></script>
 {% endblock %}
 
 {% block nav %}
     <a href="/">Home</a>
     <a href="/leaderboard">Leaderboard</a>
     <a href="/profile">Profile</a>
+    {% if discord_invite_url %}<a href="{{ discord_invite_url }}" rel="noopener noreferrer">Discord</a>{% endif %}
 {% endblock %}
 
 {% block content %}
@@ -26,9 +27,17 @@
             <p class="kicker">{{ deck.format | title }} {% if deck.archetype %}&middot; {{ deck.archetype }}{% endif %}</p>
             <h1>{{ deck.name }}</h1>
             <p class="muted small">
-                Shared by <strong>{{ deck.author_name or "Coach Player" }}</strong>
+                {% if is_source %}
+                    Sourced from <strong>{{ deck.author_name or "Meta" }}</strong>
+                {% elif author_profile_url %}
+                    Shared by <a class="deck-link" href="{{ author_profile_url }}"><strong>{{ deck.author_name }}</strong></a>
+                {% else %}
+                    Shared by <strong>{{ deck.author_name }}</strong>
+                {% endif %}
                 {% if deck.author_is_patron %}<span class="badge patron">Patron</span>{% endif %}
-                {% if deck.games > 0 %}
+                {% if performance.all_time.games > 0 %}
+                    &middot; <strong>{{ (performance.all_time.win_rate * 100) | round(1) }}%</strong> ({{ performance.all_time.wins }}W-{{ performance.all_time.losses }}L)
+                {% elif deck.games > 0 %}
                     &middot; <strong>{{ (deck.win_rate * 100) | round(1) }}%</strong> ({{ deck.wins }}W-{{ deck.losses }}L)
                 {% endif %}
             </p>
@@ -39,15 +48,67 @@
                 {% if is_owner %}
                     <button type="button" class="button primary" id="detail-queue-btn" data-deck-id="{{ deck.id }}">Send to Coach &amp; Arena</button>
                 {% else %}
-                    <button type="button" class="button primary" id="detail-clone-btn" data-deck-id="{{ deck.id }}">Clone &amp; Send to Arena</button>
+                    <button type="button" class="button" id="detail-save-profile-btn" data-deck-id="{{ deck.id }}">Add to My Profile</button>
+                    <button type="button" class="button primary" id="detail-clone-btn" data-deck-id="{{ deck.id }}">Add &amp; Send to Coach / Arena</button>
                 {% endif %}
             {% else %}
-                <a class="button primary" href="/login?next=/decks/{{ deck.slug }}">Sign in to check wildcards &amp; sync</a>
+                <a class="button primary" href="/login?next=/decks/{{ deck.slug }}">Sign in to add &amp; sync to Coach</a>
             {% endif %}
         </div>
     </header>
 
     <div id="toast-region" class="toast-region" aria-live="polite"></div>
+
+    {% if performance.all_time.games > 0 %}
+    <div class="stat-grid">
+        <div class="stat-card">
+            <span class="stat-label">{% if is_source %}Fleet Record{% else %}Overall Record{% endif %}</span>
+            <strong class="stat-value">
+                {{ (performance.all_time.win_rate * 100) | round(1) }}% ({{ performance.all_time.wins }}W-{{ performance.all_time.losses }}L)
+            </strong>
+        </div>
+        <div class="stat-card">
+            <span class="stat-label">Last 30 Days</span>
+            <strong class="stat-value">
+                {% if performance.last_30d.games %}
+                    {{ (performance.last_30d.win_rate * 100) | round(1) }}% ({{ performance.last_30d.wins }}W-{{ performance.last_30d.losses }}L)
+                {% else %}
+                    &mdash;
+                {% endif %}
+            </strong>
+        </div>
+        <div class="stat-card">
+            <span class="stat-label">Autopilot vs Manual</span>
+            <strong class="stat-value">
+                {% if performance.autopilot.games %}
+                    AP {{ (performance.autopilot.win_rate * 100) | round(0) | int }}% ({{ performance.autopilot.wins }}-{{ performance.autopilot.losses }})
+                {% elif performance.manual.games %}
+                    Manual {{ (performance.manual.win_rate * 100) | round(0) | int }}% ({{ performance.manual.wins }}-{{ performance.manual.losses }})
+                {% else %}
+                    &mdash;
+                {% endif %}
+            </strong>
+        </div>
+        <div class="stat-card">
+            <span class="stat-label">Avg Turns / Streak</span>
+            <strong class="stat-value">
+                {% if performance.avg_turns %}{{ performance.avg_turns }}t{% else %}&mdash;{% endif %}
+                {% if performance.streak %} &middot; {{ performance.streak }}{% endif %}
+            </strong>
+        </div>
+    </div>
+    {% endif %}
+
+    {% if performance.matchups %}
+    <div class="cost-banner">
+        <strong>Matchups by Opponent Colors:</strong>
+        <span class="matchup-pills">
+            {% for m in performance.matchups %}
+            <span class="badge">{{ m.colors }} {{ (m.win_rate * 100) | round(0) | int }}% ({{ m.wins }}-{{ m.losses }})</span>
+            {% endfor %}
+        </span>
+    </div>
+    {% endif %}
 
     {% if deck.craftability is defined %}
     <div class="cost-banner">
@@ -100,6 +161,34 @@
         </article>
         {% endif %}
     </div>
+
+    {% if performance.recent_matches %}
+    <h2 id="deck-matches-caption" class="section-sub">Recent Matches</h2>
+    <div tabindex="0" role="region" aria-labelledby="deck-matches-caption" class="table-wrapper">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Result</th>
+                    <th>Format</th>
+                    <th>Mode</th>
+                    <th>Turns</th>
+                    <th>Played</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for m in performance.recent_matches %}
+                <tr>
+                    <th class="{% if m.result == 'win' %}good-text{% endif %}">{{ m.result | upper }}</th>
+                    <td data-label="Format">{{ m.format_name or "—" }}</td>
+                    <td data-label="Mode">{% if m.autopilot is true %}Autopilot{% elif m.autopilot is false %}Manual{% else %}&mdash;{% endif %}</td>
+                    <td data-label="Turns">{{ m.turns if m.turns else "—" }}</td>
+                    <td data-label="Played" class="muted">{{ m.played_label }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% endif %}
 
     <textarea id="detail-export-source" class="sr-only" readonly>{{ deck.export_text }}</textarea>
 </div>

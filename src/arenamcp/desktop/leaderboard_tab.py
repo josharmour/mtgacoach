@@ -240,10 +240,14 @@ class LeaderboardTab(QWidget):
         self.copy_selected_btn = QPushButton("Copy Arena export")
         self.copy_selected_btn.clicked.connect(self._copy_selected_deck)
         self.copy_selected_btn.hide()
+        self.view_deck_btn = QPushButton("View Deck on Web ↗")
+        self.view_deck_btn.clicked.connect(self._open_selected_deck_web)
+        self.view_deck_btn.hide()
         self.craft_missing_btn = QPushButton("Craft missing…")
         self.craft_missing_btn.clicked.connect(self._confirm_craft_missing)
         self.craft_missing_btn.hide()
         deck_actions.addWidget(self.detail_label, 1)
+        deck_actions.addWidget(self.view_deck_btn)
         deck_actions.addWidget(self.build_selected_btn)
         deck_actions.addWidget(self.copy_selected_btn)
         deck_actions.addWidget(self.craft_missing_btn)
@@ -345,6 +349,7 @@ class LeaderboardTab(QWidget):
 
     def _render_entries(self, tab: str) -> None:
         self._selected_entry = None
+        self.view_deck_btn.hide()
         self.build_selected_btn.hide()
         self.copy_selected_btn.hide()
         if tab == "decks" and self._entries:
@@ -432,10 +437,26 @@ class LeaderboardTab(QWidget):
         entry = self._entries[idx]
         self._selected_entry = entry
         is_deck = "main" in entry or "export_text" in entry
+        slug = str(entry.get("slug") or entry.get("top_deck_slug") or "").strip()
+        self.view_deck_btn.setVisible(bool(slug))
         self.build_selected_btn.setVisible(is_deck)
         self.copy_selected_btn.setVisible(is_deck)
         if is_deck:
             self.detail_label.setText(f"{entry.get('name', '')} · {_format_craft_summary(entry)}")
+        elif slug:
+            self.detail_label.setText(
+                f"Top deck: {entry.get('top_deck', '')} — open on web to view stats or clone"
+            )
+        else:
+            self.detail_label.setText("")
+
+    def _open_selected_deck_web(self) -> None:
+        entry = self._selected_entry
+        if not isinstance(entry, dict):
+            return
+        slug = str(entry.get("slug") or entry.get("top_deck_slug") or "").strip()
+        if slug:
+            open_url(f"{cloud_sync._website_base()}/decks/{slug}")
 
     def save_profile_settings(self) -> None:
         handle = self.handle_input.text().strip()
