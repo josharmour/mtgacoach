@@ -1,0 +1,379 @@
+{% extends "_base.html" %}
+
+{% block title %}My Profile &amp; Deck Sync — mtgacoach{% endblock %}
+{% block description %}Your mtgacoach.com performance stats, wildcard deck builder, community deck discovery, and leaderboard.{% endblock %}
+
+{% block head %}
+    <link rel="stylesheet" href="/static/css/profile.css?v=1">
+    <script src="/static/js/profile.js?v=2" defer></script>
+{% endblock %}
+
+{% block nav %}
+    <a href="/">Home</a>
+    <a href="/leaderboard">Leaderboard</a>
+    {% if discord_invite_url %}<a href="{{ discord_invite_url }}" rel="noopener noreferrer">Discord</a>{% endif %}
+    <form method="post" action="/logout" class="inline-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit" class="nav-btn">Sign out</button>
+    </form>
+{% endblock %}
+
+{% block content %}
+<div id="profile-app"
+     class="wrap profile-shell"
+     data-page="profile"
+     data-csrf="{{ csrf_token }}"
+     data-discord-url="{{ discord_invite_url }}">
+
+    <header class="profile-hero">
+        <div>
+            <p class="kicker">Player Profile &amp; Deck Sync</p>
+            <h1 id="profile-heading">
+                {{ summary.profile.display_name or "Your Coach Profile" }}
+                {% if summary.profile.is_patron %}
+                    <span class="badge patron">Patron</span>
+                {% elif auth_source == "patreon_free" %}
+                    <span class="badge">Patreon Free</span>
+                {% else %}
+                    <span class="badge">Trial / Standard</span>
+                {% endif %}
+            </h1>
+            <p class="muted small" id="profile-subtitle">
+                Constructed: <strong>{{ summary.profile.constructed_rank }}</strong>
+                &middot; Limited: <strong>{{ summary.profile.limited_rank }}</strong>
+                &middot; Synced cards: <strong>{{ summary.profile.collection_card_count }}</strong>
+            </p>
+        </div>
+        <div class="wc-bar" aria-label="Wildcard balance">
+            <span class="wc-pill common">C <strong>{{ summary.profile.wildcards.common }}</strong></span>
+            <span class="wc-pill uncommon">U <strong>{{ summary.profile.wildcards.uncommon }}</strong></span>
+            <span class="wc-pill rare">R <strong>{{ summary.profile.wildcards.rare }}</strong></span>
+            <span class="wc-pill mythic">M <strong>{{ summary.profile.wildcards.mythic }}</strong></span>
+        </div>
+    </header>
+
+    <div id="toast-region" class="toast-region" aria-live="polite"></div>
+
+    <div class="tabs-shell">
+        <div class="tablist" focusgroup="tablist nomemory" role="tablist" aria-label="Profile sections">
+            <button type="button" role="tab" id="tab-overview" data-tab="overview" aria-selected="true" focusgroupstart>Overview &amp; Stats</button>
+            <button type="button" role="tab" id="tab-decks" data-tab="decks" aria-selected="false">My Decks</button>
+            <button type="button" role="tab" id="tab-builder" data-tab="builder" aria-selected="false">Deck Builder</button>
+            <button type="button" role="tab" id="tab-discover" data-tab="discover" aria-selected="false">Discover Decks</button>
+            <button type="button" role="tab" id="tab-leaderboard" data-tab="leaderboard" aria-selected="false">Leaderboard</button>
+        </div>
+
+        <!-- TAB 1: OVERVIEW -->
+        <section role="tabpanel" id="panel-overview" aria-labelledby="tab-overview" tabindex="0">
+            <div class="panel-inner">
+                <div class="stat-grid" id="overview-stats">
+                    <div class="stat-card">
+                        <span class="stat-label">All-Time Record</span>
+                        <strong class="stat-value" id="stat-alltime">
+                            {% if summary.stats.all_time.games %}
+                                {{ (summary.stats.all_time.win_rate * 100) | round(1) }}%
+                                ({{ summary.stats.all_time.wins }}W-{{ summary.stats.all_time.losses }}L)
+                            {% else %}
+                                No matches synced yet
+                            {% endif %}
+                        </strong>
+                    </div>
+                    <div class="stat-card">
+                        <span class="stat-label">Last 30 Days</span>
+                        <strong class="stat-value" id="stat-30d">
+                            {% if summary.stats.last_30d.games %}
+                                {{ (summary.stats.last_30d.win_rate * 100) | round(1) }}%
+                                ({{ summary.stats.last_30d.wins }}W-{{ summary.stats.last_30d.losses }}L)
+                            {% else %}
+                                &mdash;
+                            {% endif %}
+                        </strong>
+                    </div>
+                    <div class="stat-card">
+                        <span class="stat-label">Current Streak</span>
+                        <strong class="stat-value" id="stat-streak">{{ summary.stats.streak or "—" }}</strong>
+                    </div>
+                    <div class="stat-card">
+                        <span class="stat-label">Avg Match Length</span>
+                        <strong class="stat-value" id="stat-turns">
+                            {% if summary.stats.avg_turns %}{{ summary.stats.avg_turns }} turns{% else %}&mdash;{% endif %}
+                        </strong>
+                    </div>
+                </div>
+
+                <div class="two-col">
+                    <article class="panel-card">
+                        <h2>Leaderboard &amp; Privacy</h2>
+                        <p class="muted small">Your stats appear on the leaderboard by default under an anonymous handle (currently <strong>{{ summary.profile.effective_handle }}</strong>). Set a custom handle below, or uncheck the box to hide your profile.</p>
+                        <form id="settings-form" class="stack-form">
+                            <label for="setting-handle" class="field-label">Public Handle (2–32 chars)</label>
+                            <input id="setting-handle" name="display_name" type="text" maxlength="32" value="{{ summary.profile.display_name }}" placeholder="e.g. ChandraMain">
+                            <label for="setting-discord" class="field-label">Discord Username (optional)</label>
+                            <input id="setting-discord" name="discord_handle" type="text" maxlength="40" value="{{ summary.profile.discord_handle }}" placeholder="e.g. username">
+                            <label class="check-row">
+                                <input id="setting-opt-in" name="leaderboard_opt_in" type="checkbox" {% if summary.profile.leaderboard_opt_in %}checked{% endif %}>
+                                <span>Show my handle, rank, and win rate on the public leaderboard</span>
+                            </label>
+                            <div class="card-actions">
+                                <button type="submit" class="button primary">Save profile settings</button>
+                            </div>
+                        </form>
+                    </article>
+
+                    <article class="panel-card discord-card">
+                        <h2>Discord &amp; Patron Rooms</h2>
+                        {% if summary.profile.is_patron %}
+                            <p class="small good-text">Patron status active: link your Discord account in Patreon Settings to automatically receive the <strong>@Patron</strong> role and enter private channels.</p>
+                        {% else %}
+                            <p class="muted small">Free Patreon and standard members can join public Discord channels and appear on the leaderboard. <a href="/subscribe">Upgrade to a paid Patreon tier</a> to unlock Patron-only rooms and AI coaching keys.</p>
+                        {% endif %}
+                        <ul class="room-list">
+                            {% for room in patron_rooms %}
+                            <li><code>{{ room.channel }}</code> &mdash; <span class="muted small">{{ room.topic }}</span></li>
+                            {% endfor %}
+                        </ul>
+                        <div class="card-actions">
+                            {% if discord_invite_url %}
+                                <a class="button primary" href="{{ discord_invite_url }}" rel="noopener noreferrer">Join mtgacoach Discord &rarr;</a>
+                            {% else %}
+                                <span class="muted small">Discord invite URL can be set via <code>DISCORD_INVITE_URL</code>.</span>
+                            {% endif %}
+                            <a class="button quiet" href="https://www.patreon.com/settings/apps" rel="noopener noreferrer">Link Discord on Patreon</a>
+                        </div>
+                    </article>
+                </div>
+
+                <h2 id="recent-matches-caption" class="section-sub">Recent Matches</h2>
+                <div tabindex="0" role="region" aria-labelledby="recent-matches-caption" class="table-wrapper">
+                    <table class="data-table" id="recent-matches-table">
+                        <caption id="recent-matches-caption-sr" class="sr-only">Recent synced matches</caption>
+                        <thead>
+                            <tr>
+                                <th>Result</th>
+                                <th>Deck</th>
+                                <th>Format</th>
+                                <th>Mode</th>
+                                <th>Turns</th>
+                                <th>Played</th>
+                            </tr>
+                        </thead>
+                        <tbody id="recent-matches-body"></tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+
+        <!-- TAB 2: MY DECKS -->
+        <section role="tabpanel" id="panel-decks" aria-labelledby="tab-decks" hidden="until-found">
+            <div class="panel-inner">
+                <div class="toolbar">
+                    <h2 id="my-decks-caption">Your Synced &amp; Planned Decks</h2>
+                    <div class="toolbar-actions">
+                        <button type="button" class="button small-btn" id="new-deck-jump">+ New Deck in Builder</button>
+                        <button type="button" class="button quiet small-btn" id="refresh-decks-btn">Refresh</button>
+                    </div>
+                </div>
+                <p class="muted small">Queue a deck for Arena to make it appear automatically in the Coach desktop app for one-click bridge creation or clipboard import.</p>
+                <div tabindex="0" role="region" aria-labelledby="my-decks-caption" class="table-wrapper">
+                    <table class="data-table" id="my-decks-table">
+                        <thead>
+                            <tr>
+                                <th>Deck</th>
+                                <th>Format</th>
+                                <th>Record</th>
+                                <th>Wildcard Cost</th>
+                                <th>Arena Sync</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="my-decks-body"></tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+
+        <!-- TAB 3: DECK BUILDER -->
+        <section role="tabpanel" id="panel-builder" aria-labelledby="tab-builder" hidden="until-found">
+            <div class="panel-inner">
+                <div class="toolbar">
+                    <h2 id="builder-heading">Wildcard-Aware Deck Builder</h2>
+                    <button type="button" class="button quiet small-btn" id="builder-reset-btn">New Blank Deck</button>
+                </div>
+
+                <div class="builder-meta">
+                    <div>
+                        <label for="builder-name" class="field-label">Deck Name</label>
+                        <input id="builder-name" type="text" maxlength="100" placeholder="e.g. Boros Convoke">
+                    </div>
+                    <div>
+                        <label for="builder-format" class="field-label">Format</label>
+                        <select id="builder-format">
+                            <option value="standard">Standard</option>
+                            <option value="brawl">Brawl</option>
+                            <option value="historic">Historic</option>
+                            <option value="alchemy">Alchemy</option>
+                            <option value="explorer">Explorer</option>
+                            <option value="timeless">Timeless</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label for="builder-archetype" class="field-label">Archetype</label>
+                        <input id="builder-archetype" type="text" maxlength="80" placeholder="e.g. Aggro / Midrange">
+                    </div>
+                </div>
+
+                <label class="check-row builder-public">
+                    <input id="builder-public" type="checkbox">
+                    <span>Share publicly on Discover Decks &amp; Top Decks leaderboard</span>
+                </label>
+
+                <div id="builder-cost-banner" class="cost-banner">
+                    Add cards below to see how many wildcards this list needs from your synced Arena collection.
+                </div>
+
+                <div class="two-col builder-cols">
+                    <div class="panel-card">
+                        <h3>Add Cards</h3>
+                        <div class="search-row">
+                            <select id="builder-pile" aria-label="Target pile">
+                                <option value="main">Main Deck</option>
+                                <option value="sideboard">Sideboard</option>
+                                <option value="commander">Commander</option>
+                                <option value="companion">Companion</option>
+                            </select>
+                            <input id="builder-card-search" type="search" placeholder="Search card name (min 2 chars)...">
+                        </div>
+                        <ul id="builder-search-results" class="search-results" aria-label="Card search results"></ul>
+
+                        <details class="import-details">
+                            <summary>Or paste an Arena deck export</summary>
+                            <textarea id="builder-import-text" rows="7" placeholder="Deck&#10;4 Lightning Strike&#10;20 Mountain"></textarea>
+                            <button type="button" class="button small-btn" id="builder-import-btn">Load pasted list</button>
+                        </details>
+                    </div>
+
+                    <div class="panel-card">
+                        <div class="toolbar">
+                            <h3>Current List (<span id="builder-total-count">0</span> cards)</h3>
+                            <button type="button" class="button quiet small-btn" id="builder-copy-btn">Copy Arena Export</button>
+                        </div>
+                        <ul id="builder-card-list" class="deck-card-list"></ul>
+                    </div>
+                </div>
+
+                <div class="builder-footer">
+                    <button type="button" class="button" id="builder-save-btn">Save Deck</button>
+                    <button type="button" class="button primary" id="builder-save-sync-btn">Save &amp; Send to Coach &amp; Arena</button>
+                </div>
+            </div>
+        </section>
+
+        <!-- TAB 4: DISCOVER DECKS -->
+        <section role="tabpanel" id="panel-discover" aria-labelledby="tab-discover" hidden="until-found">
+            <div class="panel-inner">
+                <div class="toolbar">
+                    <h2 id="discover-caption">Discover Community Decks</h2>
+                </div>
+                <div class="filter-bar">
+                    <select id="discover-format" aria-label="Format filter">
+                        <option value="all">All formats</option>
+                        <option value="standard">Standard</option>
+                        <option value="brawl">Brawl</option>
+                        <option value="historic">Historic</option>
+                        <option value="alchemy">Alchemy</option>
+                        <option value="timeless">Timeless</option>
+                        <option value="explorer">Pioneer / Explorer</option>
+                    </select>
+                    <select id="discover-craft" aria-label="Wildcard craftability filter">
+                        <option value="all">All decks</option>
+                        <option value="owned">Owned cards only</option>
+                        <option value="affordable">Buildable within my wildcards</option>
+                        <option value="close">Close (&le; 4 extra wildcards)</option>
+                    </select>
+                    <select id="discover-sort" aria-label="Sort order">
+                        <option value="winrate">Highest win rate</option>
+                        <option value="wildcards">Fewest wildcards needed</option>
+                        <option value="games">Most games played</option>
+                        <option value="newest">Newest</option>
+                    </select>
+                    <input id="discover-search" type="search" placeholder="Filter by name or archetype...">
+                </div>
+                <div tabindex="0" role="region" aria-labelledby="discover-caption" class="table-wrapper">
+                    <table class="data-table" id="discover-table">
+                        <thead>
+                            <tr>
+                                <th>Deck</th>
+                                <th>Format</th>
+                                <th>Player</th>
+                                <th>Record</th>
+                                <th>Your Cost</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="discover-body"></tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+
+        <!-- TAB 5: LEADERBOARD -->
+        <section role="tabpanel" id="panel-leaderboard" aria-labelledby="tab-leaderboard" hidden="until-found">
+            <div class="panel-inner">
+                <div class="toolbar">
+                    <h2 id="lb-caption">mtgacoach Community Leaderboard</h2>
+                    <span class="muted small" id="lb-my-standing"></span>
+                </div>
+                <div class="filter-bar">
+                    <select id="lb-tab" aria-label="Leaderboard view">
+                        <option value="rank">Highest Rank</option>
+                        <option value="winrate">Best Win Rate (20+ games)</option>
+                        <option value="decks">Top Public Decks</option>
+                    </select>
+                    <select id="lb-format" aria-label="Leaderboard format">
+                        <option value="all">All formats</option>
+                        <option value="standard">Standard</option>
+                        <option value="brawl">Brawl</option>
+                        <option value="historic">Historic</option>
+                        <option value="alchemy">Alchemy</option>
+                        <option value="limited">Limited</option>
+                    </select>
+                    <select id="lb-mode" aria-label="Play mode">
+                        <option value="all">All games</option>
+                        <option value="autopilot">Autopilot only</option>
+                        <option value="manual">Manual play</option>
+                    </select>
+                    <select id="lb-window" aria-label="Time window">
+                        <option value="30d">Last 30 days</option>
+                        <option value="7d">Last 7 days</option>
+                        <option value="all">All time</option>
+                    </select>
+                </div>
+                <div tabindex="0" role="region" aria-labelledby="lb-caption" class="table-wrapper">
+                    <table class="data-table" id="lb-table">
+                        <thead id="lb-head"></thead>
+                        <tbody id="lb-body"></tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+    </div>
+
+    <dialog id="confirm-delete-dialog" aria-labelledby="delete-dialog-title">
+        <h1 id="delete-dialog-title" class="dialog-title">Delete this deck?</h1>
+        <p id="delete-dialog-body" class="muted small">This removes the deck from your mtgacoach.com library. Decks already in MTG Arena are untouched.</p>
+        <form method="dialog" class="dialog-actions">
+            <button value="cancel" class="button quiet" autofocus>Keep deck</button>
+            <button value="delete" class="button danger">Delete deck</button>
+        </form>
+    </dialog>
+
+    <dialog id="export-dialog" aria-labelledby="export-dialog-title" closedby="any">
+        <h1 id="export-dialog-title" class="dialog-title">Arena Deck Export</h1>
+        <textarea id="export-dialog-text" rows="12" readonly></textarea>
+        <div class="dialog-actions">
+            <button type="button" class="button primary" id="export-copy-btn">Copy to clipboard</button>
+            <form method="dialog"><button value="close" class="button quiet">Close</button></form>
+        </div>
+    </dialog>
+</div>
+{% endblock %}

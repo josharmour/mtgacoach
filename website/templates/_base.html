@@ -7,7 +7,7 @@
     <meta name="description" content="{% block description %}mtgacoach: a spoken AI coach for Magic: The Gathering Arena.{% endblock %}">
     <meta name="color-scheme" content="dark light">
     <meta name="theme-color" content="#16130f">
-    <script>document.documentElement.classList.add("js");</script>
+    <script src="/static/js/init.js"></script>
     <link rel="stylesheet" href="/static/css/site.css?v=4">
     {% block head %}{% endblock %}
 </head>
@@ -50,6 +50,10 @@
             <nav class="site-nav" aria-label="Main">
                 {% block nav %}
                 <a href="/">Home</a>
+                <a href="/leaderboard">Leaderboard</a>
+                <a href="/profile">Profile</a>
+                {% set discord_url = get_discord_invite_url() %}
+                {% if discord_url %}<a class="nav-optional" href="{{ discord_url }}" rel="noopener noreferrer">Discord</a>{% endif %}
                 <a href="https://github.com/josharmour/mtgacoach">GitHub</a>
                 {% endblock %}
             </nav>
@@ -64,7 +68,11 @@
         <div class="wrap">
             <nav aria-label="Footer">
                 <span>&copy; mtgacoach.com</span>
+                <a href="/leaderboard">Leaderboard</a>
+                <a href="/profile">Profile</a>
                 <a href="/subscribe">Subscribe</a>
+                {% set discord_url = get_discord_invite_url() %}
+                {% if discord_url %}<a href="{{ discord_url }}" rel="noopener noreferrer">Discord</a>{% endif %}
                 <a href="https://github.com/josharmour/mtgacoach">GitHub</a>
                 <a href="mailto:support@mtgacoach.com">support@mtgacoach.com</a>
                 <a class="aoa-link" href="https://arenaonair.com">Also from us: Arena<strong>OnAir</strong></a>

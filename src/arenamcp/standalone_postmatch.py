@@ -1118,6 +1118,12 @@ class _PostMatchMixin(LossStreakMixin):
                 pass
         history = MatchHistory()
         history.add_record(rec)
+        try:
+            from arenamcp import cloud_sync
+
+            cloud_sync.sync_match_async(rec)
+        except Exception as error:
+            logger.debug("Cloud match sync skipped: %s", error)
         brief = None
         try:
             brief = self._emit_between_match_brief(history, rec)

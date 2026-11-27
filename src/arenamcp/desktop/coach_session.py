@@ -611,6 +611,9 @@ class CoachSession(QObject):
         # re-checks confirm=True before touching wildcards.
         self._process.send_payload({"cmd": "craft", "cards": cards})
 
+    def request_import_synced_deck(self, deck: dict) -> None:
+        self._process.send_payload({"cmd": "import_synced_deck", "deck": deck})
+
     def request_deck_card_study(self, request: dict) -> None:
         self._process.send_payload({"cmd": "deck_card_study", **request})
 

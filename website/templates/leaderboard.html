@@ -1,0 +1,150 @@
+{% extends "_base.html" %}
+
+{% block title %}Leaderboard &amp; Top Decks — mtgacoach{% endblock %}
+{% block description %}See top-ranked mtgacoach players, highest win-rate decks, and community lists you can build with your wildcards.{% endblock %}
+
+{% block head %}
+    <link rel="stylesheet" href="/static/css/profile.css?v=1">
+    <script src="/static/js/profile.js?v=2" defer></script>
+{% endblock %}
+
+{% block nav %}
+    <a href="/">Home</a>
+    <a href="/leaderboard" aria-current="page">Leaderboard</a>
+    <a href="/profile">Profile</a>
+    {% if discord_invite_url %}<a href="{{ discord_invite_url }}" rel="noopener noreferrer">Discord</a>{% endif %}
+    <a class="nav-cta" href="/subscribe">Subscribe</a>
+{% endblock %}
+
+{% block content %}
+<div id="profile-app"
+     class="wrap profile-shell"
+     data-page="leaderboard"
+     data-csrf="{{ csrf_token }}"
+     data-signed-in="{{ '1' if signed_in else '0' }}"
+     data-discord-url="{{ discord_invite_url }}">
+
+    <header class="profile-hero">
+        <div>
+            <p class="kicker">Community Standings</p>
+            <h1>Leaderboard &amp; <em>Winning Decks</em></h1>
+            <p class="lede">See who is climbing highest, which decks are putting up real Arena results, and what you can build right now.</p>
+        </div>
+        <div class="hero-cta-col">
+            {% if not signed_in %}
+                <a class="button primary" href="/login?next=/profile">Sign in to check your wildcards</a>
+            {% else %}
+                <a class="button primary" href="/profile#builder">Open Deck Builder</a>
+            {% endif %}
+            {% if discord_invite_url %}
+                <a class="button quiet" href="{{ discord_invite_url }}" rel="noopener noreferrer">Join Discord &rarr;</a>
+            {% endif %}
+        </div>
+    </header>
+
+    <div id="toast-region" class="toast-region" aria-live="polite"></div>
+
+    <div class="tabs-shell">
+        <div class="tablist" focusgroup="tablist nomemory" role="tablist" aria-label="Community views">
+            <button type="button" role="tab" id="tab-leaderboard" data-tab="leaderboard" aria-selected="true" focusgroupstart>Leaderboard</button>
+            <button type="button" role="tab" id="tab-discover" data-tab="discover" aria-selected="false">Discover Decks</button>
+        </div>
+
+        <section role="tabpanel" id="panel-leaderboard" aria-labelledby="tab-leaderboard" tabindex="0">
+            <div class="panel-inner">
+                <div class="toolbar">
+                    <h2 id="lb-caption">Player &amp; Deck Rankings</h2>
+                    <span class="muted small" id="lb-my-standing"></span>
+                </div>
+                <div class="filter-bar">
+                    <select id="lb-tab" aria-label="Leaderboard view">
+                        <option value="rank">Highest Rank</option>
+                        <option value="winrate">Best Win Rate (20+ games)</option>
+                        <option value="decks">Top Public Decks</option>
+                    </select>
+                    <select id="lb-format" aria-label="Leaderboard format">
+                        <option value="all">All formats</option>
+                        <option value="standard">Standard</option>
+                        <option value="brawl">Brawl</option>
+                        <option value="historic">Historic</option>
+                        <option value="alchemy">Alchemy</option>
+                        <option value="limited">Limited</option>
+                    </select>
+                    <select id="lb-mode" aria-label="Play mode">
+                        <option value="all">All games</option>
+                        <option value="autopilot">Autopilot only</option>
+                        <option value="manual">Manual play</option>
+                    </select>
+                    <select id="lb-window" aria-label="Time window">
+                        <option value="30d">Last 30 days</option>
+                        <option value="7d">Last 7 days</option>
+                        <option value="all">All time</option>
+                    </select>
+                </div>
+                <div tabindex="0" role="region" aria-labelledby="lb-caption" class="table-wrapper">
+                    <table class="data-table" id="lb-table">
+                        <thead id="lb-head"></thead>
+                        <tbody id="lb-body"></tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+
+        <section role="tabpanel" id="panel-discover" aria-labelledby="tab-discover" hidden="until-found">
+            <div class="panel-inner">
+                <div class="toolbar">
+                    <h2 id="discover-caption">Discover Community Decks</h2>
+                </div>
+                <div class="filter-bar">
+                    <select id="discover-format" aria-label="Format filter">
+                        <option value="all">All formats</option>
+                        <option value="standard">Standard</option>
+                        <option value="brawl">Brawl</option>
+                        <option value="historic">Historic</option>
+                        <option value="alchemy">Alchemy</option>
+                        <option value="timeless">Timeless</option>
+                        <option value="explorer">Pioneer / Explorer</option>
+                    </select>
+                    <select id="discover-craft" aria-label="Wildcard craftability filter">
+                        <option value="all">All decks</option>
+                        <option value="owned">Owned cards only</option>
+                        <option value="affordable">Buildable within my wildcards</option>
+                        <option value="close">Close (&le; 4 extra wildcards)</option>
+                    </select>
+                    <select id="discover-sort" aria-label="Sort order">
+                        <option value="winrate">Highest win rate</option>
+                        <option value="wildcards">Fewest wildcards needed</option>
+                        <option value="games">Most games played</option>
+                        <option value="newest">Newest</option>
+                    </select>
+                    <input id="discover-search" type="search" placeholder="Filter by name or archetype...">
+                </div>
+                <div tabindex="0" role="region" aria-labelledby="discover-caption" class="table-wrapper">
+                    <table class="data-table" id="discover-table">
+                        <thead>
+                            <tr>
+                                <th>Deck</th>
+                                <th>Format</th>
+                                <th>Player</th>
+                                <th>Record</th>
+                                <th>Wildcards</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="discover-body"></tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+    </div>
+
+    <dialog id="export-dialog" aria-labelledby="export-dialog-title" closedby="any">
+        <h1 id="export-dialog-title" class="dialog-title">Arena Deck Export</h1>
+        <textarea id="export-dialog-text" rows="12" readonly></textarea>
+        <div class="dialog-actions">
+            <button type="button" class="button primary" id="export-copy-btn">Copy to clipboard</button>
+            <form method="dialog"><button value="close" class="button quiet">Close</button></form>
+        </div>
+    </dialog>
+</div>
+{% endblock %}

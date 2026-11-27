@@ -14,4 +14,5 @@ Start with [DEV.md](../DEV.md) to run the code. Use [INSTALL.md](../INSTALL.md) 
 | Gameplay features | [Quest-driven Grind](auto-quest.md), [Traditional Limited sideboarding](SIDEBOARD_AUTOMATION.md), [sacrifice continuations](sacrifice-continuation-280.md). |
 | Commentary and speech | [Commentary development](commentary.md), [local Chatterbox runtime](../runtime/chatterbox/README.md), [ArenaOnAir hosted service](../website/ARENAONAIR.md). |
 | Website and inference | [Website setup](../website/SETUP.md) and [gateway operations](../gateway/README.md). |
+| Profile, Deck Sync, Leaderboard & Discord | [Discord Patron-room setup](DISCORD_SETUP.md). |
 | Why an older decision was made | [Dated decision and verification log](DECISIONS.md). Check the current code and active ledger before using a historical result. |

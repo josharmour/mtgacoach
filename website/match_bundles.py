@@ -543,6 +543,7 @@ async def upload_match_bundle(request: Request, auth: dict = Depends(authorize_u
     tmp.write_bytes(raw)
     os.replace(tmp, target)
 
+    dims = _outcome_dimensions(payload)
     inserted = insert_bundle(
         owner=owner,
         install_id=install_id,
@@ -555,7 +556,7 @@ async def upload_match_bundle(request: Request, auth: dict = Depends(authorize_u
         platform=platform,
         result=result,
         schema_version=schema_version,
-        **_outcome_dimensions(payload),
+        **dims,
     )
     if not inserted:
         # Lost a race with a concurrent upload of the same match: keep theirs.
@@ -565,6 +566,22 @@ async def upload_match_bundle(request: Request, auth: dict = Depends(authorize_u
             pass
         prior = find_bundle(install_id, match_id, owner) or {}
         return {"status": "duplicate", "match_id": match_id, "received_at": prior.get("received_at")}
+
+    try:
+        import profiles
+
+        profiles.record_match_from_bundle(
+            owner=owner,
+            match_id=match_id,
+            received_at=time.time(),
+            result=result,
+            format_name=dims.get("format_name"),
+            deck_name=dims.get("deck_name"),
+            autopilot_enabled=dims.get("autopilot_enabled"),
+            auth_source=auth["source"],
+        )
+    except Exception as exc:
+        logger.debug("Profile mirror from match_bundle skipped: %s", exc)
 
     logger.info(
         "Match bundle stored owner=%s install=%s match=%s size=%d version=%s result=%s auth=%s",

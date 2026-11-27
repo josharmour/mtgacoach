@@ -44,6 +44,27 @@ admin_password: str = ""
 router: ProviderRouter = ProviderRouter()
 templates = Jinja2Templates(directory="templates")
 http_client: Optional[httpx.AsyncClient] = None
+
+
+def get_discord_invite_url() -> str:
+    """Return the configured Discord community invite URL, or empty string if unset."""
+    env_val = os.environ.get("DISCORD_INVITE_URL", "").strip()
+    if env_val:
+        return env_val
+    discord_cfg = config.get("discord", {}) if isinstance(config, dict) else {}
+    return str(discord_cfg.get("invite_url", "") or "").strip()
+
+
+def get_discord_webhook_url() -> str:
+    """Return an optional Discord webhook URL for community notifications."""
+    env_val = os.environ.get("DISCORD_WEBHOOK_URL", "").strip()
+    if env_val:
+        return env_val
+    discord_cfg = config.get("discord", {}) if isinstance(config, dict) else {}
+    return str(discord_cfg.get("webhook_url", "") or "").strip()
+
+
+templates.env.globals["get_discord_invite_url"] = get_discord_invite_url
 _RESPONSE_STORE_MAX = 512
 _response_store: "OrderedDict[str, dict[str, Any]]" = OrderedDict()
 

@@ -131,6 +131,12 @@ class _DeckLibraryMixin:
         except Exception as error:
             logger.debug("card facts prefetch skipped: %s", error)
         self._deck_library = library
+        try:
+            from arenamcp import cloud_sync
+
+            cloud_sync.sync_collection_and_decks_async(decks=library)
+        except Exception as error:
+            logger.debug("Cloud deck sync skipped: %s", error)
         return library, "; ".join(notes)
 
     def deck_strategy_status(self, record: Any) -> dict[str, Any]:
@@ -246,6 +252,13 @@ class _DeckLibraryMixin:
             except Exception as error:  # the UI never breaks on a bridge fault
                 logger.warning("Deck bridge command %s failed: %s", action, error)
                 response = {"ok": False, "error": str(error)}
+            if action == "get_collection" and isinstance(response, dict) and response.get("ok") is True:
+                try:
+                    from arenamcp import cloud_sync
+
+                    cloud_sync.sync_collection_and_decks_async(collection_payload=response)
+                except Exception as sync_err:
+                    logger.debug("Cloud collection sync skipped: %s", sync_err)
             self._deck_library_emit(emit, response)
 
         threading.Thread(target=work, name=f"deck-bridge-{action}", daemon=True).start()
@@ -263,6 +276,146 @@ class _DeckLibraryMixin:
         # The desktop's confirmation dialog already happened; confirm=True on
         # the wire is the adapter's second gate before any wildcard is spent.
         self._deck_bridge_command("craft", "emit_deck_op", cards=cards, confirm=True)
+
+    def import_synced_deck_async(self, deck: dict[str, Any]) -> None:
+        """Import a deck planned on mtgacoach.com into Arena via the bridge or clipboard.
+
+        When the live bridge supports ``create_deck`` and ``update_deck`` (Mac bridge
+        at the home screen) and all cards resolve cleanly, clone an existing deck under
+        the target name and populate its piles. Never crafts wildcards automatically:
+        any missing cards are returned in ``craft_plan`` so the UI can ask the user
+        explicitly. Falls back cleanly to Arena clipboard export everywhere else.
+        """
+
+        def work() -> None:
+            from arenamcp import cloud_sync
+            from arenamcp.deck_library import records_from_bridge
+            from arenamcp.desktop.deck_editor import craft_plan, deficit
+
+            web_id = str(deck.get("id") or "")
+            name = " ".join(str(deck.get("name") or "").split())[:80] or "Web Synced Deck"
+            export_text = cloud_sync.build_arena_export_text(deck)
+
+            def _clipboard_fallback(reason: str, *, already_acked: bool = False) -> None:
+                if web_id and not already_acked:
+                    cloud_sync.ack_arena_deck_sync(web_id, "synced")
+                self._deck_library_emit(
+                    "emit_deck_op",
+                    {
+                        "ok": True,
+                        "submitted_type": "SyncedDeckImport",
+                        "mode": "clipboard",
+                        "deck_id": web_id,
+                        "name": name,
+                        "export_text": export_text,
+                        "reason": reason,
+                    },
+                )
+
+            bridge = self._deck_library_bridge()
+            if bridge is None or getattr(bridge, "client_runtime", "") != "il2cpp-macos":
+                _clipboard_fallback("Bridge deck creation requires the macOS home-screen bridge.")
+                return
+
+            try:
+                col_resp = bridge.draft_command("get_collection", timeout=15.0)
+                collection = (
+                    {int(k): int(v) for k, v in (col_resp.get("cards") or {}).items()}
+                    if isinstance(col_resp, dict) and col_resp.get("ok") is True
+                    else None
+                )
+                piles, unresolved = cloud_sync.resolve_deck_piles_to_grp_ids(deck, collection=collection)
+                if unresolved or not piles.get("main"):
+                    why = (
+                        f"Could not map {len(unresolved)} card(s) locally ({', '.join(unresolved[:3])})."
+                        if unresolved
+                        else "Deck has no resolvable main-deck cards."
+                    )
+                    _clipboard_fallback(why)
+                    return
+
+                decks_resp = bridge.draft_command("get_decks", timeout=15.0)
+                existing = records_from_bridge(decks_resp)
+                if not existing:
+                    _clipboard_fallback("No existing Arena deck available to clone (open Arena home screen).")
+                    return
+
+                want_fmt = str(deck.get("format") or "").strip().lower()
+                sources = [
+                    d
+                    for d in existing.values()
+                    if d.complete
+                    and not d.snapshot
+                    and (not want_fmt or want_fmt in str(d.format or "").lower())
+                ] or [d for d in existing.values() if d.complete and not d.snapshot]
+                if not sources:
+                    _clipboard_fallback("No complete Arena deck found to clone.")
+                    return
+
+                before_ids = set(existing)
+                source = sorted(sources, key=lambda d: d.deck_id)[0]
+                target_name = name
+                if any(d.name == target_name for d in existing.values()):
+                    target_name = f"{name[:68]} (Coach)"
+
+                create_resp = bridge.draft_command(
+                    "create_deck", timeout=20.0, source_deck_id=source.deck_id, name=target_name
+                )
+                if not create_resp.get("ok"):
+                    _clipboard_fallback(str(create_resp.get("error") or "create_deck failed"))
+                    return
+
+                new_deck_id = ""
+                deadline = time.monotonic() + 8.0
+                while time.monotonic() < deadline:
+                    poll = records_from_bridge(bridge.draft_command("get_decks", timeout=10.0))
+                    matches = [
+                        d for d in poll.values() if d.deck_id not in before_ids and d.name == target_name
+                    ]
+                    if matches:
+                        new_deck_id = matches[0].deck_id
+                        break
+                    time.sleep(0.4)
+
+                if not new_deck_id:
+                    _clipboard_fallback("Timed out waiting for Arena to confirm the new deck.")
+                    return
+
+                update_resp = bridge.draft_command(
+                    "update_deck", timeout=20.0, deck_id=new_deck_id, piles=piles
+                )
+                if not update_resp.get("ok"):
+                    err = str(update_resp.get("error") or "update_deck failed")
+                    if web_id:
+                        cloud_sync.ack_arena_deck_sync(web_id, "failed", error=err)
+                    _clipboard_fallback(err, already_acked=True)
+                    return
+
+                shortfall = deficit(piles, collection) if collection is not None else {}
+                plan = craft_plan(shortfall) if shortfall else []
+                missing_count = sum(shortfall.values())
+                if web_id:
+                    cloud_sync.ack_arena_deck_sync(web_id, "synced", arena_deck_id=new_deck_id)
+                self._deck_library_emit(
+                    "emit_deck_op",
+                    {
+                        "ok": True,
+                        "submitted_type": "SyncedDeckImport",
+                        "mode": "bridge",
+                        "deck_id": web_id,
+                        "arena_deck_id": new_deck_id,
+                        "name": target_name,
+                        "export_text": export_text,
+                        "missing_count": missing_count,
+                        "craft_plan": plan,
+                        "wildcards": (col_resp.get("wildcards") or {}) if isinstance(col_resp, dict) else {},
+                    },
+                )
+            except Exception as error:
+                logger.warning("Synced deck import failed: %s", error)
+                _clipboard_fallback(str(error))
+
+        threading.Thread(target=work, name="cloud-import-deck", daemon=True).start()
 
     # -- analysis --------------------------------------------------------------
 

@@ -81,7 +81,7 @@ class _LoadDecks(QRunnable):
                 params = inspect.signature(load_candidates).parameters
                 kwargs = {}
                 if "formats" in params:
-                    kwargs["formats"] = ("standard", "brawl", "historic")
+                    kwargs["formats"] = ("standard", "brawl", "historic", "alchemy", "timeless", "explorer")
                 if "sources" in params:
                     kwargs["sources"] = ALL_SOURCES
                 raw_decks = load_candidates(self.collection, self.wildcards, **kwargs)
@@ -148,6 +148,9 @@ class DeckBuilderDialog(QDialog):
         self.format_filter.addItem("Standard", "standard")
         self.format_filter.addItem("Brawl", "brawl")
         self.format_filter.addItem("Historic", "historic")
+        self.format_filter.addItem("Alchemy", "alchemy")
+        self.format_filter.addItem("Timeless", "timeless")
+        self.format_filter.addItem("Explorer / Pioneer", "explorer")
         self.format_filter.currentIndexChanged.connect(self._render)
         self.source_filter = QComboBox()
         self.source_filter.setAccessibleName("Source filter")
@@ -156,6 +159,8 @@ class DeckBuilderDialog(QDialog):
         self.source_filter.addItem("MTGGoldfish", "mtggoldfish")
         self.source_filter.addItem("MTGTop8 (tournament)", "mtgtop8")
         self.source_filter.addItem("Moxfield (community)", "moxfield")
+        self.source_filter.addItem("Archidekt (community)", "archidekt")
+        self.source_filter.addItem("MTG Arena Zone (tier lists)", "mtgarenazone")
         self.source_filter.currentIndexChanged.connect(self._render)
         self.order = QComboBox()
         self.order.setAccessibleName("Deck ordering")
@@ -329,7 +334,7 @@ class DeckBuilderDialog(QDialog):
                 return True
             site = str(deck.get("source_site") or "").strip().lower()
             if site:
-                return site == src
+                return site.replace(" ", "") == src.replace(" ", "")
             return src in str(deck.get("source") or "").lower()
 
         pool = [

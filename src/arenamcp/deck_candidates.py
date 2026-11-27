@@ -320,7 +320,13 @@ def load_candidates(
     """
     from concurrent.futures import ThreadPoolExecutor
 
-    from arenamcp.meta_sources import AetherHubClient, MoxfieldClient, MTGTop8Client
+    from arenamcp.meta_sources import (
+        AetherHubClient,
+        ArchidektClient,
+        MoxfieldClient,
+        MTGAZoneClient,
+        MTGTop8Client,
+    )
     from arenamcp.mtggoldfish import MTGGoldfishClient
 
     database = pricing_database()
@@ -332,6 +338,8 @@ def load_candidates(
     aetherhub = AetherHubClient() if "aetherhub" in active_sources else None
     mtgtop8 = MTGTop8Client() if "mtgtop8" in active_sources else None
     moxfield = MoxfieldClient() if "moxfield" in active_sources else None
+    archidekt = ArchidektClient() if "archidekt" in active_sources else None
+    mtgazone = MTGAZoneClient() if "mtgazone" in active_sources else None
 
     # Gather work items: (rank, fmt_low, label, source_site, source_label, entry, fetch_fn)
     work: list[tuple[int, str, str, str, str, dict, object]] = []
@@ -411,6 +419,45 @@ def load_candidates(
             except Exception as exc:
                 logger.warning("Moxfield %s search failed: %s", fmt_low, exc)
 
+        if archidekt is not None:
+            try:
+                is_brawl = fmt_low == "brawl"
+                src_label = f"Archidekt {label} (community)"
+                for rank, entry in enumerate(archidekt.get_metagame(fmt_low), 1):
+                    work.append(
+                        (
+                            rank,
+                            fmt_low,
+                            label,
+                            "Archidekt",
+                            src_label,
+                            entry,
+                            lambda e=entry, c=archidekt, b=is_brawl: c.get_deck_list(
+                                e.get("deck_id") or e["url"], is_brawl=b
+                            ),
+                        )
+                    )
+            except Exception as exc:
+                logger.warning("Archidekt %s search failed: %s", fmt_low, exc)
+
+        if mtgazone is not None:
+            try:
+                src_label = f"MTG Arena Zone {label} (tier list)"
+                for rank, entry in enumerate(mtgazone.get_metagame(fmt_low), 1):
+                    work.append(
+                        (
+                            rank,
+                            fmt_low,
+                            label,
+                            "MTG Arena Zone",
+                            src_label,
+                            entry,
+                            lambda e=entry, c=mtgazone: c.get_deck_list(e.get("cache_key") or e["url"]),
+                        )
+                    )
+            except Exception as exc:
+                logger.warning("MTGAZone %s tier list failed: %s", fmt_low, exc)
+
     def _run_item(item):
         rank, fmt_low, label, source_site, src_label, entry, fetch_fn = item
         try:
@@ -469,8 +516,15 @@ def load_candidates(
 # rate below twenty decided games is noise, not signal, and is never shown.
 ARENA_MIN_GAMES = 20
 
-FORMATS = {"standard": "Standard", "brawl": "Brawl", "historic": "Historic"}
-ALL_SOURCES = ("aetherhub", "mtggoldfish", "mtgtop8", "moxfield")
+FORMATS = {
+    "standard": "Standard",
+    "brawl": "Brawl",
+    "historic": "Historic",
+    "alchemy": "Alchemy",
+    "timeless": "Timeless",
+    "explorer": "Explorer",
+}
+ALL_SOURCES = ("aetherhub", "mtggoldfish", "mtgtop8", "moxfield", "archidekt", "mtgazone")
 
 
 def normalize_deck_name(name: str) -> str:

@@ -24,6 +24,9 @@ WEBSITE_MODULES = (
     "state",
     "arenaonair",
     "match_bundles",
+    "card_facts",
+    "profiles",
+    "meta_sync",
     "download_versions",
     "routers",
     "routers.admin",
@@ -75,6 +78,7 @@ def load_website_app(tmp_path: Path, monkeypatch, module_name: str = "website_ap
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("CONFIG_PATH", str(config_path))
     monkeypatch.setenv("LITELLM_MASTER_KEY", "sk-master-test")
+    monkeypatch.setenv("META_SYNC_ENABLED", "0")
     isolate_website_modules(monkeypatch)
     module = load_website_module(monkeypatch, module_name, "app.py")
     return module, sys.modules["db"], sys.modules["patreon"]

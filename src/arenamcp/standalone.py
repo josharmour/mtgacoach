@@ -3603,6 +3603,10 @@ class StandaloneCoach(
         # Register hotkeys in a background thread (the keyboard module's
         # low-level Windows hook install can take a few seconds).
         threading.Thread(target=self._register_hotkeys, daemon=True, name="hotkey-register").start()
+        with contextlib.suppress(Exception):
+            from arenamcp import cloud_sync
+
+            cloud_sync.backfill_on_startup_async()
         if self.draft_mode:
             self._startup_complete()
 

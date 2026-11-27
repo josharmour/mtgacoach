@@ -765,6 +765,12 @@ class PipeAdapter:
                     args=("craft_async", cmd.get("cards") or []),
                     daemon=True,
                 ).start()
+            elif action == "import_synced_deck":
+                threading.Thread(
+                    target=self._handle_deck_bridge,
+                    args=("import_synced_deck_async", cmd.get("deck") or {}),
+                    daemon=True,
+                ).start()
             elif action == "deck_card_study":
                 self._start_deck_card_study(cmd)
             elif action == "analyze_deck":

@@ -30,6 +30,7 @@ from .coach_session import CoachSession
 from .compact_coach import CompactCoachPanel
 from .decks_tab import DecksTab
 from .hotkeys import HotkeyManager
+from .leaderboard_tab import LeaderboardTab
 from .performance_tab import PerformanceTab
 from .repair_tab import RepairTab
 from .runtime import open_url, read_version
@@ -129,6 +130,7 @@ class MainWindow(QMainWindow):
         self.coach_panel = CompactCoachPanel(session=self._session, parent=self)
         self.coach_panel.repair_requested.connect(self._show_repair_view)
         self.coach_panel.performance_requested.connect(self._show_performance_view)
+        self.coach_panel.leaderboard_requested.connect(self._show_leaderboard_view)
         # Rank history opens in the companion workspace, keeping the fixed shell visible.
         self.coach_panel.restart_requested.connect(self._restart_coach)
         self.coach_panel.reload_engine_requested.connect(self._reload_engine)
@@ -144,6 +146,10 @@ class MainWindow(QMainWindow):
         self._stack.addWidget(_build_page("Match History", self.performance_tab, self._show_coach_view))  # 2
         self.decks_tab = DecksTab(session=self._session)
         self._stack.addWidget(_build_page("Decks", self.decks_tab, self._show_coach_view))  # 3
+        self.leaderboard_tab = LeaderboardTab(session=self._session)
+        self._stack.addWidget(
+            _build_page("Leaderboard & Community", self.leaderboard_tab, self._show_coach_view)
+        )  # 4
         self.setCentralWidget(self._stack)
         self._session.adviceReceived.connect(self._on_deck_invitation)
         on_safeguard = getattr(self, "_on_loss_safeguard", None)
@@ -241,6 +247,10 @@ class MainWindow(QMainWindow):
         perf_act.triggered.connect(lambda: self._show_performance_view())
         decks_act = tools_menu.addAction("Decks…")
         decks_act.triggered.connect(self._show_decks_view)
+        lb_act = tools_menu.addAction("Leaderboard && Community…")
+        lb_act.triggered.connect(self._show_leaderboard_view)
+        web_profile_act = tools_menu.addAction("Open mtgacoach.com Profile ↗")
+        web_profile_act.triggered.connect(lambda: self.leaderboard_tab.open_web_profile())
         tools_menu.addSeparator()
         advice_act = tools_menu.addAction("Get Advice Now\tF5")
         advice_act.triggered.connect(lambda: self._session.send_command("force_advice"))
@@ -538,6 +548,11 @@ class MainWindow(QMainWindow):
         self._stack.setCurrentIndex(3)
         if not self.decks_tab._decks:
             self.decks_tab.refresh()
+
+    def _show_leaderboard_view(self) -> None:
+        """The Community Leaderboard & Web Deck Sync page."""
+        self._stack.setCurrentIndex(4)
+        self.leaderboard_tab.refresh()
 
     def _open_wildcard_deck_suggestions(self) -> None:
         self._show_decks_view()

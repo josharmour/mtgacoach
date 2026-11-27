@@ -34,3 +34,8 @@ admin:
 # Database
 database:
   path: "./data/mtgacoach.db"
+
+# Community Discord (Patreon native role integration unlocks Patron-only rooms)
+discord:
+  invite_url: ""
+  webhook_url: ""

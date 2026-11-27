@@ -1,0 +1,106 @@
+{% extends "_base.html" %}
+
+{% block title %}{{ deck.name }} — mtgacoach{% endblock %}
+{% block description %}{{ deck.format | title }} deck by {{ deck.author_name or 'Coach Player' }} on mtgacoach.com.{% endblock %}
+
+{% block head %}
+    <link rel="stylesheet" href="/static/css/profile.css?v=1">
+    <script src="/static/js/profile.js?v=1" defer></script>
+{% endblock %}
+
+{% block nav %}
+    <a href="/">Home</a>
+    <a href="/leaderboard">Leaderboard</a>
+    <a href="/profile">Profile</a>
+{% endblock %}
+
+{% block content %}
+<div id="profile-app"
+     class="wrap profile-shell"
+     data-page="deck_detail"
+     data-csrf="{{ csrf_token }}"
+     data-deck-id="{{ deck.id }}">
+
+    <header class="profile-hero">
+        <div>
+            <p class="kicker">{{ deck.format | title }} {% if deck.archetype %}&middot; {{ deck.archetype }}{% endif %}</p>
+            <h1>{{ deck.name }}</h1>
+            <p class="muted small">
+                Shared by <strong>{{ deck.author_name or "Coach Player" }}</strong>
+                {% if deck.author_is_patron %}<span class="badge patron">Patron</span>{% endif %}
+                {% if deck.games > 0 %}
+                    &middot; <strong>{{ (deck.win_rate * 100) | round(1) }}%</strong> ({{ deck.wins }}W-{{ deck.losses }}L)
+                {% endif %}
+            </p>
+        </div>
+        <div class="hero-cta-col">
+            <button type="button" class="button" id="detail-copy-btn">Copy Arena Export</button>
+            {% if signed_in %}
+                {% if is_owner %}
+                    <button type="button" class="button primary" id="detail-queue-btn" data-deck-id="{{ deck.id }}">Send to Coach &amp; Arena</button>
+                {% else %}
+                    <button type="button" class="button primary" id="detail-clone-btn" data-deck-id="{{ deck.id }}">Clone &amp; Send to Arena</button>
+                {% endif %}
+            {% else %}
+                <a class="button primary" href="/login?next=/decks/{{ deck.slug }}">Sign in to check wildcards &amp; sync</a>
+            {% endif %}
+        </div>
+    </header>
+
+    <div id="toast-region" class="toast-region" aria-live="polite"></div>
+
+    {% if deck.craftability is defined %}
+    <div class="cost-banner">
+        {% if deck.craftability.owned %}
+            <strong class="good-text">You own every card in this deck!</strong> (0 wildcards needed)
+        {% elif deck.craftability.affordable %}
+            <strong>Buildable with your wildcards:</strong>
+            {{ deck.craftability.spend.common }}C &middot; {{ deck.craftability.spend.uncommon }}U &middot;
+            {{ deck.craftability.spend.rare }}R &middot; {{ deck.craftability.spend.mythic }}M
+        {% else %}
+            <strong>Missing {{ deck.craftability.missing_total }} cards</strong>
+            (short {{ deck.craftability.extra_wildcards_needed }} wildcards beyond your synced balance)
+        {% endif %}
+    </div>
+    {% endif %}
+
+    {% if deck.description %}
+    <p class="lede small">{{ deck.description }}</p>
+    {% endif %}
+
+    <div class="two-col deck-piles-grid">
+        {% if deck.commander %}
+        <article class="panel-card">
+            <h2>Commander</h2>
+            <ul class="deck-card-list readonly">
+                {% for card in deck.commander %}
+                <li><span>{{ card.count }} &times; {{ card.name }}</span><span class="muted small">{{ card.rarity }}</span></li>
+                {% endfor %}
+            </ul>
+        </article>
+        {% endif %}
+
+        <article class="panel-card">
+            <h2>Main Deck ({{ deck.main | sum(attribute='count') }})</h2>
+            <ul class="deck-card-list readonly">
+                {% for card in deck.main %}
+                <li><span>{{ card.count }} &times; {{ card.name }}</span><span class="muted small">{{ card.rarity }}</span></li>
+                {% endfor %}
+            </ul>
+        </article>
+
+        {% if deck.sideboard %}
+        <article class="panel-card">
+            <h2>Sideboard ({{ deck.sideboard | sum(attribute='count') }})</h2>
+            <ul class="deck-card-list readonly">
+                {% for card in deck.sideboard %}
+                <li><span>{{ card.count }} &times; {{ card.name }}</span><span class="muted small">{{ card.rarity }}</span></li>
+                {% endfor %}
+            </ul>
+        </article>
+        {% endif %}
+    </div>
+
+    <textarea id="detail-export-source" class="sr-only" readonly>{{ deck.export_text }}</textarea>
+</div>
+{% endblock %}

@@ -469,6 +469,19 @@ def _card_facts_hooks_are_inert(monkeypatch):
     monkeypatch.setattr("arenamcp.card_facts.client._default_opener", forbidden_lookup)
 
 
+@pytest.fixture(autouse=True)
+def _cloud_sync_hooks_are_inert(monkeypatch):
+    """Background cloud_sync hooks stay fire-and-forget no-ops in tests."""
+    monkeypatch.setattr("arenamcp.cloud_sync.sync_match_async", lambda *a, **kw: None)
+    monkeypatch.setattr("arenamcp.cloud_sync.sync_collection_and_decks_async", lambda *a, **kw: None)
+    monkeypatch.setattr("arenamcp.cloud_sync.backfill_on_startup_async", lambda *a, **kw: None)
+
+    def forbidden_sync_http(*args, **kwargs):
+        raise AssertionError("cloud_sync HTTP transport must be explicitly faked in tests")
+
+    monkeypatch.setattr("arenamcp.cloud_sync._default_opener", forbidden_sync_http)
+
+
 @pytest.fixture(scope="session")
 def qapp_args():
     """Arguments passed to QApplication when created for testing."""

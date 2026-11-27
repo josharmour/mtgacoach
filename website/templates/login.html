@@ -1,0 +1,49 @@
+{% extends "_base.html" %}
+
+{% block title %}Sign in — mtgacoach{% endblock %}
+{% block description %}Sign in to your mtgacoach.com profile to track stats, build wildcard-aware decks, and sync to MTG Arena.{% endblock %}
+
+{% block head %}
+    <link rel="stylesheet" href="/static/css/profile.css?v=1">
+{% endblock %}
+
+{% block nav %}
+    <a href="/">Home</a>
+    <a href="/leaderboard">Leaderboard</a>
+    <a href="/subscribe">Subscribe</a>
+{% endblock %}
+
+{% block content %}
+<section class="auth-section">
+    <div class="wrap narrow">
+        <p class="kicker">mtgacoach.com Profile</p>
+        <h1>Sign in to your <em>Coach profile.</em></h1>
+        <p class="lede">Track your match performance, plan decks against your synced wildcard balance, discover winning lists, and send decks straight to Coach and Arena.</p>
+
+        {% if error %}
+        <div class="alert-box error" role="alert">{{ error }}</div>
+        {% endif %}
+
+        <div class="auth-grid">
+            <article class="panel-card">
+                <h2>Patreon members (paid &amp; free)</h2>
+                <p class="muted small">Paid patrons retrieve their Coach license key &amp; unlock Patron-only Discord rooms; free Patreon members get a profile, leaderboard access, and public Discord access.</p>
+                <div class="card-actions">
+                    <a class="button primary" href="/patreon/login?next={{ next_url | urlencode }}">Sign in with Patreon</a>
+                </div>
+            </article>
+
+            <article class="panel-card">
+                <h2>License or 7-day trial key</h2>
+                <p class="muted small">Paste the key from Setup &amp; Repair in the Coach desktop app (or use <strong>Tools &rarr; Open mtgacoach.com Profile</strong> in the app for one-click sign-in).</p>
+                <form method="post" action="/login/key" class="stack-form">
+                    <input type="hidden" name="next" value="{{ next_url }}">
+                    <label for="license_key" class="field-label">Coach key</label>
+                    <input id="license_key" name="license_key" type="password" required autocomplete="current-password" placeholder="sk-...">
+                    <button type="submit" class="button">Sign in with key</button>
+                </form>
+            </article>
+        </div>
+    </div>
+</section>
+{% endblock %}

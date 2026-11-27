@@ -164,11 +164,21 @@ def test_load_candidates_multi_source_and_resilience(monkeypatch):
         def get_deck_list(self, _pid):
             return {"mainboard": ["60 Island"], "sideboard": [], "commander": [], "companion": []}
 
+    class EmptyArchidekt:
+        def get_metagame(self, _fmt):
+            return []
+
+    class EmptyMTGAZone:
+        def get_metagame(self, _fmt):
+            return []
+
     monkeypatch.setattr(deck_candidates, "pricing_database", lambda: FakeDB())
     monkeypatch.setattr("arenamcp.mtggoldfish.MTGGoldfishClient", FakeGoldfish)
     monkeypatch.setattr("arenamcp.meta_sources.AetherHubClient", FakeAetherHub)
     monkeypatch.setattr("arenamcp.meta_sources.MTGTop8Client", FailingTop8)
     monkeypatch.setattr("arenamcp.meta_sources.MoxfieldClient", FakeMoxfield)
+    monkeypatch.setattr("arenamcp.meta_sources.ArchidektClient", EmptyArchidekt)
+    monkeypatch.setattr("arenamcp.meta_sources.MTGAZoneClient", EmptyMTGAZone)
 
     rows = deck_candidates.load_candidates(
         {},
@@ -222,10 +232,31 @@ def test_deck_builder_source_filter_and_paste_reset():
                 "affordable": True,
             },
         },
+        {
+            "name": "AZ Timeless List",
+            "format": "Timeless",
+            "source_site": "MTG Arena Zone",
+            "source": "MTG Arena Zone Timeless (tier list)",
+            "source_rank": 1,
+            "export": "Deck\n60 Swamp",
+            "cost": {
+                "missing": {},
+                "spend": {},
+                "shortfall_wildcards": {},
+                "unknown": [],
+                "owned": True,
+                "affordable": True,
+            },
+        },
     ]
     dlg.mode.setCurrentIndex(2)
     dlg.source_filter.setCurrentIndex(1)  # AetherHub
     assert [d["name"] for d in dlg._visible] == ["AH List"]
+
+    az_idx = dlg.source_filter.findData("mtgarenazone")
+    assert az_idx > 0
+    dlg.source_filter.setCurrentIndex(az_idx)
+    assert [d["name"] for d in dlg._visible] == ["AZ Timeless List"]
 
     # Pasting a deck resets source_filter to All sources so it is selectable.
     dlg._checking_paste = True

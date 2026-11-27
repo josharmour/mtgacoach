@@ -5,7 +5,10 @@
 
 {% block nav %}
     <a class="nav-optional" href="#tour">The 4.0 view</a>
-    <a class="nav-optional" href="#voices">Voices</a>
+    <a href="/leaderboard">Leaderboard</a>
+    <a href="/profile">Profile</a>
+    {% set discord_url = get_discord_invite_url() %}
+    {% if discord_url %}<a class="nav-optional" href="{{ discord_url }}" rel="noopener noreferrer">Discord</a>{% endif %}
     <a href="#get-started">Download</a>
     <a class="nav-optional" href="#pricing">Pricing</a>
     <a class="nav-cta" href="/subscribe">Subscribe</a>

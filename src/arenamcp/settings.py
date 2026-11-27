@@ -102,6 +102,8 @@ DEFAULTS = {
     # GRE traffic, bug reports; no names or keys) to mtgacoach.com so the
     # coach can be improved from real games (Tools > Share Match Logs).
     "share_match_logs": True,
+    # Sync match history, ranks, wildcards, and decks with mtgacoach.com profile.
+    "cloud_sync_enabled": True,
     "tts_server_url": "",
     "tts_mode": "auto",
     # Independent provider selection; Kokoro settings/voice remain intact.

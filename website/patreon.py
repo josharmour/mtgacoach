@@ -44,6 +44,8 @@ PATREON_CLIENT_ID = os.environ.get("PATREON_CLIENT_ID", "")
 PATREON_CAMPAIGN_ID = os.environ.get("PATREON_CAMPAIGN_ID", "1310866")
 PATREON_CLIENT_SECRET = os.environ.get("PATREON_CLIENT_SECRET", "")
 PATREON_WEBHOOK_SECRET = os.environ.get("PATREON_WEBHOOK_SECRET", "")
+PATREON_CREATOR_TOKEN = os.environ.get("PATREON_CREATOR_TOKEN", "")
+_creator_user_id: Optional[str] = None
 
 # LiteLLM gateway admin API. The website container runs on the same NAS as the
 # gateway, so the default talks to it directly (no Cloudflare in the path).
@@ -513,11 +515,70 @@ def _membership_allows_key(identity: dict) -> tuple[bool, str]:
     return False, "no_verified_campaign_membership"
 
 
+def _is_free_campaign_member(identity: dict) -> bool:
+    """True when the OAuth user is a non-paying follower/free member of our campaign."""
+    data = identity.get("data") or {}
+    if data.get("type") != "user" or not data.get("id") or not PATREON_CAMPAIGN_ID:
+        return False
+    refs = data.get("relationships", {}).get("memberships", {}).get("data", [])
+    member_ids = {r.get("id") for r in refs if r.get("type") == "member"}
+    for member in identity.get("included") or []:
+        if member.get("type") != "member" or member.get("id") not in member_ids:
+            continue
+        campaign = member.get("relationships", {}).get("campaign", {}).get("data") or {}
+        if campaign.get("type") != "campaign" or campaign.get("id") != PATREON_CAMPAIGN_ID:
+            continue
+        attrs = member.get("attributes") or {}
+        if attrs.get("patron_status") != "active_patron" and (
+            attrs.get("is_follower") is True or attrs.get("patron_status") is None
+        ):
+            return True
+    return False
+
+
+async def _is_campaign_creator(patron_id: str) -> bool:
+    """True when the OAuth user is the campaign creator verified by PATREON_CREATOR_TOKEN."""
+    global _creator_user_id
+    if not patron_id:
+        return False
+    token = PATREON_CREATOR_TOKEN or os.environ.get("PATREON_CREATOR_TOKEN", "")
+    if not token:
+        return False
+    if not _creator_user_id:
+        try:
+            resp = await _http().get(
+                "https://www.patreon.com/api/oauth2/v2/identity",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            if resp.status_code == 200:
+                cid = str((resp.json().get("data") or {}).get("id") or "").strip()
+                if cid:
+                    _creator_user_id = cid
+        except Exception as exc:
+            logger.warning(f"Creator identity lookup failed: {exc}")
+            return False
+    return bool(_creator_user_id) and hmac.compare_digest(str(patron_id), str(_creator_user_id))
+
+
+def _safe_next_url(raw: str) -> str:
+    val = str(raw or "").strip()
+    if (
+        not val
+        or not val.startswith("/")
+        or val.startswith("//")
+        or "\\" in val
+        or any(ch in val for ch in ("\r", "\n", "\t"))
+    ):
+        return ""
+    return val
+
+
 @router.get("/patreon/login")
-async def patreon_login():
+async def patreon_login(request: Request):
     if not PATREON_CLIENT_ID:
         raise HTTPException(503, "Patreon login is not configured")
     state = secrets.token_urlsafe(32)
+    next_url = _safe_next_url(request.query_params.get("next") or "")
     response = RedirectResponse(
         "https://www.patreon.com/oauth2/authorize?"
         + urlencode(
@@ -533,6 +594,16 @@ async def patreon_login():
     response.set_cookie(
         "__Host-patreon-state", state, max_age=600, secure=True, httponly=True, samesite="lax", path="/"
     )
+    if next_url:
+        response.set_cookie(
+            "__Host-patreon-next",
+            next_url,
+            max_age=600,
+            secure=True,
+            httponly=True,
+            samesite="lax",
+            path="/",
+        )
     response.headers["Cache-Control"] = "no-store"
     return response
 
@@ -571,6 +642,7 @@ def _error_page(title: str, message: str, status: int = 400) -> HTMLResponse:
 async def patreon_callback(request: Request):
     response = await _patreon_callback(request)
     response.delete_cookie("__Host-patreon-state", secure=True, httponly=True, samesite="lax", path="/")
+    response.delete_cookie("__Host-patreon-next", secure=True, httponly=True, samesite="lax", path="/")
     response.headers["Cache-Control"] = "no-store"
     response.headers["Pragma"] = "no-cache"
     response.headers["Referrer-Policy"] = "no-referrer"
@@ -609,7 +681,7 @@ async def _patreon_callback(request: Request):
             "?fields%5Buser%5D=email,full_name,is_email_verified"
             "&include=memberships.campaign"
             "&fields%5Bcampaign%5D=url"
-            "&fields%5Bmember%5D=patron_status",
+            "&fields%5Bmember%5D=patron_status,is_follower",
             headers={"Authorization": f"Bearer {access_token}"},
         )
         identity_resp.raise_for_status()
@@ -623,7 +695,45 @@ async def _patreon_callback(request: Request):
             return _error_page("Error", "Verify your email in Patreon before retrieving your key.")
 
         allowed, status = _membership_allows_key(identity)
+        if not allowed and await _is_campaign_creator(patron_id):
+            allowed, status = True, "campaign_creator"
         if not allowed:
+            if _is_free_campaign_member(identity):
+                import match_bundles
+                import profiles
+                import state
+
+                free_owner = match_bundles.owner_of(f"patreon-free:{patron_id}")
+                session_token, _csrf = profiles.create_web_session(free_owner, "patreon_free")
+                next_url = _safe_next_url(request.cookies.get("__Host-patreon-next") or "")
+                if next_url:
+                    resp = RedirectResponse(next_url, status_code=303)
+                    profiles._set_session_cookie(resp, request, session_token)
+                    return resp
+
+                invite_url = state.get_discord_invite_url()
+                discord_line = (
+                    f'<p><a href="{html.escape(invite_url)}">Join public Discord channels &rarr;</a> '
+                    "(upgrade to a paid tier to unlock Patron-only rooms)</p>"
+                    if invite_url
+                    else ""
+                )
+                resp = HTMLResponse(
+                    f"<html><head><title>mtgacoach - Free Member</title>{_PAGE_STYLE}</head><body>"
+                    '<div class="card">'
+                    f"<h1>Welcome, {html.escape(patron_name or 'Member')}!</h1>"
+                    "<p>Your free Patreon membership grants access to your <code>mtgacoach.com</code> profile, "
+                    "deck builder, public leaderboard, and public Discord channels.</p>"
+                    "<p>Paid AI coaching keys and private Patron-only Discord channels require an active "
+                    'paid pledge at <a href="https://www.patreon.com/mtgacoach">patreon.com/mtgacoach</a>.</p>'
+                    f"{discord_line}"
+                    '<p style="margin-top:20px;"><a href="/profile">Open your mtgacoach.com Profile &rarr;</a>'
+                    ' &middot; <a href="/leaderboard">View Leaderboard &rarr;</a></p>'
+                    "</div></body></html>"
+                )
+                profiles._set_session_cookie(resp, request, session_token)
+                return resp
+
             logger.info(f"Patreon OAuth: {patron_email} denied (status: {status})")
             return _error_page(
                 "No active pledge",
@@ -635,16 +745,39 @@ async def _patreon_callback(request: Request):
 
         license_key = await ensure_active_key(patron_email, patron_name, patron_id, f"oauth ({status})")
 
+        session_token = None
+        try:
+            import match_bundles
+            import profiles
+
+            session_token, _csrf = profiles.create_web_session(
+                match_bundles.owner_of(license_key), "subscriber"
+            )
+        except Exception as session_err:
+            logger.debug(f"Web session creation skipped on Patreon callback: {session_err}")
+
+        next_url = _safe_next_url(request.cookies.get("__Host-patreon-next") or "")
+        if session_token and next_url:
+            resp = RedirectResponse(next_url, status_code=303)
+            profiles._set_session_cookie(resp, request, session_token)
+            return resp
+
         copy_js = f"navigator.clipboard.writeText('{license_key}').then(()=>this.textContent='Copied!')"
-        return HTMLResponse(
+        resp = HTMLResponse(
             f"<html><head><title>mtgacoach - Welcome!</title>{_PAGE_STYLE}</head><body>"
             '<div class="card">'
             f"<h1>Welcome, {html.escape(patron_name or 'Patron')}!</h1>"
             "<p>Your license key is:</p>"
             f'<div class="key" onclick="{copy_js}" title="Click to copy">{license_key}</div>'
             "<p>Enter it in the mtgacoach app under <code>Settings &rarr; License Key</code>.</p>"
+            '<p style="margin-top:20px;"><a href="/profile">Open your mtgacoach.com Profile &rarr;</a></p>'
             "</div></body></html>"
         )
+        if session_token:
+            import profiles
+
+            profiles._set_session_cookie(resp, request, session_token)
+        return resp
 
     except Exception as e:
         logger.error(f"Patreon OAuth error: {e}")

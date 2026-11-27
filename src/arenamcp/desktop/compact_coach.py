@@ -374,6 +374,7 @@ class CompactCoachPanel(QWidget):
 
     repair_requested = Signal()
     performance_requested = Signal()
+    leaderboard_requested = Signal()
     restart_requested = Signal()
     reload_engine_requested = Signal()
     autopilot_bug_requested = Signal()
@@ -880,6 +881,13 @@ class CompactCoachPanel(QWidget):
             button.clicked.connect(lambda checked=False, name=key: self._show_detail(name))
             self.detail_buttons[key] = button
             discover.addWidget(button, 1)
+        leaders_btn = QPushButton("Leaders")
+        leaders_btn.setToolTip("Open community Leaderboard, Winning Decks, and mtgacoach.com Profile")
+        leaders_btn.setMinimumWidth(0)
+        leaders_btn.setProperty("compactRecovery", True)
+        leaders_btn.clicked.connect(self.leaderboard_requested.emit)
+        self.detail_buttons["leaders"] = leaders_btn
+        discover.addWidget(leaders_btn, 1)
         overview_layout.addLayout(discover)
         self.workspace.addWidget(self.overview)
         self.detail_pager = DetailPager()

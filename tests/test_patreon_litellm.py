@@ -448,3 +448,145 @@ def test_delete_404_only_succeeds_when_live_list_confirms_absence(env, monkeypat
 
     monkeypatch.setattr(patreon, "_http", lambda: API())
     assert asyncio.run(patreon.delete_litellm_key("sk-test")) is expected
+
+
+@pytest.mark.parametrize("is_creator", [True, False])
+def test_oauth_allows_verified_campaign_creator_without_pledge(env, monkeypatch, is_creator):
+    import httpx
+
+    patreon, _db, fake, client = env
+    monkeypatch.setattr(patreon, "PATREON_CREATOR_TOKEN", "creator-token")
+    monkeypatch.setattr(patreon, "_creator_user_id", None)
+    identity = _identity()
+    identity["included"] = []
+    identity["data"]["id"] = "78620" if is_creator else "99999"
+
+    async def post(url, **kwargs):
+        if "oauth2/token" in url:
+            return httpx.Response(200, json={"access_token": "test"}, request=httpx.Request("POST", url))
+        return await fake.post(url, **kwargs)
+
+    async def get(url, **kwargs):
+        auth = kwargs.get("headers", {}).get("Authorization", "")
+        if auth == "Bearer creator-token":
+            return httpx.Response(200, json={"data": {"id": "78620"}}, request=httpx.Request("GET", url))
+        return httpx.Response(200, json=identity, request=httpx.Request("GET", url))
+
+    class API:
+        pass
+
+    api = API()
+    api.post, api.get = post, get
+    monkeypatch.setattr(patreon, "_http", lambda: api)
+    response = client.get(
+        "/patreon/callback?code=test&state=matching",
+        headers={"Cookie": "__Host-patreon-state=matching"},
+    )
+    if is_creator:
+        assert response.status_code == 200
+        assert len(fake.minted) == 1
+    else:
+        assert response.status_code == 403
+        assert len(fake.minted) == 0
+
+
+@pytest.mark.parametrize(
+    "campaign,next_cookie,expected_status",
+    [
+        ("1310866", "/profile", 303),
+        ("1310866", "", 200),
+        ("other-campaign", "/profile", 403),
+    ],
+)
+def test_oauth_free_campaign_member_access(tmp_path, monkeypatch, campaign, next_cookie, expected_status):
+    import httpx
+    from tests.website_app import WEBSITE_DIR, load_website_app
+
+    (tmp_path / "templates").symlink_to(WEBSITE_DIR / "templates", target_is_directory=True)
+    (tmp_path / "static").symlink_to(WEBSITE_DIR / "static", target_is_directory=True)
+    monkeypatch.setenv("DISCORD_INVITE_URL", "https://discord.gg/free-test")
+    app_mod, _db, patreon = load_website_app(tmp_path, monkeypatch)
+    fake = FakeLiteLLM()
+
+    identity = {
+        "data": {
+            "type": "user",
+            "id": "free-user-42",
+            "attributes": {
+                "email": "free@example.com",
+                "full_name": "Free Follower",
+                "is_email_verified": True,
+            },
+            "relationships": {"memberships": {"data": [{"type": "member", "id": "m-free"}]}},
+        },
+        "included": [
+            {
+                "type": "member",
+                "id": "m-free",
+                "attributes": {"patron_status": None, "is_follower": True},
+                "relationships": {"campaign": {"data": {"type": "campaign", "id": campaign}}},
+            }
+        ],
+    }
+
+    async def post(url, **kwargs):
+        if "oauth2/token" in url:
+            return httpx.Response(200, json={"access_token": "free-tok"}, request=httpx.Request("POST", url))
+        return await fake.post(url, **kwargs)
+
+    async def get(url, **kwargs):
+        return httpx.Response(200, json=identity, request=httpx.Request("GET", url))
+
+    class API:
+        pass
+
+    api = API()
+    api.post, api.get = post, get
+    monkeypatch.setattr(patreon, "_http", lambda: api)
+
+    with TestClient(app_mod.app) as client:
+        client.cookies.set("__Host-patreon-state", "matching")
+        if next_cookie:
+            client.cookies.set("__Host-patreon-next", next_cookie)
+        resp = client.get(
+            "/patreon/callback?code=test&state=matching",
+            follow_redirects=False,
+        )
+        assert resp.status_code == expected_status
+        assert len(fake.minted) == 0
+
+        if expected_status == 403:
+            assert "mc-session" not in resp.cookies
+            return
+
+        assert "mc-session" in resp.cookies
+        if expected_status == 303:
+            assert resp.headers["location"] == "/profile"
+        else:
+            assert "/profile" in resp.text
+            assert "https://discord.gg/free-test" in resp.text
+
+        me = client.get("/v1/profile/me")
+        assert me.status_code == 200
+        assert me.json()["profile"]["is_patron"] is False
+
+        prof_html = client.get("/profile")
+        assert prof_html.status_code == 200
+        assert "Patreon Free" in prof_html.text
+
+        # Pull CSRF token from profile HTML and verify leaderboard opt-in works
+        import re
+
+        m = re.search(r'data-csrf="([^"]+)"', prof_html.text)
+        assert m
+        upd = client.patch(
+            "/v1/profile/settings",
+            headers={"X-CSRF-Token": m.group(1)},
+            json={"display_name": "FreeGrinder", "leaderboard_opt_in": True},
+        )
+        assert upd.status_code == 200
+        lb = client.get("/v1/leaderboard?tab=rank&window=all")
+        assert lb.status_code == 200
+        me_after = client.get("/v1/profile/me").json()["profile"]
+        assert me_after["display_name"] == "FreeGrinder"
+        assert me_after["leaderboard_opt_in"] is True

@@ -267,10 +267,18 @@ class DecksTab(QWidget):
         self.starter_toggle_btn.clicked.connect(self._toggle_starter_decks)
         header.addWidget(self.starter_toggle_btn, 0, Qt.AlignTop)
         lay.addLayout(header)
+        builder_row = QHBoxLayout()
         self.builder_btn = QPushButton("Build a stronger deck")
         self.builder_btn.setToolTip("Find source decks using owned cards or your wildcard balance")
         self.builder_btn.clicked.connect(self.open_builder)
-        lay.addWidget(self.builder_btn)
+        builder_row.addWidget(self.builder_btn, 1)
+        self.web_builder_btn = QPushButton("Web Deck Builder ↗")
+        self.web_builder_btn.setToolTip(
+            "Plan decks against your wildcards on mtgacoach.com and sync back to Arena"
+        )
+        self.web_builder_btn.clicked.connect(self.open_web_builder)
+        builder_row.addWidget(self.web_builder_btn)
+        lay.addLayout(builder_row)
 
         self._deck_buttons: dict[str, QPushButton] = {}
         self._selected_id = None
@@ -367,6 +375,22 @@ class DecksTab(QWidget):
         builder.activateWindow()
         if builder._collection is None:
             builder.refresh()
+
+    def open_web_builder(self) -> None:
+        import threading
+
+        from arenamcp import cloud_sync
+
+        from .runtime import open_url
+
+        def _work() -> None:
+            res = cloud_sync.create_profile_login_url(section="builder")
+            url = str(res.get("login_url") or "").strip()
+            if not url.startswith(("https://", "http://")):
+                url = cloud_sync._website_base() + "/profile#builder"
+            open_url(url)
+
+        threading.Thread(target=_work, name="open-web-builder", daemon=True).start()
 
     # -- collection, editing and crafting (feature #204) -----------------------
     def refresh_collection(self) -> None:

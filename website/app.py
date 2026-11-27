@@ -43,6 +43,7 @@ state.init_app_state()
 
 
 TRIAL_EXPIRED_EMAIL_SWEEP_SECONDS = 300.0
+META_SYNC_CHECK_SECONDS = 6 * 3600.0
 
 
 async def _expired_trial_email_loop() -> None:
@@ -60,6 +61,22 @@ async def _expired_trial_email_loop() -> None:
         await asyncio.sleep(TRIAL_EXPIRED_EMAIL_SWEEP_SECONDS)
 
 
+async def _meta_sync_loop() -> None:
+    import asyncio
+
+    await asyncio.sleep(30.0)
+    while True:
+        try:
+            summary = await meta_sync.maybe_refresh_meta_sources()
+            if not summary.get("skipped"):
+                logger.info("Scheduled meta deck refresh complete: %s", summary.get("sources"))
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning("Scheduled meta deck refresh failed: %s", e)
+        await asyncio.sleep(META_SYNC_CHECK_SECONDS)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     import asyncio
@@ -67,14 +84,26 @@ async def lifespan(app: FastAPI):
     state.http_client = httpx.AsyncClient(timeout=120.0)
     logger.info(f"Proxy server started with {len(state.router.providers)} providers")
     sweep_task = asyncio.create_task(_expired_trial_email_loop())
+    meta_task = (
+        asyncio.create_task(_meta_sync_loop())
+        if os.environ.get("META_SYNC_ENABLED", "1").strip() != "0"
+        else None
+    )
     try:
         yield
     finally:
         sweep_task.cancel()
+        if meta_task is not None:
+            meta_task.cancel()
         try:
             await sweep_task
         except asyncio.CancelledError:
             pass
+        if meta_task is not None:
+            try:
+                await meta_task
+            except asyncio.CancelledError:
+                pass
         if state.http_client:
             await state.http_client.aclose()
 
@@ -150,6 +179,18 @@ import card_facts
 
 card_facts.init_db()
 app.include_router(card_facts.router)
+
+# Customer profiles, deck sync, wildcard deck builder, and leaderboard.
+import profiles
+
+profiles.init_db()
+app.include_router(profiles.router)
+
+# Daily tournament & multi-format meta deck sync + archetype classification.
+import meta_sync
+
+meta_sync.init_db()
+app.include_router(meta_sync.router)
 
 # Compatibility exports for tests and direct module consumers
 config = state.config
