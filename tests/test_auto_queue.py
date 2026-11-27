@@ -759,7 +759,7 @@ def test_log_confirms_the_queue_the_click_joined():
     import time
 
     nav, _, backend = queued_navigator(
-        {"event_id": "Ladder", "deck_name": "Current deck", "recorded_at": time.time() + 1}
+        {"event_id": "Ladder", "deck_name": "Current deck", "recorded_at": time.time() + 60}
     )
     step(nav)
     assert not nav.paused_reason
@@ -773,7 +773,7 @@ def test_log_showing_a_different_deck_or_event_pauses_navigation():
         {"event_id": "Play_Brawl_Historic", "deck_name": "Current deck"},
         {"event_id": "Ladder", "deck_name": "Michelangelo, Weirdness to 11"},
     ):
-        nav, controller, backend = queued_navigator({**selection, "recorded_at": time.time() + 1})
+        nav, controller, backend = queued_navigator({**selection, "recorded_at": time.time() + 60})
         calls = backend.complete_with_image.call_count
         step(nav)
         assert "Leave that queue" in nav.paused_reason

@@ -21,11 +21,13 @@ merge with DEFAULTS automatically.
 import contextlib
 import json
 import logging
+import threading
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 logger = logging.getLogger(__name__)
+_SAVE_LOCK = threading.RLock()
 
 # Settings file location
 SETTINGS_DIR = Path.home() / ".arenamcp"
@@ -297,42 +299,43 @@ class Settings:
         import tempfile
 
         tmp_path: str | None = None
-        try:
-            target_dir = SETTINGS_FILE.parent
-            target_dir.mkdir(parents=True, exist_ok=True)
-            # Audit #19: other components (repair engine, runtime helpers)
-            # write keys like mtga_install_dir directly to disk; rewriting
-            # from this instance's startup snapshot deleted their fixes on
-            # every exit — the user re-repaired the same thing each session.
-            # Merge unknown on-disk keys under ours before writing.
+        with _SAVE_LOCK:
             try:
-                on_disk = json.loads(SETTINGS_FILE.read_text())
-                for key, value in on_disk.items():
-                    if key not in self._dirty and key not in self._removed:
-                        self._data[key] = value
-            except Exception:
-                pass
-            with tempfile.NamedTemporaryFile(
-                mode="w",
-                encoding="utf-8",
-                dir=target_dir,
-                prefix="settings.",
-                suffix=".tmp",
-                delete=False,
-            ) as f:
-                tmp_path = f.name
-                json.dump(self._data, f, indent=2)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp_path, SETTINGS_FILE)
-            tmp_path = None
-            self._dirty.clear()
-            logger.debug(f"Saved settings to {SETTINGS_FILE}")
-        except Exception as e:
-            if tmp_path is not None:
-                with contextlib.suppress(OSError):
-                    os.unlink(tmp_path)
-            logger.warning(f"Failed to save settings: {e}")
+                target_dir = SETTINGS_FILE.parent
+                target_dir.mkdir(parents=True, exist_ok=True)
+                # Audit #19: other components (repair engine, runtime helpers)
+                # write keys like mtga_install_dir directly to disk; rewriting
+                # from this instance's startup snapshot deleted their fixes on
+                # every exit — the user re-repaired the same thing each session.
+                # Merge unknown on-disk keys under ours before writing.
+                try:
+                    on_disk = json.loads(SETTINGS_FILE.read_text())
+                    for key, value in on_disk.items():
+                        if key not in self._dirty and key not in self._removed:
+                            self._data[key] = value
+                except Exception:
+                    pass
+                with tempfile.NamedTemporaryFile(
+                    mode="w",
+                    encoding="utf-8",
+                    dir=target_dir,
+                    prefix="settings.",
+                    suffix=".tmp",
+                    delete=False,
+                ) as f:
+                    tmp_path = f.name
+                    json.dump(self._data, f, indent=2)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp_path, SETTINGS_FILE)
+                tmp_path = None
+                self._dirty.clear()
+                logger.debug(f"Saved settings to {SETTINGS_FILE}")
+            except Exception as e:
+                if tmp_path is not None:
+                    with contextlib.suppress(OSError):
+                        os.unlink(tmp_path)
+                logger.warning(f"Failed to save settings: {e}")
 
     def get(self, key: str, default: Any = None) -> Any:
         """Get a setting value.
@@ -364,10 +367,11 @@ class Settings:
             value = "online"
         elif key == "voice_volume":
             value = clamp_voice_volume(value)
-        self._data[key] = value
-        self._dirty.add(key)
-        if save:
-            self.save()
+        with _SAVE_LOCK:
+            self._data[key] = value
+            self._dirty.add(key)
+            if save:
+                self.save()
 
     def reset(self) -> None:
         """Reset all settings to defaults."""
