@@ -86,7 +86,7 @@ async def _discord_feed_loop() -> None:
         try:
             summary = await discord_feed.check_and_post_updates()
             results = summary.get("results") or {}
-            if any(v in ("seeded", "posted", "error") for v in results.values()):
+            if any(v in ("created", "edited", "seeded", "posted", "error") for v in results.values()):
                 logger.info("Discord leaderboard feed check: %s", results)
         except asyncio.CancelledError:
             raise

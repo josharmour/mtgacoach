@@ -1,4 +1,4 @@
-"""Automatic Discord webhook announcements for Top 3 leaderboard and highest win-rate deck changes."""
+"""Automatic Discord webhook live-updating leaderboard & top decks board."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import os
 import re
 import time
 from typing import Any, Optional
-from urllib.parse import quote
+from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 from weakref import WeakKeyDictionary
 
 import httpx
@@ -26,34 +26,39 @@ DISCORD_FEED_CHECK_SECONDS = 60.0
 DISCORD_FEED_DEBOUNCE_SECONDS = 3.0
 DISCORD_FEED_DEFAULT_COOLDOWN_SECONDS = 900.0
 DISCORD_FEED_POST_TIMEOUT_SECONDS = 15.0
-DISCORD_FEED_LIMIT = 3
+DISCORD_FEED_LIMIT = 5
+LIVE_BOARD_KEY = "live_board"
 
+_POSITION_BADGES = ("🥇", "🥈", "🥉", "**#4**", "**#5**")
 _WEBHOOK_SECRET_RE = re.compile(r"https://discord(?:app)?\.com/api/webhooks/[^\s\"'<>]+")
 
 _FEED_SPECS: tuple[dict[str, Any], ...] = (
     {
-        "key": "rank_top3",
+        "key": "rank",
         "tab": "rank",
         "kind": "player",
-        "title": "Leaderboard Top 3 Switched — Highest Rank",
+        "title": "Highest Rank",
         "color": 0xD4A13C,
         "footer_path": "/leaderboard?tab=rank",
+        "footer_text": "Last 30 days · All formats · mtgacoach.com",
     },
     {
-        "key": "winrate_top3",
+        "key": "winrate",
         "tab": "winrate",
         "kind": "player",
-        "title": "Leaderboard Top 3 Switched — Highest Win Rate (30d)",
+        "title": "Highest Win Rate (20+ games)",
         "color": 0x4EA1D3,
         "footer_path": "/leaderboard?tab=winrate",
+        "footer_text": "Last 30 days · 20+ games · mtgacoach.com",
     },
     {
-        "key": "decks_top3",
+        "key": "decks",
         "tab": "decks",
         "kind": "deck",
-        "title": "Highest Win-Rate Decks Updated",
+        "title": "Top Decks (10+ games)",
         "color": 0x57B874,
         "footer_path": "/leaderboard?tab=decks",
+        "footer_text": "All-time · 10+ games · Public decks · mtgacoach.com",
     },
 )
 
@@ -63,7 +68,7 @@ _dirty_pending = False
 
 
 def init_db() -> None:
-    """Ensure Discord feed state tracking table exists."""
+    """Ensure Discord feed state tracking table and schema migrations exist."""
     with state._get_db().get_db() as conn:
         conn.executescript(
             """
@@ -72,10 +77,14 @@ def init_db() -> None:
                 last_ids_json TEXT NOT NULL DEFAULT '[]',
                 last_snapshot_json TEXT NOT NULL DEFAULT '[]',
                 last_posted_at REAL NOT NULL DEFAULT 0,
-                updated_at REAL NOT NULL DEFAULT 0
+                updated_at REAL NOT NULL DEFAULT 0,
+                message_id TEXT NOT NULL DEFAULT ''
             );
             """
         )
+        cols = {str(r["name"]) for r in conn.execute("PRAGMA table_info(discord_feed_state)").fetchall()}
+        if "message_id" not in cols:
+            conn.execute("ALTER TABLE discord_feed_state ADD COLUMN message_id TEXT NOT NULL DEFAULT ''")
 
 
 def _get_check_lock() -> asyncio.Lock:
@@ -125,10 +134,44 @@ def _abs_url(base: str, path: str) -> str:
     return f"{base}{path if path.startswith('/') else '/' + path}"
 
 
-def _collect_top3(conn, spec: dict[str, Any]) -> list[dict[str, Any]]:
-    """Fetch public-safe Top 3 snapshot rows alongside internal stability IDs."""
+def _md_label(text: str) -> str:
+    """Escape Markdown link-label brackets and collapse newlines."""
+    collapsed = " ".join(str(text or "").split())
+    return collapsed.replace("[", r"\[").replace("]", r"\]")
+
+
+def _position_badge(idx: int) -> str:
+    if 1 <= idx <= len(_POSITION_BADGES):
+        return _POSITION_BADGES[idx - 1]
+    return f"**#{idx}**"
+
+
+def _webhook_create_url(webhook_url: str) -> str:
+    """Append wait=true while preserving existing query parameters such as thread_id."""
+    parts = urlsplit(webhook_url)
+    params = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True) if k != "wait"]
+    params.append(("wait", "true"))
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(params), parts.fragment))
+
+
+def _webhook_edit_url(webhook_url: str, message_id: str) -> str:
+    """Build webhook PATCH URL for a message while preserving non-wait query params."""
+    parts = urlsplit(webhook_url)
+    path = f"{parts.path.rstrip('/')}/messages/{quote(str(message_id), safe='')}"
+    params = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True) if k != "wait"]
+    return urlunsplit((parts.scheme, parts.netloc, path, urlencode(params), parts.fragment))
+
+
+def _collect_top_entries(conn, spec: dict[str, Any]) -> list[dict[str, Any]]:
+    """Fetch public-safe Top N snapshot rows alongside internal stability IDs."""
     tab = spec["tab"]
-    fetch_limit = 15 if tab == "decks" else DISCORD_FEED_LIMIT
+    if tab == "decks":
+        fetch_limit = 25
+    elif tab == "rank":
+        fetch_limit = 15
+    else:
+        fetch_limit = DISCORD_FEED_LIMIT
+
     data = profiles.compute_leaderboard_entries(
         conn,
         tab=tab,
@@ -163,6 +206,11 @@ def _collect_top3(conn, spec: dict[str, Any]) -> list[dict[str, Any]]:
             for d in qualified
         ]
 
+    filtered = [
+        p
+        for p in rows
+        if str(p.get("owner") or "").strip() and (tab != "rank" or float(p.get("rank_score") or 0.0) > 0.0)
+    ][:DISCORD_FEED_LIMIT]
     return [
         {
             "id": str(p.get("owner") or ""),
@@ -177,136 +225,178 @@ def _collect_top3(conn, spec: dict[str, Any]) -> list[dict[str, Any]]:
             "top_deck": str(p.get("top_deck") or ""),
             "top_deck_slug": str(p.get("top_deck_slug") or ""),
         }
-        for p in rows[:DISCORD_FEED_LIMIT]
-        if str(p.get("owner") or "").strip()
+        for p in filtered
     ]
 
 
-def _movement_badge(item_id: str, new_pos: int, prev_pos_by_id: dict[str, int]) -> str:
-    old_pos = prev_pos_by_id.get(item_id)
-    if old_pos is None:
-        return " ★ NEW"
-    if new_pos < old_pos:
-        return f" ▲ from #{old_pos}"
-    if new_pos > old_pos:
-        return f" ▼ from #{old_pos}"
-    return ""
-
-
-def _headline_for_change(
+def _format_player_line(
     spec: dict[str, Any],
-    items: list[dict[str, Any]],
-    prev_ids: list[str],
-    prev_pos_by_id: dict[str, int],
+    idx: int,
+    item: dict[str, Any],
+    base_url: str,
 ) -> str:
-    if not items:
-        return ""
-    first = items[0]
-    first_label = first["name"] if spec["kind"] == "deck" else first["handle"]
-    if not prev_ids or first["id"] != prev_ids[0]:
-        if spec["kind"] == "deck":
-            return f"**{first_label}** climbed to **#1** highest win-rate deck!"
-        return f"**{first_label}** took over **#1**!"
-    for idx, item in enumerate(items[1:], start=2):
-        old_pos = prev_pos_by_id.get(item["id"])
-        label = item["name"] if spec["kind"] == "deck" else item["handle"]
-        if old_pos is None:
-            return f"**{label}** entered the Top 3 at **#{idx}**!"
-        if idx != old_pos:
-            return f"**{label}** moved to **#{idx}**!"
-    return "Top 3 standings updated."
+    badge = _position_badge(idx)
+    handle = _md_label(item.get("handle") or "")
+    p_url = _abs_url(base_url, item.get("profile_url") or spec["footer_path"])
+    wr = _pct_str(item.get("win_rate"))
+    record = f"{item['wins']}W-{item['losses']}L"
+    rank_label = str(item.get("rank_label") or "Unranked")
+
+    top_deck_name = str(item.get("top_deck") or "").strip()
+    top_deck_slug = str(item.get("top_deck_slug") or "").strip()
+    deck_part = ""
+    if top_deck_name and top_deck_slug:
+        d_url = _abs_url(base_url, f"/decks/{quote(top_deck_slug, safe='')}")
+        deck_part = f" · [{_md_label(top_deck_name)}]({d_url})"
+    elif top_deck_name:
+        deck_part = f" · {_md_label(top_deck_name)}"
+
+    if spec["key"] == "rank":
+        return f"{badge} [{handle}]({p_url}) — **{rank_label}** · {wr} ({record}){deck_part}"
+
+    rank_part = f" · {rank_label}" if rank_label and rank_label != "Unranked" else ""
+    return f"{badge} [{handle}]({p_url}) — **{wr}** ({record}){rank_part}{deck_part}"
 
 
-def _build_webhook_payload(
+def _format_deck_line(
+    spec: dict[str, Any],
+    idx: int,
+    item: dict[str, Any],
+    base_url: str,
+) -> str:
+    badge = _position_badge(idx)
+    name = _md_label(item.get("name") or "Unnamed Deck")
+    slug = str(item.get("slug") or "").strip()
+    deck_url = (
+        _abs_url(base_url, f"/decks/{quote(slug, safe='')}")
+        if slug
+        else _abs_url(base_url, spec["footer_path"])
+    )
+    fmt_label = (item.get("format") or "standard").title()
+    wr = _pct_str(item.get("win_rate"))
+    record = f"{item['wins']}W-{item['losses']}L"
+    author_name = str(item.get("author_name") or "").strip()
+    author_url = str(item.get("author_profile_url") or "").strip()
+    if author_url and not item.get("is_source"):
+        by_part = f" · by [{_md_label(author_name)}]({_abs_url(base_url, author_url)})"
+    elif author_name:
+        by_part = f" · by {_md_label(author_name)}"
+    else:
+        by_part = ""
+    return f"{badge} [{name}]({deck_url}) *({fmt_label})* — **{wr}** ({record}){by_part}"
+
+
+def _build_section_embed(
     spec: dict[str, Any],
     items: list[dict[str, Any]],
-    prev_ids: list[str],
     base_url: str,
 ) -> dict[str, Any]:
-    prev_pos_by_id = {item_id: idx for idx, item_id in enumerate(prev_ids, start=1)}
-    headline = _headline_for_change(spec, items, prev_ids, prev_pos_by_id)
-    lines: list[str] = []
-    if headline:
-        lines.append(headline)
-        lines.append("")
-
-    for idx, item in enumerate(items, start=1):
-        badge = _movement_badge(item["id"], idx, prev_pos_by_id)
-        badge_suffix = f" *({badge.strip()})*" if badge else ""
-        if spec["kind"] == "deck":
-            slug = item.get("slug") or ""
-            deck_url = (
-                _abs_url(base_url, f"/decks/{quote(slug, safe='')}")
-                if slug
-                else _abs_url(base_url, spec["footer_path"])
-            )
-            fmt_label = (item.get("format") or "standard").title()
-            wr = _pct_str(item.get("win_rate"))
-            record = f"{item['wins']}W-{item['losses']}L"
-            author_name = item.get("author_name") or ""
-            author_url = item.get("author_profile_url") or ""
-            if author_url and not item.get("is_source"):
-                by_part = f" · by [{author_name}]({_abs_url(base_url, author_url)})"
-            elif author_name:
-                by_part = f" · by {author_name}"
-            else:
-                by_part = ""
-            lines.append(
-                f"**#{idx}** · [{item['name']}]({deck_url}) *({fmt_label})* — **{wr}** ({record}){by_part}{badge_suffix}"
-            )
-        else:
-            p_url = _abs_url(base_url, item.get("profile_url") or spec["footer_path"])
-            wr = _pct_str(item.get("win_rate"))
-            record = f"{item['wins']}W-{item['losses']}L"
-            top_deck_name = item.get("top_deck") or ""
-            top_deck_slug = item.get("top_deck_slug") or ""
-            deck_part = ""
-            if top_deck_name and top_deck_slug:
-                d_url = _abs_url(base_url, f"/decks/{quote(top_deck_slug, safe='')}")
-                deck_part = f" · [{top_deck_name}]({d_url})"
-            elif top_deck_name:
-                deck_part = f" · {top_deck_name}"
-            lines.append(
-                f"**#{idx}** · [{item['handle']}]({p_url}) — {item['rank_label']} · **{wr}** ({record}){deck_part}{badge_suffix}"
-            )
-
     view_url = _abs_url(base_url, spec["footer_path"])
+    lines = [
+        (
+            _format_deck_line(spec, idx, item, base_url)
+            if spec["kind"] == "deck"
+            else _format_player_line(spec, idx, item, base_url)
+        )
+        for idx, item in enumerate(items, start=1)
+    ]
     lines.append("")
-    lines.append(f"[View full leaderboard →]({view_url})")
-
+    lines.append(f"[View full tab →]({view_url})")
     return {
-        "username": "MTGA Coach Leaderboard",
-        "allowed_mentions": {"parse": []},
-        "embeds": [
-            {
-                "title": spec["title"],
-                "url": view_url,
-                "description": "\n".join(lines)[:4000],
-                "color": spec["color"],
-                "footer": {"text": "mtgacoach.com · Last 30 days"},
-            }
-        ],
+        "title": spec["title"],
+        "url": view_url,
+        "description": "\n".join(lines)[:4000],
+        "color": spec["color"],
+        "footer": {"text": spec["footer_text"]},
     }
 
 
-async def _post_webhook(
+def _build_live_board_payload(
+    snapshots: dict[str, list[dict[str, Any]]],
+    base_url: str,
+    *,
+    updated_at: float,
+    for_edit: bool,
+) -> dict[str, Any]:
+    embeds = [
+        _build_section_embed(spec, items, base_url)
+        for spec in _FEED_SPECS
+        if (items := snapshots.get(spec["key"]) or [])
+    ]
+    payload: dict[str, Any] = {
+        "content": (
+            f"**MTGA Coach Live Leaderboard** · Updated <t:{int(updated_at)}:R> · "
+            f"[Full Leaderboard]({_abs_url(base_url, '/leaderboard')})"
+        ),
+        "allowed_mentions": {"parse": []},
+        "embeds": embeds,
+    }
+    if not for_edit:
+        payload["username"] = "MTGA Coach Leaderboard"
+    return payload
+
+
+async def _upsert_live_board_message(
     webhook_url: str,
-    payload: dict[str, Any],
+    message_id: str,
+    create_payload: dict[str, Any],
+    edit_payload: dict[str, Any],
     client: httpx.AsyncClient,
-) -> bool:
+) -> tuple[str, str]:
+    """Edit the existing live board message in place, creating or self-healing on 404."""
+    if message_id:
+        edit_url = _webhook_edit_url(webhook_url, message_id)
+        try:
+            resp = await client.patch(
+                edit_url,
+                json=edit_payload,
+                timeout=DISCORD_FEED_POST_TIMEOUT_SECONDS,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Discord webhook PATCH failed: %s",
+                _redact_secret(str(exc), webhook_url),
+            )
+            return ("error", message_id)
+        if 200 <= resp.status_code < 300:
+            return ("edited", message_id)
+        if resp.status_code == 404:
+            logger.info(
+                "Discord live leaderboard message %s not found (404); recreating",
+                message_id,
+            )
+        else:
+            logger.warning(
+                "Discord webhook PATCH returned non-success status=%s",
+                resp.status_code,
+            )
+            return ("error", message_id)
+
+    create_url = _webhook_create_url(webhook_url)
     try:
         resp = await client.post(
-            webhook_url,
-            json=payload,
+            create_url,
+            json=create_payload,
             timeout=DISCORD_FEED_POST_TIMEOUT_SECONDS,
         )
     except Exception as exc:
-        logger.warning("Discord webhook request failed: %s", _redact_secret(str(exc), webhook_url))
-        return False
+        logger.warning(
+            "Discord webhook POST failed: %s",
+            _redact_secret(str(exc), webhook_url),
+        )
+        return ("error", "")
     if 200 <= resp.status_code < 300:
-        return True
-    logger.warning("Discord webhook returned non-success status=%s", resp.status_code)
-    return False
+        try:
+            body = resp.json()
+        except Exception:
+            body = None
+        new_msg_id = str((body or {}).get("id") or "").strip() if isinstance(body, dict) else ""
+        if not new_msg_id:
+            logger.warning("Discord webhook POST ?wait=true returned no message id")
+            return ("error", "")
+        return ("created", new_msg_id)
+    logger.warning("Discord webhook POST returned non-success status=%s", resp.status_code)
+    return ("error", "")
 
 
 async def check_and_post_updates(
@@ -315,7 +405,7 @@ async def check_and_post_updates(
     http_client: Optional[httpx.AsyncClient] = None,
     now: Optional[float] = None,
 ) -> dict[str, Any]:
-    """Compare current Top 3 snapshots against persisted state and post switches to Discord."""
+    """Sync the single live Discord leaderboard message in place when standings change."""
     webhook_url = state.get_discord_webhook_url()
     if not webhook_url:
         return {"ok": True, "skipped": "no_webhook", "results": {}}
@@ -327,13 +417,33 @@ async def check_and_post_updates(
 
     async with _get_check_lock():
         with state._get_db().get_db() as conn:
-            snapshots = {spec["key"]: _collect_top3(conn, spec) for spec in _FEED_SPECS}
-            existing_rows = {
-                r["feed_key"]: dict(r)
-                for r in conn.execute("SELECT * FROM discord_feed_state").fetchall()
-            }
+            snapshots = {spec["key"]: _collect_top_entries(conn, spec) for spec in _FEED_SPECS}
+            prev_row = conn.execute(
+                "SELECT * FROM discord_feed_state WHERE feed_key = ?",
+                (LIVE_BOARD_KEY,),
+            ).fetchone()
 
-        results: dict[str, str] = {}
+        if not any(snapshots.values()):
+            return {"ok": True, "results": {LIVE_BOARD_KEY: "empty"}, "checked_at": ts}
+
+        existing_message_id = str(prev_row["message_id"] or "").strip() if prev_row else ""
+        snapshot_json = json.dumps(snapshots, sort_keys=True)
+        ids_json = json.dumps(
+            {k: [it["id"] for it in v] for k, v in snapshots.items()},
+            sort_keys=True,
+        )
+
+        if existing_message_id and prev_row is not None:
+            prev_snapshot_json = str(prev_row["last_snapshot_json"] or "")
+            last_posted_at = float(prev_row["last_posted_at"] or 0.0)
+            if not force_post and snapshot_json == prev_snapshot_json:
+                return {"ok": True, "results": {LIVE_BOARD_KEY: "unchanged"}, "checked_at": ts}
+            if not force_post and last_posted_at > 0 and (ts - last_posted_at) < cooldown_s:
+                return {"ok": True, "results": {LIVE_BOARD_KEY: "cooldown"}, "checked_at": ts}
+
+        create_payload = _build_live_board_payload(snapshots, base_url, updated_at=ts, for_edit=False)
+        edit_payload = _build_live_board_payload(snapshots, base_url, updated_at=ts, for_edit=True)
+
         owns_client = http_client is None
         client = http_client or state.http_client
         close_temp = False
@@ -342,72 +452,37 @@ async def check_and_post_updates(
             close_temp = True
 
         try:
-            for spec in _FEED_SPECS:
-                key = spec["key"]
-                items = snapshots.get(key) or []
-                current_ids = [it["id"] for it in items]
-                if not current_ids:
-                    results[key] = "empty"
-                    continue
-
-                prev_row = existing_rows.get(key)
-                if prev_row is None:
-                    if not force_post:
-                        with state._get_db().get_db() as conn:
-                            conn.execute(
-                                """
-                                INSERT INTO discord_feed_state
-                                    (feed_key, last_ids_json, last_snapshot_json, last_posted_at, updated_at)
-                                VALUES (?, ?, ?, ?, ?)
-                                """,
-                                (key, json.dumps(current_ids), json.dumps(items), 0.0, ts),
-                            )
-                        results[key] = "seeded"
-                        continue
-                    prev_ids: list[str] = []
-                    last_posted_at = 0.0
-                else:
-                    try:
-                        prev_ids = json.loads(prev_row.get("last_ids_json") or "[]")
-                    except (json.JSONDecodeError, TypeError):
-                        prev_ids = []
-                    last_posted_at = float(prev_row.get("last_posted_at") or 0.0)
-
-                if not force_post and current_ids == prev_ids:
-                    results[key] = "unchanged"
-                    continue
-
-                if not force_post and last_posted_at > 0 and (ts - last_posted_at) < cooldown_s:
-                    results[key] = "cooldown"
-                    continue
-
-                payload = _build_webhook_payload(spec, items, prev_ids, base_url)
-                posted = await _post_webhook(webhook_url, payload, client)
-                if not posted:
-                    results[key] = "error"
-                    continue
-
-                with state._get_db().get_db() as conn:
-                    conn.execute(
-                        """
-                        INSERT INTO discord_feed_state
-                            (feed_key, last_ids_json, last_snapshot_json, last_posted_at, updated_at)
-                        VALUES (?, ?, ?, ?, ?)
-                        ON CONFLICT(feed_key) DO UPDATE SET
-                            last_ids_json = excluded.last_ids_json,
-                            last_snapshot_json = excluded.last_snapshot_json,
-                            last_posted_at = excluded.last_posted_at,
-                            updated_at = excluded.updated_at
-                        """,
-                        (key, json.dumps(current_ids), json.dumps(items), ts, ts),
-                    )
-                results[key] = "posted"
-                logger.info("Posted Discord leaderboard update feed=%s", key)
+            action, new_msg_id = await _upsert_live_board_message(
+                webhook_url,
+                existing_message_id,
+                create_payload,
+                edit_payload,
+                client,
+            )
         finally:
             if owns_client and close_temp:
                 await client.aclose()
 
-    return {"ok": True, "results": results, "checked_at": ts}
+        if action == "error" or not new_msg_id:
+            return {"ok": True, "results": {LIVE_BOARD_KEY: "error"}, "checked_at": ts}
+
+        with state._get_db().get_db() as conn:
+            conn.execute(
+                """
+                INSERT INTO discord_feed_state
+                    (feed_key, last_ids_json, last_snapshot_json, last_posted_at, updated_at, message_id)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(feed_key) DO UPDATE SET
+                    last_ids_json = excluded.last_ids_json,
+                    last_snapshot_json = excluded.last_snapshot_json,
+                    last_posted_at = excluded.last_posted_at,
+                    updated_at = excluded.updated_at,
+                    message_id = excluded.message_id
+                """,
+                (LIVE_BOARD_KEY, ids_json, snapshot_json, ts, ts, new_msg_id),
+            )
+        logger.info("Synced Discord live leaderboard action=%s message_id=%s", action, new_msg_id)
+        return {"ok": True, "results": {LIVE_BOARD_KEY: action}, "checked_at": ts}
 
 
 async def _debounced_dirty_check() -> None:
@@ -443,7 +518,7 @@ async def shutdown() -> None:
 
 
 def notify_leaderboard_dirty() -> None:
-    """Coalesce mutation notifications into a background Top 3 check when active."""
+    """Coalesce mutation notifications into a background Top N live board check when active."""
     global _dirty_pending, _dirty_task
     if not _is_feed_enabled() or not state.get_discord_webhook_url():
         return

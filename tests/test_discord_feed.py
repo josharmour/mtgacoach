@@ -97,18 +97,37 @@ def test_discord_feed_noop_without_webhook(tmp_path: Path, monkeypatch):
     assert res["skipped"] == "no_webhook"
 
 
-def test_discord_feed_seed_switches_controls_and_failures(tmp_path: Path, monkeypatch, caplog):
+def test_discord_feed_live_board_lifecycle_controls_and_self_heal(tmp_path: Path, monkeypatch, caplog):
     _, db, _ = load_website_app(tmp_path, monkeypatch, "app_discord_feed")
     profiles = sys.modules["profiles"]
     discord_feed = sys.modules["discord_feed"]
 
+    # Verify legacy table without message_id migrates cleanly via init_db()
+    with db.get_db() as conn:
+        conn.execute("DROP TABLE IF EXISTS discord_feed_state")
+        conn.executescript(
+            """
+            CREATE TABLE discord_feed_state (
+                feed_key TEXT PRIMARY KEY,
+                last_ids_json TEXT NOT NULL DEFAULT '[]',
+                last_snapshot_json TEXT NOT NULL DEFAULT '[]',
+                last_posted_at REAL NOT NULL DEFAULT 0,
+                updated_at REAL NOT NULL DEFAULT 0
+            );
+            """
+        )
+    discord_feed.init_db()
+    with db.get_db() as conn:
+        cols = {str(r["name"]) for r in conn.execute("PRAGMA table_info(discord_feed_state)").fetchall()}
+        assert "message_id" in cols
+
     webhook_token = "super-secret-webhook-token-xyz"
-    webhook_url = f"https://discord.com/api/webhooks/12345/{webhook_token}"
+    webhook_url = f"https://discord.com/api/webhooks/12345/{webhook_token}?thread_id=777"
     monkeypatch.setenv("DISCORD_WEBHOOK_URL", webhook_url)
     monkeypatch.setenv("DISCORD_FEED_COOLDOWN_SECONDS", "600")
     monkeypatch.setenv("PUBLIC_BASE_URL", "https://mtgacoach.com")
 
-    # Seed 4 players across Rank, Win Rate (>=20 games), and Decks (>=10 games)
+    # Seed players across Rank, Win Rate (>=20 games), and Decks (>=10 games)
     _seed_player(
         db,
         profiles,
@@ -118,7 +137,7 @@ def test_discord_feed_seed_switches_controls_and_failures(tmp_path: Path, monkey
         mythic_pct=96.0,
         wins=18,
         losses=6,
-        deck_name="Alpha Aggro",
+        deck_name="[S] Alpha Aggro",
         deck_wins=18,
         deck_losses=6,  # 75.0%
     )
@@ -160,6 +179,33 @@ def test_discord_feed_seed_switches_controls_and_failures(tmp_path: Path, monkey
         deck_name="Delta Tempo",
         deck_wins=11,
         deck_losses=11,  # 50.0%
+    )
+    _seed_player(
+        db,
+        profiles,
+        "owner-secret-e",
+        handle="Eve",
+        rank_class="Platinum",
+        rank_tier=1,
+        wins=12,
+        losses=10,
+        deck_name="Epsilon Ramp",
+        deck_wins=12,
+        deck_losses=10,  # 54.5%
+    )
+    # Unranked high-winrate player: qualifies for Win Rate, NEVER Rank!
+    _seed_player(
+        db,
+        profiles,
+        "owner-secret-unranked",
+        handle="CasualGrinder",
+        rank_class="",
+        rank_tier=0,
+        wins=18,
+        losses=4,
+        deck_name="Grinder Deck",
+        deck_wins=18,
+        deck_losses=4,  # 81.8%
     )
     # Controls that must NEVER qualify or leak:
     _seed_player(
@@ -207,114 +253,135 @@ def test_discord_feed_seed_switches_controls_and_failures(tmp_path: Path, monkey
         deck_losses=0,
     )
 
-    posts: list[dict] = []
-    fail_next = False
+    requests_log: list[tuple[str, str, dict]] = []
+    next_status: int | None = None
+    post_counter = 0
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if fail_next:
-            return httpx.Response(500, json={"error": "upstream"})
-        posts.append(json.loads(request.content.decode()))
-        return httpx.Response(204)
+        nonlocal next_status, post_counter
+        payload = json.loads(request.content.decode()) if request.content else {}
+        if next_status is not None:
+            status = next_status
+            next_status = None
+            return httpx.Response(status, json={"error": "simulated"})
+        requests_log.append((request.method, str(request.url), payload))
+        if request.method == "POST":
+            post_counter += 1
+            return httpx.Response(200, json={"id": f"msg-{1000 + post_counter}"})
+        return httpx.Response(200, json={"id": "msg-1001"})
 
     async def run_check(now: float, force: bool = False):
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
             return await discord_feed.check_and_post_updates(force_post=force, http_client=client, now=now)
 
-    # 1. Cold start seeds silently without spamming Discord
+    # 1. Cold start creates 1 live board message via POST ?wait=true and persists message_id
     res1 = _run(run_check(now=1000.0))
-    assert res1["results"] == {"rank_top3": "seeded", "winrate_top3": "seeded", "decks_top3": "seeded"}
-    assert posts == []
+    assert res1["results"] == {"live_board": "created"}
+    assert len(requests_log) == 1
+    method1, url1, payload1 = requests_log[0]
+    assert method1 == "POST"
+    assert "wait=true" in url1
+    assert "thread_id=777" in url1
+    assert payload1["username"] == "MTGA Coach Leaderboard"
+    assert payload1["allowed_mentions"] == {"parse": []}
+    assert "<t:1000:R>" in payload1["content"]
+    assert [e["title"] for e in payload1["embeds"]] == [
+        "Highest Rank",
+        "Highest Win Rate (20+ games)",
+        "Top Decks (10+ games)",
+    ]
 
-    # 2. Same order + rank bump inside #1 (no Top 3 switch) + #4 handle rename -> no post!
     with db.get_db() as conn:
-        conn.execute(
-            "UPDATE player_profiles SET constructed_mythic_pct = 97.5, constructed_rank_score = ? WHERE owner = ?",
-            (profiles.compute_rank_score("Mythic", 1, 0, 97.5, None), "owner-secret-a"),
-        )
-        conn.execute(
-            "UPDATE player_profiles SET display_name = 'AliceRenamed' WHERE owner = 'owner-secret-a'"
-        )
-        conn.execute("UPDATE player_profiles SET display_name = 'DaveRenamed' WHERE owner = 'owner-secret-d'")
-    res2 = _run(run_check(now=1100.0))
-    assert res2["results"] == {
-        "rank_top3": "unchanged",
-        "winrate_top3": "unchanged",
-        "decks_top3": "unchanged",
-    }
-    assert posts == []
+        row = conn.execute(
+            "SELECT message_id FROM discord_feed_state WHERE feed_key = 'live_board'"
+        ).fetchone()
+        assert row is not None and row["message_id"] == "msg-1001"
 
-    # 3. Bob overtakes Alice on Rank AND overtakes Alice on Win Rate + Beta Control climbs to #1 deck!
-    with db.get_db() as conn:
-        conn.execute(
-            "UPDATE player_profiles SET constructed_mythic_pct = 98.5, constructed_rank_score = ? WHERE owner = 'owner-secret-b'",
-            (profiles.compute_rank_score("Mythic", 1, 0, 98.5, None),),
-        )
-        # Boost Bob + Beta Control past Alice (need >75% on 30+ games)
-        now = time.time()
-        for i in range(50):
-            conn.execute(
-                """
-                INSERT INTO player_matches (
-                    owner, match_id, played_at, result, format_name, format_bucket, deck_name, autopilot
-                ) VALUES ('owner-secret-b', ?, ?, 'win', 'Standard', 'standard', 'Beta Control', 0)
-                """,
-                (f"m-boost-{i}", now - i),
-            )
-        conn.execute("UPDATE synced_decks SET wins = 64 WHERE id = 'deck-b'")
+    # 2. Markdown escaping & privacy controls
+    rank_desc = payload1["embeds"][0]["description"]
+    winrate_desc = payload1["embeds"][1]["description"]
+    decks_desc = payload1["embeds"][2]["description"]
+    assert r"\[S\] Alpha Aggro" in rank_desc
+    assert r"\[S\] Alpha Aggro" in decks_desc
+    assert "CasualGrinder" not in rank_desc
+    assert "CasualGrinder" in winrate_desc
+    assert "Unranked" not in winrate_desc
 
-    res3 = _run(run_check(now=1200.0))
-    assert res3["results"] == {"rank_top3": "posted", "winrate_top3": "posted", "decks_top3": "posted"}
-    assert len(posts) == 3
-
-    combined_payload = json.dumps(posts)
-    assert "Bob" in combined_payload
-    assert "AliceRenamed" in combined_payload
-    assert "Beta Control" in combined_payload
-    assert "https://mtgacoach.com/players/Bob" in combined_payload
-    assert "https://mtgacoach.com/decks/dslug-b" in combined_payload
-    # Privacy controls must never appear anywhere in the webhook payload
+    combined_payload = json.dumps(payload1)
+    assert "https://mtgacoach.com/players/Alice" in combined_payload
+    assert "https://mtgacoach.com/decks/dslug-a" in combined_payload
     assert "owner-secret-" not in combined_payload
     assert "HiddenStar" not in combined_payload
     assert "Hidden OP Deck" not in combined_payload
     assert "Secret Tech" not in combined_payload
     assert "One Game Wonder" not in combined_payload
 
-    # 4. Cooldown suppresses rapid flip; reverting before cooldown ends yields 0 posts
+    # 3. Unchanged check sends 0 HTTP calls
+    res2 = _run(run_check(now=1050.0))
+    assert res2["results"] == {"live_board": "unchanged"}
+    assert len(requests_log) == 1
+
+    # 4. Change within cooldown (600s) is suppressed without HTTP calls
     with db.get_db() as conn:
         conn.execute(
-            "UPDATE player_profiles SET constructed_mythic_pct = 99.0, constructed_rank_score = ? WHERE owner = 'owner-secret-c'",
-            (profiles.compute_rank_score("Mythic", 1, 0, 99.0, None),),
+            "UPDATE player_profiles SET constructed_mythic_pct = 98.5, constructed_rank_score = ? WHERE owner = 'owner-secret-b'",
+            (profiles.compute_rank_score("Mythic", 1, 0, 98.5, None),),
         )
-    res4 = _run(run_check(now=1500.0))
-    assert res4["results"]["rank_top3"] == "cooldown"
-    assert len(posts) == 3
+    res3 = _run(run_check(now=1200.0))
+    assert res3["results"] == {"live_board": "cooldown"}
+    assert len(requests_log) == 1
 
-    with db.get_db() as conn:
-        conn.execute(
-            "UPDATE player_profiles SET constructed_mythic_pct = 88.0, constructed_rank_score = ? WHERE owner = 'owner-secret-c'",
-            (profiles.compute_rank_score("Mythic", 1, 0, 88.0, None),),
-        )
-    res4b = _run(run_check(now=1900.0))
-    assert res4b["results"]["rank_top3"] == "unchanged"
-    assert len(posts) == 3
+    # 5. After cooldown, silent PATCH edits existing msg-1001 in place with NO username field
+    res4 = _run(run_check(now=1700.0))
+    assert res4["results"] == {"live_board": "edited"}
+    assert len(requests_log) == 2
+    method2, url2, payload2 = requests_log[1]
+    assert method2 == "PATCH"
+    assert "/messages/msg-1001" in url2
+    assert "thread_id=777" in url2
+    assert "wait=true" not in url2
+    assert "username" not in payload2
+    assert "<t:1700:R>" in payload2["content"]
+    assert payload2["embeds"][0]["description"].index("Bob") < payload2["embeds"][0]["description"].index(
+        "Alice"
+    )
 
-    # 5. Sustained switch + HTTP 500 failure keeps last_posted_at/last_ids_json untouched so next tick retries cleanly
+    # 6. HTTP 500 on PATCH leaves DB state untouched so immediate retry succeeds without leaking token
     with caplog.at_level(logging.INFO):
         with db.get_db() as conn:
             conn.execute(
                 "UPDATE player_profiles SET constructed_mythic_pct = 99.0, constructed_rank_score = ? WHERE owner = 'owner-secret-c'",
                 (profiles.compute_rank_score("Mythic", 1, 0, 99.0, None),),
             )
-        fail_next = True
-        res5 = _run(run_check(now=2000.0))
-        assert res5["results"]["rank_top3"] == "error"
-        assert len(posts) == 3
+        next_status = 500
+        res5 = _run(run_check(now=2400.0))
+        assert res5["results"] == {"live_board": "error"}
+        assert len(requests_log) == 2
 
-        fail_next = False
-        res6 = _run(run_check(now=2060.0))
-        assert res6["results"]["rank_top3"] == "posted"
-        assert len(posts) == 4
-        assert "Carol" in posts[-1]["embeds"][0]["description"]
+        res6 = _run(run_check(now=2460.0))
+        assert res6["results"] == {"live_board": "edited"}
+        assert len(requests_log) == 3
+        assert "Carol" in requests_log[2][2]["embeds"][0]["description"]
+
+    # 7. HTTP 404 on PATCH (deleted message) self-heals by POST ?wait=true and updates message_id
+    with db.get_db() as conn:
+        conn.execute(
+            "UPDATE player_profiles SET display_name = 'CarolRenamed' WHERE owner = 'owner-secret-c'"
+        )
+    next_status = 404
+    res7 = _run(run_check(now=3200.0))
+    assert res7["results"] == {"live_board": "created"}
+    assert len(requests_log) == 4
+    method4, url4, payload4 = requests_log[3]
+    assert method4 == "POST"
+    assert "wait=true" in url4
+    assert payload4["username"] == "MTGA Coach Leaderboard"
+
+    with db.get_db() as conn:
+        row = conn.execute(
+            "SELECT message_id FROM discord_feed_state WHERE feed_key = 'live_board'"
+        ).fetchone()
+        assert row is not None and row["message_id"] == "msg-1002"
 
     assert webhook_token not in caplog.text
 
