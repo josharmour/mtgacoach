@@ -197,6 +197,7 @@ def _collect_top_entries(conn, spec: dict[str, Any]) -> list[dict[str, Any]]:
                 "format": str(d.get("format") or "standard"),
                 "author_name": str(d.get("author_name") or ""),
                 "author_profile_url": str(d.get("author_profile_url") or ""),
+                "author_is_patron": bool(d.get("author_is_patron")),
                 "is_source": bool(d.get("is_source")),
                 "wins": int(d.get("display_wins") or 0),
                 "losses": int(d.get("display_losses") or 0),
@@ -238,6 +239,7 @@ def _format_player_line(
     badge = _position_badge(idx)
     handle = _md_label(item.get("handle") or "")
     p_url = _abs_url(base_url, item.get("profile_url") or spec["footer_path"])
+    patron_badge = " ★" if item.get("is_patron") else ""
     wr = _pct_str(item.get("win_rate"))
     record = f"{item['wins']}W-{item['losses']}L"
     rank_label = str(item.get("rank_label") or "Unranked")
@@ -252,10 +254,10 @@ def _format_player_line(
         deck_part = f" · {_md_label(top_deck_name)}"
 
     if spec["key"] == "rank":
-        return f"{badge} [{handle}]({p_url}) — **{rank_label}** · {wr} ({record}){deck_part}"
+        return f"{badge} [{handle}]({p_url}){patron_badge} — **{rank_label}** · {wr} ({record}){deck_part}"
 
     rank_part = f" · {rank_label}" if rank_label and rank_label != "Unranked" else ""
-    return f"{badge} [{handle}]({p_url}) — **{wr}** ({record}){rank_part}{deck_part}"
+    return f"{badge} [{handle}]({p_url}){patron_badge} — **{wr}** ({record}){rank_part}{deck_part}"
 
 
 def _format_deck_line(
@@ -277,10 +279,11 @@ def _format_deck_line(
     record = f"{item['wins']}W-{item['losses']}L"
     author_name = str(item.get("author_name") or "").strip()
     author_url = str(item.get("author_profile_url") or "").strip()
+    author_badge = " ★" if item.get("author_is_patron") and not item.get("is_source") else ""
     if author_url and not item.get("is_source"):
-        by_part = f" · by [{_md_label(author_name)}]({_abs_url(base_url, author_url)})"
+        by_part = f" · by [{_md_label(author_name)}]({_abs_url(base_url, author_url)}){author_badge}"
     elif author_name:
-        by_part = f" · by {_md_label(author_name)}"
+        by_part = f" · by {_md_label(author_name)}{author_badge}"
     else:
         by_part = ""
     return f"{badge} [{name}]({deck_url}) *({fmt_label})* — **{wr}** ({record}){by_part}"
@@ -325,7 +328,7 @@ def _build_live_board_payload(
     ]
     payload: dict[str, Any] = {
         "content": (
-            f"**MTGA Coach Live Leaderboard** · Updated <t:{int(updated_at)}:R> · "
+            f"**MTGA Coach Live Leaderboard** · Updated <t:{int(updated_at)}:R> · ★ = Mythic Patron · "
             f"[Full Leaderboard]({_abs_url(base_url, '/leaderboard')})"
         ),
         "allowed_mentions": {"parse": []},

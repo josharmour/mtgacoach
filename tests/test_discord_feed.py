@@ -22,6 +22,7 @@ def _seed_player(
     *,
     handle: str = "",
     opt_in: bool = True,
+    is_patron: bool = True,
     rank_class: str = "Gold",
     rank_tier: int = 1,
     mythic_pct: float | None = None,
@@ -44,9 +45,20 @@ def _seed_player(
                 owner, display_name, leaderboard_opt_in, is_patron,
                 constructed_rank_class, constructed_rank_tier, constructed_rank_step,
                 constructed_mythic_pct, constructed_rank_score, created_at, updated_at
-            ) VALUES (?, ?, ?, 1, ?, ?, 0, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
             """,
-            (owner, handle, 1 if opt_in else 0, rank_class, rank_tier, mythic_pct, score, now, now),
+            (
+                owner,
+                handle,
+                1 if opt_in else 0,
+                1 if is_patron else 0,
+                rank_class,
+                rank_tier,
+                mythic_pct,
+                score,
+                now,
+                now,
+            ),
         )
         conn.execute("DELETE FROM player_matches WHERE owner = ?", (owner,))
         for idx in range(wins + losses):
@@ -146,6 +158,7 @@ def test_discord_feed_live_board_lifecycle_controls_and_self_heal(tmp_path: Path
         profiles,
         "owner-secret-b",
         handle="Bob",
+        is_patron=False,
         rank_class="Mythic",
         mythic_pct=92.0,
         wins=14,
@@ -285,6 +298,7 @@ def test_discord_feed_live_board_lifecycle_controls_and_self_heal(tmp_path: Path
     assert payload1["username"] == "MTGA Coach Leaderboard"
     assert payload1["allowed_mentions"] == {"parse": []}
     assert "<t:1000:R>" in payload1["content"]
+    assert "★ = Mythic Patron" in payload1["content"]
     assert [e["title"] for e in payload1["embeds"]] == [
         "Highest Rank",
         "Highest Win Rate (20+ games)",
@@ -297,7 +311,7 @@ def test_discord_feed_live_board_lifecycle_controls_and_self_heal(tmp_path: Path
         ).fetchone()
         assert row is not None and row["message_id"] == "msg-1001"
 
-    # 2. Markdown escaping & privacy controls
+    # 2. Markdown escaping, Mythic Patron badge (★), & privacy controls
     rank_desc = payload1["embeds"][0]["description"]
     winrate_desc = payload1["embeds"][1]["description"]
     decks_desc = payload1["embeds"][2]["description"]
@@ -306,6 +320,12 @@ def test_discord_feed_live_board_lifecycle_controls_and_self_heal(tmp_path: Path
     assert "CasualGrinder" not in rank_desc
     assert "CasualGrinder" in winrate_desc
     assert "Unranked" not in winrate_desc
+    assert "[Alice](https://mtgacoach.com/players/Alice) ★" in rank_desc
+    assert "[Alice](https://mtgacoach.com/players/Alice) ★" in winrate_desc
+    assert "by [Alice](https://mtgacoach.com/players/Alice) ★" in decks_desc
+    assert "[Bob](https://mtgacoach.com/players/Bob) ★" not in rank_desc
+    assert "[Bob](https://mtgacoach.com/players/Bob) ★" not in winrate_desc
+    assert "[Bob](https://mtgacoach.com/players/Bob) ★" not in decks_desc
 
     combined_payload = json.dumps(payload1)
     assert "https://mtgacoach.com/players/Alice" in combined_payload
